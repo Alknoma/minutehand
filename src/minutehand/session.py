@@ -1151,9 +1151,9 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             if not isinstance(provider, PushesEvents):
                 raise RunRefused(f"provider {key} declares pushes_events and does not implement PushesEvents")
             pushes[key] = provider
-        if provider.manifest.books_wakes:
+        if provider.manifest.books_wakes or provider.manifest.books_work:
             if not isinstance(provider, BooksWakes):
-                raise RunRefused(f"provider {key} declares books_wakes and does not implement BooksWakes")
+                raise RunRefused(f"provider {key} declares books_wakes or books_work and does not implement BooksWakes")
             schedulers[key] = provider
         if isinstance(provider, HoldsTickets):
             tickets[key] = provider

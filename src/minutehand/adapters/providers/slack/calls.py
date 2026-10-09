@@ -3,16 +3,21 @@ events it sets off (`pushing`)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from minutehand.adapters.providers.slack import inbound, state, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.world import Actor, Operation, RecordSnapshot, WorldEvent
 from minutehand.ports.clock import Clock
+from minutehand.ports.provider import Wakes
 from minutehand.ports.store import Store
 
 
 class Calls:
-    def __init__(self, store: Store, clock: Clock) -> None:
+    def __init__(self, store: Store, clock: Clock, booking: Callable[[], Wakes | None]) -> None:
         self._store = store
+        self._booking = booking
+        """The dispatch table the run books what falls due later in, when the provider is bound to one."""
         self._world = SlackWorld(store)
         """The workspace the call being answered is in: set for each call before its method runs."""
         self._clock = clock

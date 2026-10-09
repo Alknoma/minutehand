@@ -154,6 +154,15 @@ def post_ref(key: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"post.{key}")
 
 
+def scheduled_ref(scheduled: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"scheduled.{scheduled}")
+
+
+def scheduled_id(seq: int) -> str:
+    """A `scheduled_message_id`: Slack's examples are a `Q` and ten digits, here the log position that scheduled it."""
+    return f"Q{1_000_000_000 + seq}"
+
+
 def view_ref(view: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"view.{view}")
 
@@ -187,6 +196,7 @@ def unlisted_email_ref(user: str) -> EntityRef:
 
 
 FILES = "files"
+SCHEDULED = "scheduled"
 EMAILS = "emails"
 POSTS = "posts"
 VIEWS = "views"

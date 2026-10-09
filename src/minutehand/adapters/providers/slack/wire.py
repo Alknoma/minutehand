@@ -257,6 +257,21 @@ class SlackMessage(Model):
     )
 
 
+class SlackScheduled(Model):
+    """Minutehand's own: a message the agent scheduled and Slack has not posted yet, as it was scheduled."""
+
+    id: str
+    team: str
+    channel: str
+    post_at: int
+    date_created: int
+    text: str = ""
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+    thread_ts: str | None = None
+    reply_broadcast: bool = False
+
+
 class SlackPostKey(Model):
     """Minutehand's own: where the post a scenario names by key landed."""
 
@@ -566,6 +581,38 @@ class UpdateArgs(Model):
     attachments: list[JsonValue] | None = None
 
     _parse_blocks = field_validator("blocks", "attachments", mode="before")(_blocks_from_form)
+
+
+def _number_as_text(value: object) -> object:
+    """A JSON body carries a Unix timestamp as a number, a form as text."""
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
+
+
+class ScheduleArgs(Model):
+    channel: str = ""
+    post_at: str = ""
+    text: str = ""
+    thread_ts: str | None = None
+    reply_broadcast: bool = False
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+
+    _parse_blocks = field_validator("blocks", "attachments", mode="before")(_blocks_from_form)
+    _parse_time = field_validator("post_at", mode="before")(_number_as_text)
+
+
+class ScheduledListArgs(ListArgs):
+    channel: str = ""
+    oldest: str = ""
+    latest: str = ""
+    team_id: str = ""
+
+    _parse_time = field_validator("oldest", "latest", mode="before")(_number_as_text)
+
+
+class DeleteScheduledArgs(Model):
+    channel: str = ""
+    scheduled_message_id: str = ""
 
 
 class DeleteArgs(Model):
@@ -1108,6 +1155,37 @@ class Updated(Ok):
 class Deleted(Ok):
     channel: str
     ts: str
+
+
+class ScheduledBody(Model):
+    """The message `chat.scheduleMessage` answers: what was scheduled, as a delayed message."""
+
+    text: str
+    bot_id: str
+    type: Literal["delayed_message"] = "delayed_message"
+    subtype: Literal["bot_message"] = "bot_message"
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+
+
+class Scheduled(Ok):
+    channel: str
+    scheduled_message_id: str
+    post_at: str
+    message: ScheduledBody
+
+
+class ScheduledItem(Model):
+    id: int
+    channel_id: str
+    post_at: int
+    date_created: int
+    text: str
+
+
+class ScheduledList(Ok):
+    scheduled_messages: list[ScheduledItem]
+    response_metadata: ResponseMetadata
 
 
 class ViewAnswered(Ok):
