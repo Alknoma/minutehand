@@ -1220,6 +1220,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 | `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
+| `SIMULATION_INCOMPLETE` | Neither of the two above, and the simulated world did not play as its files declare: an incomplete kind of the run's health ("The simulation's health", below). The agent is still judged on what did happen: that verdict's kind is kept in `Verdict.on_what_happened` and its sentence follows "on what did happen:" in the words, so a failure is never hidden by it | 6 |
 
 ```
 run 5c1e0a9f2b77: partner_pricing
@@ -1236,6 +1237,34 @@ What the rule gets wrong:
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
 
+
+#### The simulation's health
+
+Built and tested (`checks/health.py`, `tests/checks/test_health.py`, `tests/services/test_service_health.py`). Always
+read, over every run and fork; facts about the simulated world, never about the agent, and kept apart from the
+agent's findings (`RunResult.simulation`, a list of `HealthFinding`: kind, whether it makes the run incomplete, one
+sentence, the person, the entity, since when, the seqs). The report prints them under `simulation`, the run's notes
+repeat each as `simulation: ...`, the read model holds them in `simulation_health`, and the viewer shows them beside
+the verdict.
+
+| `HealthKind` | Makes the run `SIMULATION_INCOMPLETE` | When |
+|---|---|---|
+| `responder_never_acts` | yes | An item of a declared service waited on a responder whose script ends in silence (`then: silent`) with no `takes` for the service: declared to respond, they never can (`application/people._picks`). A responder who never decides is declared `{kind: silent}`, or the service lists none (`docs/services.md`) |
+| `waits_on_nobody` | yes | An item of a declared service sat in a state only a person moves it out of, responders declared, and the engine held it pending on nobody |
+| `owed_unbooked` | yes | Someone owes a move or an answer (they speak for themselves, or a take pins it) with no moment booked, or a moment booked that the table of what is due never held |
+| `model_failed` | yes | A people model call failed and no later call with the same context answered it, or a move is still owed with a model's failure on it |
+| `push_failed` | yes | An event the world pushed to the agent (a Slack event, a declared service's push) was never taken, after every retry its service makes |
+| `waits_by_declaration` | no | An item waited on someone the files declare never acts: a `Silent` person, or a script that ends in silence where no service names them a responder |
+| `never_exercised` | no | A declared service, `store` collection or person nothing in the run touched |
+| `step_never_fired` | no | A scripted step whose ask never came |
+
+Precedence: `ENVIRONMENT_FAILED` and `TOOL_FAILED` stand, since such a run says nothing either way; otherwise an
+incomplete world outranks every other kind, and `minutehand run-all` and samples order it after those two and
+before `FAILED`. `expect_outcome: simulation_incomplete` is a scenario written to show one. `minutehand validate`
+warns of every service responder who never acts before any run.
+
+What it gets wrong: coverage counts a person touched by any message to them or any item pending on them, so a
+person only copied on a group message counts as exercised; a collection read and never written counts as unused.
 
 #### The checks left in the core
 
@@ -1929,7 +1958,7 @@ does not test.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **A Slack token only picks a workspace.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`; in a world that declares several, a token answers in the workspace that declares or minted it, else the first that declares none, else the first. No token is refused.
-- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
+- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called. Every send and retry is recorded as it ends (`EntityKind.PUSH`, a `PushSnapshot` with the event id, the address, the retry's number and `X-Slack-Retry-Reason`, the status or the timeout, and the real seconds it took; the read model's `pushes`), so an event the agent handled twice is in the record. An event still refused after the last retry stops the run `AGENT_FAILED`, its failure naming the event and how each send ended, and the run's health says `push_failed`. A person's reply whose push failed stands in the record as said, since the service took it: the message, their reply (`replies`) and its transition are kept, the wait it answered is settled, and the record of what was owed carries the failure. How long a send took is real time and never parts a fork from its parent.
 - **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
 - **No provider authenticates** (see "Authentication is out of scope"): any credential, or none, acts, a seeded one as its account and any other as the world's default identity; Google's `/token` matches a refresh token or a service account by name and verifies no signature.
 - **No fake's wire details have been verified against the real service.**

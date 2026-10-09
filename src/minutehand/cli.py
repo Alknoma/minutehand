@@ -69,8 +69,13 @@ Exit codes of `run`, `fork` and `findings`, which follow the verdict each report
      prints it as well)
   5  not judged: nothing was assessed (the files declare no rule, expectation, protected name or check of the
      agent's own; the facts are still reported), or a check that needs wakes had none
+  6  simulation incomplete: the simulated world did not play as its files declare (a service responder who can
+     never act, an answer owed and never booked, a people model call that failed, a push the agent never took
+     after every retry); the report's "simulation" section names each, and the agent's verdict over what did
+     happen follows the words "on what did happen"
 With samples: 2 when an external emulator was unavailable in any sample, else 4 when Minutehand failed in any,
-else 1 when any failed, else 5 when any was not judged, else 3 when any did not finish, else 0.
+else 6 when any's simulation was incomplete, else 1 when any failed, else 5 when any was not judged, else 3 when
+any did not finish, else 0.
 """
 
 from __future__ import annotations
@@ -125,11 +130,12 @@ from minutehand.application.migrate import MigrationRefused, migrate
 from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
+from minutehand.checks.health import silent_responders
 from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
-from minutehand.domain.checks import Effectiveness, Finding, FindingKind
+from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding
 from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
@@ -693,6 +699,8 @@ def _validate(paths: Sequence[Path], kind: FileKind | None) -> int:
         read_as, model, said = problems(path, kind)
         if isinstance(model, WrittenScenario):
             scenarios.append((path, model))
+            for warning in silent_responders(model):
+                print(f"{path}: warning: {warning}", file=sys.stderr)
         if isinstance(model, (WrittenScenario, AgentUnderTest)):
             known = {p.key for p in PATTERNS}
             said += [
@@ -1273,6 +1281,10 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
     if result.blocked:
         lines.append(f"\nblocked: {len(result.blocked)} check(s) could not read their input and did not run")
         lines += [f"  {b}" for b in result.blocked]
+    if result.simulation:
+        incomplete = sum(1 for f in result.simulation if f.incomplete)
+        lines.append(f"\nsimulation ({incomplete} incomplete, {len(result.simulation) - incomplete} coverage)")
+        lines += [_health(f) for f in result.simulation]
     lines.append("\nscorecard")
     lines += [f"  {line}" for line in _scorecard(result.effectiveness)]
     if points:
@@ -1298,6 +1310,12 @@ def _finding(finding: Finding) -> str:
         known = pattern(finding.pattern)
         line += f"\n    pattern {known.key}: {known.title}. {known.design}"
     return line
+
+
+def _health(found: HealthFinding) -> str:
+    said = "incomplete" if found.incomplete else "coverage"
+    seqs = f" (seq {', '.join(str(s) for s in found.evidence)})" if found.evidence else ""
+    return f"  {said} {found.kind.value}: {found.words}{seqs}"
 
 
 def _scorecard(card: Effectiveness) -> list[str]:

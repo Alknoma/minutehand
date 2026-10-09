@@ -35,6 +35,6 @@ async def test_the_views_hold_a_services_moves_by_agent_person_and_system_and_it
     ]
     items = query(db, "SELECT person, provider, state, status FROM items")
     assert [list(r) for r in items.rows] == [["nadia", "approvals", "placed", "acted"]]
-    rendered = query(db, "SELECT count(*) FROM model_calls WHERE side = 'person' AND prompt_version LIKE 'service-%'")
+    rendered = query(db, "SELECT count(*) FROM model_calls WHERE side = 'service' AND prompt_version LIKE 'service-%'")
     [[count]] = rendered.rows
     assert isinstance(count, int) and count >= 3, "the service's renderings are model calls of the run"

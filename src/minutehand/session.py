@@ -127,6 +127,7 @@ from minutehand.domain.assessments import IntegrityCheck, Rule, integrity_fails,
 from minutehand.domain.checks import (
     Check,
     CommitmentsReported,
+    DeclaredCollection,
     Finding,
     FindingKind,
     RunView,
@@ -138,7 +139,7 @@ from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, Sig
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.items import TypedItem
-from minutehand.domain.outbound import Acknowledge, UnknownHosts
+from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
@@ -305,6 +306,7 @@ async def play(
                 fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
                 claims=_claims(registry, services),
                 rhythm=declared_rhythm(agent),
+                collections=declared_collections(agent),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -406,6 +408,7 @@ async def fork(
         fail_on_integrity=integrity_fails(agent.fail_on_integrity, changed.fail_on_integrity),
         claims=_claims(registry, services),
         rhythm=declared_rhythm(agent),
+        collections=declared_collections(agent),
     )
     signing = signing_for(agent, changed.people)
 
@@ -523,6 +526,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
         fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
         claims=_Claims(registry, frozenset()),
         rhythm=declared_rhythm(agent),
+        collections=declared_collections(agent),
     )
     world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
     try:
@@ -984,6 +988,16 @@ def _claims(registry: Registry, services: Services) -> _Claims:
     return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
 
 
+def declared_collections(agent: AgentUnderTest) -> list[DeclaredCollection]:
+    """Every collection the agent file's `store` hosts declare, as the simulation's health names them."""
+    return [
+        DeclaredCollection(host=d.host, collection=c.key)
+        for d in agent.outbound
+        if isinstance(d, DeclaredStore)
+        for c in d.collections
+    ]
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
     with `judging`, the judged checks too, by `model` or blocked for want of one. With `claims`, the calls the agent
@@ -1000,9 +1014,11 @@ class _Judge:
         fail_on_integrity: Sequence[IntegrityCheck] = (),
         claims: _Claims | None = None,
         rhythm: timedelta | None = None,
+        collections: Sequence[DeclaredCollection] = (),
     ) -> None:
         self._claims = claims
         self._rhythm = rhythm
+        self._collections = list(collections)
         self._rules = list(rules)
         self._fail_on_integrity = list(fail_on_integrity)
         self._scenario = scenario
@@ -1059,6 +1075,8 @@ class _Judge:
             typed=self._typed(world),
             item_types=provided_types(self._manifests()),
             rhythm=self._rhythm,
+            person_calls=world.person_calls(),
+            collections=self._collections,
         )
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:

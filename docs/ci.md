@@ -97,7 +97,9 @@ scenario and a timeline per person, and exits 1 when any verdict differs from it
 not be performed, 0 otherwise. `--json` prints the same as data.
 
 **What a single run's exit code says.** `minutehand run` exits with its verdict: 0 passed, 1 a rule, an expectation
-or a check of the agent's own failed, 3 not finished, 4 Minutehand itself failed, 5 not judged. A run whose files
+or a check of the agent's own failed, 3 not finished, 4 Minutehand itself failed, 5 not judged, 6 simulation
+incomplete (the simulated world did not play as its files declare; the agent's verdict over what did happen is in the
+words). A run whose files
 declare no assessment (no `assess`, `expect`, `protected_names` or own `checks`) is 5, `Not assessed`: Minutehand
 judges nothing by itself, so a job that wants a gate declares the rules it gates on (`docs/assessments.md`).
 

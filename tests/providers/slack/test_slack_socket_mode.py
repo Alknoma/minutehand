@@ -25,7 +25,15 @@ from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.errors import NotServed
 from minutehand.domain.people import Delivery, InboundTarget, PersonMessage
 from minutehand.domain.scenario import FormInput, PersonCommands
-from minutehand.domain.world import Actor, CallOutcome, EntityKind, FrameSender, RecordedCall, RecordSnapshot
+from minutehand.domain.world import (
+    Actor,
+    CallOutcome,
+    EntityKind,
+    FrameSender,
+    PushSnapshot,
+    RecordedCall,
+    RecordSnapshot,
+)
 from minutehand.ports.provider import ServesSockets
 from minutehand.session import _services
 from tests.providers.google_workspace.proxied import Client, client_environment
@@ -171,6 +179,11 @@ async def test_an_envelope_the_agent_never_acknowledges_is_sent_again_and_then_f
     assert not any("retry_reason" in e for e in sent), "no page gives Socket Mode's retry_reason"
     assert len({e["envelope_id"] for e in sent}) == 4, "each send is an envelope with its own unique identifier"
     assert len({e["payload"]["event_id"] for e in sent}) == 1, "every send carries the one event"
+    recorded = [e.after for e in workspace.store.events() if isinstance(e.after, PushSnapshot)]
+    assert [(r.attempt, r.status, r.failure) for r in recorded] == [
+        (n, None, "not acknowledged within 0.3s") for n in range(4)
+    ]
+    assert {r.item for r in recorded} == {sent[0]["payload"]["event_id"]}
 
 
 async def test_an_event_due_with_no_connection_open_fails_the_agent_is_refused(

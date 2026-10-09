@@ -102,7 +102,7 @@ function renderPicker() {
       const v = r.finished ? r.verdict : "running";
       html += '<li role="option" data-open="' + esc(r.run_id) + '" class="' + (depth ? "fork" : "") + '" aria-selected="' + (r.run_id === S.run) + '" style="padding-left:' + (8 + depth * 16) + 'px">' +
         '<span><span class="name">' + esc(runLabel(r)) + '</span><div class="sub mono">' + esc(r.run_id + (batchOfRun[r.run_id] ? " · " + batchOfRun[r.run_id] : "") + (r.failed ? " · " + plural(r.failed, "failure") : "") + (r.to_review ? " · " + r.to_review + " to review" : "")) + "</div></span>" +
-        '<span class="chip ' + esc(v === "running" ? "review" : v === "passed" ? "passed" : v === "failed" || v === "tool_failed" ? "fail" : "review") + '">' + esc(v === "running" ? "running" : VERDICT_WORD[v] || v) + "</span></li>";
+        '<span class="chip ' + esc(v === "running" ? "review" : v === "passed" ? "passed" : v === "failed" || v === "tool_failed" || v === "simulation_incomplete" ? "fail" : "review") + '">' + esc(v === "running" ? "running" : VERDICT_WORD[v] || v) + "</span></li>";
     }
     walk(r.run_id, depth + 1);
   });
@@ -220,10 +220,12 @@ function renderHeader() {
   $("headline").innerHTML = numbers.map((n) => '<a href="#" data-view="' + n[0] + '"><span class="v ' + n[3] + '">' + esc(n[1]) + '</span><span class="k">' + esc(n[2]) + "</span></a>").join("");
 
   const problems = f.filter((x) => x.finding.kind !== "informational").sort((p, q) => KIND_ORDER[p.finding.kind] - KIND_ORDER[q.finding.kind] || p.number - q.number);
+  const unwell = (b.findings.simulation || []).filter((x) => x.incomplete);
+  const world = unwell.map((x) => '<a href="#" class="problem" data-view="simulation" title="' + esc(x.words) + '"><span class="chip fail">simulation</span><span class="t">' + esc(words(x.kind) + ": " + clip(x.words, 90)) + "</span></a>").join("");
   $("problems").innerHTML = !r.finished ? '<span class="none">The checks run when the run finishes.</span>'
-    : problems.length ? problems.slice(0, 30).map((x) => '<button type="button" class="problem" data-sel="finding:' + x.number + '" aria-pressed="' + (S.sel === "finding:" + x.number) + '" title="' + esc(x.finding.message) + '"><span class="chip ' + x.finding.kind + '">' + esc(x.finding.kind) + '</span><span class="t">' + esc(findingTitle(x) + ": " + clip(x.finding.message, 90)) + "</span></button>").join("") +
+    : world + (problems.length ? problems.slice(0, 30).map((x) => '<button type="button" class="problem" data-sel="finding:' + x.number + '" aria-pressed="' + (S.sel === "finding:" + x.number) + '" title="' + esc(x.finding.message) + '"><span class="chip ' + x.finding.kind + '">' + esc(x.finding.kind) + '</span><span class="t">' + esc(findingTitle(x) + ": " + clip(x.finding.message, 90)) + "</span></button>").join("") +
       (problems.length > 30 ? '<a href="#" data-view="findings" class="none">and ' + (problems.length - 30) + " more</a>" : "")
-      : '<span class="none">' + esc(verdict ? verdict.words : "No check failed.") + "</span>";
+      : '<span class="none">' + esc(verdict ? verdict.words : "No check failed.") + "</span>");
 }
 
 function renderNav() {

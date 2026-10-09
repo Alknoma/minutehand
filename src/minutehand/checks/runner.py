@@ -32,6 +32,8 @@ from minutehand.checks import judged as judged_package
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
 from minutehand.checks.facts import ended_at
+from minutehand.checks.health import CHECK as HEALTH
+from minutehand.checks.health import health
 from minutehand.checks.items import ItemChecks
 from minutehand.checks.judged.asked_about import AskedAbout
 from minutehand.checks.judged.review import Review
@@ -44,9 +46,11 @@ from minutehand.domain.checks import (
     Check,
     CheckReport,
     CommitmentsReported,
+    DeclaredCollection,
     Effectiveness,
     Finding,
     FindingKind,
+    HealthFinding,
     Needs,
     ObligationKind,
     RuleRead,
@@ -56,7 +60,7 @@ from minutehand.domain.checks import (
     WakeRecord,
 )
 from minutehand.domain.clock import DueEntry
-from minutehand.domain.conversation import Wrote
+from minutehand.domain.conversation import PersonCall, Wrote
 from minutehand.domain.items import ItemCheck, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
@@ -87,11 +91,17 @@ class RunResult(Model):
     rules_read: list[RuleRead] = Field(
         default=[], description="Each rule of `assess`, with how often it was read and how often it could not be"
     )
+    simulation: list[HealthFinding] = Field(
+        default=[],
+        description="The simulated world's health (`checks.health`), kept apart from the agent's findings: what did "
+        "not play as the files declare, and how much of what they declare the run reached",
+    )
 
     @property
     def exit_code(self) -> int:
         """The verdict's: 0 passed, 1 a check failed, 3 no check failed and the agent did not finish, 4 Minutehand
-        broke while answering a call. A blocked check does not pass a run; it is listed in `blocked`."""
+        broke while answering a call, 6 the simulated world did not play as declared. A blocked check does not pass a
+        run; it is listed in `blocked`."""
         return self.verdict.exit_code
 
 
@@ -211,14 +221,16 @@ class _Tally:
     def result(self, view: RunView, ended: datetime | None, stop: StopReason | None) -> RunResult:
         met = self.met - self.unjudged
         card = measure(view, self.findings, met=met, ended_at=ended or ended_at(view))
+        world = health(view)
         return RunResult(
             findings=self.findings,
             blocked=self.blocked,
-            notes=self.notes,
+            notes=[*self.notes, *(f"{HEALTH}: {f.words}" for f in world)],
             effectiveness=card,
-            verdict=verdict(view, card, stop),
+            verdict=verdict(view, card, stop, simulation=world),
             assessed_by=self.assessed_by,
             rules_read=self.rules_read,
+            simulation=world,
         )
 
 
@@ -248,17 +260,42 @@ _STOPPED = {
 }
 
 
-def verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Verdict:
+def verdict(
+    view: RunView,
+    card: Effectiveness,
+    stop: StopReason | None,
+    *,
+    simulation: Sequence[HealthFinding] = (),
+) -> Verdict:
     """Read from the findings of the run's own rules and checks, and from how the run stopped; nothing else.
 
-    Tool failed when Minutehand broke answering any call: such a run says nothing about the agent. Otherwise failed
-    when a finding failed; not judged when a check could not run; passed when the agent
+    Tool failed when Minutehand broke answering any call: such a run says nothing about the agent. Simulation
+    incomplete when the world did not play as its files declare (an incomplete kind in `simulation`): the agent is
+    still judged on what did happen, and that verdict is kept in `on_what_happened`, its words after the world's.
+    Otherwise failed when a finding failed; not judged when a check could not run; passed when the agent
     reported done, or nothing was left open; unfinished otherwise. Whether the agent should have done anything
     else is the team's to say, in its rules (`domain/assessments.py`).
 
     "Open" is read from the world: a wait the world had not settled, or a commitment the agent's last report held
     open. Nothing else is read into it: a wait on someone who never answers is open, whatever it said.
     """
+    judged = _verdict(view, card, stop)
+    problems = [f for f in simulation if f.incomplete]
+    if not problems or judged.kind in (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.TOOL_FAILED):
+        return judged
+    first = problems[0].words
+    more = f" and {_count(len(problems) - 1, 'more')}" if len(problems) > 1 else ""
+    return judged.model_copy(
+        update={
+            "kind": VerdictKind.SIMULATION_INCOMPLETE,
+            "on_what_happened": judged.kind,
+            "words": f"Simulation incomplete: {_count(len(problems), 'thing')} in the simulated world did not play as "
+            f"its files declare ({first}{more}); on what did happen: {judged.words}",
+        }
+    )
+
+
+def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Verdict:
     commitments = (
         None if view.commitments is None else sum(1 for c in view.commitments if c.status is CommitmentStatus.OPEN)
     )
@@ -450,6 +487,8 @@ def view_of(
     typed: Sequence[TypedItem] = (),
     item_types: Sequence[ProvidedTypes] = (),
     rhythm: timedelta | None = None,
+    person_calls: Sequence[PersonCall] = (),
+    collections: Sequence[DeclaredCollection] = (),
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies that
     landed."""
@@ -475,6 +514,8 @@ def view_of(
         typed=list(typed),
         item_types=list(item_types),
         rhythm=rhythm,
+        person_calls=list(person_calls),
+        collections=list(collections),
     )
 
 
@@ -510,12 +551,14 @@ def stability(results: list[RunResult]) -> Stability:
 
 
 def exit_code(results: list[RunResult]) -> int:
-    """Over several samples: 2 when any's environment failed, else 4 when Minutehand broke in any, else 1 when any
-    failed, else 5 when any could not be judged, else 3 when any did not finish, else 0."""
+    """Over several samples: 2 when any's environment failed, else 4 when Minutehand broke in any, else 6 when any's
+    simulated world did not play as declared, else 1 when any failed, else 5 when any could not be judged, else 3
+    when any did not finish, else 0."""
     kinds = {r.verdict.kind for r in results}
     order = (
         VerdictKind.ENVIRONMENT_FAILED,
         VerdictKind.TOOL_FAILED,
+        VerdictKind.SIMULATION_INCOMPLETE,
         VerdictKind.FAILED,
         VerdictKind.NOT_JUDGED,
         VerdictKind.UNFINISHED,

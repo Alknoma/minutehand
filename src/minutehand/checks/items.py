@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from minutehand.checks.facts import Called, body_content, calls, messages, span, transitions, writes
+from minutehand.checks.health import never_decides
 from minutehand.checks.ledger import absences
 from minutehand.domain.checks import (
     CheckReport,
@@ -656,6 +657,8 @@ class _Reader:
         if deadline is None or end < deadline:
             return
         for service, states in self.awaited().items():
+            if never_decides(self.view.scenario, service):
+                continue  # nobody can decide: the simulation's health says so, and the agent could not have done it
             reached = [
                 m
                 for m in transitions(self.view)

@@ -58,6 +58,7 @@ from minutehand.domain.world import (
     Operation,
     PendingSnapshot,
     PendingStatus,
+    PushSnapshot,
     RecordedCall,
     StoredSnapshot,
     TransitionSnapshot,
@@ -427,6 +428,46 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
             {"finding_id": number, "seq": seq}
             for number, f in enumerate(findings, start=1)
             for seq in sorted(set(f.evidence))
+        ],
+    )
+    simulation = outcome.result.simulation if outcome is not None else []
+    tables.put(
+        "simulation_health",
+        [
+            {
+                "health_id": number,
+                "kind": h.kind.value,
+                "incomplete": int(h.incomplete),
+                "words": h.words,
+                "person": h.person,
+                "provider": h.entity.provider if h.entity is not None else None,
+                "entity_kind": h.entity.kind.value if h.entity is not None else None,
+                "entity_id": h.entity.external_id if h.entity is not None else None,
+                "since": at(h.since),
+                "evidence": _json(list(h.evidence)),
+            }
+            for number, h in enumerate(simulation, start=1)
+        ],
+    )
+    tables.put(
+        "pushes",
+        [
+            {
+                "seq": e.seq,
+                "at": at(e.sim_time),
+                "wake": e.wake,
+                "provider": e.after.service,
+                "item": e.after.item,
+                "url": e.after.url,
+                "attempt": e.after.attempt,
+                "retry_reason": e.after.retry_reason,
+                "status": e.after.status,
+                "failure": e.after.failure,
+                "seconds": e.after.seconds,
+                "delivered": int(e.after.status is not None and 200 <= e.after.status < 300),
+            }
+            for e in events
+            if isinstance(e.after, PushSnapshot)
         ],
     )
     tables.put(

@@ -13,7 +13,7 @@ from pydantic import AwareDatetime, Field
 from minutehand.domain.agent import Commitment
 from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
-from minutehand.domain.conversation import Judgement
+from minutehand.domain.conversation import Judgement, PersonCall
 from minutehand.domain.items import Assessed, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
@@ -58,6 +58,52 @@ class Finding(Model):
         description="Set by the assessment of the agent's effects: a violation, a wrong action or wrong timing, and "
         "the declaration it was measured against",
     )
+
+
+class HealthKind(StrEnum):
+    """What kept the simulated world from playing as its files declare it: a fact about the world, never about the
+    agent (`checks.health`)."""
+
+    RESPONDER_NEVER_ACTS = "responder_never_acts"  # a declared service responder whose script ends in silence
+    WAITS_ON_NOBODY = "waits_on_nobody"  # an item only a person can move, held pending on nobody
+    OWED_UNBOOKED = "owed_unbooked"  # a reply or decision someone owes, with no moment booked for it
+    MODEL_FAILED = "model_failed"  # a people model call that failed and was never answered after
+    PUSH_FAILED = "push_failed"  # an event the world pushed that never reached the agent, retries and all
+    WAITS_BY_DECLARATION = "waits_by_declaration"  # an item pending on someone the files declare never acts
+    NEVER_EXERCISED = "never_exercised"  # a declared service, collection or person nothing in the run touched
+    STEP_NEVER_FIRED = "step_never_fired"  # a scripted step whose ask never came
+
+
+INCOMPLETE = frozenset(
+    {
+        HealthKind.RESPONDER_NEVER_ACTS,
+        HealthKind.WAITS_ON_NOBODY,
+        HealthKind.OWED_UNBOOKED,
+        HealthKind.MODEL_FAILED,
+        HealthKind.PUSH_FAILED,
+    }
+)
+"""The kinds that mean the world did not play what its files declare, so the run is `SIMULATION_INCOMPLETE`. The
+others state how much of what was declared the run reached, which no verdict reads."""
+
+
+class HealthFinding(Model):
+    """One fact about the simulated world's health: what did not play as declared, with its evidence."""
+
+    kind: HealthKind
+    incomplete: bool = Field(description="Whether it makes the run SIMULATION_INCOMPLETE (`INCOMPLETE`)")
+    words: str = Field(description="What happened, in one sentence")
+    person: str | None = Field(default=None, description="Person.key it is about")
+    entity: EntityRef | None = Field(default=None, description="The item, message, service or push it is about")
+    since: AwareDatetime | None = Field(default=None, description="Simulated time it began")
+    evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
+
+
+class DeclaredCollection(Model):
+    """A collection an outbound `store` host keeps (`domain.outbound.DeclaredStore`), as the health check names it."""
+
+    host: str
+    collection: str
 
 
 class Pattern(Model):
@@ -308,6 +354,12 @@ class RunView(Model):
         default=[],
         description="The integrity facts the agent file or the scenario says fail the run; any other is stated as "
         "`review` and never changes the verdict",
+    )
+    person_calls: list[PersonCall] = Field(
+        default=[], description="Every call Minutehand made to a model for people and services, in order"
+    )
+    collections: list[DeclaredCollection] = Field(
+        default=[], description="Every collection the agent file's `store` hosts declare"
     )
 
     def integrity(self, check: IntegrityCheck) -> tuple[FindingKind, Severity]:
