@@ -12,13 +12,15 @@ the agent answers is applied: nothing closes it, `clear` closes it, `update` and
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx
 from pydantic import ValidationError
 
-from minutehand.adapters.providers.slack import inbound, state, wire
-from minutehand.adapters.providers.slack.app import message_actions, write_view
+from minutehand.adapters.providers.slack import inbound, socket_mode, state, wire
+from minutehand.adapters.providers.slack.app import open_stack, write_view
+from minutehand.adapters.providers.slack.calls import message_actions
 from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
@@ -47,18 +49,17 @@ class FormNeverOpened(AgentFailed):
     """The person pressed something meaning to fill in the form it opens, and the agent opened none in time."""
 
 
-def _refuse_socket_mode(target: InboundTarget) -> None:
-    """Over Socket Mode a press or a slash command goes as an `interactive` or `slash_commands` envelope, which is
-    not served: refused, naming that, rather than sent anywhere else."""
+def _refuse_socket_mode_command(target: InboundTarget) -> None:
+    """Over Socket Mode a slash command goes as a `slash_commands` envelope, which is not served: refused, naming
+    that, rather than sent anywhere else. A press and a submission go as `interactive` envelopes."""
     if target.delivery is Delivery.SOCKET_MODE:
         raise NotServed(
-            "a press or a slash command over Socket Mode (an `interactive` or `slash_commands` envelope) is not "
-            "served; give the agent's Slack target a request URL to play presses and commands"
+            "a slash command over Socket Mode (a `slash_commands` envelope) is not served; give the agent's Slack "
+            "target a request URL to play commands"
         )
 
 
 def _url(target: InboundTarget) -> str:
-    _refuse_socket_mode(target)
     return target.interactivity_url or target.request_url()
 
 
@@ -77,10 +78,12 @@ def _channel(channel: wire.SlackChannel) -> wire.PayloadChannel:
     return wire.PayloadChannel(id=channel.id, name=channel.name or ("directmessage" if channel.is_im else "mpdm"))
 
 
-def mint_trigger(slack: SlackWorld, clock: Clock, author: str) -> wire.SlackTrigger:
-    """A `trigger_id`, stored so the agent's use of it is checked."""
+def mint_trigger(slack: SlackWorld, clock: Clock, author: str, in_view: str | None = None) -> wire.SlackTrigger:
+    """A `trigger_id`, stored so the agent's use of it is checked; `in_view` is the modal the interaction was in."""
     now = int(clock.now().timestamp())
-    trigger = wire.SlackTrigger(id=state.minted("trigger", slack.next_seq(), now), user=author, issued=now)
+    trigger = wire.SlackTrigger(
+        id=state.minted("trigger", slack.next_seq(), now), user=author, issued=now, in_view=in_view
+    )
     slack.write(
         state.trigger_ref(trigger.id), trigger, operation=Operation.CREATE, actor=Actor.PERSON, parent=state.TRIGGERS
     )
@@ -106,6 +109,18 @@ def mint(
     return trigger, hook
 
 
+async def _deliver(
+    slack: SlackWorld, target: InboundTarget, payload: wire.BlockActions | wire.ViewSubmission, secret: str, what: str
+) -> bytes:
+    """An interaction to the agent: a signed form post to its interactivity URL, or an `interactive` envelope on its
+    Socket Mode connection. Answers what the agent answered with: the body of the response, or the payload of its
+    acknowledgement, empty when it holds none."""
+    if target.delivery is Delivery.SOCKET_MODE:
+        answered = await socket_mode.hub(slack.store).interact(payload)
+        return b"" if answered is None else json.dumps(answered).encode()
+    return (await _send(_url(target), wire.payload_form(payload), secret, what)).content
+
+
 async def _send(url: str, body: bytes, secret: str, what: str) -> httpx.Response:
     try:
         answered = await inbound.post_signed(url, body, "application/x-www-form-urlencoded", secret)
@@ -121,7 +136,6 @@ async def _send(url: str, body: bytes, secret: str, what: str) -> httpx.Response
 
 async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str) -> None:
     inbound.refuse_foreign(target)
-    _refuse_socket_mode(target)
     pressed = reply.press
     if pressed is None:
         raise ValueError(f"{reply.person}'s reply presses nothing; it is delivered as a message")
@@ -196,7 +210,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
             )
         ],
     )
-    await _send(_url(target), wire.payload_form(payload), secret, "a block_actions payload")
+    await _deliver(slack, target, payload, secret, "a block_actions payload")
     if pressed.form:
         await _fill(slack, world, pressed, reply.person, author, trigger.id, reply, target, clock, secret)
 
@@ -275,7 +289,7 @@ async def submit(
 ) -> None:
     view_state, typed = _filled(opened.view, form, person)
     view = opened.view.model_copy(update={"state": view_state})
-    trigger = mint_trigger(slack, clock, author)
+    trigger = mint_trigger(slack, clock, author, in_view=view.id)
     title = view.title.text if view.title is not None else view.callback_id
     slack.write(
         state.interaction_ref(trigger.id),
@@ -295,20 +309,22 @@ async def submit(
     payload = wire.ViewSubmission(
         team=_team(slack), user=_person(slack, author), api_app_id=slack.team.app_id, trigger_id=trigger.id, view=view
     )
-    url = _url(target)
-    answered = await _send(url, wire.payload_form(payload), secret, "a view_submission payload")
+    url = "Socket Mode" if target.delivery is Delivery.SOCKET_MODE else _url(target)
+    answered = await _deliver(slack, target, payload, secret, "a view_submission payload")
     try:
-        answer = wire.view_answer(answered.content)
+        answer = wire.view_answer(answered)
     except (ValueError, ValidationError) as e:
-        raise DeliveryRefused(url, answered.status_code, answered.text, what="a view_submission payload") from e
+        raise DeliveryRefused(url, None, answered.decode(errors="replace"), what="a view_submission payload") from e
     shown = opened.model_copy(update={"view": view})
-    if answer is None or answer.response_action == "clear":  # enum-lint: exempt Slack's own response_action
+    if answer is None:
         _close(slack, shown)
+    elif answer.response_action == "clear":  # enum-lint: exempt Slack's own response_action
+        _clear(slack, shown)
     elif answer.response_action == "errors":  # enum-lint: exempt Slack's own response_action
         write_view(slack, shown.model_copy(update={"errors": answer.errors}), Operation.UPDATE, Actor.AGENT)
     else:
         if answer.view is None:
-            raise DeliveryRefused(url, answered.status_code, answered.text, what="a view_submission (no view)")
+            raise DeliveryRefused(url, None, answered.decode(errors="replace"), what="a view_submission (no view)")
         _next_view(slack, shown, answer)
 
 
@@ -316,11 +332,25 @@ def _close(slack: SlackWorld, shown: wire.OpenView) -> None:
     write_view(slack, shown.model_copy(update={"open": False}), Operation.UPDATE, Actor.AGENT)
 
 
+def _clear(slack: SlackWorld, shown: wire.OpenView) -> None:
+    """`response_action: clear` closes every view of the stack, however many it holds
+    (https://docs.slack.dev/surfaces/modals, "Closing a view")."""
+    for view in open_stack(slack, shown.view.root_view_id):
+        _close(slack, shown if view.view.id == shown.view.id else view)
+
+
 def _next_view(slack: SlackWorld, shown: wire.OpenView, answer: wire.ViewAnswer) -> None:
     """`update` replaces the submitted view; `push` stacks a new one on it."""
     assert answer.view is not None
     wire.check_view(answer.view)
     pushing = answer.response_action == "push"  # enum-lint: exempt Slack's own response_action
+    if pushing and len(open_stack(slack, shown.view.root_view_id)) >= wire.MAX_STACK:
+        raise DeliveryRefused(
+            "the answer to a view_submission",
+            None,
+            f"a push onto a stack that holds {wire.MAX_STACK} views already, the most a modal holds",
+            what="a view_submission",
+        )
     view_id = state.view_id(slack.next_seq()) if pushing else shown.view.id
     version = 0 if pushing else int(shown.view.hash.split(".", 1)[0]) + 1
     spec = answer.view
@@ -360,7 +390,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
     """The person runs one of the agent's slash commands: form fields to the agent's URL, and what it answers at
     once shown to them alone, or to the channel when it says `in_channel`."""
     inbound.refuse_foreign(target)
-    _refuse_socket_mode(target)
+    _refuse_socket_mode_command(target)
     slack = inbound.acting(world, happening.person, happening.channel)
     author = state.user_id(happening.person, slack.team.id)
     channel = inbound.conversation(slack, happening.channel, author)

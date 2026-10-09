@@ -11,5 +11,6 @@ MANIFEST = Manifest(
     hosts=["slack.com", "*.slack.com"],
     kinds=[EntityKind.MESSAGE, EntityKind.CHANNEL],
     pushes_events=True,
+    books_work=True,
     people_changes=[PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
 )

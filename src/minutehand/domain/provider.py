@@ -95,6 +95,12 @@ class Manifest(Model):
     books_wakes: bool = Field(
         default=False, description="True for a scheduler: what the agent books here becomes a wake"
     )
+    books_work: bool = Field(
+        default=False,
+        description="True for a service whose API books work that falls due later (Slack's scheduled messages): in a "
+        "run it is held to `BooksWakes` and its bookings enter the dispatch table, but a `Booked` agent does not name "
+        "it, since its bookings are not the agent's wake-ups",
+    )
     ticket_fields: list[TicketField] = Field(
         default=[],
         description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
