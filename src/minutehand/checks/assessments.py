@@ -9,6 +9,7 @@ and a note says how many were left unread, so a rule can never pass by being ski
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -120,14 +121,19 @@ class Assessments:
     id = "assessments"
     needs = frozenset({Needs.WORLD})
 
-    def run(self, view: RunView) -> CheckReport:
+    def run(self, view: RunView, conveyed: Conveyed | None = None) -> CheckReport:
+        """Every rule read over the facts; a judged one (`conveys`) only with `conveyed`, a model's verdicts."""
         if not view.rules:
             return CheckReport()
-        reader = _Reader(view)
+        reader = _Reader(view, conveyed)
         findings: list[Finding] = []
-        notes: list[str] = []
+        notes = (
+            [f"rule {r.id} is judged (`conveys`): it is read only with a judge model" for r in view.rules if judged(r)]
+            if conveyed is None
+            else []
+        )
         tallies: list[RuleRead] = []
-        for rule in view.rules:
+        for rule in [r for r in view.rules if conveyed is not None or not judged(r)]:
             found, read, unread = reader.read(rule)
             findings += found
             tallies.append(RuleRead(rule=rule.id, read=read, unread=unread))
@@ -139,9 +145,24 @@ class Assessments:
         return CheckReport(findings=findings, notes=notes, rules_read=tallies)
 
 
+def judged(rule: Rule) -> bool:
+    """Whether a model reads part of the rule (`Messages.conveys`): the judged check `conveys` reads it."""
+    return rule.count.messages is not None and bool(rule.count.messages.conveys)
+
+
+type Conveyed = Callable[[str, str], bool]
+"""Whether a message's text conveys a phrase, as a model judged it."""
+
+
+def read_with(view: RunView, rule: Rule, conveyed: Conveyed) -> None:
+    """Read `rule` with `conveyed` answering for meaning: how the judged check learns what it must ask."""
+    _Reader(view, conveyed).read(rule)
+
+
 class _Reader:
-    def __init__(self, view: RunView) -> None:
+    def __init__(self, view: RunView, conveyed: Conveyed | None = None) -> None:
         self.view = view
+        self.conveyed = conveyed
         self.end = ended_at(view)
         self.people = {p.key: p for p in view.scenario.people}
         self.asks = asks(view)
@@ -200,6 +221,20 @@ class _Reader:
             for a in found
             if a.person is not None and self._picked(rule, a.person)
         ]
+
+    def _phrases(self, said: list[str], subject: _Subject, known: dict[str, str]) -> list[str]:
+        """The phrases a rule names, filled for `subject`: `{ask.facts}` alone is each fact the answer carried."""
+        phrases: list[str] = []
+        for p in said:
+            if p.strip() == "{ask.facts}":
+                if subject.ask is None or subject.ask.answer is None:
+                    raise _Unread
+                phrases += subject.ask.answer_facts or [subject.ask.answer]
+            else:
+                if "{ask.answer}" in p and (subject.ask is None or subject.ask.answer is None):
+                    raise _Unread
+                phrases.append(str(fill(p, known)))
+        return phrases
 
     def _picked(self, rule: Rule, key: str) -> bool:
         keys = [self._key(w, None) for w in rule.where.person]
@@ -338,16 +373,9 @@ class _Reader:
                 "person.key": subject.person.key if subject.person is not None else "",
                 "person.name": subject.person.name if subject.person is not None else "",
             }
-            phrases: list[str] = []
-            for p in m.holding:
-                if p.strip() == "{ask.facts}":
-                    if subject.ask is None or subject.ask.answer is None:
-                        raise _Unread
-                    phrases += subject.ask.answer_facts or [subject.ask.answer]
-                else:
-                    phrases.append(str(fill(p, known)))
-            if subject.ask is not None and "{ask.answer}" in " ".join(m.holding) and subject.ask.answer is None:
-                raise _Unread
+            phrases = self._phrases(m.holding, subject, known)
+            meant = self._phrases(m.conveys, subject, known)
+            assert self.conveyed is not None or not meant, "a judged rule is read only by the judged check"
             thread = (
                 subject.ask.obligation.entity.external_id if subject.ask and subject.ask.obligation.entity else None
             )
@@ -358,6 +386,7 @@ class _Reader:
                 and not (to_not & set(s.to))
                 and (m.in_thread is None or (s.thread_of == thread) == m.in_thread)
                 and all(p.casefold() in s.text.casefold() for p in phrases)
+                and all(self.conveyed is not None and self.conveyed(s.text, p) for p in meant)
                 and (m.to_away is None or bool(s.to_away and (not to or to & set(s.to_away))) == m.to_away)
             ]
         if count.writes is not None:

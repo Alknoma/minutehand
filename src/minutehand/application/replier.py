@@ -270,7 +270,7 @@ class PeopleReplier:
         self._scenario = scenario
         self._model = model
         self._inboxes = {i.name: i for i in inboxes}
-        self._pins = {(p.person, p.to_ask): p.after for p in pins}
+        self._pins = {(p.person, p.to_ask): p.after for p in pins if p.provider is None}
 
     @property
     def scenario(self) -> Scenario:
@@ -378,7 +378,7 @@ class PeopleReplier:
         context = await self.context(person, behaviour, asked, history, world, clock)
         if plan.step is not None:
             step = plan.step
-            system = step_prompt(person, behaviour, step, asked.sim_time, self._scenario.starts_at)
+            system = step_prompt(person, behaviour, step, clock.now(), self._scenario.starts_at)
             written = await self.ask_model(
                 person, Wrote.REPLY, asked.entity, system, context, WrittenStep, STEP_PROMPT_VERSION, world, clock
             )
@@ -388,7 +388,7 @@ class PeopleReplier:
                 written_by=Provenance(model=written.model, prompt_version=STEP_PROMPT_VERSION),
                 **common,
             )
-        system = person_prompt(person, behaviour, asked.sim_time, self._scenario.starts_at)
+        system = person_prompt(person, behaviour, clock.now(), self._scenario.starts_at)
         written = await self.ask_model(
             person, Wrote.REPLY, asked.entity, system, context, WrittenReply, PERSON_PROMPT_VERSION, world, clock
         )

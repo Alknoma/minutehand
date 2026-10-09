@@ -16,6 +16,7 @@ from minutehand.checks.ledger import Away, absences, recipients
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
+from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import DispatchFault, Model, TicketState
 from minutehand.domain.transitions import Transition
 from minutehand.domain.world import (
@@ -48,9 +49,14 @@ class Ask(Model):
     obligation: Obligation
     follow_ups: list[Fact] = Field(description="The agent's writes the person could see while it was open, in order")
     touches: list[Fact] = Field(description="Every write of the agent's on the person, the thread or the ticket")
-    answer: str | None = Field(default=None, description="What the person answered, when they did by a reply")
+    answer: str | None = Field(
+        default=None,
+        description="What the person answered: their words; for a decision, its inputs as given, else its name",
+    )
     answer_facts: list[str] = Field(
-        default=[], description="The facts the answer's script step carried, which a model put in the person's words"
+        default=[],
+        description="What the answer carried: a decision's inputs as given, or the facts its script step carried, "
+        "which a model put in the person's words",
     )
 
     @property
@@ -149,17 +155,31 @@ def _touches(view: RunView, o: Obligation, candidates: list[WorldEvent]) -> list
 
 
 def _answer(view: RunView, o: Obligation) -> str | None:
-    if o.settled_at is None or o.person is None:
+    """What the person answered: their words; for a decision, what it carries (its inputs as given), else its name."""
+    said = _said(view, o)
+    if said is None:
         return None
-    said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return said[0].text if said else None
+    if said.decides is not None:
+        given = [v for v in said.decides.inputs.values() if v.strip()]
+        return "; ".join(given) if given else said.decides.decision
+    return said.text
 
 
 def _answer_facts(view: RunView, o: Obligation) -> list[str]:
-    if o.settled_at is None or o.person is None:
+    """What the answer carried: a decision's inputs as given, else the facts its words were written from."""
+    said = _said(view, o)
+    if said is None:
         return []
+    if said.decides is not None:
+        return [v for v in said.decides.inputs.values() if v.strip()]
+    return list(said.facts)
+
+
+def _said(view: RunView, o: Obligation) -> PersonReply | None:
+    if o.settled_at is None or o.person is None:
+        return None
     said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return list(said[0].facts) if said else []
+    return said[0] if said else None
 
 
 def unchanged(events: list[WorldEvent]) -> frozenset[int]:

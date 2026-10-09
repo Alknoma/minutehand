@@ -77,6 +77,11 @@ class Offer(Model):
         default=None,
         description="For a ticket, what the state it reaches is in Minutehand's terms: open, done, cancelled",
     )
+    note: bool = Field(
+        default=False,
+        description="Words left on the item that leave it as it is, its first field theirs: where an automatic reply "
+        "goes on an item that is no message",
+    )
     unprompted: bool = Field(
         default=True,
         description="Whether a person may take it with nothing pinning it: False for what only the scenario has "

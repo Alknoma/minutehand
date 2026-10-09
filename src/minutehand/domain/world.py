@@ -547,6 +547,9 @@ class PendingSnapshot(Model):
     follow_ups: list[str] = Field(
         default=[], description="For a conversation, the messages that followed it up while it was owed, by id"
     )
+    worded_at: AwareDatetime | None = Field(
+        default=None, description="For a conversation, when its answer's words were written, from what they knew then"
+    )
     answer: str | None = Field(
         default=None,
         description="For a conversation, the answer's words as written when it was planned (`domain.people."

@@ -53,6 +53,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import HELPFULNESS, PeopleReplier, believed_part, bulleted, voice_rule, who_is
 from minutehand.domain.clock import Drawn, DrawnFrom
 from minutehand.domain.conversation import ModelMessage, Provenance, Speaker, Wrote
+from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import Decides, PersonReply, Plan, Press, Writing
 from minutehand.domain.scenario import (
     AfterScript,
@@ -222,6 +223,7 @@ class People:
         ports: Mapping[ProviderKey, object],
         replier: Replier,
         model: LanguageModel | None,
+        pins: Sequence[ReplyAt] = (),
     ) -> None:
         needing = needs_model(scenario)
         if needing and model is None:
@@ -234,6 +236,7 @@ class People:
         self._replier = replier
         self._words = PeopleReplier(scenario, model) if model is not None else None
         self._people = {p.key: p for p in scenario.people}
+        self._item_pins = {(p.person, p.provider, p.to_ask): p.after for p in pins if p.provider is not None}
         for key in scenario.played():
             self.port(key)
         for person in scenario.people:
@@ -306,6 +309,7 @@ class People:
                             booked.append(made)
             if asks:
                 await self._converse(person, asks, events, world, clock, booked, moved)
+            moved += self._items_reminded(person, events, world, clock)
         return Looked(booked=booked, gone=gone, moved=moved)
 
     async def _converse(
@@ -344,7 +348,15 @@ class People:
             opened = created[ask.item] if ask.item in created else asked
             history = [e for e in events if e.seq <= asked.seq]
             automatic = automatic_reply(self._scenario, person, opened, history, world.replies())
-            if automatic is not None:
+            port = self.port(key)
+            noted = ask.item.kind is not EntityKind.INBOX_ITEM or any(
+                o.note for o in port.legal(ask.item, Actor.PERSON, person, world)
+            )
+            waiting = any(
+                h.pending.take == AUTOMATIC_REPLY and h.pending.status is PendingStatus.PENDING
+                for h in self.held(person.key, world)
+            )  # one already on its way: once per absence
+            if automatic is not None and noted and not waiting:
                 booked.append(self._automatic(person, ask, automatic, asked, world, clock))
             owed = self._owed(world)
             reminded = (
@@ -499,6 +511,48 @@ class People:
         self._write(world, owing.ref, changed, Operation.UPDATE)
         return Booking(pending=owing.ref, person=person.key, item=p.item, at=due, drawn=sooner_drawn, conversation=True)
 
+    def _items_reminded(self, person: Person, events: list[WorldEvent], world: Store, clock: Clock) -> list[Booking]:
+        """Each message the agent sent a person who owes a decision in its own product, sent after the decision began
+        to wait on them, reminds them of it: the decision moves sooner when their `reminded` draws it so (a moment
+        pinned stays), and the message is kept on the record as a follow-up, read once."""
+        found: list[Booking] = []
+        if person.reminded is None:
+            return found
+        sent = [
+            e
+            for e in events
+            if e.actor is Actor.AGENT
+            and e.operation is Operation.CREATE
+            and isinstance(e.after, MessageSnapshot)
+            and person.email in e.after.recipient_emails
+        ]
+        for h in self.held(person.key, world):
+            p = h.pending
+            if p.status is not PendingStatus.PENDING or p.item.kind is not EntityKind.INBOX_ITEM or p.asked is not None:
+                continue
+            began = next((e.seq for e in events if e.entity == h.ref), None)
+            if began is None:
+                continue  # it began to wait in this very look: nothing has reminded them of it yet
+            moment: Booking | None = None
+            for message in [m for m in sent if m.seq > began and m.entity.external_id not in p.follow_ups]:
+                p = p.model_copy(update={"follow_ups": [*p.follow_ups, message.entity.external_id]})
+                pinned = p.drawn is not None and p.drawn.source is DrawnFrom.PINNED
+                drawn = (
+                    sooner(self._scenario, person, message, [e for e in events if e.seq <= message.seq], p.due_at)
+                    if p.due_at is not None and not pinned
+                    else None
+                )
+                if drawn is not None:
+                    p = p.model_copy(update={"due_at": max(drawn.lands_at, clock.now()), "drawn": drawn})
+                    moment = Booking(
+                        pending=h.ref, person=person.key, item=p.item, at=p.due_at, drawn=drawn, conversation=True
+                    )
+            if p != h.pending:
+                self._write(world, h.ref, p, Operation.UPDATE)
+            if moment is not None:
+                found.append(moment)
+        return found
+
     async def _replanned(
         self, person: Person, held: Held, asked: WorldEvent, history: list[WorldEvent], world: Store, clock: Clock
     ) -> Booking:
@@ -597,7 +651,8 @@ class People:
         )
         take = person.takes[found] if found is not None else None
         asked = next((e for e in world.events() if e.entity == item.item), None) if item.conversation else None
-        drawn = self._drawn(person, item.item, take, asked.sim_time if asked is not None else clock.now(), world)
+        began = asked.sim_time if asked is not None else clock.now()
+        drawn = self._drawn(person, item.item, nth, take, began, world)
         pending = PendingSnapshot(
             person=person.key,
             item=item.item,
@@ -622,10 +677,14 @@ class People:
             conversation=item.conversation,
         )
 
-    def _drawn(self, person: Person, item: EntityRef, take: Take | None, began: datetime, world: Store) -> Drawn | None:
-        """When the person acts on `item`, which began to wait on them at `began`: exactly `after` it when a take
-        says, else drawn as their answers are (within the take's window, or the provider's), or never for someone
-        who neither is pinned nor picks for themselves."""
+    def _drawn(
+        self, person: Person, item: EntityRef, nth: int, take: Take | None, began: datetime, world: Store
+    ) -> Drawn | None:
+        """When the person acts on `item`, their nth in its provider, which began to wait on them at `began`: exactly
+        as a fork pins it (`ReplyAt` with `provider`), or `after` it when a take says, else drawn as their answers are
+        (within the take's window, or the provider's), or never for someone who neither is pinned nor picks."""
+        if (person.key, item.provider, nth) in self._item_pins:
+            return pinned_at(self._scenario, began, self._item_pins[(person.key, item.provider, nth)])
         if take is not None and take.after is not None:
             return pinned_at(self._scenario, began, take.after)
         if take is None and not _picks(person):
@@ -655,7 +714,7 @@ class People:
         found = self._pins(person, self.port(p.item.provider), p.item, everyone, world, conversation=p.conversation)
         take = person.takes[found] if found is not None else None
         began = next(e.sim_time for e in world.events() if e.entity == held.ref)
-        drawn = self._drawn(person, p.item, take, began, world)
+        drawn = self._drawn(person, p.item, p.nth, take, began, world)
         due = max(drawn.lands_at, clock.now()) if drawn is not None else None
         changed = p.model_copy(
             update={"pinned": found, "take": take.take if take is not None else None, "drawn": drawn, "due_at": due}
@@ -736,7 +795,9 @@ class People:
         ready once its words are written (`_worded`), and they are written now if a model failed to before. One that,
         read now, needs no answer is passed; one a model fails to write again is still owed, its failure kept."""
         snap = self._read(pending, world)
-        if snap.status is not PendingStatus.PENDING or snap.plan is None or snap.answer is not None:
+        if snap.status is not PendingStatus.PENDING or snap.plan is None:
+            return Ready.READY
+        if snap.answer is not None and not self._learned(snap, clock):
             return Ready.READY
         asked = _latest(world.events(), snap.item)
         if asked is None:
@@ -746,6 +807,15 @@ class People:
         if worded.status is PendingStatus.PASSED:
             return Ready.PASSED
         return Ready.READY if worded.answer is not None else Ready.FAILED
+
+    def _learned(self, pending: PendingSnapshot, clock: Clock) -> bool:
+        """Whether what the person knows changed (`Person.fact_changes`) between their answer's words and now: the
+        words are written again, from what they know as they send it."""
+        if pending.worded_at is None:
+            return False
+        person = self._people[pending.person]
+        changes = [self._scenario.starts_at + c.after for c in person.fact_changes]
+        return any(pending.worded_at < at <= clock.now() for at in changes)
 
     async def _answer(self, held: Held, person: Person, port: ProvidesTransitions, world: Store, clock: Clock) -> Acted:
         """The person's answer to an ask they owe, its words written (`ready`), delivered by its provider and kept
@@ -788,7 +858,7 @@ class People:
             return pending.model_copy(update={"failure": str(e)})
         if reply is None:
             return pending.model_copy(update={"status": PendingStatus.PASSED, "failure": None, "answer": None})
-        return pending.model_copy(update={"answer": reply.model_dump_json(), "failure": None})
+        return pending.model_copy(update={"answer": reply.model_dump_json(), "failure": None, "worded_at": clock.now()})
 
     async def _choose(
         self,

@@ -321,10 +321,10 @@ def automatic_reply(
     history: Sequence[WorldEvent],
     replies: Sequence[PersonReply],
 ) -> PersonReply | None:
-    """The automatic reply a person away while a delegate covers sends at once to a message that reaches them, once
-    per absence: that they are away, until when, and whom to contact. None when they are not away then, nobody
-    covers, or they already sent it in this absence."""
-    if not isinstance(asked.after, MessageSnapshot):
+    """The automatic reply a person away while a delegate covers sends at once to a message or an item of the agent's
+    product that reaches them, once per absence: that they are away, until when, and whom to contact. None when they
+    are not away then, nobody covers, or they already sent it in this absence."""
+    if not isinstance(asked.after, MessageSnapshot | InboxItemSnapshot):
         return None
     anchor = first_ask(person, history, asked)
     for absence in person.absences:

@@ -1534,6 +1534,15 @@
       "additionalProperties": false,
       "description": "Messages the agent sent.",
       "properties": {
+        "conveys": {
+          "default": [],
+          "description": "Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a judge model is configured, its findings for review",
+          "items": {
+            "type": "string"
+          },
+          "title": "Conveys",
+          "type": "array"
+        },
         "holding": {
           "default": [],
           "description": "Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and `{person.key}`, `{person.name}` the person the rule is read for",
@@ -4421,7 +4430,7 @@
         },
         "first": {
           "default": false,
-          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run: the first approval of an operation two people could approve",
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run (the first approval of an operation two people could approve), or, when none was made, the run's end in its place",
           "title": "First",
           "type": "boolean"
         },

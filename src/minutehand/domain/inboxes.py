@@ -200,6 +200,12 @@ class Decision(Model):
     request: InboxRequest
     inputs: list[DecisionInput] = []
     succeeds: Succeeds = Succeeds()
+    settles: bool = Field(
+        default=True,
+        description="False: a note the person leaves on the item that decides nothing and leaves it waiting on them "
+        "(a comment): where an away person's automatic reply goes, its first input their words. Only a take, or "
+        "their automatic reply, uses it",
+    )
 
     @model_validator(mode="after")
     def _names_known_fields(self) -> Self:

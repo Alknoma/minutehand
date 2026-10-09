@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import socketserver
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +48,10 @@ class Product:
     """Answer each summary as a number: the product's contract changed under whoever reads it."""
     approvals: dict[str, Approval] = field(default_factory=dict)
     sent: list[Sent] = field(default_factory=list)
+    notes: list[tuple[str, str]] = field(default_factory=list)
+    """Each note left on an approval, by its id: what an approver writes without deciding."""
+    on_decided: Callable[[Approval], None] | None = None
+    """What the product does while it handles a decision, before it answers: going ahead with what it approves."""
     base: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -163,11 +167,17 @@ def _handler(product: Product) -> type[BaseHTTPRequestHandler]:
                 self._send(403, {"error": "not this approver's"})
             elif product.refuse or found.state != "pending":
                 self._send(409, {"error": "this approval cannot be decided now"})
+            elif json.loads(raw)["decision"] == "note":
+                with product.lock:
+                    product.notes.append((found.id, str(json.loads(raw)["text"])))
+                self._send(200, {"ok": True, "state": found.state})
             else:
                 body = json.loads(raw)
                 with product.lock:
                     found.state = "approved" if body["decision"] == "approve" else "rejected"
                     found.reason = str(body.get("reason", ""))
+                if product.on_decided is not None:
+                    product.on_decided(found)
                 self._send(200, {"ok": True, "state": found.state})
 
     return Handler

@@ -18,7 +18,16 @@ from minutehand.checks.ledger import build
 from minutehand.domain.checks import ObligationKind
 from minutehand.domain.common import Window
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.scenario import Absence, MessagingHappening, Reminded, Take
+from minutehand.domain.scenario import (
+    Absence,
+    Answers,
+    DelayRange,
+    FactChange,
+    MessagingHappening,
+    Person,
+    Reminded,
+    Take,
+)
 from minutehand.domain.transitions import AWAITING, REPLIED, REPLY, conversations, message_offers
 from minutehand.domain.world import (
     Actor,
@@ -35,7 +44,7 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 from tests.orchestrator.rig import T0, scenario
-from tests.support.people import people_engine
+from tests.support.people import people_engine, people_model
 
 CHAT = "chat"
 SOFIA = "sofia@example.com"
@@ -313,3 +322,34 @@ def test_an_ask_the_script_plans_no_answer_to_opens_no_wait_and_one_it_does_open
     # Her script answers one ask, then goes silent: the second asks her nothing. Mutation: reading every record the
     # engine holds as an ask opens a wait on the thank-you too.
     assert [o.entity for o in waits] == [first]
+
+
+async def test_gap_8_an_answer_owed_when_what_they_know_changes_says_what_they_know_when_they_send_it(
+    tmp_path: Path,
+) -> None:
+    store, clock = _store(tmp_path)
+    _sent(store, "m1", "What is the partner price?")
+    sofia = Person(
+        key="sofia",
+        name="Sofia Romano",
+        email=SOFIA,
+        facts=["the partner price is 40k a year"],
+        fact_changes=[FactChange(after=timedelta(hours=10), facts=["the partner price is 45k a year"])],
+        reply=Answers(delay=DelayRange(shortest=timedelta(hours=20), longest=timedelta(hours=20))),
+    )
+    base = scenario(tom_finishes=False)
+    scn = base.model_copy(update={"people": [p if p.key != "sofia" else sofia for p in base.people]})
+    pushes = Pushes()
+    engine = people_engine(scn, {CHAT: PushedConversations(CHAT, pushes, TARGET, "secret")}, people_model())
+    [booked] = (await engine.look(store, clock)).booked
+    assert PersonReply.model_validate_json(engine.pending(booked.pending, store).answer or "").text.startswith(
+        "The partner price is 40k"
+    )
+
+    clock.jump(T0 + timedelta(hours=20))
+    await engine.act(booked.pending, store, clock)
+
+    # Her facts changed ten hours in; her answer, owed at twenty, is written again from what she knows then.
+    # Mutation: keeping the words written when she was asked sends 40k.
+    [said] = pushes.delivered
+    assert said.text.startswith("The partner price is 45k")

@@ -241,6 +241,7 @@ async def fork_run(
                 outside=outside,
                 model=model,
                 desk=desk,
+                pins=[o for o in fork.overrides if isinstance(o, ReplyAt)],
             )
             orchestrator.mount()
             edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]

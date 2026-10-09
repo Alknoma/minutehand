@@ -23,7 +23,7 @@ from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeRequest
-from minutehand.domain.experiment import Fork, Override, PersonChange
+from minutehand.domain.experiment import Fork, Override, PersonChange, ReplyAt
 from minutehand.domain.scenario import Answers, DelayRange, Take
 from minutehand.domain.world import Actor, InboxItemSnapshot, WorldEvent
 from tests.inboxes.product import Product, serving
@@ -175,3 +175,11 @@ async def test_a_fork_that_changes_the_approver_has_them_reject(tmp_path: Path, 
     change = PersonChange(person="nadia", reply=rejecting.reply, takes=rejecting.takes)
     assert await _fork(tmp_path, product, [change]) == [("reject", T0 + hours(5))]
     assert product.state("a1") == "rejected"
+
+
+async def test_gap_7_a_fork_pins_the_moment_of_an_owed_decision(tmp_path: Path, product: Product) -> None:
+    pinned = ReplyAt(person="nadia", provider="approvals", to_ask=1, after=timedelta(hours=5))
+
+    # Her first item in the inbox lands exactly five hours after it began to wait, where her delay drew two.
+    # Mutation: an engine that leaves item pins to the replier, which pins only messages, keeps two.
+    assert await _fork(tmp_path, product, [pinned]) == [("approve", T0 + hours(5))]

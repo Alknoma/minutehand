@@ -175,6 +175,12 @@ class Messages(Model):
     to_away: bool | None = Field(
         default=None, description="True: to someone away at that moment while a delegate covered for them"
     )
+    conveys: list[str] = Field(
+        default=[],
+        description="Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's "
+        "own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a "
+        "judge model is configured, its findings for review",
+    )
 
 
 class Writes(Model):

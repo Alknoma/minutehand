@@ -25,7 +25,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import Decides, PersonReply
 from minutehand.domain.scenario import Account, Person, Scenario
-from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of
+from minutehand.domain.transitions import AUTOMATIC_REPLY, TEXT, Offer, OfferField, Transition, Waiting, content_of
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -222,29 +222,27 @@ class Inboxes:
         ]
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
-        """The decisions the product offers on the item, each with the inputs it takes."""
+        """The decisions the product offers on the item, each with the inputs it takes; and each note the inbox
+        declares (`Decision.settles` False), which leaves the item waiting, for a take or an automatic reply."""
         del by, who
         held = items_in(world.events())
         snapshot = held[item] if item in held else None
         if snapshot is None or snapshot.status is not ItemStatus.PENDING:
             return []
         declared = self.declared(item.provider)
-        offers: list[Offer] = []
-        for name in snapshot.decisions:
-            decision = declared.decision(name)
-            if decision is None:
-                continue
-            offers.append(
-                Offer(
-                    name=decision.name,
-                    to_state=DECIDED,
-                    description=decision.description,
-                    fields=[
-                        OfferField(name=i.name, required=i.required, description=i.description) for i in decision.inputs
-                    ],
-                )
+        offered = [d for d in (declared.decision(n) for n in snapshot.decisions) if d is not None and d.settles]
+        notes = [d for d in declared.decisions if not d.settles]
+        return [
+            Offer(
+                name=d.name,
+                to_state=DECIDED if d.settles else PENDING,
+                description=d.description,
+                fields=[OfferField(name=i.name, required=i.required, description=i.description) for i in d.inputs],
+                note=not d.settles,
+                unprompted=d.settles,
             )
-        return offers
+            for d in [*offered, *notes]
+        ]
 
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
@@ -253,7 +251,14 @@ class Inboxes:
         before the call goes out, so whatever the product does in handling it comes after the decision; when the
         product does not take it, the product's refusal is a move of its own (`refuse`, by the system, back to
         pending, its answer as content)."""
-        found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
+        offers = self.legal(item, by, who, world)
+        if offer == AUTOMATIC_REPLY:
+            note = next((o for o in offers if o.note and o.fields), None)
+            if note is None or who is None:
+                raise ValueError(f"inbox {item.provider} takes no note an automatic reply could be")
+            words: dict[str, str] = json.loads(content)
+            offer, content = note.name, json.dumps({note.fields[0].name: words[TEXT] if TEXT in words else ""})
+        found = next((o for o in offers if o.name == offer), None)
         if found is None or who is None:
             raise ValueError(f"item {item.external_id} of inbox {item.provider} offers no decision {offer!r}")
         inputs = content_of(content, found, who.key)
@@ -271,7 +276,7 @@ class Inboxes:
                 item=item,
                 name=offer,
                 from_state=PENDING,
-                to_state=DECIDED,
+                to_state=found.to_state,
                 by=by,
                 who=who.key,
                 content=content,
@@ -318,17 +323,15 @@ class Inboxes:
                 f"{person.key} decides {reply.decides.decision!r}, which inbox {ref.provider} does not offer"
             )
         answer = await reach.decide(person, ref.external_id, reply.decides, world, clock)
-        after = item.model_copy(
-            update={
-                "status": ItemStatus.DECIDED if answer.accepted else ItemStatus.PENDING,
-                "decision": decision.name,
-                "said": decision.said,
-                "inputs": dict(reply.decides.inputs),
-                "refused": None
-                if answer.accepted
-                else f"{answer.status if answer.status is not None else 'no answer'}: {answer.answer}",
-            }
+        refused = (
+            None
+            if answer.accepted
+            else f"{answer.status if answer.status is not None else 'no answer'}: {answer.answer}"
         )
+        settled = {"status": ItemStatus.DECIDED if answer.accepted else ItemStatus.PENDING}
+        if decision.settles:
+            settled |= {"decision": decision.name, "said": decision.said, "inputs": dict(reply.decides.inputs)}
+        after = item.model_copy(update={**settled, "refused": refused} if decision.settles else {"refused": refused})
         return world.apply(
             Change(
                 entity=ref,

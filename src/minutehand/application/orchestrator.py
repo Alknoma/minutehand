@@ -54,6 +54,7 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import InboundTarget, PersonMessage
 from minutehand.domain.run import RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import DocumentHappening, Happening, ProviderKey, Scenario, TicketHappening
@@ -229,6 +230,7 @@ class Orchestrator:
         outside: OutsideState | None = None,
         model: LanguageModel | None = None,
         desk: ServiceDesk | None = None,
+        pins: Sequence[ReplyAt] = (),
     ) -> None:
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
@@ -272,6 +274,7 @@ class Orchestrator:
             transition_ports(services, agent, signing or {}, channels or {}, inboxes, desk, scenario),
             replier,
             model,
+            pins,
         )
         self._untaken: list[EntityRef] = []
         self._retried: list[EntityRef] = []
