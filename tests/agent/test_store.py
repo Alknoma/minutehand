@@ -270,3 +270,35 @@ async def test_a_held_receiver_answers_the_agent_only_from_the_run_mounted_next(
     assert not reading.done(), "the call waits while the receiver is held"
     held[0].mount(child, RunClock(T0))
     assert await reading is None, "answered from the fork, which has none of the parent's memory"
+
+
+async def test_a_poll_of_memory_that_has_not_changed_is_counted_every_time_and_kept_in_the_log_once(
+    run: SqliteStore,
+) -> None:
+    """A worker that polls its queue: every read counted in its wake, and only those that find something new kept,
+    so the log's length, and every seq after it, does not depend on how many polls the machine's speed allowed."""
+    receiver, jobs = _receivers[-1], store.collection("jobs")
+    await jobs.aput("1", {"job": "ask"})
+    for _ in range(50):
+        await jobs.alist()
+        await store.aget("status")
+    await jobs.aput("2", {"job": "chase"})
+    for _ in range(5):
+        await jobs.alist()
+        await store.aget("status")
+    assert isinstance(receiver.clock, RunClock)
+    receiver.clock.begin_wake()
+    await jobs.alist()
+
+    reads = [
+        (e.wake, e.operation, e.entity.external_id)
+        for e in run.events()
+        if e.operation in (Operation.READ, Operation.SEARCH)
+    ]
+    assert reads == [
+        (1, Operation.SEARCH, "jobs/*"),
+        (1, Operation.READ, "default/status"),
+        (1, Operation.SEARCH, "jobs/*"),  # the queue changed: found something new
+        (2, Operation.SEARCH, "jobs/*"),  # the first of its wake
+    ]
+    assert (receiver.memory_reads(1), receiver.memory_reads(2)) == (110, 1)

@@ -295,7 +295,7 @@ The run loop's table of what is due next, every entry as it last stood: what ent
 
 ### `memory`
 
-The agent's memory (`minutehand.agent.store`) over time: every get, listing, write and delete. Kept in the order `seq`.
+The agent's memory (`minutehand.agent.store`) over time: every write and delete, and each get or listing that was the first of its key in its wake or found something other than the last one kept (`wakes.memory_reads` counts every one). Kept in the order `seq`.
 
 | Column | Type | What it holds |
 |---|---|---|

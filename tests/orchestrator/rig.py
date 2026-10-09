@@ -82,6 +82,9 @@ class Mounted:
         self.board.mount(world, clock, apps, scenario=scenario)
         self.receiver.mount(world, clock)
 
+    def memory_reads(self, wake: int) -> int:
+        return self.receiver.memory_reads(wake)
+
     def flush(self) -> None:
         self.board.flush()
 

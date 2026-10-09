@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from minutehand.application import memory
 from minutehand.application.checkpoint import (
@@ -119,6 +119,16 @@ class Mounts(Protocol):
     def flush(self) -> None:
         """Record every call still in progress as far as it has gone (a burst on a tunnel it relays unopened, kept
         once it falls quiet): the run is about to be summarised."""
+        ...
+
+
+@runtime_checkable
+class HoldsMemory(Protocol):
+    """Mounts that also answer the agent's memory (`minutehand.agent.store`): the receiver beside the proxy."""
+
+    def memory_reads(self, wake: int) -> int:
+        """The agent's gets and listings of its memory in `wake`, every one, though the log keeps only those that
+        could find something new (`application.memory.Reads`)."""
         ...
 
 
@@ -861,7 +871,7 @@ class Orchestrator:
                     1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD
                 ),
                 commitments_changed=commitments_changed,
-                memory_reads=sum(1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation in _NOT_CHANGES),
+                memory_reads=self._mounts.memory_reads(wake) if isinstance(self._mounts, HoldsMemory) else 0,
                 memory_writes=sum(
                     1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation not in _NOT_CHANGES
                 ),

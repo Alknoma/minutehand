@@ -315,7 +315,9 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="memory",
-        description="The agent's memory (`minutehand.agent.store`) over time: every get, listing, write and delete.",
+        description="The agent's memory (`minutehand.agent.store`) over time: every write and delete, and each get or "
+        "listing that was the first of its key in its wake or found something other than the last one kept "
+        "(`wakes.memory_reads` counts every one).",
         order="seq",
         columns=[
             _c("seq", N, "The event"),

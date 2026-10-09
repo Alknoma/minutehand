@@ -141,6 +141,7 @@ class Receiver:
         self._grpc_starting = asyncio.Lock()
         self._mounted = asyncio.Event()
         self._mounted.set()
+        self._reads = memory.Reads()
 
     @property
     def notices(self) -> list[str]:
@@ -151,7 +152,12 @@ class Receiver:
         """From now on spans are kept in `world`, stamped from `clock`, and the agent's calls answered from it."""
         self.store = world
         self.clock = clock
+        self._reads = memory.Reads()
         self._mounted.set()
+
+    def memory_reads(self, wake: int) -> int:
+        """The agent's gets and listings of its memory in `wake` of the run mounted (`memory.Reads`)."""
+        return self._reads.count(wake)
 
     def hold(self) -> None:
         """Hold the agent's calls until the next `mount`: a fork's agent starts before the fork's run exists."""
@@ -203,9 +209,9 @@ class Receiver:
         except ValidationError as e:
             return PlainTextResponse(f"not a call of the agent's store: {e}", status_code=400)
         if isinstance(call, MemoryGet):
-            answer: Model = memory.recall(self.store, call)
+            answer: Model = self._reads.recall(self.store, self.clock.wake(), call)
         elif isinstance(call, MemoryList):
-            answer = memory.listing(self.store, call)
+            answer = self._reads.listing(self.store, self.clock.wake(), call)
         else:
             answer = memory.remember(self.store, call)
         return Response(answer.model_dump_json(), media_type=JSON)
