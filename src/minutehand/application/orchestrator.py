@@ -541,7 +541,7 @@ class Orchestrator:
         driver = self._reach.for_reason(WakeReason.START)
 
         async def say_goal() -> None:
-            if provider is not None:
+            if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
         requests = [(driver, request)] if driver is not None else []
@@ -1049,8 +1049,9 @@ class Orchestrator:
             await self._inboxes.look(self._store, self._clock)
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
-        """The scenario's owner messages the agent: its goal, or a direction."""
-        message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
+        """An older scenario's owner messages the agent: its goal, or a direction."""
+        sender = self._scenario.acting(None, "who sends the scenario's goal and directions (owner)")
+        message = PersonMessage(person=sender, text=text, at=self._clock.now())
         await self._pushes(provider).say(
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )

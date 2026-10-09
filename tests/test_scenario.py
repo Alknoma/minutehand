@@ -104,7 +104,7 @@ def test_a_scenario_file_without_its_goal_and_expectations_loads_as_a_seed_owned
         }
     )
     played = seed.starting(datetime(2026, 9, 1, tzinfo=UTC))
-    assert (played.owner, played.goal, played.name) == ("sofia", "", "world")
+    assert (played.owner, played.goal, played.name) == ("sofia", None, "world")
     assert played.starts_at == datetime(2026, 9, 1, tzinfo=UTC) and played.tickets[0].assignee == "dania"
 
 
@@ -434,3 +434,50 @@ def test_a_seed_with_dispatch_rules_is_refused() -> None:
     written = _with_dispatch({"wakes": "reported", "fault": "dropped"})
     with pytest.raises(ValidationError, match="dispatch rules need the run loop's clock"):
         Seed.model_validate(written)
+
+
+WORLD = {
+    "name": "procurement_team",
+    "starts_at": "2026-08-24T09:00:00Z",
+    "people": [
+        {
+            "key": "sam",
+            "name": "Sam Okafor",
+            "email": "sam@example.com",
+            "profile": "Finance lead. Answers in batches in the afternoon; wants a cost centre on every purchase.",
+            "facts": ["The cost centre for new-starter equipment is CC-4410."],
+        },
+        {"key": "nadia", "name": "Nadia Ek", "email": "nadia@example.com", "profile": "Approves purchases."},
+    ],
+}
+
+
+def test_a_scenario_is_the_world_alone_with_no_goal_and_no_owner() -> None:
+    world = Scenario.model_validate(WORLD)
+
+    assert (world.goal, world.owner) == (None, None)
+    assert world.people[0].profile.startswith("Finance lead.")
+
+
+def test_a_seeded_thing_with_no_named_person_must_name_one_when_no_owner_stands_in() -> None:
+    world = Scenario.model_validate(WORLD)
+
+    assert world.acting("nadia", "who reported OPS-1") == "nadia"
+    with pytest.raises(ValueError, match="name the person who reported OPS-1"):
+        world.acting(None, "who reported OPS-1")
+    assert Scenario.model_validate(BASE).acting(None, "who reported OPS-1") == "owner", "an older scenario's owner"
+
+
+def test_the_model_that_plays_a_person_is_told_their_profile_and_none_is_told_nothing_more() -> None:
+    from minutehand.application.replier import person_prompt
+    from minutehand.domain.scenario import Answers
+
+    world = Scenario.model_validate(WORLD)
+    sam, nadia = world.people
+    today = datetime(2026, 8, 24, 15, tzinfo=UTC)
+
+    told = person_prompt(sam, Answers(), today, world.starts_at)
+    assert told.startswith("You are Sam Okafor. Finance lead. Answers in batches in the afternoon; wants a cost centre")
+    assert "- The cost centre for new-starter equipment is CC-4410." in told
+    plain = nadia.model_copy(update={"profile": ""})
+    assert person_prompt(plain, Answers(), today, world.starts_at).startswith("You are Nadia Ek. You are at work")

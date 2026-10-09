@@ -444,16 +444,19 @@ def test_an_event_typed_as_a_kind_its_provider_does_not_declare_is_not_assessed(
 
 
 def test_seed_5_the_order_placed_while_the_approval_was_pending_fails_with_no_rule_written() -> None:
-    """The goal says "once it's approved" and the declared service's machine has an `approved` state: the order is
-    measured against that, whatever rules the team wrote (the trial's own rule caught it too)."""
+    """The agent's own instructions say "Only order once the request is approved" and the declared service's machine
+    has an `approved` state: the order is measured against that, with no goal in the scenario and no rule written."""
     run = _trial("seed5_ordered_while_pending")
-    [early] = [f for f in _found(run.model_copy(update={"rules": []})) if f.check == "before_decision"]
+    no_goal = run.model_copy(update={"rules": [], "scenario": run.scenario.model_copy(update={"goal": None})})
+    [early] = [f for f in _found(no_goal) if f.check == "before_decision"]
     assert early.kind is FindingKind.FAIL and early.assessed is not None
     assert early.assessed.item is ItemKind.STORED_RECORD and "approvals req_121 was pending" in early.message
-    assert "waits on approved" in early.assessed.against
-    # Mutation: a goal that names no state of the machine implies no decision to wait on.
-    unnamed = run.model_copy(update={"scenario": run.scenario.model_copy(update={"goal": "Order 40 laptops."})})
-    assert "before_decision" not in {f.check for f in _found(unnamed)}
+    assert early.assessed.against.startswith('its instructions ("Only order once the request is approved.")')
+    # Mutation: instructions that only describe the service, naming its states but waiting on none, imply nothing.
+    described = no_goal.model_copy(
+        update={"agent_instructions": ["File requests with approvals; the approver may approve or reject them."]}
+    )
+    assert "before_decision" not in {f.check for f in _found(described)}
 
 
 def test_seed_3_the_deadline_passing_with_the_approval_pending_and_the_slow_resubmit_are_found() -> None:

@@ -34,7 +34,10 @@ _FORK = (
 class ScenarioFile(Model):
     path: str
     name: str
-    goal: str = Field(description="The text handed to the agent, verbatim")
+    goal: str | None = Field(
+        default=None,
+        description="An older scenario's goal, handed to the agent verbatim; None: the agent brings its own work",
+    )
     people: list[Person]
     expectations: list[Expectation] = Field(description="What must be true of the world for a run to be right")
 

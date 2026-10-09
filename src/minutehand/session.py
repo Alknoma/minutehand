@@ -83,7 +83,7 @@ from minutehand.application.inboxes import Inboxes
 from minutehand.application.items import provided_types, typed_items
 from minutehand.application.items import rhythm as declared_rhythm
 from minutehand.application.kept import KeptModel
-from minutehand.application.model_calls import is_model_call, model_call, per_wake
+from minutehand.application.model_calls import agent_instructions, is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.people import needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
@@ -1076,6 +1076,7 @@ class _Judge:
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
+            agent_instructions=agent_instructions(spans),
             broken_calls=broken(calls),
             contract_breaks=contract_breaks(calls),
             dues=due_entries(world),

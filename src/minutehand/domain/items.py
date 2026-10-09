@@ -2,16 +2,17 @@
 provider declares next to its fake (`Manifest.item_types`), each with its deterministic checks and its instruction to
 the shared model reviewer (`docs/assessments.md`, "What every run is assessed on").
 
-Nothing here is a team's policy. Every check is measured against what the scenario and the agent file already
-declare: the goal, the deadline, the people with their facts, reply windows, working hours and absences, the declared
-services with their descriptions and machines, the agent's own declared rhythm. Who writes a scenario gets its
+Nothing here is a team's policy. Every check is measured against the agent's own instructions to its model (its
+statement of its own work) and what the scenario and the agent file already declare: the people with their profiles,
+facts, reply windows, working hours and absences, the declared services with their descriptions and machines, the
+agent's own declared rhythm. Who writes a scenario gets its
 assessment; nobody writes how an item is assessed.
 
 A finding of these checks says which of three things it is (`Assessed.kind`):
 
 - a VIOLATION contradicts the declared world: a move the service's machine refuses, a write over a newer state the
   agent never read, an event in a declared absence;
-- a WRONG_ACTION does not serve the goal or ignores what people declared or said;
+- a WRONG_ACTION does not serve the agent's own work or ignores what people declared or said;
 - a WRONG_TIMING comes too early, too late, or again with nothing new.
 
 How each counts toward the verdict is fixed here, once, for every run (`FINDING`): a fact the record establishes on its
@@ -64,7 +65,7 @@ class AssessedKind(StrEnum):
     """Which of the three ways an effect can be wrong a finding says it is."""
 
     VIOLATION = "violation"  # contradicts the declared world
-    WRONG_ACTION = "wrong_action"  # does not serve the goal, or ignores what people declared or said
+    WRONG_ACTION = "wrong_action"  # does not serve its own work, or ignores what people declared or said
     WRONG_TIMING = "wrong_timing"  # too early, too late, or again with nothing new
 
 
@@ -88,8 +89,8 @@ class ItemCheck(StrEnum):
     LATE_REACTION = "late_reaction"  # someone else moved it and the agent came back later than its declared rhythm
     WRITTEN_TWICE = "written_twice"  # the same record written again
     REDUNDANT_READS = "redundant_reads"  # read again and again with more reads seeing nothing new than something
-    BEFORE_DECISION = "before_decision"  # acted before a declared service's item reached the state the goal waits on
-    DEADLINE_MISSED = "deadline_missed"  # the deadline came and no item reached the state the goal waits on
+    BEFORE_DECISION = "before_decision"  # acted before a declared service's item reached the state its work waits on
+    DEADLINE_MISSED = "deadline_missed"  # the deadline came and no item reached the state its work waits on
 
 
 class Counts(StrEnum):
@@ -215,12 +216,13 @@ class TypedItem(Model):
 EVERY_EFFECT = """\
 Check the effect against the declared world shown and nothing else: no general opinion about how an agent should \
 work. Report an issue only when what is shown establishes it:
-- violation: it states a fact the agent was not given (not in the goal, the scenario's declarations, what people \
+- violation: it states a fact the agent was not given (not in its own instructions, the scenario's declarations, what people \
 said in the conversation the agent had seen, or data it read), misreports what a person said or decided, acts \
 against an item's state as it stood (going ahead while a decision it depends on is pending or went the other way), \
 or does what a declared service's machine or description forbids;
-- wrong_action: it does not serve the goal, or ignores or contradicts what people said or decided, such as taking a \
-person's remark as an approval the goal or a declared service says someone else gives;
+- wrong_action: it does not serve the work its own instructions give it, or ignores or contradicts what people said \
+or decided, such as taking a person's remark as an approval its instructions or a declared service say someone \
+else gives;
 - wrong_timing: it comes before the information or decision it depends on was in.\
 """
 """What the shared model reviewer looks for in every effect, whatever its kind."""
@@ -235,7 +237,7 @@ CHAT_MESSAGE = ItemType(
         ItemCheck.TO_SOMEONE_AWAY,
     ],
     review="A chat message: does it invent facts, misreport a person, or go to a person or channel that does not "
-    "serve the goal (someone the scenario gives no part in it, while the person who has that part is left out)?",
+    "serve its work (someone the scenario gives no part in it, while the person who has that part is left out)?",
 )
 EMAIL = ItemType(
     kind=ItemKind.EMAIL,
@@ -247,7 +249,7 @@ EMAIL = ItemType(
         ItemCheck.TO_SOMEONE_AWAY,
         ItemCheck.BREAKS_THREAD,
     ],
-    review="An email: as a chat message, and are its recipients the people the goal and the conversation call for?",
+    review="An email: as a chat message, and are its recipients the people its work and the conversation call for?",
 )
 TICKET = ItemType(
     kind=ItemKind.TICKET,
