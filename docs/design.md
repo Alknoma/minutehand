@@ -138,13 +138,13 @@ inbound:
      secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}}
 ```
 
-An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
+An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `push_timeout` (default `PT5M`) is how long one push to it may take before it is sent again, as the vendor retries (`docs/agent-contract.md`). `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
 
 ```yaml
   - kind: reported
     wake_url: http://platform:8025/minutehand/wake
     report_url: http://platform:8025/minutehand/report
-    wake_timeout: PT2M            # one call to wake_url or report_url (default 2 minutes)
+    wake_timeout: PT10M           # one call to wake_url or report_url (default 10 minutes: room for a model's turn)
     report_first_after: PT0.1S    # the first ask for the report; each wait doubles from here
     report_at_most_every: PT10S   # up to this
     working_limit: PT30M          # a wake still WORKING after this stops the run AGENT_FAILED, saying so

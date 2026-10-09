@@ -103,3 +103,14 @@ def test_run_all_hands_each_run_the_flags_that_record_model_calls_and_capture(tm
         "--",
         "x",
     ]
+
+
+def test_the_wake_and_push_waits_default_to_room_for_a_models_turn() -> None:
+    from datetime import timedelta
+
+    from minutehand.domain.agent import Marked
+    from minutehand.domain.people import InboundTarget
+
+    assert Reported(wake_url="http://a/w", report_url="http://a/r").wake_timeout == timedelta(minutes=10)
+    assert Marked(wake_url="http://a/w").wake_timeout == timedelta(minutes=10)
+    assert InboundTarget(provider="slack", url="http://a/e").push_timeout == timedelta(minutes=5)

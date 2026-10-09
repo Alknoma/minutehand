@@ -103,7 +103,7 @@ async def push(
         raise ValueError(f"a {target.provider} target is not Microsoft's to deliver to")
     where = url or target.request_url()
     try:
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=target.push_timeout.total_seconds(), trust_env=False) as client:
             answered = await client.post(
                 where,
                 content=wire.dump(activity),

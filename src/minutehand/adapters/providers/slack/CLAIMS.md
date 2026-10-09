@@ -148,6 +148,10 @@ check Slack makes and this stack does not test:
 - **The app's own message writes as events.** `message_changed` "is sent when a message … is edited using the chat.update
   API method". The fake pushes no event for the agent's own `chat.postMessage`, `chat.update` or `chat.delete`, or for a
   scheduled message when it posts; it does push the events of its conversation, reaction and file calls (above).
+- **How long a push may take is the agent file's.** Slack counts an event unanswered after three seconds
+  (https://docs.slack.dev/apis/events-api); a request-URL push here waits the target's `push_timeout`, five minutes
+  unless the agent file says otherwise, so an LLM agent that takes a model's turn inside its handler is not retried for
+  it. `push_timeout: PT3S` holds a target to Slack's window. A Socket Mode envelope is always held to three seconds.
 - **Retries are not spaced out.** Slack retries a request URL "nearly immediately", then after one and five minutes
   (https://docs.slack.dev/apis/events-api); no simulated time passes while the agent is being called, so the retries
   here follow each other.

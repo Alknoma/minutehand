@@ -10,7 +10,8 @@ The world stamps from the run's clock: a message's `ts` and the callback's `even
 `X-Slack-Request-Timestamp` is not world time. It is the moment the request is sent, and the agent's
 `SignatureVerifier` refuses any timestamp more than five minutes from its own clock, which is the machine's.
 
-An event the agent does not answer with 2xx is sent again, as Slack does, up to three more times with
+An event the agent does not answer with 2xx within its target's `push_timeout` is sent again, as Slack does, up to
+three more times with
 `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`; the retries are not spaced out, since no simulated time passes
 while the agent is being called. A delivery still refused after the last retry fails the agent.
 """
@@ -20,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from datetime import timedelta
 
 import httpx
 
@@ -45,7 +47,6 @@ from minutehand.ports.store import Store
 
 RETRIES = 3
 """How many more times Slack sends an event the agent did not acknowledge."""
-TIMEOUT = 30.0
 
 
 class DeliveryRefused(AgentFailed):
@@ -69,9 +70,17 @@ def refuse_foreign(target: InboundTarget) -> None:
 
 
 async def post_signed(
-    url: str, body: bytes, content_type: str, secret: str, *, retry: int | None = None, reason: str | None = None
+    url: str,
+    body: bytes,
+    content_type: str,
+    secret: str,
+    *,
+    timeout: timedelta,
+    retry: int | None = None,
+    reason: str | None = None,
 ) -> httpx.Response:
-    """One signed request from Slack to the agent; raises only when it could not be made."""
+    """One signed request from Slack to the agent, given `timeout` (the target's `push_timeout`) to answer; raises
+    only when it could not be made."""
     stamp = str(int(time.time()))  # clock-lint: exempt the request's send time, checked against the agent's own clock
     headers = {
         "Content-Type": content_type,
@@ -82,7 +91,7 @@ async def post_signed(
     if retry is not None and reason is not None:
         headers["X-Slack-Retry-Num"] = str(retry)
         headers["X-Slack-Retry-Reason"] = reason
-    async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout.total_seconds(), trust_env=False) as client:
         return await client.post(url, content=body, headers=headers)
 
 
@@ -100,7 +109,15 @@ async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.Ev
     for attempt in range(RETRIES + 1):
         reason = None if attempt == 0 else ("http_timeout" if status is None else "http_error")
         try:
-            answered = await post_signed(url, body, "application/json", secret, retry=attempt or None, reason=reason)
+            answered = await post_signed(
+                url,
+                body,
+                "application/json",
+                secret,
+                timeout=target.push_timeout,
+                retry=attempt or None,
+                reason=reason,
+            )
         except httpx.TimeoutException as e:
             status, last = None, repr(e)
             continue
@@ -163,7 +180,7 @@ async def verify_url(target: InboundTarget, secret: str, challenge: str) -> None
     url = target.request_url()
     body = wire.event_body(wire.UrlVerification(token=wire.VERIFICATION_TOKEN, challenge=challenge))
     try:
-        answered = await post_signed(url, body, "application/json", secret)
+        answered = await post_signed(url, body, "application/json", secret, timeout=target.push_timeout)
     except httpx.HTTPError as e:
         raise DeliveryRefused(url, None, repr(e), what="url_verification") from e
     if not answered.is_success:

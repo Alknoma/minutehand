@@ -48,6 +48,40 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **assessments** | Minutehand reads the team's rules over the facts of every run and fork; nothing else judges how the agent behaves | YAML rules (`docs/assessments.md`) → findings named by each rule's `id` | `assess[]` in the agent file; `assess[]` and `assess_off[]` in a scenario | No: a run with none is reported as facts, `Not assessed` |
 | **own checks** | Minutehand runs the agent's checks after every run and fork: the escape hatch for what a rule cannot say | A class with `id`, `needs` and `run(view) -> CheckReport`, reading the facts `minutehand.checks.facts` gives (`asks`, `messages`, `writes`, `planned_wakes`, `reported`) | `checks[]`: Python files, a relative path read from the agent file's folder | No |
 
+## The report, and how long Minutehand waits
+
+**`AgentReport.status`** is the agent's answer to `GET report_url`:
+
+| Status | Means | What Minutehand does |
+|---|---|---|
+| `working` | This wake is still in progress: the agent is still acting on it (a model's turn, a tool call) | Asks again, the wait doubling from `report_first_after` to `report_at_most_every`, until the status changes; a wake still `working` after `working_limit` (default 30 minutes) stops the run `agent_failed`, saying so. Nothing is printed while it waits |
+| `idle` | This wake is over; wake me at `next_wake` (or not at all) | Checkpoints the wake and moves the clock |
+| `done` | The goal is finished | Stops the run `agent_done` |
+
+An agent that answers `working` for "I have work open" rather than "this wake is still running" keeps every wake
+open until `working_limit`: say `idle`, with the work in `commitments`.
+
+**Timeouts, sized for a model's turns.** A scripted agent answers in milliseconds; an LLM agent may take minutes
+inside one call. Both waits are the agent file's:
+
+| Field | Default | What it bounds |
+|---|---|---|
+| `wakes[].wake_timeout` (`reported`, `marked`) | `PT10M` | One call to `wake_url` or `report_url`; a `marked` wake is the whole call |
+| `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
+
+Slack itself waits three seconds for an event's 2xx and then retries: an app that handles an event inside the request
+(a model's turn in the handler) is sent it again by the real service, and handles it more than once. The default
+`push_timeout` leaves room for such a handler so a first run is not cut short; set `push_timeout: PT3S` to be held to
+Slack's own window, which is how the duplicate handling a slow handler causes shows up in a run. A Socket Mode
+envelope is always held to Slack's three seconds.
+
+**A person's reply is delivered twice, by design.** When a person answers on a provider that pushes (a Slack message,
+a Bot Framework activity), the provider pushes the event to `inbound[].url` as the real service would, and the same
+moment is a wake: an agent with a wake endpoint is also woken with `reason: person_replied`. An agent that acts on
+the pushed event and again on the wake takes two turns for one reply; one that takes the event as its notice treats
+a `person_replied` wake as possibly handled already (its memory says so), or declares no wake source and hears only
+pushes.
+
 ## The agent's memory and its next wake
 
 ```python
@@ -204,7 +238,7 @@ New declarations (inboxes) use the following.
 | `input` | the decision's inputs, by name |
 | `clock` | `now` |
 | `page` | `cursor` |
-| `run` | `port`, `dir`: anywhere in the agent file and the agent's command under `minutehand run-all`, a free port and a folder of the scenario's own, so runs in parallel share neither; also `MINUTEHAND_RUN_PORT` and `MINUTEHAND_RUN_DIR` in the agent's environment |
+| `run` | `port`, `dir`: anywhere in the agent file and the agent's command under `minutehand run-all` (a free port and a folder of the scenario's own, so runs in parallel share neither) and `minutehand run` with a command (filled once); also `MINUTEHAND_RUN_PORT` and `MINUTEHAND_RUN_DIR` in the agent's environment. Refused by name where no agent is started (`env`, `doctor`, `run` with no command) |
 | `case` | reserved |
 | `person`, `ask`, `rule` | in an assessment's `message` and `holding`: `{person.key}`, `{person.name}`, `{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`, and in `holding` `{ask.facts}` (`docs/assessments.md`) |
 | `team` | a team's values in a library scenario: `goal`, `owner_key`, `owner_name`, `owner_email`, the same for `ask` and `other`, `answer`, `tell`, `credential_env`, `provider`, `wakes` (`docs/scenarios.md`) |

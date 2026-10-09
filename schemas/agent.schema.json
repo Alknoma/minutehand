@@ -1269,6 +1269,13 @@
           "title": "Provider",
           "type": "string"
         },
+        "push_timeout": {
+          "default": "PT5M",
+          "description": "How long one push to `url` or `interactivity_url` may take before it counts as unanswered and is sent again, as the vendor retries it. The default leaves room for a model's turn handled inside the request; Slack itself waits three seconds (PT3S), and a Socket Mode envelope is always held to that",
+          "format": "duration",
+          "title": "Push Timeout",
+          "type": "string"
+        },
         "secret": {
           "anyOf": [
             {
@@ -1372,8 +1379,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT5M",
-          "description": "How long one call to wake_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url may take: the whole wake, a model's turns and all",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"
@@ -2234,8 +2241,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT2M",
-          "description": "How long one call to wake_url or report_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url or report_url may take; the default leaves room for a model's turn taken inside the call",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"
