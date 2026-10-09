@@ -28,14 +28,13 @@ from zoneinfo import ZoneInfo
 
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.clock import Drawn, DrawnFrom
-from minutehand.domain.people import PersonReply, Press, Writing
+from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.scenario import (
     Absence,
     AbsenceTrigger,
     DelayRange,
     Person,
     Scenario,
-    ScriptedPress,
     Window,
     WorkingHours,
 )
@@ -68,20 +67,6 @@ def decision_text(decision: str, inputs: dict[str, str]) -> str:
     """A decision as the reply table keeps its text: the decision, then what was given with it."""
     given = "; ".join(f"{name}: {value}" for name, value in inputs.items())
     return f"{decision} ({given})" if given else decision
-
-
-def pressed(scripted: ScriptedPress, asked: WorldEvent) -> Press | None:
-    """The control on the asked message whose label reads as the script says, in any case; None when the message
-    carries no such control, and the person, who cannot press what is not there, does nothing."""
-    if not isinstance(asked.after, MessageSnapshot):
-        return None
-    wanted = scripted.label.casefold()
-    control = next((a for a in asked.after.actions if a.label.casefold() == wanted), None)
-    if control is None:
-        return None
-    return Press(
-        action_id=control.action_id, label=control.label, value=control.value, picks=scripted.picks, form=scripted.form
-    )
 
 
 # -- the asks ----------------------------------------------------------------------------------------------------
@@ -336,10 +321,10 @@ def automatic_reply(
     history: Sequence[WorldEvent],
     replies: Sequence[PersonReply],
 ) -> PersonReply | None:
-    """The automatic reply a person away while a delegate covers sends at once to a message that reaches them, once
-    per absence: that they are away, until when, and whom to contact. None when they are not away then, nobody
-    covers, or they already sent it in this absence."""
-    if not isinstance(asked.after, MessageSnapshot):
+    """The automatic reply a person away while a delegate covers sends at once to a message or an item of the agent's
+    product that reaches them, once per absence: that they are away, until when, and whom to contact. None when they
+    are not away then, nobody covers, or they already sent it in this absence."""
+    if not isinstance(asked.after, MessageSnapshot | InboxItemSnapshot):
         return None
     anchor = first_ask(person, history, asked)
     for absence in person.absences:

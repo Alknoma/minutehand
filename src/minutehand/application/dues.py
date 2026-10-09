@@ -18,7 +18,6 @@ from minutehand.application.checkpoint import (
     PendingBooking,
     PendingCall,
     PendingDirection,
-    PendingFate,
     PendingHappening,
     PendingMachine,
     PendingService,
@@ -39,8 +38,6 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.POLLED if pending.reason is WakeReason.TICK else DueSource.REPORTED
     if isinstance(pending, PendingBooking):
         return DueSource.BOOKED
-    if isinstance(pending, PendingFate):
-        return DueSource.FATE
     if isinstance(pending, PendingHappening):
         return DueSource.HAPPENING
     if isinstance(pending, PendingMachine):

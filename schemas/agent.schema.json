@@ -609,19 +609,6 @@
           "title": "Name",
           "type": "string"
         },
-        "permits": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Whether it lets what the item gates go ahead (approve: true, reject: false); None: it says nothing about that (an answer to a question)",
-          "title": "Permits"
-        },
         "reads": {
           "anyOf": [
             {
@@ -652,6 +639,12 @@
             }
           ],
           "title": "Request"
+        },
+        "settles": {
+          "default": true,
+          "description": "False: a note the person leaves on the item that decides nothing and leaves it waiting on them (a comment): where an away person's automatic reply goes, its first input their words. Only a take, or their automatic reply, uses it",
+          "title": "Settles",
+          "type": "boolean"
         },
         "succeeds": {
           "$ref": "#/$defs/Succeeds",
@@ -1526,6 +1519,15 @@
       "additionalProperties": false,
       "description": "Messages the agent sent.",
       "properties": {
+        "conveys": {
+          "default": [],
+          "description": "Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a judge model is configured, its findings for review",
+          "items": {
+            "type": "string"
+          },
+          "title": "Conveys",
+          "type": "array"
+        },
         "holding": {
           "default": [],
           "description": "Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and `{person.key}`, `{person.name}` the person the rule is read for",
@@ -2411,6 +2413,7 @@
           "$ref": "#/$defs/Where",
           "default": {
             "by": [],
+            "first": false,
             "name": [],
             "person": [],
             "person_not": [],
@@ -2887,6 +2890,12 @@
           "title": "By",
           "type": "array"
         },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run (the first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+          "title": "First",
+          "type": "boolean"
+        },
         "name": {
           "default": [],
           "description": "For `each: transition`: named these by the provider only",
@@ -2951,19 +2960,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {
@@ -3066,21 +3062,6 @@
           "default": null,
           "description": "In an item: the names of the decisions allowed on it; None: every one declared",
           "title": "Decisions"
-        },
-        "gates": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
-          "title": "Gates"
         },
         "id": {
           "description": "In an item: its own id",

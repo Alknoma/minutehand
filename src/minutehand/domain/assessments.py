@@ -175,6 +175,12 @@ class Messages(Model):
     to_away: bool | None = Field(
         default=None, description="True: to someone away at that moment while a delegate covered for them"
     )
+    conveys: list[str] = Field(
+        default=[],
+        description="Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's "
+        "own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a "
+        "judge model is configured, its findings for review",
+    )
 
 
 class Writes(Model):
@@ -190,11 +196,6 @@ class Writes(Model):
     )
     in_repeated_wake: bool | None = Field(
         default=None, description="True: written in a wake that was the second delivery of the same wake (`dispatch`)"
-    )
-    gated: bool | None = Field(
-        default=None,
-        description="True: a call carrying an operation an item in the agent's own product held back (`gates`), made "
-        "while that item was pending, turned down, or taken back undecided",
     )
 
 
@@ -387,10 +388,15 @@ class Where(Model):
     name: list[str] = Field(default=[], description="For `each: transition`: named these by the provider only")
     to: list[str] = Field(default=[], description="For `each: transition`: into these states only")
     by: list[Mover] = Field(default=[], description="For `each: transition`: made by these only")
+    first: bool = Field(
+        default=False,
+        description="For `each: transition`: only the first transition the rest of `where` matches, in the run (the "
+        "first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+    )
 
     @property
     def on_transitions(self) -> bool:
-        return bool(self.provider or self.name or self.to or self.by)
+        return bool(self.provider or self.name or self.to or self.by or self.first)
 
 
 class StoppedBy(StrEnum):

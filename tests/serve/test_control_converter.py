@@ -4,6 +4,7 @@ request. A bare `KeyError` or `ValueError` was a 404 or a 409 before, so a bug r
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -131,7 +132,7 @@ def test_a_port_methods_lookup_or_value_error_reaches_the_control_api_as_its_typ
         )
         world.open(["asana"])
         with pytest.raises(raised) as refused:
-            world.move_ticket(ticket, TicketState.DONE)
+            asyncio.run(world.move_ticket(ticket, TicketState.DONE))
         assert words in str(refused.value)
         assert type(refused.value) is raised
     finally:

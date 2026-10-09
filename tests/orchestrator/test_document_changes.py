@@ -39,7 +39,7 @@ class Watched(GoogleWorkspaceProvider):
 
 def with_a_document_change() -> Scenario:
     return scenario(
-        ticket_fates=[],
+        tom_finishes=False,
         documents=[SeededDocument(provider="google_workspace", title="Pricing Notes", text="40k?")],
         happenings=[
             DocumentHappening(
@@ -66,8 +66,6 @@ async def played(rig: Rig, drive: GoogleWorkspaceProvider) -> tuple[RunRecord, l
         services=Services(
             providers=[rig.chat, rig.sched, drive],
             pushes={CHAT: rig.chat},
-            tickets={CHAT: rig.chat},
-            editors={CHAT: rig.chat},
             schedulers={rig.sched.manifest.key: rig.sched},
         ),
         replier=PeopleReplier(scn, None),

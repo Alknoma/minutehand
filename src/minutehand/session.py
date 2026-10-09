@@ -137,9 +137,7 @@ from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
-    EditsTickets,
     HeldCalls,
-    HoldsTickets,
     Provider,
     PushesEvents,
     ServesSockets,
@@ -1145,8 +1143,6 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     refuse_unheld(scenario, manifests)
     providers: list[Provider] = [registry.provider(manifests[key]) for key in sorted(named)]
     pushes: dict[ProviderKey, PushesEvents] = {}
-    tickets: dict[ProviderKey, HoldsTickets] = {}
-    editors: dict[ProviderKey, EditsTickets] = {}
     schedulers: dict[ProviderKey, BooksWakes] = {}
     for provider in providers:
         key = provider.manifest.key
@@ -1158,14 +1154,10 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             if not isinstance(provider, BooksWakes):
                 raise RunRefused(f"provider {key} declares books_wakes and does not implement BooksWakes")
             schedulers[key] = provider
-        if isinstance(provider, HoldsTickets):
-            tickets[key] = provider
-        if isinstance(provider, EditsTickets):
-            editors[key] = provider
         socket_mode = any(t.provider == key and t.delivery is Delivery.SOCKET_MODE for t in agent.inbound)
         if socket_mode and not isinstance(provider, ServesSockets):
             raise RunRefused(f"agent {agent.name} takes {key}'s events in socket mode, and {key} serves no sockets")
-    return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
+    return Services(providers=providers, pushes=pushes, schedulers=schedulers)
 
 
 @dataclass(frozen=True)

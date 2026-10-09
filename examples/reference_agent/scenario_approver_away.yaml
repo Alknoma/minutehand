@@ -24,7 +24,7 @@ people:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}
       replies: []
-      decisions: [{decision: approve}]
+    takes: [{take: approve}]
 expect:
   - {kind: person_asked, person: rosa, by: PT1H}
   - {kind: relayed, said_by: rosa, to: owen, holding: [LH-2291]}

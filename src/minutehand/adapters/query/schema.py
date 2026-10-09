@@ -298,12 +298,12 @@ VIEWS: tuple[View, ...] = (
         order="due_id",
         columns=[
             _c("due_id", N, "The entry, numbered in the order it entered"),
-            _c("kind", T, "agent_wake, person_reply, direction, ticket_fate, happening or machine"),
+            _c("kind", T, "agent_wake, person_reply, direction, happening, machine, transition or service"),
             _c("ref", T, "What it refers to, in the run loop's words"),
             _c(
                 "source",
                 T,
-                "reported, booked, polled, reply, fate, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it)",
+                "reported, booked, polled, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it)",
             ),
             _c("due_at", T, f"When it was due; {TIME}"),
             _c("entered_at", T, "When it entered the table"),

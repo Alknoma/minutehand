@@ -14,7 +14,6 @@ class DueKind(StrEnum):
     AGENT_WAKE = "agent_wake"
     PERSON_REPLY = "person_reply"
     DIRECTION = "direction"
-    TICKET_FATE = "ticket_fate"
     HAPPENING = "happening"
     MACHINE = "machine"
     TRANSITION = "transition"
@@ -60,7 +59,6 @@ class DueSource(StrEnum):
     BOOKED = "booked"  # the agent's booking with a scheduler provider
     POLLED = "polled"  # the declared rhythm of a `Polled` agent
     REPLY = "reply"  # a person's reply, decided and on its way
-    FATE = "fate"  # what becomes of a ticket assigned to a person
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
     MACHINE = "machine"  # something the scenario does to the agent's own machine

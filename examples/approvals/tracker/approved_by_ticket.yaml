@@ -10,9 +10,11 @@ starts_at: "2026-08-24T09:00:00Z"
 deadline_after: P5D
 people:
   - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
-  - {key: nadia, name: Nadia Ek, email: nadia@example.com, reply: {kind: scripted, then: silent}}
-ticket_fates:
-  - {assignee: nadia, becomes: done, after: PT6H}   # the first ticket the agent assigns her
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    reply: {kind: scripted, then: silent}
+    takes: [{take: done, after: PT6H}]   # every ticket the agent assigns her, in any tracker, done six hours on
 assess:
   - id: orders_only_once_the_ticket_is_done
     each: handoff

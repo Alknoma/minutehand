@@ -97,14 +97,13 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.telemetry import ReceivedSpan
-from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
+from minutehand.domain.world import CallOutcome, EntityKind, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
     ChangesPeople,
     DeclaresFaults,
-    DeletesTickets,
     GrantsPermissions,
     Message,
     MintsInboundCredentials,
@@ -113,6 +112,7 @@ from minutehand.ports.provider import (
     Scope,
 )
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import ProvidesTransitions
 from minutehand.session import (
     KEPT,
     RECORD,
@@ -842,7 +842,8 @@ class Standing:
                     permissions=isinstance(provider, GrantsPermissions),
                     inbound_credentials=isinstance(provider, MintsInboundCredentials),
                     faults=isinstance(provider, DeclaresFaults),
-                    deletes_tickets=isinstance(provider, DeletesTickets),
+                    deletes_tickets=isinstance(provider, ProvidesTransitions)
+                    and EntityKind.TICKET in provider.manifest.kinds,
                     seed_model=isinstance(provider, OwnsSeed),
                 )
             )

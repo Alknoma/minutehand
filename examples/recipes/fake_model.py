@@ -29,18 +29,20 @@ says it is finished. The tools it calls are the same in every recipe:
     python fake_model.py [--port 8790]
 
 It also writes what Minutehand's people say, when Minutehand itself asks (a request whose structured answer is
-`WrittenStep`, `WrittenReply`, `WrittenDecision`, `WrittenTransition` or `WrittenSummary`), so a run with
+`WrittenStep`, `WrittenReply`, `WrittenTransition` or `WrittenSummary`), so a run with
 model-written people needs no real model either. The rules read the prompt Minutehand sends, never guess:
 
     a script step       its facts ("What this reply says:"), as plain sentences; a step that declines, asks back
                         or defers says so in a fixed sentence
     conversing          an answer only when the last message asks something (holds "?"): what the person knows,
                         as plain sentences, or "I do not know."; else no answer
-    a decision          the one the script decided, else the first offered; each input from the reasons given
     a transition        the one the scenario pinned, else the first offered whose name, then whose state, the
                         person's facts mention, else the first offered; each required field, and an optional one
-                        when they know something, from their facts
+                        when they know something, from their facts: a ticket's move, an invitation's answer, a
+                        decision in the agent's own product
     a summary           how many earlier messages there were
+    conveys             whether a message conveys a statement: every word of four letters or more, and every
+                        figure, of the statement is in it
 
 And it stands in for a declared service (`docs/services.md`), from the state and the log Minutehand shows it:
 
@@ -127,8 +129,9 @@ def decide(situation: str) -> list[Call]:
 
 # -- what people say, when Minutehand asks -------------------------------------------------------------------
 
-PEOPLE = ("WrittenStep", "WrittenReply", "WrittenDecision", "WrittenTransition", "WrittenSummary")
+PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary")
 SERVICES = ("WrittenMachine", "WrittenRoute", "WrittenAnswer")
+JUDGES = ("ConveysVerdict",)
 
 
 def _bullets(text: str, heading: str) -> list[str]:
@@ -186,18 +189,9 @@ def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
         if "?" not in _last_message(shown):
             return {"replies": False, "text": None, "press": None, "form": None}
         return {"replies": True, "text": _sentences(known) or "I do not know.", "press": None, "form": None}
-    if schema == "WrittenTransition":
-        return transition_answer(system, shown, known)
-    offered = re.findall(r'^- "([a-z][a-z0-9_]*)"', shown, flags=re.MULTILINE)
-    decided = re.search(r'You have decided: "([a-z][a-z0-9_]*)"', system)
-    decision = decided.group(1) if decided else offered[0]
-    because = _known(system, "because:") or known
-    block = shown.split(f'- "{decision}"', 1)[1].split('\n- "', 1)[0] if f'- "{decision}"' in shown else ""
-    inputs = [
-        {"name": name, "value": _sentences(because) or "No reason given."}
-        for name in re.findall(r'input "([a-z][a-z0-9_]*)"', block)
-    ]
-    return {"decision": decision, "inputs": inputs}
+    if schema != "WrittenTransition":
+        raise ValueError(f"no rule for what a person says as {schema}")
+    return transition_answer(system, shown, known)
 
 
 def transition_answer(system: str, shown: str, known: list[str]) -> dict[str, object]:
@@ -370,7 +364,19 @@ def people_schema(body: dict[str, object]) -> str | None:
     if not isinstance(response_format, dict) or "json_schema" not in response_format:
         return None
     name = str(response_format["json_schema"]["name"])
-    return name if name in PEOPLE or name in SERVICES else None
+    return name if name in PEOPLE or name in SERVICES or name in JUDGES else None
+
+
+def conveys_answer(shown: str) -> dict[str, object]:
+    """Whether a message conveys a statement: every word of four letters or more in the statement, or a figure, is
+    in the message, in any case."""
+    statement = shown.split("Statement: ", 1)[1].split("\n", 1)[0]
+    message = shown.split("Message:\n", 1)[1].casefold()
+    words = [w for w in re.findall(r"[\w-]+", statement.casefold()) if len(w) >= 4 or any(c.isdigit() for c in w)]
+    missing = [w for w in words if w not in message]
+    if missing:
+        return {"conveys": False, "rationale": f"It does not say {', '.join(missing)}."}
+    return {"conveys": True, "rationale": "It says what the statement says."}
 
 
 def people_completion(body: dict[str, object], schema: str, number: int) -> dict[str, object]:
@@ -378,7 +384,9 @@ def people_completion(body: dict[str, object], schema: str, number: int) -> dict
     assert isinstance(messages, list)
     system = _text(messages[0]["content"])
     shown = _text(messages[-1]["content"])
-    if schema in SERVICES:
+    if schema in JUDGES:
+        answered = conveys_answer(shown)
+    elif schema in SERVICES:
         answered = service_answer(schema, system, _text(messages[1]["content"]))
     elif schema == "WrittenTransition":
         answered = person_answer(schema, system, _text(messages[1]["content"]))  # the item, before any retry

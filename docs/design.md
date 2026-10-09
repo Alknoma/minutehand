@@ -119,10 +119,9 @@ protected_names: [Ayven]
 people:
   - {key: owner,  name: Test User,      email: owner@example.com, reply: {kind: silent}}
   - {key: sofia,  name: Sofia Romano,   email: sofia@example.com, reply_within: {min: PT2H, max: PT6H},
-     reply: {kind: scripted, replies: [{to_ask: 1, facts: ["the agreement is signed and sent back"]}]}}
+     reply: {kind: scripted, replies: [{to_ask: 1, facts: ["the agreement is signed and sent back"]}]},
+     takes: [{take: done, after: P3D}]}           # a ticket handed to her: she moves it to done three days on
   - {key: dania,  name: Dania Kovac,    email: dania@example.com, reply: {kind: silent}}
-ticket_fates:
-  - {assignee: sofia, becomes: done, after: P3D}
 expect:
   - {kind: person_asked,   person: owner}
   - {kind: ticket_created, assignee: dania, by: P5D}
@@ -246,7 +245,7 @@ src/minutehand/
                       ProviderSeed, Happening (TicketHappening (Moves, Reassigns, Comments, Deletes) |
                       DocumentHappening (Edited, Renamed, Moved, Shared, Trashed, Commented, FieldSet) |
                       MessagingHappening (PersonPosts, PersonEdits, PersonDeletes, PersonReacts, PersonJoins,
-                      PersonAddsAgent, PersonOpensAgent, PersonCommands)), TicketFate, Direction, PersonAsked, TicketCreated, TicketDeleted,
+                      PersonAddsAgent, PersonOpensAgent, PersonCommands)), Take, Direction, PersonAsked, TicketCreated, TicketDeleted,
                       TicketInState, Relayed, DocumentCreated, DocumentShared; `{{start+P2D}}` in any text (DATED)
     world.py          WorldEvent, Change, Stored, Exchange (CallOutcome, CallFailure), Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, GrantSnapshot,
@@ -270,8 +269,8 @@ src/minutehand/
     errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
     memory.py         SeededMemory, StoreCall (MemoryGet, MemoryList, MemoryWrite), WakeMark: the agent's memory on the wire
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
-  ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
-                      ActsOnTickets, DeletesTickets, ChangesDocuments, NotifiesChanges, DeclaresFaults,
+  ports/              Store, Clock, Provider, ProvidesTransitions, SteersPeople, TalksToAgent, HoldsSeeded,
+                      PushesEvents, ChangesDocuments, NotifiesChanges, DeclaresFaults,
                       ChangesPeople, GrantsPermissions, MintsInboundCredentials, OwnsSeed, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (a fork's agent proven),
@@ -384,7 +383,7 @@ class CheckReport(Model):
 
 ### The provider port
 
-Nine protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
+Many small protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub. Those people act through:
 
 ```python
 class Provider(Protocol):
@@ -396,11 +395,30 @@ class Provider(Protocol):
 
 
 @runtime_checkable
-class PushesEvents(Protocol):
-    async def deliver(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None: ...
+class ProvidesTransitions(Protocol):
+    def items_for(self, person: Person, world: Store) -> list[Waiting]: ...
 
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]: ...
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition: ...
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool: ...
+
+
+@runtime_checkable
+class TalksToAgent(Protocol):
+    def talking(self, target: InboundTarget | None, secret: str | None) -> ProvidesTransitions: ...
+
+
+@runtime_checkable
+class HoldsSeeded(Protocol):
+    def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None: ...
+
+
+@runtime_checkable
+class PushesEvents(Protocol):
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
@@ -408,39 +426,6 @@ class PushesEvents(Protocol):
     async def happen(
         self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
-
-
-@runtime_checkable
-class LandsReplies(Protocol):
-    def lands(self, reply: PersonReply, world: Store) -> bool: ...
-
-    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool: ...
-
-    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None: ...
-
-
-@runtime_checkable
-class PushesInteractions(Protocol):
-    async def press(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None: ...
-
-
-@runtime_checkable
-class HoldsTickets(Protocol):
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None: ...
-
-
-@runtime_checkable
-class EditsTickets(Protocol):
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None: ...
-
-
-@runtime_checkable
-class ActsOnTickets(Protocol):
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
 
 
 @runtime_checkable
@@ -489,18 +474,18 @@ class ServesSockets(Protocol):
 
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
 |---|---|---|---|
-| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com`, `hooks.slack.com` and Socket Mode's `wss-primary.slack.com` included) | `PushesEvents`, `PushesInteractions`, `ServesSockets`, `DeclaresFaults` |
-| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
-| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
-| Google Workspace (Drive, Docs, Slides, Gmail, Calendar) | `google_workspace` | `www.googleapis.com` (Drive at `/drive/v3`, Calendar at `/calendar/v3`), `oauth2.googleapis.com`, `gmail.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `OwnsSeed` |
-| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
+| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com`, `hooks.slack.com` and Socket Mode's `wss-primary.slack.com` included) | `TalksToAgent`, `PushesEvents`, `ServesSockets`, `DeclaresFaults` |
+| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
+| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
+| Google Workspace (Drive, Docs, Slides, Gmail, Calendar) | `google_workspace` | `www.googleapis.com` (Drive at `/drive/v3`, Calendar at `/calendar/v3`), `oauth2.googleapis.com`, `gmail.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `ProvidesTransitions`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `OwnsSeed` |
+| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `TalksToAgent`, `PushesEvents`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | Google Cloud Tasks | `google_cloud_tasks` | `cloudtasks.googleapis.com` | `BooksWakes`, `ConfirmsDelivery`, `ServesGrpc`, `OwnsSeed` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
-| Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
+| Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
 | Notion | `notion` | `api.notion.com` | `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 
-Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person replying by email, or answering a calendar invitation, is a reply like any other, decided by the replier when the agent's message reaches them, but it lands through `LandsReplies.land` (Google Workspace; Microsoft for a reply to an email or a meeting request, which `LandsReplies.lands` tells from a reply to a Teams message): in the agent's mailbox, threaded with what it answers, or as the guest's `responseStatus` (the invitation offers Yes, Maybe and No as controls, so a scripted `press` answers it) or response comment. Nothing is pushed to an inbound target, so the agent needs none for it. It wakes nobody unless the service itself tells the agent (`LandsReplies.heard`: a live Graph subscription on the mailbox or calendar it lands in, or a live Calendar `events.watch` channel on a calendar the event is on; Gmail never has one): otherwise the agent finds it on its next poll, and `Orchestrator._unheard` counts it with ticket fates. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
+Every provider but GitHub is `Tier.FINISHED`. Whatever a person does to an item that waits on them is a transition through `ProvidesTransitions` (`docs/design-transitions.md`): the provider says what is legal now (`legal`: a tracker's workflow, an invitation's response states, a message's reply and controls) and takes it through its own code path (`apply`), recorded once as theirs. The people engine (`application/people.py`) decides which, and when: a take (`Person.takes`) pins it, or a model picks among what a person would do unprompted (a delete, a comment or a note only by a take). A person moving a tracker's item is found by the agent on its next read. A reply by email, or an answer to a calendar invitation, lands where the service keeps it (the agent's mailbox, threaded; the guest's `responseStatus` or response comment) and wakes nobody unless the service itself tells the agent (`heard_of`: a live Graph subscription on the mailbox or calendar it lands in, or a live Calendar `events.watch` channel; Gmail never has one): otherwise the agent finds it on its next poll. A chat answer is pushed to the agent's inbound target (`TalksToAgent`). `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
 
 ### Things people do by themselves
 
@@ -508,7 +493,7 @@ Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker i
 
 | Family | Members (`kind`) | Names its target | Lands through | Wakes the agent |
 |---|---|---|---|---|
-| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | `ActsOnTickets.act` (Asana, YouTrack, Jira) | never: it is found on the next read |
+| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | a person transition of the seeded item (`HoldsSeeded.seeded`, then `apply`: Asana, YouTrack, Jira) | never: it is found on the next read |
 | Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)`, `Trashed()`, `Commented(text)` or `FieldSet(field, value)`, as far as the provider's `Manifest.document_changes` allows | the seeded document's `title`, exactly one (a Notion seed's page or row is one by its `document`) | `ChangesDocuments.change` (Drive, Notion, Microsoft) | only when the agent watches (`NotifiesChanges`: Drive's `changes.watch`, a Graph subscription on the drive, a seeded Notion webhook); that wake carries no `WakeRequest`, and inside it `notify` sends what the service sends |
 | Messaging | `MessagingHappening`: `PersonPosts` (`posts`), `PersonEdits` (`edits`), `PersonDeletes` (`deletes`), `PersonReacts` (`reacts`), `PersonJoins` (`joins`), `PersonAddsAgent` (`adds_agent`: Slack invites the bot to a channel; Teams installs the app in a channel or, with none, the person's own chat), `PersonOpensAgent` (`opens_agent`), `PersonCommands` (`commands`) | its own `provider`, channel and post keys | `PushesEvents.happen` (Slack, Microsoft) | yes, `PERSON_REPLIED`, as a pushed reply does |
 
@@ -654,20 +639,20 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates, ticket or document happenings and unheard landed replies fired -> HoldsTickets.transition,
-                     ActsOnTickets.act, ChangesDocuments.change, LandsReplies.land; no wake, unless the agent watches a changed provider's documents
-                     (NotifiesChanges.watched), then a DUE wake in which NotifiesChanges.notify tells it
+    only people's moves the service tells the agent of by no push, ticket or document happenings fired
+                     -> People.act (ProvidesTransitions.apply), ChangesDocuments.change; no wake, unless the agent
+                     watches a changed provider's documents (NotifiesChanges.watched), then a DUE wake in which
+                     NotifiesChanges.notify tells it
     otherwise, one wake:
-      fire in order: fates (transition), replies (LandsReplies.land where the agent reads them, PushesEvents.deliver,
-                     or PushesInteractions.press for a
-                     reply that uses a control), happenings (ActsOnTickets.act for a ticket,
-                     ChangesDocuments.change for a document, PushesEvents.happen for a message), directions by
-                     message (say),
+      fire in order: people's moves (People.act -> ProvidesTransitions.apply: a reply, a control, a decision, a
+                     ticket moved), happenings (a transition for a ticket, ChangesDocuments.change for a document,
+                     PushesEvents.happen for a message), directions by message (say),
                      bookings (BooksWakes.deliver_booking, .advance_booking), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
-      read the new events: an agent message to a person, as its text reads when the wake ends
-                           -> Replier.plan (when, and how) -> Replier.write (the words) -> a pending reply
-                           an agent ticket assigned to a person with a TicketFate -> a pending fate
+      People.look: what now waits on each person in each provider (items_for), as it reads when the wake ends
+                           -> a conversation: Replier.plan (when, and how) -> Replier.write (the words)
+                           -> anything else: a take, or the model's pick at its moment
+                           -> a PendingSnapshot in the log, due as PERSON_REPLY or TRANSITION
       AgentReport.next_wake replaces the agent's previous DUE wake
       the last next wake the agent marked in the wake (`minutehand.agent.wake`) replaces its next wake
       checkpoint: a Checkpoint row in the log, carrying the agent's report and its memory's digest
@@ -861,8 +846,8 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   world whose call minted them. Each world has its own lock, so calls in different worlds do not wait on each
   other.
 - **A world** is `application/standing.py`'s `StandingWorld` over a `Seed` (`domain/scenario.py`): its own
-  store and `RunClock`, providers seeded on first use, and, with scripted people on, the replies, decisions, fates
-  and directions it owes, fired only when its clock is moved past them; people's words are written then, by the
+  store and `RunClock`, providers seeded on first use, and, with scripted people on, the people's moves (replies,
+  decisions, tickets moved) and directions it owes, fired only when its clock is moved past them; people's words are written then, by the
   server's model, exactly as in a run ("People").
 - **The record.** A world is a run (`StopReason.CLOSED` when closed), so `findings`, `view` and the MCP tools
   read it; the newest `--keep` closed worlds are kept.
@@ -876,7 +861,7 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   wrote that the first did not is landed; refused with nothing written when it would renumber, rewrite something
   changed since it was seeded, or take an id in use), a person's account changed (`ChangesPeople`, each provider's
   `Manifest.people_changes`), a named permission (`GrantsPermissions`), a provider's switches as typed faults
-  (`DeclaresFaults`), a ticket deleted by a person (`DeletesTickets`), the headers a pushed request is signed with
+  (`DeclaresFaults`), a ticket deleted by a person (its `delete` transition), the headers a pushed request is signed with
   (`MintsInboundCredentials`), a reset in place to the seed, and a provider's raw state for a person to read.
   `GET /v1/providers` says which of these each provider has; a provider asked for one it has not answers 409 with
   `kind: unsupported`.
@@ -1071,8 +1056,8 @@ people:
         - {to_ask: 1, intent: ask_back, facts: ["she needs the headcount first"]}
         - {to_ask: 2, facts: ["the lakeside hall is booked for the 14th"], within: {min: PT1H, max: PT1H}}
         - {to_ask: 3, verbatim: "Confirmed: LH-2291."}     # exact words, no model: the rare opt-in
-      decisions: [{decision: reject, facts: ["the office has a room that day"]}]   # a model writes the reason
       then: answers                                        # once used, she keeps conversing (default); or silent
+    takes: [{provider: approvals, take: reject, facts: ["the office has a room that day"]}]   # a model words why
 ```
 
 **A script is a plan of facts.** `Scripted.replies` are steps: the nth ask (`to_ask`) is answered with what the step
@@ -1084,8 +1069,8 @@ unless `inputs` fixes the words. `Answers` is a person with no plan.
 
 **Then the person keeps talking.** Once the steps are used (`then: answers`, the default), and for `Answers`, each
 further ask is answered by the model from the person's facts, stale facts (for a `mistaken` person), helpfulness
-and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions likewise
-(`person-decision/2`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
+and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions, and any
+other move on an item, are picked from what it offers (`person-transition/1`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
 ever the author's: `Silent`, or `then: silent`. Each reply records how its words were written (`PersonReply.writing`:
 `script`, `verbatim`, `conversing`, `automatic`, `by_hand`), and a team's rule counts them (`count: {replies: {by,
 written}}`, `docs/assessments.md`).
@@ -1162,13 +1147,13 @@ place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Mi
 - **Seeing the ask.** At the end of every wake and before the clock moves, every inbox is read as every person
   Minutehand can act as. A new item is the agent asking that person (`InboxItemSnapshot`, actor AGENT); one gone
   undecided is withdrawn. The reads are Minutehand's own calls (`Exchange.inbox_call`), never the agent's.
-- **The person decides, never by default.** The replier seam decides as for a reply (`PersonReply.decides`): a
-  script's decision for the nth or every item, a model's pick, or nothing from a `Silent` person. A person who can
-  receive items and whose script says nothing of them refuses the run. When due, the declared call is made as them;
-  the product taking it is their change (`DECIDED`); its refusal is recorded and the wait stays open.
+- **The person decides as the people engine says.** A take pins the decision (`Person.takes`, for the nth or every
+  item), a model picks, or a `Silent` person leaves it. When due, the person's transition is recorded and the declared
+  call is made as them; the product taking it is their change (`DECIDED`); its refusal is a SYSTEM `refuse`
+  transition, and the wait stays open.
 - **Scored by reuse.** An item is an `ANSWER_FROM_PERSON` wait in the ledger, so every rule that counts `follow_ups`
-  or `touches` on an ask reads it. Going ahead with an operation the item `gates`, while pending, rejected or
-  withdrawn, is the fact `writes: {gated: true}`; a team that holds that against its agent writes a rule.
+  or `touches` on an ask reads it, and each decision is a transition a rule reads (`each: transition`, `by`,
+  `first`). Going ahead before an approval, or after a rejection, is a team's rule over those.
 
 ### Pillar one: proactive effectiveness
 
@@ -1359,7 +1344,7 @@ class Fork(Model):
 | Override | What changes | Where | Tested |
 |---|---|---|---|
 | `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every ask they had not answered by the fork is planned and worded again under it, and an answer on its way is moved to its new moment, since it was never said | `changed_scenario`, `_replanned` in `application/rewind.py`, `People.replan` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
-| `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
+| `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | a SCENARIO transition through `ProvidesTransitions.apply` | `tests/orchestrator/test_rewind.py` |
 | `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
 | `MemoryEdit` | Keys of the agent's memory set or removed at the fork; the agent's own planned wakes replaced by the report it gives after | `memory.edit`, `start_fork`, `Orchestrator.resume(replan=)` | Through a whole run (`tests/e2e/test_memory_run.py`) |
 | `DispatchChange` | The scenario's dispatch rules, from the fork on: the same run with the agent's wakes delivered late, twice or dropped; an nth counts the wakes before the fork | `changed_scenario` | `tests/orchestrator/test_dispatch.py` |
@@ -1403,7 +1388,7 @@ The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`
 
 | Source | What the agent must do | Exact? | Cost of a quiet fortnight | State |
 |---|---|---|---|---|
-| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer: `LandsReplies`, which wakes nobody) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
+| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer, through `ProvidesTransitions.apply`, which wakes nobody unless the service tells the agent) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
 | **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
 | **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
 | **`Marked`**: the agent marks its next wake with `minutehand.agent.wake`, and is woken at `wake_url` | One import, and a wake endpoint whose call returns when the wake is done | Yes | None | Built and tested (`tests/orchestrator/test_wake_marks.py`); a mark is also the next wake of any other source, replacing what it reported in that wake |
@@ -1501,7 +1486,7 @@ class Obligation(Model):
 | `ObligationKind` | Opens when | `expected_by` | Settles when |
 |---|---|---|---|
 | `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's patience: the calendar time `reply_within.max` of their available time takes from the ask, else their `DelayRange.longest`; `patience` is that span | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
-| `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
+| `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus the moment their take on it sets; none without one | The person moves it to `DONE` or `CANCELLED` |
 | `ANSWER_FROM_PERSON` (an item) | An item waiting on a person in the agent's own product is first seen (`docs/inboxes.md`) | First seen plus the person's longest delay | The person decides it and the product takes the decision, or the agent withdraws it |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
 
@@ -1786,7 +1771,7 @@ Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/pattern
 | `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `count: {writes: {repeats_open_ticket: true}}`, `at_most: 0` | A judge that compares each outgoing question with those already open with the same person |
 | `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `count: {writes: {in_repeated_wake: true}}`, `at_most: 0`, review | A check for an existing instance in the current period before each cadence tick creates anything |
 | `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expect:`; `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0` | Closure evaluated against the recorded state of every piece of work the goal depends on |
-| `act_on_the_decision` | Goes ahead with what a person has still to approve, or turned down | Hold each gated operation until a decision that permits it; on a rejection close the work and say so | `count: {writes: {gated: true}}`, `at_most: 0` | The operation's state read at the moment it is performed, against the approval it needs |
+| `act_on_the_decision` | Goes ahead with what a person has still to approve, or turned down | Hold each operation until a decision that allows it; on a rejection close the work and say so | per ask, the operation's message `until: closed-PT1S`, `at_most: 0`; and `each: transition` on a rejection, `since: transition`, `at_most: 0` | The operation's state read at the moment it is performed, against the approval it needs |
 | `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name`, over `protected_names` | None. Run `f431fc97f427` is the evidence one is needed. |
 
 - Patterns are documentation in the repo, one page each, and data the tool returns (`pattern(key)`; the CLI prints the pattern under each finding). They are not code the user must import.
