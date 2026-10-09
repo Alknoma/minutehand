@@ -13,6 +13,8 @@ Behaviour, from AGENT_BEHAVIOUR:
   forgetful   asks once and reports idle with nothing to wake for; on an answer it thanks the owner, done
   slack_only  has no wake endpoint for its goal: the owner's DM is the goal, and it then acts as diligent
               does on the answer
+  unacknowledging  as diligent, but answers every Slack event 500 after acting on it, as a handler that runs past
+              Slack's timeout: every retry is acted on again
 
 Other variables: AGENT_SLACK_SIGNING_SECRET (the signing secret), OWN_DB (a SQLite file the agent writes its goal to,
 beside its memory), OUTSIDE_FILE (when set, the agent also keeps its
@@ -339,7 +341,10 @@ def serve(port: int, state: Path, *, tracing: bool) -> None:
                     self._answer(200, {"ok": True})
                 elif self.path == "/slack/events":
                     if agent.event(body, {k: v for k, v in self.headers.items()}):
-                        self._answer(200, {"ok": True})
+                        # `unacknowledging` acts on every event and then never acknowledges it, as a handler that
+                        # runs past Slack's timeout does: each retry is acted on again.
+                        failed = agent.behaviour == "unacknowledging"
+                        self._answer(500 if failed else 200, {"ok": not failed})
                     else:
                         self._answer(401, {"error": "invalid signature"})
                 else:

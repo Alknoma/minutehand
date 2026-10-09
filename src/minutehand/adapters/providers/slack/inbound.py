@@ -12,7 +12,10 @@ The world stamps from the run's clock: a message's `ts` and the callback's `even
 
 An event the agent does not answer with 2xx is sent again, as Slack does, up to three more times with
 `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`; the retries are not spaced out, since no simulated time passes
-while the agent is being called. A delivery still refused after the last retry fails the agent.
+while the agent is being called. Every send is recorded as it ends (`EntityKind.PUSH`, a `PushSnapshot` of actor
+SCENARIO: the event id, the address, the retry's number and reason, how the address answered and how long it took),
+so a duplicate the agent handled twice is in the record. A delivery still refused after the last retry fails the
+agent, naming the event, every send and how each ended.
 """
 
 from __future__ import annotations
@@ -39,10 +42,12 @@ from minutehand.domain.scenario import (
     PersonPosts,
     PersonReacts,
 )
-from minutehand.domain.world import Actor, Change, EntityKind, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, PushSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
+PUSHES = "pushes"
+"""What every send of an event to the agent is recorded under."""
 RETRIES = 3
 """How many more times Slack sends an event the agent did not acknowledge."""
 TIMEOUT = 30.0
@@ -86,30 +91,88 @@ async def post_signed(
         return await client.post(url, content=body, headers=headers)
 
 
+def sent(
+    slack: SlackWorld,
+    callback: wire.EventCallback,
+    url: str,
+    *,
+    attempt: int,
+    reason: str | None,
+    status: int | None,
+    failure: str | None,
+    seconds: float,
+) -> PushSnapshot:
+    """One send of an event to the agent, recorded as it ended: actor SCENARIO, so no check counts it as anyone's
+    work, under `EntityKind.PUSH` like a declared service's push."""
+    snapshot = PushSnapshot(
+        service=MANIFEST.key,
+        item=callback.event_id,
+        url=url,
+        body=wire.event_body(callback).decode(),
+        status=status,
+        failure=failure,
+        attempt=attempt,
+        retry_reason=reason,
+        seconds=round(seconds, 3),
+    )
+    slack.store.apply(
+        Change(
+            entity=EntityRef(provider=MANIFEST.key, kind=EntityKind.PUSH, external_id=f"{callback.event_id}/{attempt}"),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            body=snapshot.model_dump_json(),
+            parent=PUSHES,
+            after=snapshot,
+        )
+    )
+    return snapshot
+
+
+def _ended(snapshot: PushSnapshot) -> str:
+    said = f"answered {snapshot.status}" if snapshot.status is not None else (snapshot.failure or "no answer")
+    return f"send {snapshot.attempt + 1} {said} after {snapshot.seconds or 0:g}s"
+
+
 async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.EventCallback, secret: str) -> None:
     """An Events API callback, sent again on failure as Slack sends it, until the agent acknowledges it: a signed
     request to the target's URL, or, for a target in Socket Mode, an envelope on the connection the agent holds open
-    (`socket_mode`)."""
+    (`socket_mode`). Each send is recorded (`sent`)."""
     if target.delivery is Delivery.SOCKET_MODE:
-        await socket_mode.hub(slack.store).push(callback)
+        await socket_mode.hub(slack.store).push(callback, record=lambda **said: sent(slack, callback, **said))
         return
     body = wire.event_body(callback)
     url = target.request_url()
     last: str = ""
     status: int | None = None
+    sends: list[PushSnapshot] = []
     for attempt in range(RETRIES + 1):
         reason = None if attempt == 0 else ("http_timeout" if status is None else "http_error")
+        began = time.monotonic()
         try:
             answered = await post_signed(url, body, "application/json", secret, retry=attempt or None, reason=reason)
         except httpx.TimeoutException as e:
             status, last = None, repr(e)
+            failure = f"no answer within {TIMEOUT:g}s ({last})"
+            sends.append(sent(slack, callback, url, attempt=attempt, reason=reason, status=None, failure=failure,
+                              seconds=time.monotonic() - began))  # fmt: skip
             continue
         except httpx.HTTPError as e:
+            sent(slack, callback, url, attempt=attempt, reason=reason, status=None, failure=repr(e),
+                 seconds=time.monotonic() - began)  # fmt: skip
             raise DeliveryRefused(url, None, repr(e)) from e
+        refused = None if answered.is_success else f"the address answered {answered.status_code}"
+        sends.append(sent(slack, callback, url, attempt=attempt, reason=reason, status=answered.status_code,
+                          failure=refused, seconds=time.monotonic() - began))  # fmt: skip
         if answered.is_success:
             return
         status, last = answered.status_code, answered.text
-    raise DeliveryRefused(url, status, last)
+    raise DeliveryRefused(
+        url,
+        status,
+        last,
+        what=f"Slack event {callback.event_id} ({callback.event.type}), sent {len(sends)} times "
+        f"({'; '.join(_ended(s) for s in sends)}), and Slack retries no more",
+    )
 
 
 def callback(

@@ -59,6 +59,7 @@ from minutehand.domain.world import (
     InteractionSnapshot,
     MessageSnapshot,
     Operation,
+    PushSnapshot,
     RecordedCall,
     RecordSnapshot,
     TicketSnapshot,
@@ -505,7 +506,8 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
             EntityKind.NEXT_WAKE,
         ):
             continue  # the run's own rows: the agent's plan is compared through its report, below
-        key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
+        after = e.after.model_copy(update={"seconds": None}) if isinstance(e.after, PushSnapshot) else e.after
+        key = (e.actor, e.operation, e.entity, after, e.sim_time)  # how long a push took is real time, not the world
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
     for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
         report = checkpoint.agent.report

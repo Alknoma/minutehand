@@ -264,3 +264,30 @@ async def test_a_fork_from_the_checkpoint_the_clock_ran_on_to_says_so_and_not_th
     assert not listed[forks[end.seq].run_id].forked_ran_on and listed[forks[ran_on.seq].run_id].forked_ran_on
     assert "after wake 1, with the clock run on to " in "\n".join(described(later))
     assert "with the clock run on" not in "\n".join(described(at_end))
+
+
+def test_a_push_that_took_longer_in_the_fork_is_not_a_divergence_but_one_answered_differently_is() -> None:
+    """How long the agent's address took is real time, not the world: only what a send was and how it was answered
+    can part a fork from its parent."""
+    from minutehand.application.forks import first_divergence
+    from minutehand.domain.world import EntityKind, EntityRef, Operation, PushSnapshot, WorldEvent
+
+    def push(seconds: float, status: int, run: str) -> WorldEvent:
+        snapshot = PushSnapshot(
+            service="slack", item="Ev1", url="http://a/slack/events", body="{}", status=status, seconds=seconds
+        )
+        return WorldEvent(
+            seq=3,
+            run_id=run,
+            wake=2,
+            sim_time=T0,
+            wall_time=T0,
+            actor=Actor.SCENARIO,
+            operation=Operation.CREATE,
+            entity=EntityRef(provider="slack", kind=EntityKind.PUSH, external_id="Ev1/0"),
+            after=snapshot,
+        )
+
+    slow, quick, refused = push(29.5, 200, "c"), push(0.2, 200, "p"), push(0.2, 500, "c")
+    assert first_divergence(Record([quick]), Record([slow]), 1, scenario(Silent()), scenario(Silent())) is None
+    assert first_divergence(Record([quick]), Record([refused]), 1, scenario(Silent()), scenario(Silent())) is not None
