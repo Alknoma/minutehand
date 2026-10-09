@@ -482,7 +482,8 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         self.mount()
-        for key, provider in self._services.pushes.items():
+        for provider in self._services.providers:
+            key = provider.manifest.key
             if isinstance(provider, ListensForAgent):
                 target = next((t for t in self._agent.inbound if t.provider == key), None)
                 provider.listen(target, self._signing[key] if key in self._signing else None)

@@ -230,10 +230,19 @@ host nobody declared as a service with no description; the separate stand-in (`a
   ask it holds. Answers land at the moments they did; what can shift is a reply whose words a model failed to write
   (written again on the next look, or at its moment, where the old path waited a turn), and a standing world now puts
   an edited ask to its person again, as a run does. An invitation's answer carries its comment as `text`.
-- **Not built.** GitHub pull request reviews (the fake serves none) and Drive or Docs comment replies (the fake
-  serves no `comments.replies`): a person cannot answer where the service does not, and nothing is invented for it.
-  In Notion and SharePoint nothing waits on a person in the fakes (no assignment or mention is modelled), so what
-  people do there stays a provider happening.
+- **GitHub**: an open issue assigned to a person waits on them, and an open pull request that asks their review (and
+  has none from them) or is assigned to them. The offers are the ones the REST routes take: close or reopen an issue
+  with a comment and the reason GitHub takes; approve, ask for changes or comment on a pull request (`APPROVE`,
+  `REQUEST_CHANGES`, `COMMENT`, the events a review takes); merge it where it merges
+  cleanly (and is no draft); close it. Each goes through the code of its route, so the update times and the commit are the route's, and
+  each is one transition in the log. An agent that declares an inbound target for GitHub is pushed the webhooks GitHub
+  sends (`issues`, `issue_comment`, `pull_request`, `pull_request_review`) with `X-GitHub-Event` and
+  `X-GitHub-Delivery`, signed (`X-Hub-Signature-256`) only where the world declares a secret for the target, through
+  `TalksToAgent`. The agent's own writes through the API push the same webhooks, after each call is answered, through
+  `ListensForAgent`.
+- **Not built.** Drive or Docs comment replies (the fake serves no `comments.replies`): a person cannot answer where
+  the service does not, and nothing is invented for it. In Notion and SharePoint nothing waits on a person in the fakes
+  (no assignment or mention is modelled), so what people do there stays a provider happening.
 
 **Phase 4.** The superseded mechanisms are gone; a take is the one way to pin what a person does.
 
