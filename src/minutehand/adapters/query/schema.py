@@ -300,7 +300,11 @@ VIEWS: tuple[View, ...] = (
             _c("due_id", N, "The entry, numbered in the order it entered"),
             _c("kind", T, "agent_wake, person_reply, direction, ticket_fate, happening or machine"),
             _c("ref", T, "What it refers to, in the run loop's words"),
-            _c("source", T, "reported, booked, polled, reply, fate, happening, direction, machine or timer"),
+            _c(
+                "source",
+                T,
+                "reported, booked, polled, reply, fate, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it)",
+            ),
             _c("due_at", T, f"When it was due; {TIME}"),
             _c("entered_at", T, "When it entered the table"),
             _c("entered_wake", N, "The wake in progress then; 0 is setup"),

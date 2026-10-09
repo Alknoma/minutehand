@@ -138,6 +138,7 @@ from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
     EditsTickets,
+    HeldCalls,
     HoldsTickets,
     Provider,
     PushesEvents,
@@ -1457,8 +1458,16 @@ class Intercepting:
     def flush(self) -> None:
         self.proxy.flush()
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
-        self.proxy.mount(world, clock, apps, scenario=scenario)
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        self.proxy.mount(world, clock, apps, scenario=scenario, holds=holds)
         self.receiver.mount(world, clock)
 
     def memory_reads(self, wake: int) -> int:

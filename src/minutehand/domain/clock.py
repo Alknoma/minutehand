@@ -19,6 +19,7 @@ class DueKind(StrEnum):
     MACHINE = "machine"
     TRANSITION = "transition"
     SERVICE = "service"
+    CALL = "call"
 
 
 class Due(Model):
@@ -66,6 +67,7 @@ class DueSource(StrEnum):
     TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
     TRANSITION = "transition"  # a person's move on an item pending on them (`application.people`)
     SERVICE = "service"  # a declared service's own move on an item: a timer's, or a system actor's
+    CALL = "call"  # a call of the agent's held until the world can answer it: a long poll, at its end or sooner
 
 
 PLANNED_BY = {

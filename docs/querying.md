@@ -281,7 +281,7 @@ The run loop's table of what is due next, every entry as it last stood: what ent
 | `due_id` | INTEGER | The entry, numbered in the order it entered |
 | `kind` | TEXT | agent_wake, person_reply, direction, ticket_fate, happening or machine |
 | `ref` | TEXT | What it refers to, in the run loop's words |
-| `source` | TEXT | reported, booked, polled, reply, fate, happening, direction, machine or timer |
+| `source` | TEXT | reported, booked, polled, reply, fate, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it) |
 | `due_at` | TEXT | When it was due; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `entered_at` | TEXT | When it entered the table |
 | `entered_wake` | INTEGER | The wake in progress then; 0 is setup |

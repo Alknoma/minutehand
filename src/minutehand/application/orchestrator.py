@@ -20,6 +20,7 @@ from minutehand.application.checkpoint import (
     Checkpoint,
     Pending,
     PendingBooking,
+    PendingCall,
     PendingDirection,
     PendingFate,
     PendingHappening,
@@ -80,6 +81,7 @@ from minutehand.ports.provider import (
     ConfirmsDelivery,
     DeletesTickets,
     EditsTickets,
+    HeldCalls,
     HoldsTickets,
     NotifiesChanges,
     Provider,
@@ -114,7 +116,18 @@ class Mounts(Protocol):
     from then on the calls it answers are recorded in `world`, and each provider in `apps` answers its hosts. A
     provider the agent calls that is not in `apps` is seeded with `scenario` on its first call."""
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None: ...
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        """`holds` takes a call that waits on the world (`ports.provider.HeldCalls`) into the run's table; with
+        none, such a call is refused, since nothing would move the clock it waits on."""
+        ...
 
     def flush(self) -> None:
         """Record every call still in progress as far as it has gone (a burst on a tunnel it relays unopened, kept
@@ -211,6 +224,41 @@ class Reach:
         return self.main or self.ticks
 
 
+class _Holding:
+    """`ports.provider.HeldCalls` for the run: each call held until the world can answer it is an entry of the run's
+    table (`PendingCall`) at its moment, and how to look at it again."""
+
+    def __init__(self, dues: Dues, clock: Clock) -> None:
+        self._dues = dues
+        self._clock = clock
+        self.looks: dict[str, Callable[[bool], Awaitable[bool]]] = {}
+        self._settled: Callable[[], Awaitable[None]] | None = None
+
+    def answering(self, settled: Callable[[], Awaitable[None]]) -> None:
+        self._settled = settled
+
+    async def settled(self) -> None:
+        """Every call that has reached the world is answered or held."""
+        if self._settled is not None:
+            await self._settled()
+
+    def hold(self, ref: str, at: datetime, *, ends: bool, look: Callable[[bool], Awaitable[bool]]) -> None:
+        self.looks[ref] = look
+        due = Due(at=max(at, self._clock.now()), kind=DueKind.CALL, ref=ref)
+        self._dues.replace(lambda p: _held(p, ref), PendingCall(due=due, ends=ends))
+
+    def answered(self, ref: str) -> None:
+        self.looks.pop(ref, None)
+        self._dues.cancel(lambda p: _held(p, ref))
+
+    async def look(self, *, over: bool = False) -> None:
+        """Look at every call held, on the world as it now stands: each is answered, or held to its next moment.
+        `over`: answer each as the world stands, its wait cut short by the run's end."""
+        for ref in list(self.looks):
+            if ref in self.looks:
+                await self.looks[ref](over)
+
+
 class _Bookings:
     """`ports.provider.Wakes` for one scheduler provider: its bookings enter the run's pending set."""
 
@@ -301,6 +349,7 @@ class Orchestrator:
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
+        self._holding = _Holding(self._dues, clock)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
         self._quiet_tasks: dict[int, int] = {}
@@ -395,7 +444,8 @@ class Orchestrator:
         held = len(self._store.replies())
         if held < checkpoint.replies:
             raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {held}")
-        self._dues.resume(list(checkpoint.pending))
+        # a held call is a connection of the process that played the parent: the fork's agent makes its own calls
+        self._dues.resume([p for p in checkpoint.pending if not isinstance(p, PendingCall)])
         self._fated = list(checkpoint.fated)
         self._untaken = list(checkpoint.untaken)
         self._commitments = checkpoint.commitments
@@ -430,6 +480,7 @@ class Orchestrator:
                     for provider in self._services.providers
                 },
                 scenario=self._scenario,
+                holds=self._holding,
             )
         self._mounted = True
 
@@ -442,6 +493,7 @@ class Orchestrator:
             scheduler.bind(_Bookings(self, key))
 
     async def _end(self, stop: StopReason, started: float) -> RunRecord:
+        await self._holding.look(over=True)  # a call still held is answered as the world stands at the run's end
         if self._mounts is not None:
             self._mounts.flush()
         failed = self._environment.failure() if self._environment is not None else None
@@ -503,7 +555,12 @@ class Orchestrator:
             await self._schedule(self._record_new())
             if not await self._plan_timer():
                 return StopReason.AGENT_FAILED
-            jump = next_jump(self._clock.now(), [p.due for p in self._dues.items])
+            await self._holding.settled()  # a call the agent made is held or answered at this moment, not the next
+            items = self._dues.items
+            # a call held to the end of its wait changes nothing by being answered empty: with nothing else due,
+            # nothing more is
+            waiting = any(not (isinstance(p, PendingCall) and p.ends) for p in items)
+            jump = next_jump(self._clock.now(), [p.due for p in items]) if waiting else None
             if jump is None:
                 await self._run_on_to(deadline)
                 return StopReason.NOTHING_PENDING
@@ -668,6 +725,9 @@ class Orchestrator:
         for item in fired:
             if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
                 self._schedule_tick()
+        # the world as it now stands may answer a call held on it: one whose moment came, or one what fired brought
+        # what it waits for (a delivery to the queue it polls)
+        await self._holding.look()
 
     async def _machine(self, due: list[PendingMachine]) -> bool:
         """Run what the scenario does to the agent's machine at this moment, before anything else due then, and
@@ -755,6 +815,8 @@ class Orchestrator:
         if isinstance(pending, PendingService):
             assert self._desk is not None
             return not self._desk.heard(pending, self._store)
+        if isinstance(pending, PendingCall):
+            return pending.ends  # answered empty at the end of its wait; sooner, it is answered with what came
         return isinstance(pending, PendingHappening) and isinstance(
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
@@ -764,7 +826,7 @@ class Orchestrator:
         still acts on what was delivered: the loop waits on its main driver until it is no longer working."""
         if self._reach.main is None:
             return []
-        if not any(isinstance(p, PendingBooking) for p in fired) and not self._watched(fired):
+        if not any(_delivers(p) for p in fired) and not self._watched(fired):
             return []
         return [self._reach.main]
 
@@ -1200,6 +1262,16 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
                 continue
             what = f"{happening.person} {happening.kind}"
         raise RunRefused(f"happening {n} ({what}) lands on {provider}, which {why}")
+
+
+def _held(pending: Pending, ref: str) -> bool:
+    return isinstance(pending, PendingCall) and pending.due.ref == ref
+
+
+def _delivers(pending: Pending) -> bool:
+    """Something due that hands the agent what it acts on without a wake request: a booking's delivery, or a held
+    call answered when what it waits for came."""
+    return isinstance(pending, PendingBooking) or (isinstance(pending, PendingCall) and not pending.ends)
 
 
 def _timer(pending: Pending) -> bool:
