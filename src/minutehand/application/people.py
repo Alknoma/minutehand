@@ -1011,9 +1011,8 @@ def _said(
     clock: Clock,
 ) -> PersonReply:
     """An answer the engine picked or a take pinned, as the run keeps it said: its words, the control it used and what
-    its form held, the decision it made. A decision's facts are what it carries, its inputs as given (what a rule's
-    `{ask.facts}` reads); anything else carries its take's facts. Its words are the take's exact ones, a model's from
-    the take's facts, or a model's pick."""
+    its form held, the decision it made, and its take's facts (a rule reads a decision's answer from its inputs,
+    `checks.facts`). Its words are the take's exact ones, a model's from the take's facts, or a model's pick."""
     given: dict[str, str] = json.loads(content)
     writing = Writing.CONVERSING if take is None else Writing.VERBATIM if not take.facts else Writing.SCRIPT
     facts = list(take.facts) if take is not None else []
@@ -1035,7 +1034,7 @@ def _said(
             at=clock.now(),
             decides=Decides(decision=offer, inputs=given),
             writing=writing,
-            facts=[v for v in given.values() if v.strip()],
+            facts=facts,
             written_by=written_by,
         )
     shown = next((e.after for e in reversed(world.events()) if e.entity == item and e.after is not None), None)

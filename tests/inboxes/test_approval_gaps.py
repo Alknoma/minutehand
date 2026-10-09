@@ -243,6 +243,13 @@ TOLD_WHY = """
   count: {messages: {to: [owen], holding: ["{ask.facts}"]}, since: answer}
   at_least: 1
   message: "Owen was not told why"
+- id: tells_owen_her_answer
+  each: ask
+  where: {person: [nadia]}
+  when: {answered: true}
+  count: {messages: {to: [owen], holding: ["{ask.answer}"]}, since: answer}
+  at_least: 1
+  message: "Owen was not told her answer"
 - id: conveys_why
   each: ask
   where: {person: [nadia]}
@@ -288,6 +295,7 @@ async def test_gap_15_a_decisions_answer_is_what_it_carries_and_a_judged_rule_re
     # Her decision's answer is the reason she gave, as she gave it: told word for word, `holding` finds it.
     # Mutation: an answer read as the decision's text ("reject (reason: ...)") is in no message.
     assert checks_named(exact.result, "tells_owen_why") == []
+    assert checks_named(exact.result, "tells_owen_her_answer") == []
     # Reworded, `holding` cannot see it; `conveys`, a rule the team wrote for a model to judge, can, and only with a
     # judge: without one it is not read. Mutation: a `conveys` read as text fails the reworded run.
     assert checks_named(reworded.result, "tells_owen_why") == ["Owen was not told why"]
