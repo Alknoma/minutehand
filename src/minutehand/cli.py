@@ -1,6 +1,8 @@
 """`minutehand`: run a scenario against an agent, read a run's findings, fork a run, list the runs.
 
     minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--seed S] [--judge] [--json] [PROXY] [-- <command...>]
+                                                 {run.port} and {run.dir} in the agent file and the command are
+                                                 filled once, as run-all fills them, when a command is given
     minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json] [-- <command...>]
                                                  every scenario in the folder, in parallel, each in a run of its own,
                                                  N times under seeds S, S+1, ...; {run.port} and {run.dir} in the agent
@@ -957,16 +959,17 @@ def _standing_compose(args: argparse.Namespace) -> dict[str, object]:
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
     scenario = load_scenario(args.scenario)
-    agent = load_agent(args.agent)
+    filled = run_all.filled_for_run(args.agent, command, state=state)
+    os.environ.update(filled.environment)  # the agent's command is started from this process's environment
     telemetry = _telemetry()
     try:
         outcomes = asyncio.run(
             session.play(
                 scenario,
-                agent,
+                filled.agent,
                 state=state,
                 samples=args.samples,
-                command=command,
+                command=filled.command,
                 telemetry=telemetry,
                 model=model_from_environment(),
                 judge=args.judge,

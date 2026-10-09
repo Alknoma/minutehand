@@ -32,13 +32,23 @@ from pydantic import Field, ValidationError
 
 from minutehand import session
 from minutehand.adapters.proxy.trust import authority
-from minutehand.application.files import FileKind, FileRefused, kind_of, load_agent, load_scenario, read_yaml
+from minutehand.application.files import (
+    FileKind,
+    FileRefused,
+    filled_as_run,
+    kind_of,
+    load_agent,
+    load_scenario,
+    read_yaml,
+)
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
+from minutehand.domain.templates import RUN_DIR, RUN_PORT
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
-PORT = "{run.port}"
-DIR = "{run.dir}"
+PORT = RUN_PORT
+DIR = RUN_DIR
 PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
 CA = "ca"
@@ -173,7 +183,40 @@ def checked_agent(agent: Path) -> None:
         text = agent.read_text(encoding="utf-8")
     except OSError as e:
         raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
-    load_agent(agent, text=_filled(text, PORTS.start, agent.resolve().parent))
+    load_agent(agent, text=filled_as_run(text, agent))
+
+
+ONE_RUN = "run"
+"""The folder under the state directory's `run-all/` that holds the folders `{run.dir}` names for `minutehand run`."""
+
+
+class FilledRun(Model):
+    """An agent file and command as `minutehand run` starts them, each placeholder filled once for the invocation."""
+
+    agent: AgentUnderTest
+    command: list[str] | None
+    environment: dict[str, str] = Field(description="Handed to the agent's command: empty when nothing was filled")
+
+
+def filled_for_run(agent: Path, command: list[str] | None, *, state: Path) -> FilledRun:
+    """`{run.port}` and `{run.dir}` in the agent file and the command, filled as `run-all` fills them for one
+    scenario: a free port and a folder of the invocation's own under the state directory. A file that holds one with
+    no command to start is refused (`load_agent`): nobody would listen on a port picked here."""
+    try:
+        text = agent.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
+    uses = any(p in text or any(p in word for word in command or []) for p in (PORT, DIR))
+    if not uses or not command:
+        return FilledRun(agent=load_agent(agent), command=command, environment={})
+    port = free_port()
+    folder = state / BATCHES / ONE_RUN / secrets.token_hex(4)
+    folder.mkdir(parents=True, exist_ok=True)
+    return FilledRun(
+        agent=load_agent(agent, text=_filled(text, port, folder)),
+        command=[_filled(word, port, folder) for word in command],
+        environment={PORT_VARIABLE: str(port), DIR_VARIABLE: str(folder)},
+    )
 
 
 async def play_all(
