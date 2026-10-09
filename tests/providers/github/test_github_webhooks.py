@@ -13,8 +13,10 @@ from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 
+from minutehand.adapters.providers.github.app import GitHubApp
 from minutehand.adapters.providers.github.hooks import DeliveryRefused
 from minutehand.adapters.providers.github.provider import build
 from minutehand.adapters.providers.github.state import GitHubWorld
@@ -25,6 +27,7 @@ from minutehand.domain.common import GeneratedSecret
 from minutehand.domain.people import Delivery as DeliveryKind
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.world import Actor, EntityKind, EntityRef
+from tests.providers.github.github_world import IRIS as IRIS_TOKEN
 from tests.providers.github.github_world import PEOPLE, SCENARIO, START, pulls_seed
 from tests.providers.github.hook_receiver import Receiver, receiver
 from tests.providers.github.schema import missing
@@ -256,3 +259,109 @@ async def test_what_a_webhook_carries_is_what_the_rest_route_answers_of_it(tmp_p
         read = (await http.get("/repos/lanternworks/ledger/issues/3", headers={"Authorization": "Bearer x"})).json()
     carried = cast(dict[str, object], pushed.payload()["issue"])
     assert {k: v for k, v in carried.items() if k not in ("performed_via_github_app", "reactions")} == read
+
+
+# ------------------------------------------------------------------------------------------------------ the agent's own
+
+
+def listening(tmp_path: Path, on: InboundTarget | None, secret: str | None = SECRET) -> tuple[GitHubApp, SqliteStore]:
+    """The provider told where the agent takes GitHub's webhooks (`ListensForAgent`), and its app."""
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "agent.db", "agent", clock)
+    provider = build()
+    provider.seed_with(pulls_seed(), SCENARIO, store)
+    provider.listen(on, secret)
+    app = provider.app(store, clock)
+    assert isinstance(app, GitHubApp)
+    return app, store
+
+
+def agent_client(app: GitHubApp) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://api.github.com",
+        headers={"Authorization": f"Bearer {IRIS_TOKEN}", "X-GitHub-Api-Version": "2022-11-28"},
+    )
+
+
+async def test_the_agents_own_writes_are_pushed_as_the_webhooks_github_sends_after_each_call(tmp_path: Path) -> None:
+    """Documented: GitHub sends `issues` (`opened`, `closed`), `issue_comment` (`created`), `pull_request` (`opened`,
+    `closed` with `merged`) and `pull_request_review` (`submitted`) for what happens on the repository, whoever does it;
+    `sender` is "the user that triggered the event".
+    https://docs.github.com/en/webhooks/webhook-events-and-payloads"""
+    with receiver() as agent:
+        app, _ = listening(tmp_path, target(agent))
+        async with agent_client(app) as http:
+            opened = await http.post("/repos/lanternworks/ledger/issues", json={"title": "Check the ledger"})
+            number = opened.json()["number"]
+            assert opened.status_code == 201
+            await http.post(f"/repos/lanternworks/ledger/issues/{number}/comments", json={"body": "Looking."})
+            await http.patch(f"/repos/lanternworks/ledger/issues/{number}", json={"state": "closed"})
+            pulled = await http.post(
+                "/repos/lanternworks/ledger/pulls", json={"title": "Notes", "head": "notes", "base": "main"}
+            )
+            assert pulled.status_code == 201
+            await http.post("/repos/lanternworks/ledger/pulls/4/reviews", json={"event": "APPROVE"})
+            assert (await http.put("/repos/lanternworks/ledger/pulls/4/merge", json={})).status_code == 200
+        await app.settled()
+    assert [(d.event, d.payload()["action"]) for d in agent.pushed] == [
+        ("issues", "opened"),
+        ("issue_comment", "created"),
+        ("issues", "closed"),
+        ("pull_request", "opened"),
+        ("pull_request_review", "submitted"),
+        ("pull_request", "closed"),
+    ]
+    names = [
+        "issues-opened",
+        "issue-comment-created",
+        "issues-closed",
+        "pull-request-opened",
+        "pull-request-review-submitted",
+        "pull-request-closed",
+    ]
+    for pushed, name in zip(agent.pushed, names, strict=True):
+        checked(name, pushed.payload(), name)
+        assert cast(dict[str, object], pushed.payload()["sender"])["login"] == "iris-calder"
+        assert (
+            pushed.headers["x-hub-signature-256"]
+            == "sha256=" + hmac.new(SECRET.encode(), pushed.body, hashlib.sha256).hexdigest()
+        )
+    assert cast(dict[str, object], agent.pushed[0].payload()["issue"])["number"] == number
+    assert cast(dict[str, object], agent.pushed[-1].payload()["pull_request"])["merged"] is True
+    assert len({d.headers["x-github-delivery"] for d in agent.pushed}) == len(agent.pushed)
+
+
+async def test_an_agent_that_declares_no_target_for_github_is_pushed_nothing_by_its_own_writes(tmp_path: Path) -> None:
+    app, _ = listening(tmp_path, None, None)
+    async with agent_client(app) as http:
+        assert (await http.post("/repos/lanternworks/ledger/issues", json={"title": "Quiet"})).status_code == 201
+    assert app.delivering() == 0 and app.background.refused == []
+
+
+async def test_a_webhook_the_agent_refuses_for_its_own_write_is_kept_and_its_call_is_still_answered(
+    tmp_path: Path,
+) -> None:
+    """The call is answered before its webhook is sent, as GitHub sends a delivery apart from the call that set it off;
+    a delivery the agent does not take is logged and kept, not retried ("does not automatically redeliver")."""
+    with receiver(500) as agent:
+        app, _ = listening(tmp_path, target(agent))
+        async with agent_client(app) as http:
+            answered = await http.post("/repos/lanternworks/ledger/issues", json={"title": "Refused"})
+        await app.settled()
+    assert answered.status_code == 201
+    assert len(agent.pushed) == 1
+    [refused] = app.background.refused
+    assert refused.startswith("issues ") and "answered 500" in refused
+
+
+async def test_what_the_agents_calls_set_off_is_delivered_one_after_another_in_the_order_made(tmp_path: Path) -> None:
+    """A delivery is sent once the one before it is answered: an agent slow to answer the first is not sent the second
+    beside it."""
+    with receiver(hold=0.3) as agent:
+        app, _ = listening(tmp_path, target(agent))
+        async with agent_client(app) as http:
+            first = (await http.post("/repos/lanternworks/ledger/issues", json={"title": "First"})).json()["number"]
+            second = (await http.post("/repos/lanternworks/ledger/issues", json={"title": "Second"})).json()["number"]
+        await app.settled()
+    assert [cast(dict[str, object], d.payload()["issue"])["number"] for d in agent.pushed] == [first, second]

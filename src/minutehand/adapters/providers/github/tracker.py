@@ -310,7 +310,7 @@ class Tracker:
         who: str | None,
     ) -> wire.StoredIssue:
         """An issue opened by `account`: numbered after the repository's last issue or pull request, stamped from the
-        clock, recorded as the first move of its state."""
+        clock, recorded as the first move of its state, and an `issues` webhook if the agent has a target."""
         world = self._api.world
         number = max((i.number for i in world.issues(repository)), default=0) + 1
         now = wire.timestamp(self._api.clock.now())
@@ -327,6 +327,7 @@ class Tracker:
         )
         world.put_issue(repository, issue, operation=Operation.CREATE, actor=actor)
         self.moved_to(repository, issue, "open", None, actor, who, "{}")
+        await self._api.hooks.opened(repository, issue, account)
         return issue
 
     async def edit_issue(

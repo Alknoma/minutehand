@@ -6495,6 +6495,3049 @@
     "title": "issues closed event",
     "type": "object"
    },
+   "webhook-issues-opened": {
+    "properties": {
+     "action": {
+      "enum": [
+       "opened"
+      ],
+      "type": "string"
+     },
+     "changes": {
+      "properties": {
+       "old_issue": {
+        "description": "The [issue](https://docs.github.com/rest/issues/issues#get-an-issue) itself.",
+        "nullable": true,
+        "properties": {
+         "active_lock_reason": {
+          "enum": [
+           "resolved",
+           "off-topic",
+           "too heated",
+           "spam",
+           null
+          ],
+          "nullable": true,
+          "type": "string"
+         },
+         "assignee": {
+          "nullable": true,
+          "properties": {
+           "avatar_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "deleted": {
+            "type": "boolean"
+           },
+           "email": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "followers_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "following_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gists_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gravatar_id": {
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "type": "integer"
+           },
+           "login": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "organizations_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "received_events_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "repos_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "site_admin": {
+            "type": "boolean"
+           },
+           "starred_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "Bot",
+             "User",
+             "Organization"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "user_view_type": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "login",
+           "id"
+          ],
+          "title": "User",
+          "type": "object"
+         },
+         "assignees": {
+          "items": {
+           "nullable": true,
+           "properties": {
+            "avatar_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "deleted": {
+             "type": "boolean"
+            },
+            "email": {
+             "nullable": true,
+             "type": "string"
+            },
+            "events_url": {
+             "format": "uri-template",
+             "type": "string"
+            },
+            "followers_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "following_url": {
+             "format": "uri-template",
+             "type": "string"
+            },
+            "gists_url": {
+             "format": "uri-template",
+             "type": "string"
+            },
+            "gravatar_id": {
+             "type": "string"
+            },
+            "html_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "id": {
+             "type": "integer"
+            },
+            "login": {
+             "type": "string"
+            },
+            "name": {
+             "type": "string"
+            },
+            "node_id": {
+             "type": "string"
+            },
+            "organizations_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "received_events_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "repos_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "site_admin": {
+             "type": "boolean"
+            },
+            "starred_url": {
+             "format": "uri-template",
+             "type": "string"
+            },
+            "subscriptions_url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "type": {
+             "enum": [
+              "Bot",
+              "User",
+              "Organization"
+             ],
+             "type": "string"
+            },
+            "url": {
+             "format": "uri",
+             "type": "string"
+            },
+            "user_view_type": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "login",
+            "id"
+           ],
+           "title": "User",
+           "type": "object"
+          },
+          "type": "array"
+         },
+         "author_association": {
+          "description": "How the author is associated with the repository.",
+          "enum": [
+           "COLLABORATOR",
+           "CONTRIBUTOR",
+           "FIRST_TIMER",
+           "FIRST_TIME_CONTRIBUTOR",
+           "MANNEQUIN",
+           "MEMBER",
+           "NONE",
+           "OWNER"
+          ],
+          "title": "AuthorAssociation",
+          "type": "string"
+         },
+         "body": {
+          "description": "Contents of the issue",
+          "nullable": true,
+          "type": "string"
+         },
+         "closed_at": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         },
+         "comments": {
+          "type": "integer"
+         },
+         "comments_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "created_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "draft": {
+          "type": "boolean"
+         },
+         "events_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "format": "int64",
+          "type": "integer"
+         },
+         "issue_dependencies_summary": {
+          "$ref": "#/components/schemas/issue-dependencies-summary"
+         },
+         "issue_field_values": {
+          "items": {
+           "$ref": "#/components/schemas/issue-field-value"
+          },
+          "type": "array"
+         },
+         "labels": {
+          "items": {
+           "properties": {
+            "color": {
+             "description": "6-character hex code, without the leading #, identifying the color",
+             "type": "string"
+            },
+            "default": {
+             "type": "boolean"
+            },
+            "description": {
+             "nullable": true,
+             "type": "string"
+            },
+            "id": {
+             "type": "integer"
+            },
+            "name": {
+             "description": "The name of the label.",
+             "type": "string"
+            },
+            "node_id": {
+             "type": "string"
+            },
+            "url": {
+             "description": "URL for the label",
+             "format": "uri",
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "node_id",
+            "url",
+            "name",
+            "color",
+            "default",
+            "description"
+           ],
+           "title": "Label",
+           "type": "object"
+          },
+          "type": "array"
+         },
+         "labels_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "locked": {
+          "type": "boolean"
+         },
+         "milestone": {
+          "description": "A collection of related issues and pull requests.",
+          "nullable": true,
+          "properties": {
+           "closed_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+           },
+           "closed_issues": {
+            "type": "integer"
+           },
+           "created_at": {
+            "format": "date-time",
+            "type": "string"
+           },
+           "creator": {
+            "nullable": true,
+            "properties": {
+             "avatar_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "deleted": {
+              "type": "boolean"
+             },
+             "email": {
+              "nullable": true,
+              "type": "string"
+             },
+             "events_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "followers_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "following_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "gists_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "gravatar_id": {
+              "type": "string"
+             },
+             "html_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "id": {
+              "type": "integer"
+             },
+             "login": {
+              "type": "string"
+             },
+             "name": {
+              "type": "string"
+             },
+             "node_id": {
+              "type": "string"
+             },
+             "organizations_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "received_events_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "repos_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "site_admin": {
+              "type": "boolean"
+             },
+             "starred_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "subscriptions_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "Bot",
+               "User",
+               "Organization"
+              ],
+              "type": "string"
+             },
+             "url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "user_view_type": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "login",
+             "id"
+            ],
+            "title": "User",
+            "type": "object"
+           },
+           "description": {
+            "nullable": true,
+            "type": "string"
+           },
+           "due_on": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "type": "integer"
+           },
+           "labels_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "number": {
+            "description": "The number of the milestone.",
+            "type": "integer"
+           },
+           "open_issues": {
+            "type": "integer"
+           },
+           "state": {
+            "description": "The state of the milestone.",
+            "enum": [
+             "open",
+             "closed"
+            ],
+            "type": "string"
+           },
+           "title": {
+            "description": "The title of the milestone.",
+            "type": "string"
+           },
+           "updated_at": {
+            "format": "date-time",
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           }
+          },
+          "required": [
+           "url",
+           "html_url",
+           "labels_url",
+           "id",
+           "node_id",
+           "number",
+           "title",
+           "description",
+           "creator",
+           "open_issues",
+           "closed_issues",
+           "state",
+           "created_at",
+           "updated_at",
+           "due_on",
+           "closed_at"
+          ],
+          "title": "Milestone",
+          "type": "object"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "number": {
+          "type": "integer"
+         },
+         "performed_via_github_app": {
+          "description": "GitHub apps are a new way to extend GitHub. They can be installed directly on organizations and user accounts and granted access to specific repositories. They come with granular permissions and built-in webhooks. GitHub apps are first class actors within GitHub.",
+          "nullable": true,
+          "properties": {
+           "created_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+           },
+           "description": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events": {
+            "description": "The list of events for the GitHub app",
+            "items": {
+             "enum": [
+              "branch_protection_rule",
+              "check_run",
+              "check_suite",
+              "code_scanning_alert",
+              "commit_comment",
+              "content_reference",
+              "create",
+              "delete",
+              "deployment",
+              "deployment_review",
+              "deployment_status",
+              "deploy_key",
+              "discussion",
+              "discussion_comment",
+              "fork",
+              "gollum",
+              "issues",
+              "issue_comment",
+              "label",
+              "member",
+              "membership",
+              "milestone",
+              "organization",
+              "org_block",
+              "page_build",
+              "project",
+              "project_card",
+              "project_column",
+              "public",
+              "pull_request",
+              "pull_request_review",
+              "pull_request_review_comment",
+              "push",
+              "registry_package",
+              "release",
+              "repository",
+              "repository_dispatch",
+              "secret_scanning_alert",
+              "star",
+              "status",
+              "team",
+              "team_add",
+              "watch",
+              "workflow_dispatch",
+              "workflow_run"
+             ],
+             "type": "string"
+            },
+            "type": "array"
+           },
+           "external_url": {
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "description": "Unique identifier of the GitHub app",
+            "nullable": true,
+            "type": "integer"
+           },
+           "name": {
+            "description": "The name of the GitHub app",
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "owner": {
+            "nullable": true,
+            "properties": {
+             "avatar_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "deleted": {
+              "type": "boolean"
+             },
+             "email": {
+              "nullable": true,
+              "type": "string"
+             },
+             "events_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "followers_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "following_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "gists_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "gravatar_id": {
+              "type": "string"
+             },
+             "html_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "id": {
+              "type": "integer"
+             },
+             "login": {
+              "type": "string"
+             },
+             "name": {
+              "type": "string"
+             },
+             "node_id": {
+              "type": "string"
+             },
+             "organizations_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "received_events_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "repos_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "site_admin": {
+              "type": "boolean"
+             },
+             "starred_url": {
+              "format": "uri-template",
+              "type": "string"
+             },
+             "subscriptions_url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "type": {
+              "enum": [
+               "Bot",
+               "User",
+               "Organization"
+              ],
+              "type": "string"
+             },
+             "url": {
+              "format": "uri",
+              "type": "string"
+             },
+             "user_view_type": {
+              "type": "string"
+             }
+            },
+            "required": [
+             "login",
+             "id"
+            ],
+            "title": "User",
+            "type": "object"
+           },
+           "permissions": {
+            "description": "The set of permissions for the GitHub app",
+            "properties": {
+             "actions": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "administration": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "checks": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "content_references": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "contents": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "deployments": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "discussions": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "emails": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "environments": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "issues": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "keys": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "members": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "metadata": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_administration": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_hooks": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_packages": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_plan": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_projects": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_secrets": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_self_hosted_runners": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "organization_user_blocking": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "packages": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "pages": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "pull_requests": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "repository_hooks": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "repository_projects": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "secret_scanning_alerts": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "secrets": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "security_events": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "security_scanning_alert": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "single_file": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "statuses": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "vulnerability_alerts": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             },
+             "workflows": {
+              "enum": [
+               "read",
+               "write"
+              ],
+              "type": "string"
+             }
+            },
+            "type": "object"
+           },
+           "slug": {
+            "description": "The slug name of the GitHub app",
+            "type": "string"
+           },
+           "updated_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+           }
+          },
+          "required": [
+           "id",
+           "node_id",
+           "owner",
+           "name",
+           "description",
+           "external_url",
+           "html_url",
+           "created_at",
+           "updated_at"
+          ],
+          "title": "App",
+          "type": "object"
+         },
+         "pinned_comment": {
+          "$ref": "#/components/schemas/nullable-issue-comment"
+         },
+         "pull_request": {
+          "properties": {
+           "diff_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "merged_at": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+           },
+           "patch_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           }
+          },
+          "type": "object"
+         },
+         "reactions": {
+          "properties": {
+           "+1": {
+            "type": "integer"
+           },
+           "-1": {
+            "type": "integer"
+           },
+           "confused": {
+            "type": "integer"
+           },
+           "eyes": {
+            "type": "integer"
+           },
+           "heart": {
+            "type": "integer"
+           },
+           "hooray": {
+            "type": "integer"
+           },
+           "laugh": {
+            "type": "integer"
+           },
+           "rocket": {
+            "type": "integer"
+           },
+           "total_count": {
+            "type": "integer"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           }
+          },
+          "required": [
+           "url",
+           "total_count",
+           "+1",
+           "-1",
+           "laugh",
+           "confused",
+           "heart",
+           "hooray",
+           "eyes",
+           "rocket"
+          ],
+          "title": "Reactions",
+          "type": "object"
+         },
+         "repository_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "state": {
+          "description": "State of the issue; either 'open' or 'closed'",
+          "enum": [
+           "open",
+           "closed"
+          ],
+          "type": "string"
+         },
+         "state_reason": {
+          "nullable": true,
+          "type": "string"
+         },
+         "sub_issues_summary": {
+          "$ref": "#/components/schemas/sub-issues-summary"
+         },
+         "timeline_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "title": {
+          "description": "Title of the issue",
+          "type": "string"
+         },
+         "type": {
+          "$ref": "#/components/schemas/issue-type"
+         },
+         "updated_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "url": {
+          "description": "URL for the issue",
+          "format": "uri",
+          "type": "string"
+         },
+         "user": {
+          "nullable": true,
+          "properties": {
+           "avatar_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "deleted": {
+            "type": "boolean"
+           },
+           "email": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "followers_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "following_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gists_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gravatar_id": {
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "format": "int64",
+            "type": "integer"
+           },
+           "login": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "organizations_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "received_events_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "repos_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "site_admin": {
+            "type": "boolean"
+           },
+           "starred_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "Bot",
+             "User",
+             "Organization"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "user_view_type": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "login",
+           "id"
+          ],
+          "title": "User",
+          "type": "object"
+         }
+        },
+        "required": [
+         "id",
+         "number"
+        ],
+        "title": "Issue",
+        "type": "object"
+       },
+       "old_repository": {
+        "description": "A git repository",
+        "properties": {
+         "allow_auto_merge": {
+          "default": false,
+          "description": "Whether to allow auto-merge for pull requests.",
+          "type": "boolean"
+         },
+         "allow_forking": {
+          "description": "Whether to allow private forks",
+          "type": "boolean"
+         },
+         "allow_merge_commit": {
+          "default": true,
+          "description": "Whether to allow merge commits for pull requests.",
+          "type": "boolean"
+         },
+         "allow_rebase_merge": {
+          "default": true,
+          "description": "Whether to allow rebase merges for pull requests.",
+          "type": "boolean"
+         },
+         "allow_squash_merge": {
+          "default": true,
+          "description": "Whether to allow squash merges for pull requests.",
+          "type": "boolean"
+         },
+         "allow_update_branch": {
+          "type": "boolean"
+         },
+         "archive_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "archived": {
+          "default": false,
+          "description": "Whether the repository is archived.",
+          "type": "boolean"
+         },
+         "assignees_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "blobs_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "branches_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "clone_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "collaborators_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "comments_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "commits_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "compare_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "contents_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "contributors_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "created_at": {
+          "oneOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "format": "date-time",
+            "type": "string"
+           }
+          ]
+         },
+         "custom_properties": {
+          "additionalProperties": true,
+          "description": "The custom properties that were defined for the repository. The keys are the custom property names, and the values are the corresponding custom property values.",
+          "type": "object"
+         },
+         "default_branch": {
+          "description": "The default branch of the repository.",
+          "type": "string"
+         },
+         "delete_branch_on_merge": {
+          "default": false,
+          "description": "Whether to delete head branches when pull requests are merged",
+          "type": "boolean"
+         },
+         "deployments_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "description": {
+          "nullable": true,
+          "type": "string"
+         },
+         "disabled": {
+          "description": "Returns whether or not this repository is disabled.",
+          "type": "boolean"
+         },
+         "downloads_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "events_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "fork": {
+          "type": "boolean"
+         },
+         "forks": {
+          "type": "integer"
+         },
+         "forks_count": {
+          "type": "integer"
+         },
+         "forks_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "full_name": {
+          "type": "string"
+         },
+         "git_commits_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "git_refs_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "git_tags_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "git_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "has_discussions": {
+          "description": "Whether the repository has discussions enabled.",
+          "type": "boolean"
+         },
+         "has_downloads": {
+          "default": true,
+          "description": "Whether downloads are enabled.",
+          "type": "boolean"
+         },
+         "has_issues": {
+          "default": true,
+          "description": "Whether issues are enabled.",
+          "type": "boolean"
+         },
+         "has_pages": {
+          "type": "boolean"
+         },
+         "has_projects": {
+          "default": true,
+          "description": "Whether projects are enabled.",
+          "type": "boolean"
+         },
+         "has_pull_requests": {
+          "default": true,
+          "description": "Whether pull requests are enabled.",
+          "type": "boolean"
+         },
+         "has_wiki": {
+          "default": true,
+          "description": "Whether the wiki is enabled.",
+          "type": "boolean"
+         },
+         "homepage": {
+          "nullable": true,
+          "type": "string"
+         },
+         "hooks_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "description": "Unique identifier of the repository",
+          "format": "int64",
+          "type": "integer"
+         },
+         "is_template": {
+          "type": "boolean"
+         },
+         "issue_comment_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "issue_events_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "issues_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "keys_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "labels_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "language": {
+          "nullable": true,
+          "type": "string"
+         },
+         "languages_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "license": {
+          "nullable": true,
+          "properties": {
+           "key": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "spdx_id": {
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "nullable": true,
+            "type": "string"
+           }
+          },
+          "required": [
+           "key",
+           "name",
+           "spdx_id",
+           "url",
+           "node_id"
+          ],
+          "title": "License",
+          "type": "object"
+         },
+         "master_branch": {
+          "type": "string"
+         },
+         "merges_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "milestones_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "mirror_url": {
+          "format": "uri",
+          "nullable": true,
+          "type": "string"
+         },
+         "name": {
+          "description": "The name of the repository.",
+          "type": "string"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "notifications_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "open_issues": {
+          "type": "integer"
+         },
+         "open_issues_count": {
+          "type": "integer"
+         },
+         "organization": {
+          "type": "string"
+         },
+         "owner": {
+          "nullable": true,
+          "properties": {
+           "avatar_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "deleted": {
+            "type": "boolean"
+           },
+           "email": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "followers_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "following_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gists_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gravatar_id": {
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "type": "integer"
+           },
+           "login": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "organizations_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "received_events_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "repos_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "site_admin": {
+            "type": "boolean"
+           },
+           "starred_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "Bot",
+             "User",
+             "Organization"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "user_view_type": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "login",
+           "id"
+          ],
+          "title": "User",
+          "type": "object"
+         },
+         "permissions": {
+          "properties": {
+           "admin": {
+            "type": "boolean"
+           },
+           "maintain": {
+            "type": "boolean"
+           },
+           "pull": {
+            "type": "boolean"
+           },
+           "push": {
+            "type": "boolean"
+           },
+           "triage": {
+            "type": "boolean"
+           }
+          },
+          "required": [
+           "pull",
+           "push",
+           "admin"
+          ],
+          "type": "object"
+         },
+         "private": {
+          "description": "Whether the repository is private or public.",
+          "type": "boolean"
+         },
+         "public": {
+          "type": "boolean"
+         },
+         "pull_request_creation_policy": {
+          "description": "The policy controlling who can create pull requests: all or collaborators_only.",
+          "enum": [
+           "all",
+           "collaborators_only"
+          ],
+          "type": "string"
+         },
+         "pulls_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "pushed_at": {
+          "nullable": true,
+          "oneOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "format": "date-time",
+            "type": "string"
+           }
+          ]
+         },
+         "releases_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "role_name": {
+          "nullable": true,
+          "type": "string"
+         },
+         "size": {
+          "type": "integer"
+         },
+         "ssh_url": {
+          "type": "string"
+         },
+         "stargazers": {
+          "type": "integer"
+         },
+         "stargazers_count": {
+          "type": "integer"
+         },
+         "stargazers_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "statuses_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "subscribers_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "subscription_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "svn_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "tags_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "teams_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "topics": {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "trees_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "updated_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "visibility": {
+          "enum": [
+           "public",
+           "private",
+           "internal"
+          ],
+          "type": "string"
+         },
+         "watchers": {
+          "type": "integer"
+         },
+         "watchers_count": {
+          "type": "integer"
+         },
+         "web_commit_signoff_required": {
+          "description": "Whether to require commit signoff.",
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "id",
+         "node_id",
+         "name",
+         "full_name",
+         "private",
+         "owner",
+         "html_url",
+         "description",
+         "fork",
+         "url",
+         "forks_url",
+         "keys_url",
+         "collaborators_url",
+         "teams_url",
+         "hooks_url",
+         "issue_events_url",
+         "events_url",
+         "assignees_url",
+         "branches_url",
+         "tags_url",
+         "blobs_url",
+         "git_tags_url",
+         "git_refs_url",
+         "trees_url",
+         "statuses_url",
+         "languages_url",
+         "stargazers_url",
+         "contributors_url",
+         "subscribers_url",
+         "subscription_url",
+         "commits_url",
+         "git_commits_url",
+         "comments_url",
+         "issue_comment_url",
+         "contents_url",
+         "compare_url",
+         "merges_url",
+         "archive_url",
+         "downloads_url",
+         "issues_url",
+         "pulls_url",
+         "milestones_url",
+         "notifications_url",
+         "labels_url",
+         "releases_url",
+         "deployments_url",
+         "created_at",
+         "updated_at",
+         "pushed_at",
+         "git_url",
+         "ssh_url",
+         "clone_url",
+         "svn_url",
+         "homepage",
+         "size",
+         "stargazers_count",
+         "watchers_count",
+         "language",
+         "has_issues",
+         "has_projects",
+         "has_downloads",
+         "has_wiki",
+         "has_pages",
+         "forks_count",
+         "mirror_url",
+         "archived",
+         "open_issues_count",
+         "license",
+         "forks",
+         "open_issues",
+         "watchers",
+         "default_branch",
+         "topics",
+         "visibility"
+        ],
+        "title": "Repository",
+        "type": "object"
+       }
+      },
+      "required": [
+       "old_issue",
+       "old_repository"
+      ],
+      "type": "object"
+     },
+     "enterprise": {
+      "$ref": "#/components/schemas/enterprise-webhooks"
+     },
+     "installation": {
+      "$ref": "#/components/schemas/simple-installation"
+     },
+     "issue": {
+      "description": "The [issue](https://docs.github.com/rest/issues/issues#get-an-issue) itself.",
+      "properties": {
+       "active_lock_reason": {
+        "enum": [
+         "resolved",
+         "off-topic",
+         "too heated",
+         "spam",
+         null
+        ],
+        "nullable": true,
+        "type": "string"
+       },
+       "assignee": {
+        "nullable": true,
+        "properties": {
+         "avatar_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "deleted": {
+          "type": "boolean"
+         },
+         "email": {
+          "nullable": true,
+          "type": "string"
+         },
+         "events_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "followers_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "following_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "gists_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "gravatar_id": {
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "type": "integer"
+         },
+         "login": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "organizations_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "received_events_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "repos_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "site_admin": {
+          "type": "boolean"
+         },
+         "starred_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "subscriptions_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "type": {
+          "enum": [
+           "Bot",
+           "User",
+           "Organization"
+          ],
+          "type": "string"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "user_view_type": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "login",
+         "id"
+        ],
+        "title": "User",
+        "type": "object"
+       },
+       "assignees": {
+        "items": {
+         "nullable": true,
+         "properties": {
+          "avatar_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "deleted": {
+           "type": "boolean"
+          },
+          "email": {
+           "nullable": true,
+           "type": "string"
+          },
+          "events_url": {
+           "format": "uri-template",
+           "type": "string"
+          },
+          "followers_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "following_url": {
+           "format": "uri-template",
+           "type": "string"
+          },
+          "gists_url": {
+           "format": "uri-template",
+           "type": "string"
+          },
+          "gravatar_id": {
+           "type": "string"
+          },
+          "html_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "id": {
+           "type": "integer"
+          },
+          "login": {
+           "type": "string"
+          },
+          "name": {
+           "type": "string"
+          },
+          "node_id": {
+           "type": "string"
+          },
+          "organizations_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "received_events_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "repos_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "site_admin": {
+           "type": "boolean"
+          },
+          "starred_url": {
+           "format": "uri-template",
+           "type": "string"
+          },
+          "subscriptions_url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "type": {
+           "enum": [
+            "Bot",
+            "User",
+            "Organization"
+           ],
+           "type": "string"
+          },
+          "url": {
+           "format": "uri",
+           "type": "string"
+          },
+          "user_view_type": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "login",
+          "id"
+         ],
+         "title": "User",
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "author_association": {
+        "description": "How the author is associated with the repository.",
+        "enum": [
+         "COLLABORATOR",
+         "CONTRIBUTOR",
+         "FIRST_TIMER",
+         "FIRST_TIME_CONTRIBUTOR",
+         "MANNEQUIN",
+         "MEMBER",
+         "NONE",
+         "OWNER"
+        ],
+        "title": "AuthorAssociation",
+        "type": "string"
+       },
+       "body": {
+        "description": "Contents of the issue",
+        "nullable": true,
+        "type": "string"
+       },
+       "closed_at": {
+        "format": "date-time",
+        "nullable": true,
+        "type": "string"
+       },
+       "comments": {
+        "type": "integer"
+       },
+       "comments_url": {
+        "format": "uri",
+        "type": "string"
+       },
+       "created_at": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "draft": {
+        "type": "boolean"
+       },
+       "events_url": {
+        "format": "uri",
+        "type": "string"
+       },
+       "html_url": {
+        "format": "uri",
+        "type": "string"
+       },
+       "id": {
+        "format": "int64",
+        "type": "integer"
+       },
+       "issue_dependencies_summary": {
+        "$ref": "#/components/schemas/issue-dependencies-summary"
+       },
+       "issue_field_values": {
+        "items": {
+         "$ref": "#/components/schemas/issue-field-value"
+        },
+        "type": "array"
+       },
+       "labels": {
+        "items": {
+         "properties": {
+          "color": {
+           "description": "6-character hex code, without the leading #, identifying the color",
+           "type": "string"
+          },
+          "default": {
+           "type": "boolean"
+          },
+          "description": {
+           "nullable": true,
+           "type": "string"
+          },
+          "id": {
+           "type": "integer"
+          },
+          "name": {
+           "description": "The name of the label.",
+           "type": "string"
+          },
+          "node_id": {
+           "type": "string"
+          },
+          "url": {
+           "description": "URL for the label",
+           "format": "uri",
+           "type": "string"
+          }
+         },
+         "required": [
+          "id",
+          "node_id",
+          "url",
+          "name",
+          "color",
+          "default",
+          "description"
+         ],
+         "title": "Label",
+         "type": "object"
+        },
+        "type": "array"
+       },
+       "labels_url": {
+        "format": "uri-template",
+        "type": "string"
+       },
+       "locked": {
+        "type": "boolean"
+       },
+       "milestone": {
+        "description": "A collection of related issues and pull requests.",
+        "nullable": true,
+        "properties": {
+         "closed_at": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         },
+         "closed_issues": {
+          "type": "integer"
+         },
+         "created_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "creator": {
+          "nullable": true,
+          "properties": {
+           "avatar_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "deleted": {
+            "type": "boolean"
+           },
+           "email": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "followers_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "following_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gists_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gravatar_id": {
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "type": "integer"
+           },
+           "login": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "organizations_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "received_events_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "repos_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "site_admin": {
+            "type": "boolean"
+           },
+           "starred_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "Bot",
+             "User",
+             "Organization",
+             "Mannequin"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "user_view_type": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "login",
+           "id"
+          ],
+          "title": "User",
+          "type": "object"
+         },
+         "description": {
+          "nullable": true,
+          "type": "string"
+         },
+         "due_on": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "type": "integer"
+         },
+         "labels_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "number": {
+          "description": "The number of the milestone.",
+          "type": "integer"
+         },
+         "open_issues": {
+          "type": "integer"
+         },
+         "state": {
+          "description": "The state of the milestone.",
+          "enum": [
+           "open",
+           "closed"
+          ],
+          "type": "string"
+         },
+         "title": {
+          "description": "The title of the milestone.",
+          "type": "string"
+         },
+         "updated_at": {
+          "format": "date-time",
+          "type": "string"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         }
+        },
+        "required": [
+         "url",
+         "html_url",
+         "labels_url",
+         "id",
+         "node_id",
+         "number",
+         "title",
+         "description",
+         "creator",
+         "open_issues",
+         "closed_issues",
+         "state",
+         "created_at",
+         "updated_at",
+         "due_on",
+         "closed_at"
+        ],
+        "title": "Milestone",
+        "type": "object"
+       },
+       "node_id": {
+        "type": "string"
+       },
+       "number": {
+        "type": "integer"
+       },
+       "performed_via_github_app": {
+        "description": "GitHub apps are a new way to extend GitHub. They can be installed directly on organizations and user accounts and granted access to specific repositories. They come with granular permissions and built-in webhooks. GitHub apps are first class actors within GitHub.",
+        "nullable": true,
+        "properties": {
+         "created_at": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         },
+         "description": {
+          "nullable": true,
+          "type": "string"
+         },
+         "events": {
+          "description": "The list of events for the GitHub app",
+          "items": {
+           "enum": [
+            "branch_protection_rule",
+            "check_run",
+            "check_suite",
+            "code_scanning_alert",
+            "commit_comment",
+            "content_reference",
+            "create",
+            "delete",
+            "deployment",
+            "deployment_review",
+            "deployment_status",
+            "deploy_key",
+            "discussion",
+            "discussion_comment",
+            "fork",
+            "gollum",
+            "issues",
+            "issue_comment",
+            "label",
+            "member",
+            "membership",
+            "milestone",
+            "organization",
+            "org_block",
+            "page_build",
+            "project",
+            "project_card",
+            "project_column",
+            "public",
+            "pull_request",
+            "pull_request_review",
+            "pull_request_review_comment",
+            "push",
+            "registry_package",
+            "release",
+            "repository",
+            "repository_dispatch",
+            "secret_scanning_alert",
+            "star",
+            "status",
+            "team",
+            "team_add",
+            "watch",
+            "workflow_dispatch",
+            "workflow_run",
+            "security_and_analysis",
+            "pull_request_review_thread",
+            "reminder"
+           ],
+           "type": "string"
+          },
+          "type": "array"
+         },
+         "external_url": {
+          "format": "uri",
+          "nullable": true,
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "description": "Unique identifier of the GitHub app",
+          "nullable": true,
+          "type": "integer"
+         },
+         "name": {
+          "description": "The name of the GitHub app",
+          "type": "string"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "owner": {
+          "nullable": true,
+          "properties": {
+           "avatar_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "deleted": {
+            "type": "boolean"
+           },
+           "email": {
+            "nullable": true,
+            "type": "string"
+           },
+           "events_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "followers_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "following_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gists_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "gravatar_id": {
+            "type": "string"
+           },
+           "html_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "id": {
+            "type": "integer"
+           },
+           "login": {
+            "type": "string"
+           },
+           "name": {
+            "type": "string"
+           },
+           "node_id": {
+            "type": "string"
+           },
+           "organizations_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "received_events_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "repos_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "site_admin": {
+            "type": "boolean"
+           },
+           "starred_url": {
+            "format": "uri-template",
+            "type": "string"
+           },
+           "subscriptions_url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "type": {
+            "enum": [
+             "Bot",
+             "User",
+             "Organization"
+            ],
+            "type": "string"
+           },
+           "url": {
+            "format": "uri",
+            "type": "string"
+           },
+           "user_view_type": {
+            "type": "string"
+           }
+          },
+          "required": [
+           "login",
+           "id"
+          ],
+          "title": "User",
+          "type": "object"
+         },
+         "permissions": {
+          "description": "The set of permissions for the GitHub app",
+          "properties": {
+           "actions": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "administration": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "checks": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "content_references": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "contents": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "deployments": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "discussions": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "emails": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "environments": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "issues": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "keys": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "members": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "metadata": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_administration": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_hooks": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_packages": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_plan": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_projects": {
+            "enum": [
+             "read",
+             "write",
+             "admin"
+            ],
+            "type": "string"
+           },
+           "organization_secrets": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_self_hosted_runners": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "organization_user_blocking": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "packages": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "pages": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "pull_requests": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "repository_hooks": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "repository_projects": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "secret_scanning_alerts": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "secrets": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "security_events": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "security_scanning_alert": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "single_file": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "statuses": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "vulnerability_alerts": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           },
+           "workflows": {
+            "enum": [
+             "read",
+             "write"
+            ],
+            "type": "string"
+           }
+          },
+          "type": "object"
+         },
+         "slug": {
+          "description": "The slug name of the GitHub app",
+          "type": "string"
+         },
+         "updated_at": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         }
+        },
+        "required": [
+         "id",
+         "node_id",
+         "owner",
+         "name",
+         "description",
+         "external_url",
+         "html_url",
+         "created_at",
+         "updated_at"
+        ],
+        "title": "App",
+        "type": "object"
+       },
+       "pinned_comment": {
+        "$ref": "#/components/schemas/nullable-issue-comment"
+       },
+       "pull_request": {
+        "properties": {
+         "diff_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "merged_at": {
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+         },
+         "patch_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         }
+        },
+        "type": "object"
+       },
+       "reactions": {
+        "properties": {
+         "+1": {
+          "type": "integer"
+         },
+         "-1": {
+          "type": "integer"
+         },
+         "confused": {
+          "type": "integer"
+         },
+         "eyes": {
+          "type": "integer"
+         },
+         "heart": {
+          "type": "integer"
+         },
+         "hooray": {
+          "type": "integer"
+         },
+         "laugh": {
+          "type": "integer"
+         },
+         "rocket": {
+          "type": "integer"
+         },
+         "total_count": {
+          "type": "integer"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         }
+        },
+        "required": [
+         "url",
+         "total_count",
+         "+1",
+         "-1",
+         "laugh",
+         "confused",
+         "heart",
+         "hooray",
+         "eyes",
+         "rocket"
+        ],
+        "title": "Reactions",
+        "type": "object"
+       },
+       "repository_url": {
+        "format": "uri",
+        "type": "string"
+       },
+       "state": {
+        "description": "State of the issue; either 'open' or 'closed'",
+        "enum": [
+         "open",
+         "closed"
+        ],
+        "type": "string"
+       },
+       "state_reason": {
+        "nullable": true,
+        "type": "string"
+       },
+       "sub_issues_summary": {
+        "$ref": "#/components/schemas/sub-issues-summary"
+       },
+       "timeline_url": {
+        "format": "uri",
+        "type": "string"
+       },
+       "title": {
+        "description": "Title of the issue",
+        "type": "string"
+       },
+       "type": {
+        "$ref": "#/components/schemas/issue-type"
+       },
+       "updated_at": {
+        "format": "date-time",
+        "type": "string"
+       },
+       "url": {
+        "description": "URL for the issue",
+        "format": "uri",
+        "type": "string"
+       },
+       "user": {
+        "nullable": true,
+        "properties": {
+         "avatar_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "deleted": {
+          "type": "boolean"
+         },
+         "email": {
+          "nullable": true,
+          "type": "string"
+         },
+         "events_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "followers_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "following_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "gists_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "gravatar_id": {
+          "type": "string"
+         },
+         "html_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "id": {
+          "format": "int64",
+          "type": "integer"
+         },
+         "login": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "node_id": {
+          "type": "string"
+         },
+         "organizations_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "received_events_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "repos_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "site_admin": {
+          "type": "boolean"
+         },
+         "starred_url": {
+          "format": "uri-template",
+          "type": "string"
+         },
+         "subscriptions_url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "type": {
+          "enum": [
+           "Bot",
+           "User",
+           "Organization"
+          ],
+          "type": "string"
+         },
+         "url": {
+          "format": "uri",
+          "type": "string"
+         },
+         "user_view_type": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "login",
+         "id"
+        ],
+        "title": "User",
+        "type": "object"
+       }
+      },
+      "required": [
+       "url",
+       "repository_url",
+       "labels_url",
+       "comments_url",
+       "events_url",
+       "html_url",
+       "id",
+       "node_id",
+       "number",
+       "title",
+       "user",
+       "assignees",
+       "milestone",
+       "comments",
+       "created_at",
+       "updated_at",
+       "closed_at",
+       "author_association",
+       "active_lock_reason",
+       "body",
+       "reactions"
+      ],
+      "title": "Issue",
+      "type": "object"
+     },
+     "organization": {
+      "$ref": "#/components/schemas/organization-simple-webhooks"
+     },
+     "repository": {
+      "$ref": "#/components/schemas/repository-webhooks"
+     },
+     "sender": {
+      "$ref": "#/components/schemas/simple-user"
+     }
+    },
+    "required": [
+     "action",
+     "issue",
+     "repository",
+     "sender"
+    ],
+    "title": "issues opened event",
+    "type": "object"
+   },
    "webhook-issues-reopened": {
     "properties": {
      "action": {
@@ -7767,6 +10810,46 @@
      "sender"
     ],
     "title": "pull_request closed event",
+    "type": "object"
+   },
+   "webhook-pull-request-opened": {
+    "properties": {
+     "action": {
+      "enum": [
+       "opened"
+      ],
+      "type": "string"
+     },
+     "enterprise": {
+      "$ref": "#/components/schemas/enterprise-webhooks"
+     },
+     "installation": {
+      "$ref": "#/components/schemas/simple-installation"
+     },
+     "number": {
+      "$ref": "#/components/schemas/webhooks_number"
+     },
+     "organization": {
+      "$ref": "#/components/schemas/organization-simple-webhooks"
+     },
+     "pull_request": {
+      "$ref": "#/components/schemas/pull-request-webhook"
+     },
+     "repository": {
+      "$ref": "#/components/schemas/repository-webhooks"
+     },
+     "sender": {
+      "$ref": "#/components/schemas/simple-user"
+     }
+    },
+    "required": [
+     "action",
+     "number",
+     "pull_request",
+     "repository",
+     "sender"
+    ],
+    "title": "pull_request opened event",
     "type": "object"
    },
    "webhook-pull-request-review-submitted": {
@@ -10893,7 +13976,9 @@
    "issues-reopened",
    "issue-comment-created",
    "pull-request-closed",
-   "pull-request-review-submitted"
+   "pull-request-review-submitted",
+   "issues-opened",
+   "pull-request-opened"
   ]
  },
  "x-webhooks": {
@@ -10927,6 +14012,22 @@
     "summary": "This event occurs when there is activity relating to an issue. For more information about issues, see \"[About issues](https://docs.github.com/issues/tracking-your-work-with-issues/about-issues).\" For information about the APIs to manage issues, see [the GraphQL documentation](https://docs.github.com/graphql/reference/objects#issue) or \"[Issues](https://docs.github.com/rest/issues)\" in the REST API documentation.\n\nFor activity relating to a comment on an issue, use the `issue_comment` event.\n\nTo subscribe to this event, a GitHub App must have at least read-level access for the \"Issues\" repository permission."
    }
   },
+  "issues-opened": {
+   "post": {
+    "operationId": "issues/opened",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/webhook-issues-opened"
+       }
+      }
+     },
+     "required": true
+    },
+    "summary": "This event occurs when there is activity relating to an issue. For more information about issues, see \"[About issues](https://docs.github.com/issues/tracking-your-work-with-issues/about-issues).\" For information about the APIs to manage issues, see [the GraphQL documentation](https://docs.github.com/graphql/reference/objects#issue) or \"[Issues](https://docs.github.com/rest/issues)\" in the REST API documentation.\n\nFor activity relating to a comment on an issue, use the `issue_comment` event.\n\nTo subscribe to this event, a GitHub App must have at least read-level access for the \"Issues\" repository permission."
+   }
+  },
   "issues-reopened": {
    "post": {
     "operationId": "issues/reopened",
@@ -10953,6 +14054,22 @@
        }
       }
      }
+    },
+    "summary": "This event occurs when there is activity on a pull request. For more information, see \"[About pull requests](https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests).\" For information about the APIs to manage pull requests, see [the GraphQL API documentation](https://docs.github.com/graphql/reference/objects#pullrequest) or \"[Pulls](https://docs.github.com/rest/pulls/pulls)\" in the REST API documentation.\n\nFor activity related to pull request reviews, pull request review comments, pull request comments, or pull request review threads, use the `pull_request_review`, `pull_request_review_comment`, `issue_comment`, or `pull_request_review_thread` events instead.\n\nTo subscribe to this event, a GitHub App must have at least read-level access for the \"Pull requests\" repository permission."
+   }
+  },
+  "pull-request-opened": {
+   "post": {
+    "operationId": "pull-request/opened",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/webhook-pull-request-opened"
+       }
+      }
+     },
+     "required": true
     },
     "summary": "This event occurs when there is activity on a pull request. For more information, see \"[About pull requests](https://docs.github.com/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests).\" For information about the APIs to manage pull requests, see [the GraphQL API documentation](https://docs.github.com/graphql/reference/objects#pullrequest) or \"[Pulls](https://docs.github.com/rest/pulls/pulls)\" in the REST API documentation.\n\nFor activity related to pull request reviews, pull request review comments, pull request comments, or pull request review threads, use the `pull_request_review`, `pull_request_review_comment`, `issue_comment`, or `pull_request_review_thread` events instead.\n\nTo subscribe to this event, a GitHub App must have at least read-level access for the \"Pull requests\" repository permission."
    }

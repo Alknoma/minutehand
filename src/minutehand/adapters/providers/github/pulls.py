@@ -412,6 +412,7 @@ class Pulls:
         )
         world.put_issue(repository, issue, operation=Operation.CREATE, actor=actor)
         self.tracker.moved_to(repository, issue, "open", None, actor, who, "{}")
+        await self._api.hooks.opened(repository, issue, account)
         return issue
 
     async def get_pull(self, request: Request, caller: Caller) -> Answered:

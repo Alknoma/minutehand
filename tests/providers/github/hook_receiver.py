@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import socketserver
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -31,7 +32,10 @@ class Delivery:
 class Receiver:
     url: str
     status: int = 200
+    hold: float = 0.0
+    """Seconds the first delivery waits before it is kept and answered, so one sent beside it would be kept first."""
     pushed: list[Delivery] = field(default_factory=list[Delivery])
+    seen: int = 0
 
 
 class _Loopback(ThreadingHTTPServer):
@@ -43,12 +47,18 @@ class _Loopback(ThreadingHTTPServer):
 
 
 @contextmanager
-def receiver(status: int = 200) -> Iterator[Receiver]:
-    found = Receiver(url="", status=status)
+def receiver(status: int = 200, hold: float = 0.0) -> Iterator[Receiver]:
+    found = Receiver(url="", status=status, hold=hold)
+    lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             length = int(self.headers["Content-Length"] or 0)
+            with lock:
+                first = found.seen == 0
+                found.seen += 1
+            if first and found.hold:
+                time.sleep(found.hold)
             found.pushed.append(Delivery({k.lower(): v for k, v in self.headers.items()}, self.rfile.read(length)))
             self.send_response(found.status)
             self.send_header("Content-Length", "0")

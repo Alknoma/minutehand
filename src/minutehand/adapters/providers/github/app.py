@@ -41,7 +41,7 @@ from minutehand.adapters.providers.github.answers import (
     param,
 )
 from minutehand.adapters.providers.github.commits import Commits
-from minutehand.adapters.providers.github.hooks import Hooks, Pusher
+from minutehand.adapters.providers.github.hooks import Background, Hooks, Pusher
 from minutehand.adapters.providers.github.pulls import Pulls
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.tracker import Tracker
@@ -105,13 +105,17 @@ def _raw(file: wire.StoredFile) -> bytes:
 
 
 class GitHubApi:
-    def __init__(self, store: Store, clock: Clock, pusher: Pusher | None = None) -> None:
+    def __init__(
+        self, store: Store, clock: Clock, pusher: Pusher | None = None, background: Background | None = None
+    ) -> None:
+        """`pusher` sends a person's move to the agent at once; `background`, what the agent's own calls set off,
+        after each is answered."""
         self.world = GitHubWorld(store)
         self.clock = clock
         self.tracker = Tracker(self)
         self.pulls = Pulls(self)
         self.commits_made = Commits(self)
-        self.hooks = Hooks(self, pusher)
+        self.hooks = Hooks(self, pusher, background)
 
     # ------------------------------------------------------------------ the gate
 
@@ -804,8 +808,25 @@ def _conditional(request: Request, answered: Answered) -> Answered:
     return Answered(answered.status, answered.body, headers)
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
-    api = GitHubApi(store, clock)
+class GitHubApp(Starlette):
+    """The GitHub app: Starlette, and `DeliversInBackground` for the webhooks the agent's own calls set off."""
+
+    def __init__(self, background: Background, routes: list[Route]) -> None:
+        super().__init__(routes=routes)
+        self.background = background
+
+    def delivering(self) -> int:
+        return self.background.delivering()
+
+    async def settled(self) -> None:
+        await self.background.settled()
+
+
+def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None] | None = None) -> GitHubApp:
+    """`listening` says where the agent takes GitHub's webhooks, when it does (`ListensForAgent`): what its own calls
+    set off is pushed there."""
+    background = Background(listening if listening is not None else lambda: None)
+    api = GitHubApi(store, clock, background=background)
     tracker = api.tracker
     pulls = api.pulls
     made = api.commits_made
@@ -879,7 +900,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         raise NotServed("it is not among the calls this provider serves (its README's table)")
 
     routes.append(Route("/{anything:path}", unserved, methods=list(EVERY_METHOD)))
-    return Starlette(routes=routes)
+    return GitHubApp(background, routes)
 
 
 REPOSITORY = "/repos/{owner}/{repo}"
