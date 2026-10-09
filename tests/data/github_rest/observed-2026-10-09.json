@@ -244,7 +244,6 @@
      "merged_at": null
     },
     "draft": false,
-    "id_differs_from_pull_id": true,
     "keys": [
      "active_lock_reason",
      "assignee",
@@ -352,7 +351,7 @@
     "review_comments": 0,
     "maintainer_can_modify": true,
     "merge_commit_sha_is_set": true,
-    "base_sha_is_the_base_branch_tip": true,
+    "issue_id_differs_from_pull_id": true,
     "head_keys": [
      "label",
      "ref",
@@ -499,14 +498,12 @@
    "observed": {
     "commits": [
      {
-      "sha_is_new": true,
       "date": "2026-10-09T11:00:46Z",
       "message": "Hello file",
       "parents": 1,
       "first_parent_is_the_previous": true
      },
      {
-      "sha_is_new": true,
       "date": "2026-10-09T11:10:46Z",
       "message": "Update Hello file",
       "parents": 1,
@@ -524,6 +521,46 @@
      "parents",
      "sha",
      "url"
+    ]
+   }
+  },
+  {
+   "claim": "files of a pull request: a removed file",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/11072/files",
+   "status": 200,
+   "observed": {
+    "files": [
+     {
+      "filename": "README",
+      "status": "removed",
+      "additions": 0,
+      "deletions": 1,
+      "changes": 1,
+      "patch": "@@ -1 +0,0 @@\n-Hello World!",
+      "sha_is_the_old_blob_sha": true,
+      "urls_use_the": "base sha",
+      "blob_url_shape": "https://github.com/octocat/Hello-World/blob/<sha>/README",
+      "contents_url_shape": "https://api.github.com/repos/octocat/Hello-World/contents/README?ref=<sha>"
+     }
+    ]
+   }
+  },
+  {
+   "claim": "files of a pull request: lines added after the last, with context",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/11300/files",
+   "status": 200,
+   "observed": {
+    "files": [
+     {
+      "filename": "README",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 0,
+      "changes": 2,
+      "patch": "@@ -1 +1,3 @@\n Hello World!\n+Hello world2\n+Hello world3"
+     }
     ]
    }
   },

@@ -225,6 +225,17 @@ def tracker_ledger() -> SeedRepository:
         ],
         diverged_branches=[
             SeedBranch(
+                name="notes",
+                commits=[
+                    SeedLineCommit(
+                        message="Describe the notes",
+                        author="iris-calder",
+                        before=timedelta(hours=4, minutes=30),
+                        changes=[SeedChange(path="docs/notes.md", text="# Notes\n\nA note.\n")],
+                    )
+                ],
+            ),
+            SeedBranch(
                 name="timeout",
                 commits=[
                     SeedLineCommit(
@@ -237,7 +248,7 @@ def tracker_ledger() -> SeedRepository:
                         ],
                     )
                 ],
-            )
+            ),
         ],
         pulls=[
             SeedPull(
@@ -266,7 +277,95 @@ def tracker_ledger() -> SeedRepository:
 def tracker_seed() -> GitHubSeed:
     """The shared GitHub with the tracker in the ledger."""
     base = github_seed()
-    return base.model_copy(update={"repositories": [tracker_ledger(), *base.repositories[1:]]})
+    return validated(base.model_copy(update={"repositories": [tracker_ledger(), *base.repositories[1:]]}))
+
+
+def validated(seed: GitHubSeed) -> GitHubSeed:
+    """A seed built by copying, which checks nothing, read through the seed's own validation."""
+    return GitHubSeed.model_validate(seed.model_dump())
+
+
+RETRY_TWICE = RETRY.replace("TIMEOUT_SECONDS = 30", "TIMEOUT_SECONDS = 60").replace("attempts=5", "attempts=7")
+"""`RETRY` changed in two places, between which it keeps lines: a change git may align more than one way."""
+
+
+def branch(name: str, *commits: tuple[str, str, timedelta, list[SeedChange]]) -> SeedBranch:
+    return SeedBranch(
+        name=name,
+        commits=[
+            SeedLineCommit(message=message, author=author, before=before, changes=changes)
+            for message, author, before, changes in commits
+        ],
+    )
+
+
+def pulls_seed() -> GitHubSeed:
+    """The tracker's GitHub with more branches to make pull requests from: two commits that delete a file and add
+    another, a change to a file the first pull request also changes, a change to a binary file, a change in two
+    places, and, in the public notes, a branch to ask a merge of from a repository its author does not push to."""
+    base = tracker_seed()
+    ledger_repo = tracker_ledger()
+    extra = [
+        branch(
+            "cleanup",
+            ("Drop the guide", "iris-calder", timedelta(hours=3), [SeedChange(path="docs/guide.md", delete=True)]),
+            (
+                "Say where the guide went",
+                "iris-calder",
+                timedelta(hours=2),
+                [SeedChange(path="docs/moved.md", text="Moved.\n")],
+            ),
+        ),
+        branch(
+            "retry-config",
+            (
+                "Allow more retries",
+                "tomas-b",
+                timedelta(hours=3),
+                [SeedChange(path="services/billing/config.py", text="PAYMENT_TIMEOUT = 45\nRETRY_LIMIT = 7\n")],
+            ),
+        ),
+        branch(
+            "logo",
+            (
+                "New logo",
+                "iris-calder",
+                timedelta(hours=3),
+                [SeedChange(path="assets/logo.png", base64_bytes=base64.b64encode(bytes(range(255, -1, -1))).decode())],
+            ),
+        ),
+        branch(
+            "edgy",
+            (
+                "Tune the retries",
+                "tomas-b",
+                timedelta(hours=3),
+                [SeedChange(path="services/billing/retry.py", text=RETRY_TWICE)],
+            ),
+        ),
+    ]
+    ledger_repo = ledger_repo.model_copy(update={"diverged_branches": [*ledger_repo.diverged_branches, *extra]})
+    notes = base.repositories[1].model_copy(
+        update={
+            "commits": [
+                SeedCommit(
+                    message="Start the notes", author="iris-calder", before=timedelta(hours=1), paths=["README.md"]
+                )
+            ],
+            "diverged_branches": [
+                branch(
+                    "fix",
+                    (
+                        "Fix the notes",
+                        "iris-calder",
+                        timedelta(minutes=30),
+                        [SeedChange(path="README.md", text="# Notes\n\nFixed.\n")],
+                    ),
+                )
+            ],
+        }
+    )
+    return validated(base.model_copy(update={"repositories": [ledger_repo, notes, *base.repositories[2:]]}))
 
 
 @dataclass

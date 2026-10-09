@@ -36,6 +36,12 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | `GET`, `PATCH`, `DELETE /repos/{o}/{r}/issues/comments/{id}` | one comment; delete is 204 |
 | `GET`, `POST /repos/{o}/{r}/labels`, `GET /repos/{o}/{r}/labels/{name}` | labels by name, case aside; 422 `already_exists` |
 | `GET`, `POST`, `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/labels`, `DELETE .../labels/{name}` | list, add, set, remove all (204), remove one (the rest) |
+| `GET /repos/{o}/{r}/pulls?state&head&base&sort&direction` | the simple form, `Link` paging |
+| `POST /repos/{o}/{r}/pulls`, `GET`, `PATCH .../pulls/{n}` | 201; title, body, draft kept as sent; the full form with `mergeable`, `mergeable_state`, `merge_commit_sha` and the counts of its diff |
+| `GET .../pulls/{n}/files`, `GET .../pulls/{n}/commits` | the diff entries (patch where git can write only one), the commits oldest first |
+| `PUT`, `GET .../pulls/{n}/merge` | a merge commit of two parents (`merge_method` merge); 405, 409; 204 once merged |
+| `GET`, `POST .../pulls/{n}/reviews`, `GET .../reviews/{id}`, `GET .../reviews/{id}/comments` | APPROVE, REQUEST_CHANGES, COMMENT; the three states; no pending review |
+| `GET`, `POST .../pulls/{n}/comments` | comments on a line of the diff, with `diff_hunk`, `position`, `line`, `side`; replies |
 
 Every other method and path is refused by name: 501, "minutehand's github fake does not implement <METHOD>
 <path>", never a 404 a client would take for GitHub's answer. So is `X-GitHub-Api-Version: 2026-03-10`, a version
@@ -53,7 +59,7 @@ for a new repository's features (`has_issues` and the rest, from the create-repo
 (github/rest-api-description at `2eba8c3b`, 2026-10-08) for the reference sections this provider touches or
 would be asked for next: repositories, contents, webhooks, branches, commits, git blobs, trees, commits, refs and
 tags, search, users, rate limit, apps and installations, issues, issue comments, labels, pulls, review comments
-and reviews. It holds 169 operations: 32 served, 137 refused by name. The coverage test fails if one is neither.
+and reviews. It holds 169 operations: 46 served, 123 refused by name. The coverage test fails if one is neither.
 GraphQL is not in that description; `graphql.py` validates every query against its own schema and refuses what
 it does not answer.
 
@@ -64,11 +70,9 @@ The unserved operations a GitHub client most often calls, to serve next in this 
 2. `PUT /repos/{owner}/{repo}/contents/{path}`: committing a file, the one write a code-reading world changes by.
 3. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
    its files, and a diff.
-4. `GET /repos/{owner}/{repo}/pulls`, `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`,
-   `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`: pull requests and review.
-5. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
+4. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
    `GET /repos/{owner}/{repo}/git/ref/{ref}`, `GET /repos/{owner}/{repo}/tags`.
-6. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
+5. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
    the token exchange; and webhook delivery (`X-GitHub-Event`, `X-Hub-Signature-256`) if a scenario needs GitHub to
    push.
 
@@ -118,14 +122,22 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 
 ## What it does not do
 
-- Pull requests, webhooks, milestones, issue types, reactions, issue events and the timeline, the OAuth web flow, and
-  every app route but the token exchange: refused by name (above).
+- Webhooks, milestones, issue types, reactions, issue events and the timeline, review requests, pending and dismissed
+  reviews, the OAuth web flow, and every app route but the token exchange: refused by name (above).
 - A repository's labels are what its seed and the agent's `POST .../labels` define: a label name an issue is given
   that the repository has not defined is refused by name, since the reference does not say what GitHub does with one.
   Labels list alphabetically by name, case aside (recorded). An assignee must be a user with a role on the repository.
 - An issue's `updated_at` moves with its own changes and with a comment on it (recorded), not with a lock.
 - A GraphQL query costs one point, whatever its size; GitHub prices a query by the nodes it may return.
-- Every branch and commit shows the head's files; history is a list of commits, not a sequence of trees.
+- Every branch and commit shows the default branch's head files, except a branch with commits of its own (a seed's
+  `diverged_branches`), which shows its tree at its own commits; history before a commit made here is a list of
+  commits, not a sequence of trees.
+- A pull request is from a branch with commits of its own, within the repository, into its default branch. Its diff is
+  the difference between the tree the branch was made at and the tree it has, counted by a minimal edit script; its
+  `patch` is written only where git has one way to write it (a file added or deleted whole, or a change of lines that
+  share nothing with the lines they replace and cannot slide), and otherwise refused by name. Whether it merges is
+  worked out from the three trees where no path is changed on both sides, and is `null` where one is: merging the
+  lines of one file is not done. Only the merge commit is a merge method here.
 - `ETag` and `If-None-Match` are answered (a 304 to a call with an `Authorization` spends nothing); `Last-Modified`
   and `If-Modified-Since` are not, nor `Accept: application/vnd.github.raw`. A text match's fragment is the first
   line holding a term, not GitHub's wider snippet.

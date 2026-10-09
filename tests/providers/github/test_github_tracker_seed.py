@@ -34,7 +34,6 @@ from tests.providers.github.github_world import (
     github_seed,
     ledger,
     listing,
-    tracker_ledger,
     tracker_seed,
 )
 
@@ -199,9 +198,9 @@ async def test_a_branch_made_by_the_seed_is_listed_at_its_own_commit(hub: Hub) -
     async with hub.client() as http:
         branches = listing(await http.get("/repos/lanternworks/ledger/branches"))
     tips = {b["name"]: cast(Json, b["commit"])["sha"] for b in branches}
-    assert set(tips) == {"main", "release", "timeout"}
+    assert set(tips) == {"main", "release", "timeout", "notes"}
     assert tips["timeout"] != tips["main"] and tips["release"] == tips["main"]
-    assert tracker_ledger().diverged_branches[0].name == "timeout"
+    assert tips["notes"] != tips["timeout"]
 
 
 def gapped() -> GitHubSeed:

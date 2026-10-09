@@ -159,8 +159,8 @@ async def test_a_binary_file_reads_as_its_bytes(hub: Hub) -> None:
 async def test_an_unserved_path_is_refused_by_name_not_answered_as_github_s_404(hub: Hub) -> None:
     async with hub.client() as http:
         refusal(
-            await http.get("/repos/lanternworks/ledger/pulls"),
+            await http.get("/repos/lanternworks/ledger/milestones"),
             501,
-            "minutehand's github fake does not implement GET /repos/lanternworks/ledger/pulls: it is not among the "
+            "minutehand's github fake does not implement GET /repos/lanternworks/ledger/milestones: it is not among the "
             "calls this provider serves (its README's table)",
         )

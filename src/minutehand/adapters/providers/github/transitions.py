@@ -1,24 +1,29 @@
 """What people do on GitHub, through the one port people act through (`ports.transitions.ProvidesTransitions`).
 
 An issue assigned to a person and still open waits on them: they close it (with a comment, and the reason GitHub
-takes for closing one) or, once it is closed, reopen it. Both go through the code the REST route takes, so the same
-validation, history and update times apply, and each is one move of the issue's state in the log.
+takes for closing one) or, once it is closed, reopen it. An open pull request that asks a person for their review
+waits on them until they have given it: they approve it, ask for changes or comment (the three events a review takes).
+Each goes through the code the REST route takes, so the same validation, history and update times apply, and each is
+one move of the item's state in the log.
 """
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.github import state, wire
+from minutehand.adapters.providers.github import pulls, state, wire
 from minutehand.adapters.providers.github.app import GitHubApi
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import Person
 from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of, item_parent
 from minutehand.domain.world import Actor, EntityKind, EntityRef, TransitionSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
+BODY = "body"
 COMMENT = "comment"
 REASON = "state_reason"
+REVIEW_REQUESTED = "review requested"
 CLOSE = "close"
 REOPEN = "reopen"
 CLOSING_REASONS = (wire.StateReason.COMPLETED, wire.StateReason.NOT_PLANNED)
@@ -70,7 +75,8 @@ class GitHubTransitions:
     """The provider's moves for the people engine."""
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        """Every open issue assigned to the person's account, as they read it on GitHub."""
+        """Every open issue assigned to the person's account, and every open pull request that asks their review and
+        has none from them, as they read it on GitHub."""
         github = GitHubWorld(world)
         account = account_of(github, person)
         if account is None:
@@ -79,35 +85,61 @@ class GitHubTransitions:
         for repository in github.repositories():
             if reaches(github, account, repository) < 0:
                 continue
+            reviewed = {(r.pull, r.author.lower()) for r in github.reviews(repository)}
             for issue in github.issues(repository):
-                if issue.pull is None and issue.state is wire.IssueState.OPEN and account.login in issue.assignees:
-                    item = state.issue_ref(repository.owner, repository.name, issue.number)
+                item = state.issue_ref(repository.owner, repository.name, issue.number)
+                if issue.state is not wire.IssueState.OPEN:
+                    continue
+                if issue.pull is None and account.login in issue.assignees:
                     waiting.append(
                         Waiting(item=item, state=issue.state.value, shown=self._shown(github, repository, issue))
+                    )
+                elif (
+                    issue.pull is not None
+                    and account.login in issue.pull.requested_reviewers
+                    and (issue.number, account.login.lower()) not in reviewed
+                ):
+                    waiting.append(
+                        Waiting(item=item, state=REVIEW_REQUESTED, shown=self._shown(github, repository, issue))
                     )
         return waiting
 
     def _shown(self, github: GitHubWorld, repository: wire.StoredRepository, issue: wire.StoredIssue) -> str:
-        """The issue as its assignee reads it: title, state, labels, body and comments, oldest first."""
+        """The issue as its assignee reads it, or the pull request as its reviewer does: title, state, labels, body,
+        for a pull request the files it changes with their patches, and the conversation, oldest first."""
         lines = [f"{repository.full_name}#{issue.number}: {issue.title}", f"State: {issue.state.value}"]
         if issue.labels:
             lines.append(f"Labels: {', '.join(issue.labels)}")
         if issue.body:
             lines += ["", issue.body]
+        if issue.pull is not None:
+            lines += ["", f"{issue.author} asks to merge {issue.pull.head} into {issue.pull.base}."]
+            for entry in pulls.entries_of(github, repository, issue):
+                lines.append(f"{entry.status.value} {entry.path} (+{entry.counts.additions} -{entry.counts.deletions})")
+                try:
+                    lines.append(entry.patch())
+                except NotServed:
+                    continue
         for comment in github.comments(repository):
             if comment.issue == issue.number:
                 lines.append(f"{comment.author}: {comment.body}")
+        for review in github.reviews(repository):
+            if review.pull == issue.number:
+                lines.append(f"{review.author} reviewed ({review.state.value}): {review.body}")
         return "\n".join(lines)
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """Close an open issue, reopen a closed one: for its author and those with triage access or more ("Issue owners
-        and users with push access or Triage role can edit an issue", https://docs.github.com/en/rest/issues/issues#update-an-issue)."""
+        and users with push access or Triage role can edit an issue", https://docs.github.com/en/rest/issues/issues#update-an-issue);
+        review an open pull request."""
         del by
         github = GitHubWorld(world)
         repository, issue = locate(github, item)
         account = None if who is None else account_of(github, who)
-        if account is None or issue.pull is not None:
+        if account is None:
             return []
+        if issue.pull is not None:
+            return self._review_offers(github, repository, issue, account)
         if issue.author.lower() != account.login.lower() and reaches(github, account, repository) < TRIAGE:
             return []
         comment = OfferField(name=COMMENT, description="A comment added to the issue as it moves")
@@ -127,6 +159,36 @@ class GitHubTransitions:
             Offer(name=REOPEN, to_state=wire.IssueState.OPEN.value, fields=[comment], description="Reopen the issue")
         ]
 
+    def _review_offers(
+        self,
+        github: GitHubWorld,
+        repository: wire.StoredRepository,
+        issue: wire.StoredIssue,
+        account: wire.StoredAccount,
+    ) -> list[Offer]:
+        """The three events a review takes, for an open pull request the account can read; its author may only
+        comment (GitHub refuses a review of one's own that approves or asks for changes)."""
+        if issue.state is not wire.IssueState.OPEN or reaches(github, account, repository) < 0:
+            return []
+        offers = {
+            wire.ReviewEvent.APPROVE: ("Approve the changes", False),
+            wire.ReviewEvent.REQUEST_CHANGES: ("Ask for changes before it merges", True),
+            wire.ReviewEvent.COMMENT: ("Comment without approving or asking for changes", True),
+        }
+        found: list[Offer] = []
+        for event, (description, words_required) in offers.items():
+            if event is not wire.ReviewEvent.COMMENT and issue.author.lower() == account.login.lower():
+                continue
+            found.append(
+                Offer(
+                    name=event.value,
+                    to_state=pulls.REVIEW_WORDS[pulls.REVIEW_STATES[event]],
+                    fields=[OfferField(name=BODY, required=words_required, description="The text of your review")],
+                    description=description,
+                )
+            )
+        return found
+
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
@@ -140,6 +202,20 @@ class GitHubTransitions:
         if found is None:
             raise ValueError(f"github issue {repository.full_name}#{issue.number} offers {who.key} no {offer!r}")
         given = content_of(content, found, who.key)
+        if issue.pull is not None:
+            account = account_of(github, who)
+            assert account is not None
+            await GitHubApi(world, clock).pulls.submit_review(
+                repository,
+                issue,
+                account,
+                event=wire.ReviewEvent(offer),
+                body=given[BODY] if BODY in given else None,
+                commit_id=None,
+                actor=Actor.PERSON,
+                who=who.key,
+            )
+            return last_move(world, item)
         reason = given[REASON] if REASON in given else None
         if reason is not None and reason not in {r.value for r in CLOSING_REASONS}:
             raise ValueError(

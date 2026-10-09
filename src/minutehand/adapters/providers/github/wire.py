@@ -460,6 +460,13 @@ class IssueSort(StrEnum):
     COMMENTS = "comments"
 
 
+class PullSort(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+    POPULARITY = "popularity"
+    LONG_RUNNING = "long-running"
+
+
 class CommentSort(StrEnum):
     CREATED = "created"
     UPDATED = "updated"
@@ -1299,7 +1306,6 @@ class PullOut(PullSimpleOut):
 
     merged: bool
     mergeable: bool | None
-    rebaseable: bool | None
     mergeable_state: str
     merged_by: AccountOut | None
     comments: int

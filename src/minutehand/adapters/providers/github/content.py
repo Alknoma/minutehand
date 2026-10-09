@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from minutehand.adapters.providers.github import wire
+from minutehand.adapters.providers.github import history, wire
 
 CONTENTS_INLINE_LIMIT = 1024 * 1024
 """Past 1 MiB the contents endpoint carries no bytes (`"content": ""`, `"encoding": "none"`)."""
@@ -112,6 +112,34 @@ def resolve(repository: wire.StoredRepository, ref: str | None) -> wire.StoredCo
         found = [c for c in repository.commits if c.sha.startswith(lowered)]
         if len(found) == 1:
             return found[0]
+    return None
+
+
+@dataclass(frozen=True)
+class Located:
+    """The commit a ref names and, when it is on a branch of its own, that branch."""
+
+    commit: wire.StoredCommit
+    line: wire.StoredLine | None
+
+
+def locate(repository: wire.StoredRepository, ref: str | None) -> Located | None:
+    """What a ref names, branches with commits of their own included: those by name or by the sha (or its unique
+    prefix of at least seven characters) of one of their commits. None for a ref that names nothing."""
+    found = resolve(repository, ref)
+    if found is not None:
+        return Located(found, None)
+    if ref is None or not repository.commits:
+        return None
+    named = history.line_named(repository, ref.removeprefix(BRANCH_PREFIX))
+    if named is not None:
+        tip = named.commits[0] if named.commits else history.commit_of(repository, named.fork)
+        return None if tip is None else Located(tip, named)
+    lowered = ref.lower()
+    if len(lowered) >= 7 and all(c in "0123456789abcdef" for c in lowered):
+        matches = [(line, c) for line in repository.lines for c in line.commits if c.sha.startswith(lowered)]
+        if len(matches) == 1:
+            return Located(matches[0][1], matches[0][0])
     return None
 
 

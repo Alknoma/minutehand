@@ -32,11 +32,16 @@ class Call:
     url: str
     json: object = None
     status: int = 200
+    before: tuple[Call, ...] = ()
+    """Calls made first, to put the world where this one can be answered."""
 
 
 LEDGER = "/repos/lanternworks/ledger"
 COMMENT = number("comment/lanternworks/ledger/1/0")
 """The id the seed derives for the first comment on issue 1."""
+REVIEW = number("review/lanternworks/ledger/4/0")
+"""The id the seed derives for the first review of pull request 4."""
+MERGE = Call(f"{LEDGER}/pulls/4/merge", {}, 200)
 SERVED: dict[tuple[str, str], Call] = {
     ("GET", "/user"): Call("/user"),
     ("GET", "/user/repos"): Call("/user/repos"),
@@ -80,6 +85,34 @@ SERVED: dict[tuple[str, str], Call] = {
     ),
     ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(f"{LEDGER}/issues/1/labels", None, 204),
     ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}"): Call(f"{LEDGER}/issues/1/labels/bug"),
+    ("GET", "/repos/{owner}/{repo}/pulls"): Call(f"{LEDGER}/pulls?state=all"),
+    ("POST", "/repos/{owner}/{repo}/pulls"): Call(
+        f"{LEDGER}/pulls", {"title": "Describe the notes", "head": "notes", "base": "main"}, 201
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}"): Call(f"{LEDGER}/pulls/4"),
+    ("PATCH", "/repos/{owner}/{repo}/pulls/{pull_number}"): Call(f"{LEDGER}/pulls/4", {"title": "Raise it"}),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/files"): Call(f"{LEDGER}/pulls/4/files"),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/commits"): Call(f"{LEDGER}/pulls/4/commits"),
+    ("PUT", "/repos/{owner}/{repo}/pulls/{pull_number}/merge"): MERGE,
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/merge"): Call(
+        f"{LEDGER}/pulls/4/merge", None, 204, before=(MERGE,)
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews"): Call(f"{LEDGER}/pulls/4/reviews"),
+    ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews"): Call(
+        f"{LEDGER}/pulls/4/reviews", {"event": "COMMENT", "body": "A review"}
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"): Call(
+        f"{LEDGER}/pulls/4/reviews/{REVIEW}"
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments"): Call(
+        f"{LEDGER}/pulls/4/reviews/{REVIEW}/comments"
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(f"{LEDGER}/pulls/4/comments"),
+    ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(
+        f"{LEDGER}/pulls/4/comments",
+        {"body": "Why?", "commit_id": "{head}", "path": "services/billing/config.py", "line": 1, "side": "RIGHT"},
+        201,
+    ),
 }
 """Each operation the provider serves, and a call of it against the seeded world."""
 
@@ -174,8 +207,8 @@ def seeded() -> GitHubSeed:
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 169 operations, 32 served, 137 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 32, 137)
+    """The counts the provider's README states: 169 operations, 46 served, 123 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 46, 123)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 
@@ -185,8 +218,11 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
 ) -> None:
     call = SERVED[(method, path)]
     async with hub.client(TOMAS) as http:
-        readme = (await http.get("/repos/lanternworks/ledger/contents/README.md")).json()["sha"]
-        answered = await _call(http, method, call.url.replace("{readme}", readme), call.json)
+        readme = (await http.get(f"{LEDGER}/contents/README.md")).json()["sha"]
+        head = (await http.get(f"{LEDGER}/pulls/4")).json()["head"]["sha"]
+        for earlier in call.before:
+            assert (await _call(http, "PUT", earlier.url, earlier.json)).status_code == earlier.status
+        answered = await _call(http, method, call.url.replace("{readme}", readme), _filled(call.json, head))
     assert answered.status_code == call.status, answered.text
     schema = _success_schema(method, path)
     if call.status == 204:
@@ -195,6 +231,12 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
     assert schema is not None
     gaps = _missing(schema, answered.json(), "$")
     assert gaps == [], " ".join(gaps)
+
+
+def _filled(sent: object, head: str) -> object:
+    if isinstance(sent, dict):
+        return {k: _filled(v, head) for k, v in sent.items()}
+    return head if sent == "{head}" else sent
 
 
 async def test_every_operation_the_provider_does_not_serve_is_refused_by_name(hub: Hub) -> None:

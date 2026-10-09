@@ -407,6 +407,21 @@ class GitHubWorld:
             parent = blobs_parent(repository.owner, repository.name)
             self._write(ref, blob, parent, Operation.CREATE, actor)
 
+    def put_file(
+        self, repository: wire.StoredRepository, file: wire.StoredFile, *, operation: Operation, actor: Actor
+    ) -> WorldEvent:
+        """A file of the default branch as a commit made through the API leaves it."""
+        parent = repository_id(repository.owner, repository.name)
+        return self._write(
+            file_ref(repository, file.path), file, parent, operation, actor, snapshot("files", file.path)
+        )
+
+    def delete_file(self, repository: wire.StoredRepository, file: wire.StoredFile, *, actor: Actor) -> WorldEvent:
+        parent = repository_id(repository.owner, repository.name)
+        return self._store.apply(
+            Change(entity=file_ref(repository, file.path), operation=Operation.DELETE, actor=actor, parent=parent)
+        )
+
     def arm(self, number: int, fault: wire.StoredFault) -> WorldEvent:
         return self._write(fault_ref(number), fault, FAULTS, Operation.CREATE, Actor.SCENARIO)
 

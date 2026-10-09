@@ -27,7 +27,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.github import content, graphql, search, state, wire
+from minutehand.adapters.providers.github import content, graphql, history, search, state, wire
 from minutehand.adapters.providers.github.answers import (
     PAGE_DEFAULT,
     PAGE_MAX,
@@ -40,6 +40,7 @@ from minutehand.adapters.providers.github.answers import (
     paged,
     param,
 )
+from minutehand.adapters.providers.github.pulls import Pulls
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.tracker import Tracker
 from minutehand.domain.errors import NotServed
@@ -106,6 +107,7 @@ class GitHubApi:
         self.world = GitHubWorld(store)
         self.clock = clock
         self.tracker = Tracker(self)
+        self.pulls = Pulls(self)
 
     # ------------------------------------------------------------------ the gate
 
@@ -363,7 +365,7 @@ class GitHubApi:
         encoded = wire.wrapped_base64(_raw(file)) if fits else ""
         return wire.FileOut.model_validate({**shape, "encoding": "base64" if fits else "none", "content": encoded})
 
-    def _commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
+    def commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
         full = repository.full_name
         person = wire.PersonOut(name=commit.author_name, email=commit.author_email, date=commit.date)
         committed = wire.PersonOut(name=commit.committer_name, email=commit.committer_email, date=commit.committer_date)
@@ -385,14 +387,14 @@ class GitHubApi:
             comments_url=f"{wire.API}/repos/{full}/commits/{commit.sha}/comments",
             author=author,
             committer=committer,
-            parents=[]
-            if commit.parent is None
-            else [
+            parents=[
                 wire.ParentOut(
-                    sha=commit.parent,
-                    url=f"{wire.API}/repos/{full}/commits/{commit.parent}",
-                    html_url=f"{wire.WEB}/{full}/commit/{commit.parent}",
+                    sha=parent,
+                    url=f"{wire.API}/repos/{full}/commits/{parent}",
+                    html_url=f"{wire.WEB}/{full}/commit/{parent}",
                 )
+                for parent in (commit.parent, commit.merged)
+                if parent is not None
             ],
         )
 
@@ -472,6 +474,12 @@ class GitHubApi:
         ]
         return as_json(out, headers=links)
 
+    def files_at(self, repository: wire.StoredRepository, located: content.Located) -> list[wire.StoredFile]:
+        """The files a ref shows: the default branch's, or a branch of its own at the commit named."""
+        if located.line is None:
+            return self.world.files(repository)
+        return history.materialize(self.world, repository, history.line_tree(located.line, upto=located.commit.sha))
+
     async def contents(self, request: Request, caller: Caller) -> Answered:
         section = "/repos/contents#get-repository-content"
         owner, name = request.path_params["owner"], request.path_params["repo"]
@@ -480,7 +488,8 @@ class GitHubApi:
         if not repository.commits:
             raise wire.Refusal(404, "This repository is empty.", section=section)
         ref = param(request, "ref")
-        if content.resolve(repository, ref) is None:
+        located = content.locate(repository, ref)
+        if located is None:
             # Observed 2026-10-08: this refusal points at the reference's old address.
             raise wire.Refusal(
                 404,
@@ -488,7 +497,7 @@ class GitHubApi:
                 documentation_url="https://docs.github.com/v3/repos/contents/",
             )
         shown = ref or repository.default_branch
-        files = self.world.files(repository)
+        files = self.files_at(repository, located)
         self.world.saw(state.repository_ref(owner, name), Operation.READ)
         found = next((f for f in files if f.path == path), None) if path else None
         if found is not None:
@@ -509,6 +518,11 @@ class GitHubApi:
             )
         found = next((f for f in self.world.files(repository) if f.sha == sha), None)
         if found is None:
+            kept = self.world.blob(repository, sha)
+            found = (
+                None if kept is None else wire.StoredFile(path="", content=kept.content, size=kept.size, sha=kept.sha)
+            )
+        if found is None:
             raise wire.not_found(section)
         self.world.saw(state.repository_ref(owner, name), Operation.READ)
         out = wire.BlobOut(
@@ -524,8 +538,9 @@ class GitHubApi:
         section = "/git/trees#get-a-tree"
         owner, name, wanted = request.path_params["owner"], request.path_params["repo"], request.path_params["tree"]
         repository = self.visible(caller, owner, name, section)
-        files = self.world.files(repository)
-        directory: str | None = "" if content.resolve(repository, wanted) is not None else None
+        located = content.locate(repository, wanted)
+        files = self.world.files(repository) if located is None else self.files_at(repository, located)
+        directory: str | None = "" if located is not None else None
         if directory is None:
             directory = next(
                 (d for d in ["", *content.directories(files)] if content.tree_sha(repository, d) == wanted.lower()),
@@ -580,16 +595,16 @@ class GitHubApi:
         if not repository.commits:
             raise wire.Refusal(409, "Git Repository is empty.", section=section)
         sha = param(request, "sha")
-        start = content.resolve(repository, sha)
+        start = content.locate(repository, sha)
         if start is None:
             raise wire.not_found(section)
-        history = repository.commits[repository.commits.index(start) :]
+        listed = history.log(repository, start.commit)
         path = (param(request, "path") or "").strip("/")
         if path:
-            history = [c for c in history if any(p == path or p.startswith(path + "/") for p in c.paths)]
-        first, end, links = paged(request, len(history), path=_by_id(request, repository))
+            listed = [c for c in listed if any(p == path or p.startswith(path + "/") for p in c.paths)]
+        first, end, links = paged(request, len(listed), path=_by_id(request, repository))
         self.world.saw(state.repository_ref(owner, name), Operation.READ)
-        return as_json([self._commit_out(repository, c) for c in history[first:end]], headers=links)
+        return as_json([self.commit_out(repository, c) for c in listed[first:end]], headers=links)
 
     async def search_code(self, request: Request, caller: Caller) -> Answered:
         if caller.account is None:
@@ -788,6 +803,7 @@ def _conditional(request: Request, answered: Answered) -> Answered:
 def build_app(store: Store, clock: Clock) -> Starlette:
     api = GitHubApi(store, clock)
     tracker = api.tracker
+    pulls = api.pulls
     table: list[tuple[str, str, Handler]] = [
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
@@ -820,6 +836,24 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/repos/{owner}/{repo}/labels", "GET", tracker.list_labels),
         ("/repos/{owner}/{repo}/labels", "POST", tracker.create_label),
         ("/repos/{owner}/{repo}/labels/{name:path}", "GET", tracker.get_label),
+        ("/repos/{owner}/{repo}/pulls", "GET", pulls.list_pulls),
+        ("/repos/{owner}/{repo}/pulls", "POST", pulls.create_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}", "GET", pulls.get_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}", "PATCH", pulls.update_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/files", "GET", pulls.list_files),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/commits", "GET", pulls.list_commits),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/merge", "GET", pulls.check_merged),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/merge", "PUT", pulls.merge_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews", "GET", pulls.list_reviews),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews", "POST", pulls.create_review),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews/{review_id:int}", "GET", pulls.get_review),
+        (
+            "/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews/{review_id:int}/comments",
+            "GET",
+            pulls.list_review_comments_of_review,
+        ),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "GET", pulls.list_review_comments),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "POST", pulls.create_review_comment),
         ("/search/code", "GET", api.search_code),
         ("/app/installations/{installation_id:int}/access_tokens", "POST", api.installation_token),
         ("/graphql", "POST", api.graph),

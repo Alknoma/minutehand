@@ -10,7 +10,8 @@ a call without one) and is unproven. Tests are in `tests/providers/github/`, fil
 `test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S),
 `test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B), `test_github_refusals.py`
 (F), `test_github_coverage.py` (C), `test_github_world_without_users.py` (W), and, for what the agent writes,
-`test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E) and
+`test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E),
+`test_github_pulls.py` (P), `test_github_reviews.py` (V), `test_github_diffs.py` (D) and
 `tests/transitions/test_github_people.py` (T). **Observed** means the same of a capture committed under `tests/data/`:
 `tests/data/github_rest/observed-2026-10-09.json` holds read-only exchanges with public repositories, trimmed to what
 a claim rests on and holding no login or free text of anyone.
@@ -143,6 +144,58 @@ required and its schema optional); a label added as a suggestion; commenting on 
 access; a comment list sorted without a direction (no default is given); reopening a merged pull request; a `since` that
 is not ISO 8601 with a time zone; a `state`, `sort` or `direction` outside the reference's lists.
 
+## Pull requests, reviews and branches
+
+A pull request is an issue with a head branch and a base (one sequence numbers both), so every row of "Issues,
+comments and labels" holds for it too. Its head is a branch with commits of its own, laid on the default branch's head
+as the seed leaves it; its base is the default branch. What it changes is the difference between the tree its head was
+made at and the tree its head has.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A repository's pull requests list the open ones by default, newest created first, in the description's `pull-request-simple` form; `state`, `head` (`user:ref-name`), `base`, `sort` (created, updated, popularity) and `direction` ("`desc` when sort is `created` or sort is not specified, otherwise `asc`") filter and order | documented | P `test_pull_requests_list_the_open_ones_newest_first_in_the_simple_form`, P `test_pull_requests_filter_by_state_head_and_base_and_sort`, P `test_pull_requests_are_paged` | https://docs.github.com/en/rest/pulls/pulls#list-pull-requests |
+| The list answers the simple form: none of a pull request's counts, `merged`, `mergeable` or `mergeable_state` | observed | P `test_pull_requests_list_the_open_ones_newest_first_in_the_simple_form` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A pull request got holds its `head` and `base` (`label`, `ref`, `sha`, `repo`, `user`), `_links`, `merged`, `mergeable`, `mergeable_state`, `commits`, `additions`, `deletions`, `changed_files`, `comments`, `review_comments` and `maintainer_can_modify`; the urls take the forms observed | observed | P `test_a_pull_request_reads_with_what_github_computes_of_it` | `tests/data/github_rest/observed-2026-10-09.json` |
+| `mergeable` is true, false or null ("GitHub has started a background job to compute the mergeability"); when true `merge_commit_sha` is the test merge commit's, before the merge, and the merge commit's after | documented | P `test_a_pull_request_reads_with_what_github_computes_of_it`, P `test_the_test_merge_commit_follows_the_commits_it_would_merge` | https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request |
+| A pull request that merges cleanly reads `mergeable_state: "clean"`, open or closed, draft or not | observed | P `test_a_pull_request_reads_with_what_github_computes_of_it` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A mergeability that cannot be settled is `mergeable: null` and `mergeable_state: "unknown"` ("The state cannot currently be determined", GraphQL's `MergeStateStatus`) | documented | P `test_a_file_changed_on_both_sides_is_a_mergeability_github_has_not_computed_and_a_merge_is_refused_by_name` | https://docs.github.com/en/graphql/reference/enums#mergestatestatus |
+| A pull request's `id` is its own, not its issue's ("the `id` of a pull request returned from "Issues" endpoints will be an _issue id_") | documented | P `test_a_pulls_id_is_not_its_issues` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| Creating a pull request answers 201; `title`, `body`, `draft` and `maintainer_can_modify` are kept as sent; `head` and `base` are required | documented | P `test_a_pull_request_the_agent_opens_is_kept_and_returned_as_sent`, P `test_a_pull_request_missing_what_the_reference_requires_is_422_invalid_request` | https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request |
+| Opening or updating a pull request takes write access to the head, or, for an organization's repository, membership of the organization; 403 refuses | documented | P `test_an_organization_member_may_open_one_and_a_reader_of_a_user_repository_may_not` | https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request |
+| Updating a pull request takes `title`, `body`, `state` (open, closed) and `maintainer_can_modify`; closing keeps the commits it stood between | documented | P `test_a_pull_request_is_retitled_closed_and_reopened`, P `test_a_closed_pull_request_keeps_the_commits_it_stood_between` | https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request |
+| A pull request's files list as the description's `diff-entry`, by name: `sha` the head's blob, `status`, `additions`, `deletions`, `changes`, `patch`; the urls name the head's sha | observed | P `test_the_files_of_a_pull_request_are_listed_by_name_with_their_patches` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A removed file's entry carries the blob it had as `sha` and urls at the base's sha | observed | P `test_a_removed_file_is_listed_with_its_old_sha_and_urls_at_the_base` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A patch is a hunk header (`@@ -a,b +c,d @@`, a length of one left out) and the changed lines with three of context each side; a line without its newline is followed by `\ No newline at end of file`; the patch has no newline at its end | observed | D `test_the_patch_of_a_file_added_whole_is_the_one_the_real_service_answered`, D `test_the_patch_of_a_change_to_a_file_with_no_final_newline_is_the_one_the_real_service_answered`, D `test_the_patch_of_lines_added_after_the_last_is_the_one_the_real_service_answered`, D `test_the_patch_of_a_removed_file_is_the_one_the_real_service_answered` | `tests/data/github_rest/observed-2026-10-09.json` |
+| `additions` and `deletions` are the lines added and deleted by a minimal edit script | observed | D `test_counts_are_those_of_a_minimal_edit_script` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A pull request's commits list oldest first, the first with the base's head as its parent | observed | P `test_the_commits_of_a_pull_request_are_listed_oldest_first` | `tests/data/github_rest/observed-2026-10-09.json` |
+| Merging answers 200 with `sha`, `merged: true` and "Pull Request successfully merged"; the pull request is then merged, closed and has `merged_by`, `merged_at` and the merge commit | documented | P `test_a_pull_request_is_merged_by_a_merge_commit_of_two_parents` | https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request |
+| The merge commit has the base's head and the head as parents, its author and committer the merging user, and says "Merge pull request #N from <owner>/<branch>" with the pull request's title below it; `commit_title` replaces the first and `commit_message` is appended | observed | P `test_a_pull_request_is_merged_by_a_merge_commit_of_two_parents`, P `test_a_merge_takes_a_title_and_extra_detail_as_the_reference_words_them` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A commit's committer defaults to its author | documented | P `test_a_pull_request_is_merged_by_a_merge_commit_of_two_parents` | https://docs.github.com/en/rest/git/commits#create-a-commit |
+| A merge "if merge cannot be performed" is 405 and one with a `sha` the head does not match 409; checking a merge answers 204 once merged and 404 before; merging takes write access; the reference gives no message for 403, 405 or 409, so each answer's message is its status's name | documented | P `test_a_merge_that_cannot_be_performed_is_405_and_a_head_that_moved_409`, P `test_a_merge_takes_write_access_and_a_pull_request_to_merge` | https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request |
+| What a merge brings shows on the default branch and not before; the branch the pull request is from keeps its own commits | documented | P `test_what_a_merge_brings_shows_on_the_default_branch_and_not_before`, P `test_the_branches_the_seed_made_read_at_their_own_commits` | https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request |
+| The reviews of a pull request list in chronological order; a review is APPROVED, CHANGES_REQUESTED or COMMENTED (GraphQL's `PullRequestReviewState`) for the event APPROVE, REQUEST_CHANGES or COMMENT; creating one answers 200 and defaults `commit_id` to the most recent commit | documented | V `test_the_reviews_of_a_pull_request_list_oldest_first_as_seeded`, V `test_a_review_is_submitted_with_the_state_its_event_leaves_it_in` | https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request |
+| A review holds `user`, `body`, `state`, `commit_id`, `submitted_at`, `html_url`, `pull_request_url`, `author_association` and `_links` (`html`, `pull_request`) | observed | V `test_the_reviews_of_a_pull_request_list_oldest_first_as_seeded` | `tests/data/github_rest/observed-2026-10-09.json` |
+| `body` is required for REQUEST_CHANGES and COMMENT; a missing required parameter is 422 "Invalid request" | documented | V `test_an_approval_needs_no_words_and_the_other_two_do` | https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request |
+| Pull request authors cannot approve their own pull requests | documented | V `test_the_author_may_comment_on_their_own_pull_request_and_no_more` | https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/approving-a-pull-request-with-required-reviews |
+| A review comment holds `diff_hunk` (the patch from its header through the commented line), `position` (counted from the line below the `@@` line, the marker line counting), `line`, `side`, `path`, `commit_id`, `original_commit_id`, `subject_type` and `pull_request_review_id` | observed | V `test_a_comment_on_a_line_carries_the_diff_up_to_it`, D `test_the_hunk_through_a_position_is_the_diff_hunk_the_real_service_gave_the_comment_there` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A comment names its line by `line` and `side` (LEFT for deletions, RIGHT for additions and context) or by `position`; a reply (`in_reply_to`) ignores every parameter but `body` | documented | V `test_a_comment_names_its_line_by_the_old_side_or_by_position`, V `test_a_reply_sits_where_the_comment_it_answers_does` | https://docs.github.com/en/rest/pulls/comments#create-a-review-comment-for-a-pull-request |
+| A pull request's review comments list by ascending id, or sorted by created or updated with a direction, and take `since` | documented | V `test_the_comments_of_a_pull_request_list_by_ascending_id_or_sorted` | https://docs.github.com/en/rest/pulls/comments#list-review-comments-on-a-pull-request |
+| An open pull request that asks a person's review waits on them until they have reviewed it; they approve, ask for changes or comment, and its author may only comment; each is one move of its state in the log | documented | T `test_a_pull_request_that_asks_a_review_is_pending_on_the_reviewer_and_a_pinned_approval_lands_as_theirs`, T `test_a_pull_request_closed_or_reviewed_offers_its_reviewer_nothing_more_to_ask` | https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request |
+
+### Refused by name
+
+A pull request from another repository (`head_repo`, `owner:branch` of another owner), into a base other than the
+default branch, from a branch with no commits of its own beyond the base or one the repository has not, from an issue
+(`issue`), or a second open one from the same branch (the reference gives no message for GitHub's refusals of these);
+a binary file in a pull request's diff; a patch git may place either way (a change whose lines are aligned with the lines
+it replaces, or could slide past their neighbours), whose counts are still given; a merge by `squash` or `rebase` (the
+reference gives neither commit's default message), of a pull request whose changes meet changes on the default branch
+in the same files, or reopening one that was merged; moving a pull request's base; `sort=long-running`; a review
+with no `event` (left PENDING until submitted), with draft `comments`, or of a commit other than the head; approving or
+asking changes of one's own pull request; a comment on several lines (`start_line`, `start_side`), on a whole file
+(`subject_type: file`), on a file the pull request does not change, on a line its diff does not show, or on a commit
+other than the head.
+
 ## `HEAD` as a ref
 
 Each place the fake accepts a ref or a SHA, and what GitHub's public reference says of `HEAD` there. Tests in
@@ -197,7 +250,7 @@ organization is a 404 (F `test_a_private_repository_without_access_is_not_found`
 
 Every operation of `tests/providers/github/openapi/api.github.com.subset.json` that is not served is answered 501,
 "minutehand's github fake does not implement <METHOD> <path>" (C `test_every_operation_the_provider_does_not_serve_is_refused_by_name`;
-169 operations, 32 served, 137 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
+169 operations, 46 served, 123 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
 is any other path. `X-GitHub-Api-Version: 2026-03-10`, which GitHub answers (recorded), is refused by name the same
 way (F `test_an_api_version_github_serves_and_this_provider_does_not_is_refused_by_name`).
 

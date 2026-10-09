@@ -29,7 +29,7 @@ from typing import ClassVar, Self
 
 from pydantic import Field, model_validator
 
-from minutehand.adapters.providers.github import wire
+from minutehand.adapters.providers.github import history, wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.provider import Keyed
@@ -464,12 +464,6 @@ def _name(account: wire.StoredAccount, where: str) -> str:
     return account.name
 
 
-def _email(account: wire.StoredAccount) -> str:
-    """The account's email, else GitHub's no-reply address for an account that keeps its email private:
-    https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address"""
-    return account.email or f"{account.id}+{account.login}@users.noreply.github.com"
-
-
 def _commits(
     repository: SeedRepository, accounts: dict[str, wire.StoredAccount], start: datetime
 ) -> list[wire.StoredCommit]:
@@ -490,10 +484,10 @@ def _commits(
                 message=commit.message,
                 author_login=_login(author),
                 author_name=_name(author, where),
-                author_email=_email(author),
+                author_email=history.commit_email(author),
                 committer_login=_login(committer),
                 committer_name=_name(committer, where),
-                committer_email=_email(committer),
+                committer_email=history.commit_email(committer),
                 committer_date=committed,
                 date=date,
                 paths=commit.paths,
@@ -562,10 +556,10 @@ def _lines(
                     message=commit.message,
                     author_login=_login(author),
                     author_name=_name(author, where),
-                    author_email=_email(author),
+                    author_email=history.commit_email(author),
                     committer_login=_login(author),
                     committer_name=_name(author, where),
-                    committer_email=_email(author),
+                    committer_email=history.commit_email(author),
                     committer_date=date,
                     date=date,
                     paths=[c.path for c in changes],
