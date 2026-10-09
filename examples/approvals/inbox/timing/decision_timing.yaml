@@ -2,7 +2,6 @@
 # Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
 # days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
 #   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- env APPROVAL_VIA=inbox python ../agent.py
-# (an agent file that writes {run.port} for 8720 runs them side by side: --jobs 4 -- env PORT={run.port} ...)
 name: inbox_decision_timing
 goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
 owner: owen
