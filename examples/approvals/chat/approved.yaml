@@ -11,10 +11,9 @@ people:
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes: [{nth: 1, take: Approve}]     # the button on the agent's first message to her
     reply:
       kind: scripted
-      replies:
-        - {to_ask: 1, press: {label: Approve}}     # the button on the agent's first message to her
       then: silent
   - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
 assess:

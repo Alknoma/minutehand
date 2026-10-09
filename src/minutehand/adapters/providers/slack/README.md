@@ -27,7 +27,7 @@ an argument of a served method the fake does not model is refused the same way, 
 (`app.UNSERVED_ARGUMENTS`). `CLAIMS.md` gives the source of every behaviour, and the credential checks Slack makes
 that this fake deliberately does not: any token, or none, is answered.
 
-Pushed to the app (`PushesEvents`, `PushesInteractions`), signed with the world's signing secret: messages in a DM,
+Pushed to the app (`PushesEvents`, `PushesPresses`), signed with the world's signing secret: messages in a DM,
 a channel or a thread, `app_mention`, `message_changed`, `message_deleted`, `reaction_added`,
 `member_joined_channel` (a person joining, the bot being added), `app_home_opened`, slash commands, `block_actions`
 and `view_submission`. `credential` (`MintsInboundCredentials`) signs a request a test builds itself:

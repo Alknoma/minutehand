@@ -174,7 +174,7 @@ async def test_inbox_rejected_fails_the_heedless_agent_that_orders_anyway(
     played = await play("inbox", "rejected.yaml", tmp_path, monkeypatch, heedless=True)
 
     assert played.verdict is VerdictKind.FAILED
-    assert played.failed == ["acts_only_once_approved"]
+    assert played.failed == ["acts_only_once_approved", "never_orders_after_a_rejection"]
     assert len(played.orders) == 1
 
 
@@ -329,10 +329,11 @@ async def test_the_guides_queries_show_what_the_agent_did_around_each_decision(
     assert nadias[0]["person"] == "nadia" and nadias[2]["summary"].startswith("create inbox_item apr-2")
 
 
-async def test_a_budget_cut_while_her_answer_is_owed_does_not_change_it(
+async def test_a_budget_cut_while_her_answer_is_owed_is_worded_anew_and_still_says_what_her_script_does(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The gap the guide states: a fact change reaches what a person is asked after it, never an answer they owe."""
+    """An answer owed when a fact changes is worded again from what she knows as she sends it; what it decides is
+    her script's step, which the change does not rewrite."""
     played = await play("email", "budget_changes.yaml", tmp_path, monkeypatch)
 
     assert played.verdict is VerdictKind.PASSED, played.failed

@@ -31,8 +31,7 @@ people:
     email: sofia@example.com
     reply: {kind: scripted, delay: {shortest: PT36H, longest: PT36H}, replies: [{to_ask: 1, verbatim: "Yes."}], then: silent}
     working_hours: {timezone: Europe/Rome, opens: 09:00, closes: 17:30}
-ticket_fates:
-  - {assignee: sofia, becomes: done, after: P3D}
+    takes: [{take: done, after: P3D}]
 """
 
 
@@ -44,7 +43,7 @@ def test_a_yaml_scenario_loads_with_clock_times_read_as_times(tmp_path: Path) ->
     assert sofia.working_hours is not None
     assert (sofia.working_hours.opens, sofia.working_hours.closes) == (time(9), time(17, 30))
     assert isinstance(sofia.reply, Scripted) and sofia.reply.delay.shortest == timedelta(hours=36)
-    assert scn.deadline_after == timedelta(days=14) and scn.ticket_fates[0].after == timedelta(days=3)
+    assert scn.deadline_after == timedelta(days=14) and sofia.takes[0].after == timedelta(days=3)
 
 
 def test_a_json_agent_loads(tmp_path: Path) -> None:

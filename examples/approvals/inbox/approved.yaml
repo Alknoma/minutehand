@@ -9,17 +9,18 @@ people:
   - key: owen                          # the requester: told the outcome, decides nothing
     name: Owen Hart
     email: owen@example.com
-    reply: {kind: scripted, decisions: [], then: silent}
+    reply: {kind: scripted, then: silent}
   - key: nadia                         # the approver
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}   # of her working time after the request
     working_hours: {timezone: Europe/Stockholm, opens: "09:00", closes: "17:00"}
+    takes: [{take: approve}]
     reply:
       kind: scripted
-      decisions: [{decision: approve}]
       then: silent
   - key: marta                         # the backup approver, never needed here
     name: Marta Holm
     email: marta@example.com
-    reply: {kind: scripted, decisions: [{decision: approve}], then: silent}
+    reply: {kind: scripted, then: silent}
+    takes: [{take: approve}]

@@ -18,7 +18,7 @@ def test_the_clock_jumps_to_the_earliest_pending_moment_and_fires_only_what_is_d
 
 
 def test_something_already_overdue_fires_without_moving_the_clock() -> None:
-    jump = next_jump(NOW, [Due(at=NOW - timedelta(hours=1), kind=DueKind.TICKET_FATE, ref="late")])
+    jump = next_jump(NOW, [Due(at=NOW - timedelta(hours=1), kind=DueKind.TRANSITION, ref="late")])
     assert jump is not None and jump.now == NOW and [d.ref for d in jump.firing] == ["late"]
 
 

@@ -9,7 +9,7 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.clock import Drawn
 from minutehand.domain.conversation import Provenance
-from minutehand.domain.scenario import FormInput, Model, ProviderKey, ScriptedDecision, ScriptedReply, SigningSecret
+from minutehand.domain.scenario import FormInput, Model, ProviderKey, ScriptedReply, SigningSecret
 from minutehand.domain.world import EntityRef
 
 
@@ -168,8 +168,6 @@ class Plan(Model):
     nth: int = Field(ge=1, description="Which of their asks (or items) it is")
     writing: Writing
     step: ScriptedReply | None = None
-    decision: ScriptedDecision | None = None
-    press: Press | None = None
     drawn: Drawn
 
     @property

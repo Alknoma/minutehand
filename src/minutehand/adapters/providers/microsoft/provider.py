@@ -1,14 +1,14 @@
 """The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams, files, Outlook mail and calendars,
 and the people of the tenant acting in Teams, on files, by email and on invitations.
 
-It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
-`LandsReplies`,
+It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesPresses`,
+`LandsAnswers`,
 `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `ChangesPeople` (a user removed, disabled or enabled again
 by an administrator) and `MintsInboundCredentials` (the Bot Framework's token for an activity a test posts itself). A person's change to a seeded document (edit, rename, move, share, delete)
 lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
 notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
 through. A person's reply to an email is an email back into the mailbox it answers, and a press of Accept, Tentative or
-Decline on a meeting request answers the invitation (`LandsReplies`); neither is pushed to the bot, so an agent that
+Decline on a meeting request answers the invitation (`LandsAnswers`); neither is pushed to the bot, so an agent that
 talks to people only by email declares no Teams inbound target. A Graph subscription on the mailbox it lands in is
 notified, and that notification is the wake (`heard`). A file held open is
 not something a person does here: it is a fault the scenario declares
@@ -104,14 +104,14 @@ class MicrosoftProvider:
     ) -> None:
         await People(world, clock).happen(happening, target)
 
-    # ------------------------------------------------------------------ PushesInteractions
+    # ------------------------------------------------------------------ PushesPresses
 
     async def press(
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await People(world, clock).press(reply, target)
 
-    # ------------------------------------------------------------------ LandsReplies
+    # ------------------------------------------------------------------ LandsAnswers
 
     def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
         """`TalksToAgent`: people's answers to the agent's Teams messages pushed to `target` signed with `secret`,
@@ -284,6 +284,6 @@ def _by(user: UserRecord) -> wire.IdentitySet:
 
 
 def build() -> MicrosoftProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`,
+    """A `Provider` that also `PushesEvents`, `PushesPresses`, `LandsAnswers`, `ChangesDocuments`, `NotifiesChanges`,
     `DeclaresFaults`, `ChangesPeople` and `MintsInboundCredentials`."""
     return MicrosoftProvider()

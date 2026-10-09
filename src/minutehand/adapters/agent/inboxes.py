@@ -320,5 +320,4 @@ def _item(holder: object, declared: HttpInbox) -> ListedItem | None:
         waits_on=_text(first(holder, listing.waits_on)) if listing.waits_on is not None else None,
         category=_text(first(holder, listing.category)) if listing.category is not None else None,
         decisions=decisions,
-        gates=_text(first(holder, listing.gates)) if listing.gates is not None else None,
     )

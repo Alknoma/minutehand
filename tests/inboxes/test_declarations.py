@@ -9,12 +9,12 @@ import pytest
 from pydantic import ValidationError
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
-from minutehand.application.inboxes import refuse_undecided
+from minutehand.application.inboxes import refuse_untakeable
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.inboxes import HttpInbox
 from minutehand.domain.jsonpath import JsonPathError, parse, query
-from minutehand.domain.scenario import AfterScript, Scripted, ScriptedDecision, Silent
+from minutehand.domain.scenario import Take
 from minutehand.domain.templates import fill
 from tests.inboxes.support import deciding, scenario
 
@@ -121,46 +121,31 @@ def test_an_agent_file_written_for_a_later_version_is_refused_saying_so() -> Non
     assert AgentUnderTest.model_validate({"version": 1, "name": "a", "wakes": [{"kind": "command", "argv": ["x"]}]})
 
 
-def test_a_person_who_can_receive_items_and_says_nothing_of_deciding_is_refused_naming_them() -> None:
-    reach = HttpInboxReach(HttpInbox.model_validate(declared()), {"nadia": "t"})
-    with pytest.raises(RunRefused, match="nadia can receive items in inbox approvals and their script says nothing"):
-        refuse_undecided(scenario(Scripted(then=AfterScript.SILENT)), [reach])
-    refuse_undecided(scenario(Silent()), [reach])
-    refuse_undecided(scenario(Scripted(then=AfterScript.SILENT, decisions=[])), [reach])
-
-
-def test_a_person_without_a_credential_cannot_receive_items_and_is_not_refused() -> None:
-    reach = HttpInboxReach(HttpInbox.model_validate(declared()), {})
-    refuse_undecided(scenario(Scripted(then=AfterScript.SILENT)), [reach])
-
-
 @pytest.mark.parametrize(
-    ("decision", "said"),
+    ("take", "said"),
     [
-        (ScriptedDecision(decision="approve"), "nadia decides 'approve', which no inbox the agent declares offers"),
         (
-            ScriptedDecision(decision="reject", inputs={"reason": "x", "mood": "y"}),
+            Take(provider="approvals", take="sign"),
+            "nadia takes 'sign' in inbox approvals, which offers no such decision",
+        ),
+        (
+            Take(provider="approvals", take="reject", fields={"reason": "x", "mood": "y"}),
             "nadia gives decision 'reject' mood; it takes reason",
         ),
-        (ScriptedDecision(decision="reject", inbox="elsewhere"), "nadia decides in inbox elsewhere"),
     ],
 )
-def test_a_scripted_decision_the_inbox_cannot_take_is_refused(decision: ScriptedDecision, said: str) -> None:
+def test_a_take_the_inbox_cannot_take_is_refused(take: Take, said: str) -> None:
     reach = HttpInboxReach(HttpInbox.model_validate(declared()), {"nadia": "t"})
+    # Mutations: a check that skips the decision's name, or its inputs, lets the take through.
     with pytest.raises(RunRefused, match=_escaped(said)):
-        refuse_undecided(scenario(deciding(decision)), [reach])
+        refuse_untakeable(scenario(deciding(take)), [reach])
 
 
-def test_a_scripted_decision_that_leaves_a_required_input_out_has_a_model_write_it() -> None:
-    from minutehand.application.replier import unspoken
-
-    leaves_out = deciding(ScriptedDecision(decision="reject", facts=["the office has a room that day"]))
-    exact = deciding(ScriptedDecision(decision="reject", inputs={"reason": "x"}))
-    declared_inbox = HttpInbox.model_validate(declared())
-    reach = HttpInboxReach(declared_inbox, {"nadia": "t"})
-    refuse_undecided(scenario(leaves_out), [reach])
-    assert unspoken(scenario(leaves_out), [declared_inbox]) == ["nadia (a model writes what they give with 'reject')"]
-    assert unspoken(scenario(exact), [declared_inbox]) == []
+def test_a_take_on_any_provider_or_another_one_is_not_the_inboxs_to_refuse() -> None:
+    reach = HttpInboxReach(HttpInbox.model_validate(declared()), {"nadia": "t"})
+    refuse_untakeable(scenario(deciding(Take(take="sign"))), [reach])
+    refuse_untakeable(scenario(deciding(Take(provider="jira", take="done"))), [reach])
+    refuse_untakeable(scenario(deciding(Take(provider="approvals", take="reject", fields={"reason": "x"}))), [reach])
 
 
 def test_jsonpath_reads_the_rfc_9535_selectors_it_supports() -> None:

@@ -32,7 +32,7 @@ async def test_what_the_agent_removes_and_what_a_machine_command_adds_are_record
         FileRemoved(path="*/Downloads/old.zip"),
         FileRemoved(path="*/Downloads/keep.pdf", at_least=0, at_most=0),
     ]
-    scn = scenario(ticket_fates=[], machine=[add], expect=expect)
+    scn = scenario(tom_finishes=False, machine=[add], expect=expect)
     agent = rig.agent("tidy").model_copy(update={"watches": [str(downloads)]})
 
     record, store, _ = await rig.run(scn, agent, env=rig.env(TIDY_FILE=str(downloads / "old.zip")))
@@ -51,6 +51,6 @@ async def test_what_the_agent_removes_and_what_a_machine_command_adds_are_record
 async def test_with_no_folder_watched_nothing_of_the_machine_is_recorded(rig: Rig, tmp_path: Path) -> None:
     gone = tmp_path / "old.zip"
     gone.write_bytes(b"x")
-    _, store, _ = await rig.run(scenario(ticket_fates=[]), rig.agent("tidy"), env=rig.env(TIDY_FILE=str(gone)))
+    _, store, _ = await rig.run(scenario(tom_finishes=False), rig.agent("tidy"), env=rig.env(TIDY_FILE=str(gone)))
 
     assert not gone.exists() and not [e for e in store.events() if e.entity.kind is EntityKind.FILE]

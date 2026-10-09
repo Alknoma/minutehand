@@ -7,18 +7,18 @@ owner: owen
 starts_at: "2026-08-24T09:00:00Z"
 deadline_after: P5D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes:
+      - take: reject
+        facts: ["the Q3 hardware budget is spent"]   # why: a model writes her reason from it
     reply:
       kind: scripted
-      decisions:
-        - decision: reject
-          facts: ["the Q3 hardware budget is spent"]   # why: a model writes her reason from it
       then: silent
-  - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
 assess:
   - id: tells_the_requester_why        # the requester hears the reason: the decision's facts, whatever the wording
     each: ask

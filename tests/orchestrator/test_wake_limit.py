@@ -65,12 +65,12 @@ def _agent(*, tick: timedelta | None = None, polled: timedelta | None = None) ->
 def test_the_wake_limit_is_the_scenarios_or_sized_from_its_deadline_and_the_agents_rhythm(
     max_wakes: int | None, deadline: timedelta | None, agent: AgentUnderTest, limit: WakeLimit
 ) -> None:
-    played = scenario(max_wakes=max_wakes, deadline_after=deadline, ticket_fates=[])
+    played = scenario(max_wakes=max_wakes, deadline_after=deadline, tom_finishes=False)
     assert wake_limit(played, agent) == limit
 
 
 async def test_an_hourly_agent_with_a_tick_runs_to_its_deadline_and_one_without_stops_at_twenty(rig: Rig) -> None:
-    played = scenario(ticket_fates=[], deadline_after=timedelta(days=1))
+    played = scenario(tom_finishes=False, deadline_after=timedelta(days=1))
     ticking = rig.agent("keep_waking").model_copy(update={"tick": timedelta(hours=1)})
 
     record, _, _ = await rig.run(played, ticking)
