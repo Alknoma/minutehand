@@ -130,7 +130,6 @@ answering it with; a code with no Graph recording (Exchange's `ErrorFolderNotFou
 | Messages page 10 by default, `$top` 1 to 1000, the next page by `@odata.nextLink` | documented | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
 | With `$filter` and `$orderby` together, the `$orderby` properties must open the `$filter` in order, else `InefficientFilter` "The restriction or sort order is too complex for this operation." | documented | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://learn.microsoft.com/en-us/graph/api/user-list-messages |
 | `InefficientFilter` is a 400 | observed | `test_an_orderby_that_does_not_lead_the_filter_is_refused_inefficient_filter` | https://github.com/mpalermiti/outlook-mcp/issues/31 |
-| A list of messages or events without `$orderby` that would hold more than one is refused by name: neither page documents an order, no Microsoft page or public recording states one (searched: List messages, List events, List calendarView, the query-parameters page, the Outlook REST v2 reference, Microsoft's own email tutorials, which send `$orderby` themselves; only `$search` results are documented sorted, by receivedDateTime descending). Client authors: send `$orderby` | documented | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask`, `test_an_event_list_without_orderby_holding_more_than_one_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/user-list-messages and https://learn.microsoft.com/en-us/graph/api/user-list-events |
 | A reply's subject is `RE: ` before the original's; an acceptance's is `Accepted: ` before the event's; a tentative or declining answer's is left out (no source shows it) | observed | `test_a_reply_goes_to_the_messages_reply_to_and_else_to_its_sender`, `test_only_an_acceptance_carries_a_subject_a_recording_shows` | https://github.com/microsoftgraph/dataconnect-solutions/blob/e6b679831b424c6a6a0a68d8246e0b3be38140d9/Datasets/data-connect-dataset-sentitems.md |
 | A mailbox's folders are named "Deleted Items", "Drafts", "Inbox", "Sent Items" and listed in that order | documented | `test_mail_folders_list_by_display_name_as_graphs_example_answer_does` | https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders |
 | `internetMessageId` is left out (Exchange assigns it from its own hosts) and a `$filter` on it is refused by name | documented | `test_internet_message_id_is_left_out_and_filtering_on_it_is_refused_by_name` | https://learn.microsoft.com/en-us/graph/api/resources/message |
@@ -193,12 +192,14 @@ answering it with; a code with no Graph recording (Exchange's `ErrorFolderNotFou
 ## Answered without a source (tracked, to be sourced or refused)
 
 Each row is a behaviour still answered that no Microsoft page or public recording backs. They are kept because
-refusing them would stop agents listing files, users and channels at all; each is to be replaced by a recorded
+refusing them would stop agents listing files, users, channels, mail and events at all; each is to be replaced by a recorded
 answer of the real service or refused by name, and the list may only shrink
 (`tests/providers/test_claims_are_sourced.py`, `OPEN`).
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
+| A list of messages, a folder's included, without `$orderby` lists newest received first (`receivedDateTime desc`) | unsourced | `test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask` | none: user-list-messages documents no default order and its example answer holds one message; the Outlook REST v2 page says "If you do not include an $orderby expression, the return order is not guaranteed" (https://learn.microsoft.com/en-us/previous-versions/office/office-365-api/api/version-2.0/mail-rest-operations), so the order is answered rather than refused, and newest first is the order Microsoft's own email tutorials ask for (`$orderby=receivedDateTime DESC`, https://learn.microsoft.com/graph/tutorials/javascript-email) |
+| A list of events, and the calendar view, without `$orderby` lists by start, earliest first | unsourced | `test_an_event_list_and_the_calendar_view_without_orderby_answer_by_start_ascending` | none: user-list-events and user-list-calendarview document no default order and each example answer holds one event |
 | A folder's children without `$orderby` list in the order the items were made | unsourced | `test_a_folders_children_are_listed_under_value` | none: driveitem-list-children documents `$orderby` and no default |
 | Users without `$orderby` list in the directory's own order | unsourced | `test_users_by_id_principal_name_and_filter_with_select` | none: user-list documents no default order |
 | A team's channels list General first, then in the order they were made | unsourced | `test_channels_by_name_and_their_messages_paged_with_replies` | none: channel-list documents no order |
@@ -226,8 +227,7 @@ it and no recording of the real service shows one:
   not served; a body content type other than text or html; an event without start and end; a `dateTime` that
   cannot be read; `getSchedule` with its end not after its start, an interval outside 5 to 1440, or an address
   with no mailbox in the tenant; `sendMail` without a message; the content of a folder; listing sites without
-  `?search=`; delta on a folder that is not the drive's root; a list of messages or events without `$orderby` that
-  would hold more than one; a folder the mailbox does not hold; an event ending before it starts; an organizer
+  `?search=`; delta on a folder that is not the drive's root; a folder the mailbox does not hold; an event ending before it starts; an organizer
   answering their own meeting; a request body that cannot be read (outside files); and every subscription refusal
   but the three documented above;
 - Graph mail drafts: a MIME draft or a draft made in a folder, a change to a property of a message that is no draft,

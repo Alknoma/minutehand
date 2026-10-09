@@ -26,7 +26,6 @@ from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.master import Master
 from mitmproxy.proxy import mode_specs
 
-from minutehand.adapters import reaching
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.base_url import BaseUrls
 from minutehand.adapters.proxy.capture import Capturing
@@ -165,7 +164,6 @@ class Proxy:
             self.redirect_port = redirected[0][1]
         self._master = master
         _running.append(self)
-        reaching.trust(self.ca_bundle)
         return self
 
     async def __aexit__(
@@ -175,7 +173,6 @@ class Proxy:
         if master is None:
             return
         _running.remove(self)
-        reaching.trust(None)
         server = master.addons.get("proxyserver")
         assert isinstance(server, Proxyserver)
         await server.servers.update([])

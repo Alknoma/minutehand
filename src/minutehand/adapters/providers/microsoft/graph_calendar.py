@@ -15,7 +15,7 @@ reply's moment.
   organizer's mailbox or calendar is notified. A reply written back to a request instead is an email to the
   organizer. An answer to a request a newer one replaced, or to an event since deleted, changes nothing.
 - **Query options** on a list or the view: `$top` (1 to 1000, 10 by default), `$skip`, `$select`; `$orderby` on
-  `start/dateTime` or `end/dateTime`; `$filter` on `start/dateTime` and `end/dateTime` compared to a quoted date
+  `start/dateTime` or `end/dateTime` (without it, by start ascending); `$filter` on `start/dateTime` and `end/dateTime` compared to a quoted date
   and time, and `subject eq`, joined by `and`. Anything else is not served (501).
 """
 
@@ -332,8 +332,6 @@ class Calendar:
                 raise NotServed(f"{option} on events")
         found = self._filtered(events, query(request, "$filter"))
         order = (query(request, "$orderby") or "").strip()
-        if not order and len(found) > 1:
-            raise NotServed("listing events without $orderby: Graph documents no order for them (user-list-events)")
         side, _, direction = (order or "start/dateTime").partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
             raise NotServed(f"$orderby on events: {order}")

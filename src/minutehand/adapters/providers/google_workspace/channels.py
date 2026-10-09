@@ -4,9 +4,9 @@ stopped by its own API's `channels.stop`. `CLAIMS.md` gives the source of each r
 **Opening.** A watch's body names `id`, `type` (`web_hook`, or `webhook`), `address`, and optionally `token` and
 `expiration` (milliseconds since the epoch). A channel id is taken once in a run, whichever API took it and
 whether or not it was stopped since: Google takes an id once "within your project", and a run is one project.
-The address must be HTTPS: an `http://` one is a 400 "WebHook callback must be HTTPS: <address>". A push verifies
-the address's certificate against what the agent itself trusts (`adapters.reaching`): an agent's receiver serves
-a certificate the run's CA signed.
+The address must be HTTPS: an `http://` one is a 400 "WebHook callback must be HTTPS: <address>". The receiver's
+certificate is never checked: Minutehand simulates the service and does no transport authentication, so an agent's
+receiver may serve any certificate, self-signed included (docs/design.md, "Authentication is out of scope").
 
 **Lifetime**, read on the run's clock. A Drive channel lives an hour unless it asks for longer, and a week at most,
 as Drive documents. A Calendar channel lives `params.ttl` seconds, 604800 (a week) unless it says; a longer one is
@@ -34,7 +34,6 @@ from datetime import datetime, timedelta
 
 import httpx
 
-from minutehand.adapters import reaching
 from minutehand.adapters.providers.google_workspace import wire
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.scenario import Model
@@ -218,9 +217,7 @@ class Channels:
             headers["X-Goog-Channel-Token"] = channel.token
         delivery = wire.Delivery(channel=channel.id, number=number, state=state, address=channel.address)
         try:
-            async with httpx.AsyncClient(
-                trust_env=False, timeout=DELIVERY_TIMEOUT_SECONDS, verify=reaching.verify()
-            ) as client:
+            async with httpx.AsyncClient(trust_env=False, timeout=DELIVERY_TIMEOUT_SECONDS, verify=False) as client:
                 answered = await client.post(channel.address, headers=headers)
         except httpx.HTTPError as error:
             delivery = delivery.model_copy(update={"failure": f"{type(error).__name__}: {error}".rstrip(": ")})

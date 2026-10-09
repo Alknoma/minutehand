@@ -12,7 +12,7 @@ from notion_client import APIResponseError
 
 from minutehand.domain.scenario import DocumentHappening, FieldSet
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
-from tests.providers.notion.notion_world import OTHER_TOKEN, START, Sdk, World, ids, scenario
+from tests.providers.notion.notion_world import OTHER_TOKEN, START, Sdk, World, ids, query_database, scenario
 
 
 async def _refused_not_found(sdk: Sdk, call: Any, token: str | None = None) -> None:
@@ -44,7 +44,7 @@ async def test_what_is_not_shared_with_an_integration_is_invisible_to_it(sdk: Sd
     seen_by_other = await sdk.as_token(OTHER_TOKEN, lambda c: c.search(page_size=100))
     assert {r["id"] for r in seen_by_other["results"]} == {ids("private"), ids("private_child")}
     await _refused_not_found(sdk, lambda c: c.pages.retrieve(ids("handbook")), token=OTHER_TOKEN)
-    await _refused_not_found(sdk, lambda c: c.databases.query(ids("projects")), token=OTHER_TOKEN)
+    await _refused_not_found(sdk, lambda c: query_database(c, ids("projects")), token=OTHER_TOKEN)
     await _refused_not_found(
         sdk,
         lambda c: c.pages.create(parent={"page_id": ids("handbook")}, properties={"title": []}),
@@ -146,7 +146,7 @@ async def test_an_agent_conversation_from_a_token_to_an_archived_row(async_sdk: 
         },
     ]
     for shape in shapes:
-        found = await sdk(lambda c, shape=shape: c.databases.query(database_id, filter=shape))
+        found = await sdk(lambda c, shape=shape: query_database(c, database_id, filter=shape))
         assert row["id"] in [r["id"] for r in found["results"]], shape
 
     world.clock.jump(START + timedelta(days=1, hours=3))
@@ -165,14 +165,14 @@ async def test_an_agent_conversation_from_a_token_to_an_archived_row(async_sdk: 
     assert changed.actor is Actor.PERSON and isinstance(changed.after, RecordSnapshot)
 
     moving = await sdk(
-        lambda c: c.databases.query(database_id, filter={"property": "Status", "status": {"equals": "Done"}})
+        lambda c: query_database(c, database_id, filter={"property": "Status", "status": {"equals": "Done"}})
     )
     seen = next(r for r in moving["results"] if r["id"] == ids("launch"))
     assert seen["last_edited_by"]["id"] == dov["id"] and seen["last_edited_time"] == "2026-09-15T11:30:00.000Z"
 
     await sdk(lambda c: c.pages.update(row["id"], archived=True))
     after = await sdk(
-        lambda c: c.databases.query(database_id, filter={"property": "Name", "title": {"contains": "q4"}})
+        lambda c: query_database(c, database_id, filter={"property": "Name", "title": {"contains": "q4"}})
     )
     assert after["results"] == []
     searched = await sdk(lambda c: c.search(query="Write Q4"))
