@@ -25,7 +25,7 @@ from minutehand.session import ForkPoint
 class RunRow(Model):
     run_id: str
     scenario: str
-    goal: str
+    goal: str | None
     finished: bool = Field(description="False while another process is still writing the run")
     stop: StopReason | None
     verdict: VerdictKind | None = Field(description="None until the run finishes")

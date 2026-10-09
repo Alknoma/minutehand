@@ -280,3 +280,68 @@ def _strings(text: str, depth: int = 0) -> list[str]:
         elif isinstance(item, dict):
             stack.extend(item.values())  # pyright: ignore[reportUnknownArgumentType, reportUnknownMemberType]
     return found
+
+
+def _texts(parts: object) -> list[str]:
+    """The text of GenAI parts (`[{"type": "text", "content": ...}]`), or of a plain string."""
+    if isinstance(parts, str):
+        return [parts]
+    if not isinstance(parts, list):
+        return []
+    return [p["content"] for p in parts if isinstance(p, dict) and isinstance(p.get("content"), str)]
+
+
+def instructions_of(call: ModelCall) -> str | None:
+    """The system prompt the agent gave its model in this call: the span's system instructions, else the system
+    messages among its input (a chat-completions call keeps them there). None when it gave none."""
+    found: list[str] = []
+    if call.system_instructions:
+        try:
+            found = _texts(json.loads(call.system_instructions))
+        except json.JSONDecodeError:
+            found = [call.system_instructions]
+    if not found and call.input_messages:
+        try:
+            messages = json.loads(call.input_messages)
+        except json.JSONDecodeError:
+            messages = []
+        for message in messages if isinstance(messages, list) else []:
+            if isinstance(message, dict) and message.get("role") in ("system", "developer"):
+                found += _texts(message.get("parts", message.get("content")))
+    text = "\n\n".join(t.strip() for t in found if t.strip())
+    return text or None
+
+
+FRAMEWORK_LINES = 2
+"""How many lines two system prompts may differ by and still be one prompt: a framework writes a line or two of its own
+into each call (a request id, a turn counter), which makes no prompt of the agent's a new one."""
+
+
+def _same(one: str, other: str) -> bool:
+    a, b = set(one.splitlines()), set(other.splitlines())
+    shared, only_a, only_b = a & b, a - b, b - a
+    return (
+        len(only_a) <= FRAMEWORK_LINES
+        and len(only_b) <= FRAMEWORK_LINES
+        and len(shared) > max(len(only_a), len(only_b))
+    )
+
+
+def agent_instructions(spans: list[StoredSpan]) -> list[str]:
+    """Every distinct system prompt the agent gave its model during the run, in the order it first gave each, each as
+    it last gave it: the agent's own statement of its work, which the assessment reads where an older scenario read
+    a goal. Prompts that differ only by a line or two a framework writes into each call are one prompt."""
+    seen: list[str] = []
+    logged = [s for s in spans if s.source is SpanSource.LOG]
+    for stored in spans:
+        if not is_model_call(stored):
+            continue
+        text = instructions_of(model_call(stored, logged))
+        if text is None:
+            continue
+        same = next((i for i, earlier in enumerate(seen) if _same(earlier, text)), None)
+        if same is None:
+            seen.append(text)
+        else:
+            seen[same] = text
+    return seen

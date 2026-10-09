@@ -435,7 +435,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     if stray:
         raise ValueError(f"the YouTrack seed describes tickets no seeded YouTrack ticket is: {', '.join(stray)}")
     people = {p.key: by_login[p.key] for p in scenario.people}
-    reporter = people[scenario.owner]
+    reporter = people[scenario.acting(None, "who reports the seeded YouTrack tickets")]
     made_issues: dict[str, wire.StoredIssue] = {}
     labels = list(dict.fromkeys(label.lower() for t in seeded for label in t.labels))
     for position, ticket in enumerate(scenario.tickets):

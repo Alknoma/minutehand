@@ -657,7 +657,7 @@ def _issue(
             raise ValueError(f"{detail.ticket!r} has parent {detail.parent!r}, which is not seeded before it")
         parent = earlier[detail.parent].id
     created = scenario.starts_at + detail.created
-    reporter = who(detail.reporter) if detail.reporter is not None else who(scenario.owner)
+    reporter = who(scenario.acting(detail.reporter, f"who reported {detail.ticket!r} (reporter)"))
     history = [
         wire.StoredHistory(
             id=str(n + 1),

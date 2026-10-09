@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from minutehand.application.checkpoint import PendingService
 from minutehand.application.further_seed import Scratch, land
 from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_untakeable
-from minutehand.application.model_calls import per_wake
+from minutehand.application.model_calls import agent_instructions, per_wake
 from minutehand.application.moments import decision_text
 from minutehand.application.orchestrator import acting
 from minutehand.application.people import Booking, People, happen, move, needs_model
@@ -604,7 +604,8 @@ class StandingWorld:
         if owed.happening is not None:
             await self._happen(owed.happening)
         elif owed.direction is not None:
-            await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
+            sender = self.scenario.acting(None, "who sends the directions (owner)")
+            await self.say(sender, owed.direction, provider=self._only_inbound())
         return True
 
     def _lands(self, happening: Happening, n: int) -> None:
@@ -726,7 +727,9 @@ class StandingWorld:
         before = self.store.head()
         with _refusing():
             port.legal(ticket, Actor.PERSON, None, self.store)  # the provider's own word on a ticket that is not there
-            who = self._assignee(ticket) or self._person(self.scenario.owner)
+            who = self._assignee(ticket) or self._person(
+                self.scenario.acting(None, f"who deletes {ticket.external_id}, which has no assignee")
+            )
             await move(port, ticket, DELETE, Actor.PERSON, who, {}, self.store, self.clock)
         return self._written(before)
 
@@ -947,6 +950,7 @@ def score(
         commitments=reported.commitments if reported is not None else None,
         unmatched_calls=[c.exchange for c in calls if c.refused],
         model_calls=per_wake(world.spans(), [w.index for w in wakes]),
+        agent_instructions=agent_instructions(world.spans()),
         broken_calls=broken(calls),
         contract_breaks=contract_breaks(calls),
         rules=merged([], scenario.assess, scenario.assess_off),

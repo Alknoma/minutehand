@@ -289,6 +289,11 @@ class Person(Model):
     name: str
     email: str
     title: str | None = None
+    profile: str = Field(
+        default="",
+        description="Who this person is, in plain words: their role, what they care about and require, how and when "
+        "they work and answer. The model that plays them acts from it; `facts` are what they know",
+    )
     account: Account = Account.MEMBER
     facts: list[str] = Field(default=[], description="What this person knows; all a model reply may draw on")
     stale_facts: list[str] = Field(default=[], description="What they believe that is no longer true")
@@ -995,8 +1000,16 @@ class _ScenarioBody(Model):
     """Everything a scenario says but when it starts."""
 
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    goal: str = Field(description="The text handed to the agent, verbatim")
-    owner: str = Field(description="Person.key of whoever gave the goal")
+    goal: str | None = Field(
+        default=None,
+        description="Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so "
+        "an older scenario still loads; when given, it is handed to the agent on its first wake, verbatim",
+    )
+    owner: str | None = Field(
+        default=None,
+        description="Retired with `goal`: Person.key of whoever an older scenario says gave it. Nothing is special "
+        "about this person",
+    )
     deadline_after: timedelta | None = None
     max_wakes: int | None = Field(
         default=None,
@@ -1061,6 +1074,14 @@ class _ScenarioBody(Model):
         "value. Nothing else is in it; the agent's own production database is never read",
     )
 
+    def acting(self, named: str | None, what: str) -> str:
+        """The person a seeded thing is by: the one it names, else the person an older scenario calls its `owner`.
+        With neither, the seed must name them: nothing makes one person special."""
+        who = named or self.owner
+        if who is None:
+            raise ValueError(f"name the person {what}: nothing in the scenario stands in for them")
+        return who
+
     @model_validator(mode="after")
     def _one_value_per_key(self) -> Self:
         keys = [(m.collection, m.key) for m in self.memory]
@@ -1086,7 +1107,7 @@ class _ScenarioBody(Model):
             raise ValueError("two seeded tickets share a key")
         known = set(keys)
         self._refuse_unknown_places()
-        named = [self.owner]
+        named = [self.owner] if self.owner is not None else []
         named += [k for c in self.channels for k in c.members]
         named += [p.by for c in self.channels for p in _every_post(c.history)]
         named += [h.person for h in self.happenings]
@@ -1226,7 +1247,7 @@ class _ScenarioBody(Model):
         """A value the agent could write without hearing it from `said_by`, or that `said_by` can never say."""
         if relayed.said_by == relayed.to:
             raise ValueError(f"a relayed fact goes from one person to another; {relayed.said_by} is both")
-        elsewhere = [("the goal", self.goal)]
+        elsewhere = [("the goal", self.goal)] if self.goal is not None else []
         elsewhere += [(f"direction {i + 1}", d.text) for i, d in enumerate(self.directions)]
         elsewhere += [(f"seeded ticket {t.title!r}", f"{t.title} {t.body}") for t in self.tickets]
         elsewhere += [(f"a comment on {t.title!r}", c.text) for t in self.tickets for c in t.comments]
@@ -1353,7 +1374,6 @@ class Seed(WrittenScenario):
     since every provider writes the world as someone."""
 
     name: str = Field(default="world", pattern=r"^[a-z][a-z0-9_]*$")
-    goal: str = Field(default="", description="Handed to nobody: a standing world has no run loop")
     people: list[Person] = Field(min_length=1)
 
     @model_validator(mode="after")

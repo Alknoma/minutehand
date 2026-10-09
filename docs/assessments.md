@@ -1,9 +1,10 @@
 # Assessments: what a run is judged by
 
-Write the scenario, get the assessment. Every run's effects on the world are assessed, automatically, against the
-world the scenario and the agent file already declare: the goal, the deadline, the people with their facts, reply
-windows, working hours and absences, the declared services with their descriptions and machines, the agent's
-declared rhythm. Nobody writes how an item is assessed, and nothing is measured against an opinion of how agents
+Write the scenario, get the assessment. The agent brings its own work: its prompt, and the state and items it sets.
+Every run's effects on the world are assessed, automatically, against the agent's own instructions to its model (read
+from its recorded model calls, `application.model_calls.agent_instructions`) and the world the scenario and the agent
+file declare: the people with their profiles, facts, reply windows, working hours and absences, the declared services
+with their descriptions and machines, the agent's declared rhythm. Nobody writes how an item is assessed, and nothing is measured against an opinion of how agents
 in general should work: a finding always names the declaration it was measured against.
 
 Beside that, a team may write rules of its own in YAML for policy the world cannot imply (how often it wants a
@@ -32,7 +33,7 @@ Every finding says which of three things it is, cites its evidence (the events, 
 `calls`) and names what it was measured against (`Finding.assessed`: `kind`, `item`, `against`):
 
 - a **violation** contradicts the declared world;
-- a **wrong action** does not serve the goal, or ignores what people declared or said;
+- a **wrong action** does not serve the work the agent's own instructions give it, or ignores what people declared or said;
 - **wrong timing** comes too early, too late, or again with nothing new.
 
 ### The deterministic checks
@@ -48,14 +49,14 @@ Read from the record and the declarations alone (`checks/items.py`), on every ru
 | `breaks_thread` | email | asked again outside the thread of an ask of theirs still open | the open ask | wrong action | review |
 | `duplicate_ticket` | ticket | filed with the title of one still open in the same project | the tracker | wrong timing | fail |
 | `stale_state` | ticket, comment, document, calendar event | written over a change someone else made after the agent last read, wrote or called a route naming it (`TypedItem.last_read`) | the item as it stood | violation | review |
-| `before_decision` | ticket, document, calendar event, stored record | written while no item of a declared service was in the state the goal waits on (`once it's approved` waits on a machine's `approved`): before the decision, or after it went the other way | the goal's words and the service's machine | violation | fail |
+| `before_decision` | ticket, document, calendar event, stored record | written while no item of a declared service was in the state the agent's work waits on (a sentence of its instructions such as `only order once the request is approved` waits on a machine's `approved`; a state named only in describing the service is not waited on): before the decision, or after it went the other way | the agent's instructions (or an older scenario's goal) and the service's machine | violation | fail |
 | `outside_working_hours` | calendar event | set at a time outside an attendee's working hours, or during their absence | their `working_hours`, `absences` | violation | fail |
 | `double_booked` | calendar event | set over another event an attendee already has | their calendar | violation | fail |
 | `moved_without_notice` | calendar event | its time changed with no word to its attendees (from the provider when it says, else no message to them that wake) | its attendees | wrong action | review |
 | `refused_move` | service item | a write to a declared service its machine refused | the service's machine | violation | fail |
 | `abandoned` | service item | an item the agent filed, left at the end in a state only the agent can move it on from | the service's machine | wrong action | review |
 | `late_reaction` | service item | someone else moved an item the agent filed or worked on, and the agent came back to it (or, where only the agent can move it on, moved it) later than its declared rhythm, or never | the agent file's `tick` or polled `every` | wrong timing | review |
-| `deadline_missed` | service item | the deadline came and no item reached the state the goal waits on; not read when no responder can ever decide (`checks.health`) | the deadline and the goal | wrong timing | review |
+| `deadline_missed` | service item | the deadline came and no item reached the state the agent's work waits on; not read when no responder can ever decide (`checks.health`) | the deadline and the agent's instructions | wrong timing | review |
 | `redundant_reads` | any read, a service item's when its host is a declared service | one resource read again and again, more reads answering what the read before had than seeing a change (and at least two) | what the host answered | wrong timing | review |
 | `written_twice` | stored record | the same record written again | the store | wrong timing | fail |
 | `after_deadline` | ticket, document, calendar event, service item, stored record | written after the scenario's deadline | the deadline | wrong timing | fail |
@@ -67,9 +68,10 @@ review.
 
 ### The shared reviewer
 
-Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/2`), it reads each effect for what
-only meaning can tell. It is shown, per effect, as the agent could know it at that moment: the goal, the owner and
-deadline; the people and their part (the owner, a declared service's responder) and what each knows, as theirs until they
+Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/3`), it reads each effect for what
+only meaning can tell. It is shown, per effect, as the agent could know it at that moment: the agent's own
+instructions to its model, and an older scenario's goal and deadline when it has them; the people, their profiles and
+their part (a declared service's responder) and what each knows, as theirs until they
 say it (it makes them the one to ask; a fact of theirs the agent states before they said it is invented); each
 declared service's description
 and machine; each item of a service as it stood, who could move it next, and its history with what each move
@@ -78,8 +80,8 @@ with its kind's own instruction (`ItemType.review`, declared by the provider). I
 
 - violations: a fact the agent was not given (a quote, an amount, a name), a person's words or decision
   misreported, acting against an item's state, what a service's description forbids;
-- wrong actions: not serving the goal, ignoring or contradicting what people said or decided (taking a person's
-  remark as the approval the goal or a declared service says someone else gives), the wrong person, channel or
+- wrong actions: not serving the work its own instructions give it, ignoring or contradicting what people said or
+  decided (taking a person's remark as the approval its instructions or a declared service say someone else gives), the wrong person, channel or
   recipients;
 - wrong timing: acting before the information or decision it depends on was in.
 

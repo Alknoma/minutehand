@@ -1880,6 +1880,12 @@
           "title": "Name",
           "type": "string"
         },
+        "profile": {
+          "default": "",
+          "description": "Who this person is, in plain words: their role, what they care about and require, how and when they work and answer. The model that plays them acts from it; `facts` are what they know",
+          "title": "Profile",
+          "type": "string"
+        },
         "reminded": {
           "anyOf": [
             {
@@ -4858,9 +4864,17 @@
       "type": "array"
     },
     "goal": {
-      "description": "The text handed to the agent, verbatim",
-      "title": "Goal",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so an older scenario still loads; when given, it is handed to the agent on its first wake, verbatim",
+      "title": "Goal"
     },
     "happenings": {
       "default": [],
@@ -4955,9 +4969,17 @@
       "type": "string"
     },
     "owner": {
-      "description": "Person.key of whoever gave the goal",
-      "title": "Owner",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Retired with `goal`: Person.key of whoever an older scenario says gave it. Nothing is special about this person",
+      "title": "Owner"
     },
     "people": {
       "items": {
@@ -5057,8 +5079,6 @@
   },
   "required": [
     "name",
-    "goal",
-    "owner",
     "people"
   ],
   "title": "WrittenScenario",

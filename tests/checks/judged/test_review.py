@@ -57,7 +57,13 @@ def test_the_reviewer_is_shown_the_declared_world_as_it_stood_and_what_the_agent
     order = next(t for t in run.typed if t.seq == 143)
     shown = shown_to_reviewer(run, order)
 
-    assert shown.startswith("Goal: Order 40 laptops for the new starters (PO-7731)")
+    # The agent's work is what its own instructions to its model say; the older scenario's goal is shown as that.
+    assert shown.startswith(
+        "The agent's own instructions, as it gave them to its model:\nYou are Owen Hart's purchasing"
+    )
+    assert "Only order once the request is approved." in shown
+    assert "What an older scenario told the agent to do: Order 40 laptops for the new starters (PO-7731)" in shown
+    assert "Owner" not in shown and "the owner" not in shown
     assert "- Nadia Ek <nadia@example.com>; responds for the service approvals" in shown
     # What a person knows is shown as theirs: Sam is the one to ask for the cost centre, and the agent quoting it
     # before Sam said it would be invented.

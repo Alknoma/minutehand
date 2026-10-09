@@ -292,6 +292,11 @@ class RunView(Model):
         default=[], description="What people said: every reply that landed, with who and when"
     )
     commitments: list[Commitment] | None = None
+    agent_instructions: list[str] = Field(
+        default=[],
+        description="Every distinct system prompt the agent gave its model, in the order it first gave each: its own "
+        "statement of its work (`application.model_calls.agent_instructions`); empty when no call of its was seen",
+    )
     model_calls: list[WakeModelCalls] | None = Field(
         default=None,
         description="Model calls per wake, from the agent's telemetry; None when the run received no span of a "
