@@ -14,8 +14,8 @@ import pytest
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.provider import build
 from minutehand.adapters.providers.asana.seed import AsanaSeed
-from minutehand.adapters.providers.asana.state import StateUnexpressible
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.people import move
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import ProviderSeed, Scenario, TicketHappening, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
@@ -32,6 +32,7 @@ from tests.providers.asana.rich_workspace import (
     rich,
     section,
 )
+from tests.support.tickets import acted, assignee_moves, edited
 
 __all__ = ["agent", "client", "rich", "workspace"]
 
@@ -95,12 +96,13 @@ def test_with_the_completed_box_as_the_source_a_section_says_nothing(tmp_path: P
     assert ws.asana.snapshot(reopened.model_copy(update={"memberships": moved.memberships})).state is TicketState.OPEN
 
 
-def test_with_the_completed_box_as_the_source_a_person_cannot_cancel(tmp_path: Path) -> None:
+async def test_with_the_completed_box_as_the_source_a_person_cannot_cancel(tmp_path: Path) -> None:
     ws = seeded(tmp_path, scenario_with({"status": {"kind": "completed"}}))
     ticket = state.task_ref(state.task_gid(0))
-    with pytest.raises(StateUnexpressible, match="the completed box alone"):
-        ws.provider.transition(ticket, TicketState.CANCELLED, ws.store, ws.clock)
-    ws.provider.transition(ticket, TicketState.DONE, ws.store, ws.clock)
+    # The completed box alone cannot say cancelled, so nothing that means it is offered.
+    with pytest.raises(ValueError, match="offers no 'cancelled' now"):
+        await assignee_moves(ws.provider, ticket, TicketState.CANCELLED, PLAIN, ws.store, ws.clock)
+    await assignee_moves(ws.provider, ticket, TicketState.DONE, PLAIN, ws.store, ws.clock)
     assert last_change(ws, ticket.external_id) == (
         Actor.PERSON,
         TicketSnapshot(
@@ -138,9 +140,9 @@ async def test_with_a_status_field_as_the_source_the_field_says_and_the_box_is_t
     assert state_of(rich, INCIDENT) is TicketState.DONE
 
 
-def test_a_person_moves_a_task_by_the_status_field_and_ticks_it(rich: Workspace) -> None:
+async def test_a_person_moves_a_task_by_the_status_field_and_ticks_it(rich: Workspace) -> None:
     ticket = state.task_ref(INCIDENT)
-    rich.provider.transition(ticket, TicketState.CANCELLED, rich.store, rich.clock)
+    await assignee_moves(rich.provider, ticket, TicketState.CANCELLED, SCENARIO, rich.store, rich.clock)
     task = rich.asana.task(INCIDENT)
     assert task is not None and task.completed
     assert [v.option for v in task.custom_fields if v.field == STATUS_FIELD] == [option("Status", "Cancelled")]
@@ -148,16 +150,24 @@ def test_a_person_moves_a_task_by_the_status_field_and_ticks_it(rich: Workspace)
     assert (
         last_change(rich, INCIDENT)[0] is Actor.PERSON and last_change(rich, INCIDENT)[1].state is TicketState.CANCELLED
     )
-    rich.provider.edit(
-        ticket, state=TicketState.OPEN, assignee_email="alice.chen@company.com", world=rich.store, clock=rich.clock
+    await edited(
+        rich.provider,
+        ticket,
+        state=TicketState.OPEN,
+        assignee_email="alice.chen@company.com",
+        world=rich.store,
+        clock=rich.clock,
     )
     actor, after = last_change(rich, INCIDENT)
     assert (actor, after.state, after.assignee_email) == (Actor.SCENARIO, TicketState.OPEN, "alice.chen@company.com")
 
 
-def test_a_task_in_no_project_with_the_status_field_cannot_be_cancelled(rich: Workspace) -> None:
-    with pytest.raises(StateUnexpressible, match="no value of the status field"):
-        rich.provider.transition(state.task_ref(state.task_gid(1)), TicketState.CANCELLED, rich.store, rich.clock)
+async def test_a_task_in_no_project_with_the_status_field_cannot_be_cancelled(rich: Workspace) -> None:
+    bob = next(p for p in SCENARIO.people if p.key == "bob")
+    with pytest.raises(ValueError, match="offers no 'cancelled' now"):
+        await move(
+            rich.provider, state.task_ref(state.task_gid(1)), "cancelled", Actor.PERSON, bob, {}, rich.store, rich.clock
+        )
 
 
 # ---------------------------------------------------------------------- people acting by themselves
@@ -179,7 +189,7 @@ async def test_people_complete_reassign_comment_and_delete_seeded_tasks_as_thems
         {"kind": "reassigns", "to": "alice"},
         {"kind": "comments", "text": "Fixed by the pool change."},
     ):
-        rich.provider.act(happening("bob", incident, action), SCENARIO, rich.store, rich.clock)
+        await acted(rich.provider, happening("bob", incident, action), SCENARIO, rich.store, rich.clock)
     read = got(
         await agent.get(
             f"/tasks/{INCIDENT}", params={"opt_fields": "completed,assignee.name,custom_fields.display_value"}
@@ -204,16 +214,22 @@ async def test_people_complete_reassign_comment_and_delete_seeded_tasks_as_thems
         (EntityKind.TICKET, Operation.UPDATE),
         (EntityKind.TRANSITION, Operation.CREATE),
         (EntityKind.TICKET, Operation.UPDATE),
+        (EntityKind.TRANSITION, Operation.CREATE),
         (EntityKind.COMMENT, Operation.CREATE),
-    ], "the move to done is recorded once as a transition beside the task's version; the reassignment moves nothing"
+        (EntityKind.TRANSITION, Operation.CREATE),
+    ], "each act is recorded once as a transition beside what it changed: the move, the reassignment, the comment"
     assert all(e.sim_time == rich.clock.now() for e in people)
-    rich.provider.act(happening("bob", incident, {"kind": "deletes"}), SCENARIO, rich.store, rich.clock)
+    await acted(rich.provider, happening("bob", incident, {"kind": "deletes"}), SCENARIO, rich.store, rich.clock)
     assert (await agent.get(f"/tasks/{INCIDENT}")).status_code == 404
     deleted = [e for e in rich.store.events() if e.actor is Actor.PERSON and e.operation is Operation.DELETE]
     assert [e.entity.external_id for e in deleted] == [state.task_gid(1), INCIDENT], "its subtask goes with it"
     head = rich.store.head()
-    rich.provider.act(
-        happening("bob", incident, {"kind": "comments", "text": "too late"}), SCENARIO, rich.store, rich.clock
+    await acted(
+        rich.provider,
+        happening("bob", incident, {"kind": "comments", "text": "too late"}),
+        SCENARIO,
+        rich.store,
+        rich.clock,
     )
     assert rich.store.head() == head, "a task the agent or someone deleted is left alone"
 

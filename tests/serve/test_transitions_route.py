@@ -61,7 +61,7 @@ def test_the_route_lists_what_waits_on_people_and_the_moves_after_the_clock_pass
         assert before.transitions == []
 
         advanced = world.advance(timedelta(hours=2))
-        assert [f.what for f in advanced.fired] == [f"owen acts on jira {held.item.external_id}"]
+        assert [f.what for f in advanced.fired] == [f"owen takes 'Done' on jira {held.item.external_id}"]
 
         after = world.transitions()
         [moved] = after.transitions

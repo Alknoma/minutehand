@@ -242,3 +242,38 @@ host nobody declared as a service with no description; the separate stand-in (`a
 - **Not built.** Drive or Docs comment replies (the fake serves no `comments.replies`): a person cannot answer where
   the service does not, and nothing is invented for it. In Notion and SharePoint nothing waits on a person in the fakes
   (no assignment or mention is modelled), so what people do there stays a provider happening.
+
+**Phase 4.** The superseded mechanisms are gone; a take is the one way to pin what a person does.
+
+- **Takes.** `Take.provider` is optional: with none, `nth` counts the person's asks in every provider, and a take
+  for every item that an item does not offer pins nothing there. `fields` and `form` carry what the move takes, word
+  for word; `within` draws its moment. A model picks only offers a person would make unprompted (`Offer.unprompted`):
+  a delete, a comment, a reassignment or a note only by a take.
+- **Tickets move only through the port.** Jira, YouTrack and Asana offer each state move (with the `TicketState` it
+  means), `comment`, `reassign` and `delete`, each recorded as a transition; a ticket happening, a standing world's
+  `move_ticket` and `edit_ticket`, and a fork's `TicketEdit` are transitions too.
+- **Answers reach the agent only through the conversation port** (`application/conversations.py`).
+- **No gates.** A decision is the person's transition, recorded before the product's decide call; a refusal is a
+  SYSTEM `refuse` transition; a withdrawal is the agent's `withdraw`. Rules read them (`each: transition`, `by`,
+  `where: {first: true}`).
+- **Inboxes**: a decision with `settles: false` is a note, where an away person's automatic reply goes. A reminder
+  brings an owed decision forward; a fork's `reply_at` with `provider` pins an item's moment; an owed answer is
+  worded again when what the person knows changes before it is sent.
+- **Facts.** A decision's answer is its inputs as given (`{ask.answer}`, and each a fact for `{ask.facts}`); a
+  message count's `conveys` is a phrase a judge model must find conveyed (`checks/judged/conveys.py`, `conveys/1`).
+- **`minutehand migrate <file> [--write]`** rewrites the retired keys:
+
+| Retired | Now |
+|---|---|
+| `ticket_fates: [{assignee, becomes, after}]` | the assignee's `takes: [{take: <becomes>, after}]`; `deleted: true` is `take: delete` |
+| a script step's `press: {label, picks, form}` | `takes: [{take: <label>, nth: <to_ask>, fields: {picks}, form}]` |
+| `presses_every: {label, ...}` | `takes: [{take: <label>}]` |
+| a script's `decisions: [{to_item, inbox, decision, inputs, facts, within}]` | `takes: [{provider: <inbox>, nth: <to_item>, take: <decision>, fields: <inputs>, facts, within}]` |
+| `pending.gates`, `decisions[].permits`, `writes: {gated: true}` | rules over transitions (`docs/inboxes.md`) |
+| `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeletesTickets`, `LandsReplies`, `PushesInteractions` | `ProvidesTransitions`, `HoldsSeeded`, `TalksToAgent` |
+| the `person-decision/2` prompt | the people engine's `person-transition/1` |
+
+- **What broke for users.** Every scenario with the retired keys is refused until migrated; rules with
+  `writes: {gated}` are refused; an inbox declaration with `gates` or `permits` is refused. A decision's
+  `{ask.answer}` is now its inputs, not its rendered text. Moments of answers to inbox items can shift, since the
+  engine draws them per item.

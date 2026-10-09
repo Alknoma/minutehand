@@ -15,10 +15,9 @@ people:
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes: [{nth: 1, take: "No"}]   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
     reply:
       kind: scripted
-      replies:
-        - {to_ask: 1, press: {label: "No"}}   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
       then: silent
 sign_ins: [{provider: google_workspace, credential: "1//assistant-refresh-token", person: assistant}]
 provider_seeds: [{provider: google_workspace, body: {}}]

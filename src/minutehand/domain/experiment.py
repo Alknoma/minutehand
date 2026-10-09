@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from minutehand.domain.memory import Collection, Key, SeededMemory
-from minutehand.domain.scenario import DispatchRule, Model, ReplyBehaviour, TicketState
+from minutehand.domain.scenario import DispatchRule, Model, ProviderKey, ReplyBehaviour, Take, TicketState
 from minutehand.domain.world import EntityRef
 
 
@@ -44,6 +44,9 @@ class PersonChange(Model):
     kind: Literal["person_change"] = "person_change"
     person: str = Field(description="Person.key")
     reply: ReplyBehaviour
+    takes: list[Take] | None = Field(
+        default=None, description="What they are pinned to do from the fork onward (`Person.takes`); None: as before"
+    )
 
 
 class ReplyAt(Model):
@@ -52,8 +55,19 @@ class ReplyAt(Model):
 
     kind: Literal["reply_at"] = "reply_at"
     person: str = Field(description="Person.key")
-    to_ask: int = Field(ge=1, description="The nth message the agent sent them, counted over the whole run")
-    after: timedelta = Field(ge=timedelta(0), description="How long after that message the answer lands")
+    to_ask: int = Field(
+        ge=1,
+        description="The nth message the agent sent them, counted over the whole run; with `provider`, the nth item "
+        "waiting on them there",
+    )
+    provider: ProviderKey | None = Field(
+        default=None,
+        description="Pins an item they move rather than a message: a decision in an inbox of the agent's product (its "
+        "`name`), a ticket",
+    )
+    after: timedelta = Field(
+        ge=timedelta(0), description="How long after that message, or after the item began to wait, it lands"
+    )
 
 
 class TicketEdit(Model):

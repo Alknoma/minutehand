@@ -123,7 +123,7 @@ async def test_a_fork_applies_a_person_change_to_a_reply_decided_but_not_yet_lan
 
 
 async def test_a_ticket_edit_lands_in_the_fork_as_the_scenario(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     agent = rig.agent("ask_and_file")
     parent, parent_store, _ = await rig.run(scn, agent)
     assert parent.stop is StopReason.NOTHING_PENDING
@@ -163,22 +163,26 @@ async def test_a_fork_starts_from_its_parents_memory_at_the_checkpoint_with_no_h
 
 async def test_a_fork_between_checkpoints_is_refused(rig: Rig) -> None:
     agent = rig.agent("ask_silent")
-    parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
+    parent, store, _ = await rig.run(scenario(tom_finishes=False), agent)
     with pytest.raises(RunRefused, match="no checkpoint at seq"):
         await fork(
-            rig, parent, scenario(ticket_fates=[]), agent, Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0] + 1)
+            rig,
+            parent,
+            scenario(tom_finishes=False),
+            agent,
+            Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0] + 1),
         )
     assert runs(rig) == ["root"]
 
 
 async def test_a_prompt_patch_with_nothing_on_the_wire_is_refused(rig: Rig) -> None:
     agent = rig.agent("ask_silent")
-    parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
+    parent, store, _ = await rig.run(scenario(tom_finishes=False), agent)
     with pytest.raises(RunRefused, match="prompt_patch"):
         await fork(
             rig,
             parent,
-            scenario(ticket_fates=[]),
+            scenario(tom_finishes=False),
             agent,
             Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0], overrides=[PromptPatch(text="Be brief.")]),
         )
@@ -188,7 +192,7 @@ async def test_a_fork_with_a_booking_pending_is_refused(rig: Rig) -> None:
     # Until this was refused, the fork shared the parent's schedule record and, on the AWS provider, raised
     # LookupError when it fired: the schedule's queue was in the parent's account, in the parent process's memory.
     agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     parent, store, _ = await rig.run(scn, agent)
     after_start = checkpoint_seqs(store)[1]
     with pytest.raises(RunRefused, match=r"1 booked wake\(s\) pending at seq \d+ \(testsched kept\)"):
@@ -198,7 +202,7 @@ async def test_a_fork_with_a_booking_pending_is_refused(rig: Rig) -> None:
 
 async def test_a_fork_after_the_booking_fired_is_not_refused(rig: Rig) -> None:
     agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     parent, store, _ = await rig.run(scn, agent)
     last = checkpoint_seqs(store)[-1]
     [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=last))
@@ -215,7 +219,7 @@ async def test_a_fork_after_a_provider_with_state_outside_the_log_was_used_is_re
     answered by a scheduler holding none of what the parent had booked or delivered (on AWS, a fresh account
     with none of the agent's queues), and nothing said so."""
     agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     parent, store, _ = await rig.run(scn, agent)
     last = checkpoint_seqs(store)[-1]
     refusal = (
@@ -229,7 +233,7 @@ async def test_a_fork_after_a_provider_with_state_outside_the_log_was_used_is_re
 
 async def test_a_fork_before_the_agent_first_used_such_a_provider_is_not_refused(rig: Rig) -> None:
     agent = rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))])
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     parent, store, _ = await rig.run(scn, agent)
     setup = checkpoint_seqs(store)[0]
     [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=setup), manifests=_outside(rig))
@@ -245,13 +249,13 @@ def test_a_deadline_shift_moves_the_childs_deadline() -> None:
 
 async def test_a_ticket_edit_on_a_provider_that_cannot_edit_is_refused_and_leaves_no_run(rig: Rig) -> None:
     agent = rig.agent("ask_silent")
-    parent, store, _ = await rig.run(scenario(ticket_fates=[]), agent)
+    parent, store, _ = await rig.run(scenario(tom_finishes=False), agent)
     edit = TicketEdit(entity=EntityRef(provider="nowhere", kind=EntityKind.TICKET, external_id="t1"))
     with pytest.raises(RunRefused, match="nowhere, which cannot edit tickets"):
         await fork(
             rig,
             parent,
-            scenario(ticket_fates=[]),
+            scenario(tom_finishes=False),
             agent,
             Fork(parent_run="root", at_seq=checkpoint_seqs(store)[0], overrides=[edit]),
         )
@@ -264,7 +268,7 @@ async def test_a_checkpoint_the_agent_went_on_writing_its_memory_after_is_not_re
     """The agent reports idle and a process of its own writes its memory a moment later, in the same wake: the
     checkpoints of that wake hold memory it had not finished writing."""
     agent = rig.agent("remember_late")
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     parent, store, _ = await rig.run(scn, agent, env=rig.env(BACKGROUND_SECONDS="0.2"))
     for _ in range(100):
         if ("default", "late") in memory_of(store.events()):
@@ -285,7 +289,7 @@ async def test_a_checkpoint_the_agent_went_on_writing_its_memory_after_is_not_re
 
 
 async def test_a_fork_of_an_agent_that_cannot_be_asked_for_its_report_says_it_was_not_verified(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     agent = rig.agent("ask_silent")
     parent, store, _ = await rig.run(scn, agent)
     [child] = await fork(rig, parent, scn, agent, Fork(parent_run="root", at_seq=checkpoint_seqs(store)[1]))

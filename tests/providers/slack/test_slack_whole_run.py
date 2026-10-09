@@ -28,9 +28,8 @@ from minutehand.domain.scenario import (
     PersonPosts,
     Scenario,
     Scripted,
-    ScriptedPress,
-    ScriptedReply,
     Silent,
+    Take,
 )
 from minutehand.domain.world import Actor, InteractionSnapshot, MessageSnapshot, Operation
 from tests.providers.slack.intercepted import SECRET, AgentEndpoint, Intercepted, Received, data
@@ -53,8 +52,8 @@ SCENARIO = Scenario(
             reply=Scripted(
                 then=AfterScript.SILENT,
                 delay=DelayRange(shortest=timedelta(hours=1, minutes=4), longest=timedelta(hours=1, minutes=4)),
-                replies=[ScriptedReply(to_ask=1, press=ScriptedPress(label="Accept"))],
             ),
+            takes=[Take(nth=1, take="Accept")],
         ),
     ],
     happenings=[PersonPosts(provider="slack", person="nadia", text="Sent it myself, thanks", after=timedelta(days=1))],

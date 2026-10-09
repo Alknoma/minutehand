@@ -189,10 +189,8 @@ def test_a_scripted_step_that_mixes_its_ways_of_answering_is_rejected() -> None:
     from minutehand.domain.scenario import ScriptedReply
 
     assert ScriptedReply(to_ask=1).written, "a step with no facts is written from the person's own"
-    with pytest.raises(ValidationError, match="presses a control writes nothing"):
-        ScriptedReply.model_validate({"to_ask": 1, "verbatim": "ok", "press": {"label": "Accept"}})
-    with pytest.raises(ValidationError, match="presses a control writes nothing"):
-        ScriptedReply.model_validate({"to_ask": 1, "facts": ["ok"], "press": {"label": "Accept"}})
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ScriptedReply.model_validate({"to_ask": 1, "press": {"label": "Accept"}})  # a press is a take now
     with pytest.raises(ValidationError, match="verbatim step says exactly its words"):
         ScriptedReply.model_validate({"to_ask": 1, "verbatim": "ok", "facts": ["ok"]})
     with pytest.raises(ValidationError, match="two scripted steps answer ask 1"):
@@ -204,11 +202,8 @@ def test_a_reason_typed_into_a_form_is_what_the_person_says_for_a_relayed_tell()
         "key": "nadia",
         "name": "Nadia",
         "email": "nadia@example.com",
-        "reply": {
-            "kind": "scripted",
-            "then": "silent",
-            "replies": [{"to_ask": 1, "press": {"label": "Reject", "form": [{"value": "budget is frozen"}]}}],
-        },
+        "reply": {"kind": "scripted", "then": "silent"},
+        "takes": [{"nth": 1, "take": "Reject", "form": [{"value": "budget is frozen"}]}],
     }
     scenario = Scenario.model_validate(
         {
@@ -225,11 +220,8 @@ def test_a_picker_that_picks_nobody_real_is_rejected() -> None:
         "key": "nadia",
         "name": "Nadia",
         "email": "nadia@example.com",
-        "reply": {
-            "kind": "scripted",
-            "then": "silent",
-            "replies": [{"to_ask": 1, "press": {"label": "Assign to", "picks": "ghost"}}],
-        },
+        "reply": {"kind": "scripted", "then": "silent"},
+        "takes": [{"nth": 1, "take": "Assign to", "fields": {"picks": "ghost"}}],
     }
     with pytest.raises(ValidationError, match="no such person: ghost"):
         Scenario.model_validate({**BASE, "people": [*BASE["people"], picker]})

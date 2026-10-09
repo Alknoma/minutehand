@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import MessageChange, MessagesResponse
-from minutehand.domain.scenario import ScriptedDecision
+from minutehand.domain.scenario import Take
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, TOKENS, deciding, inbox, play, scenario
 from tests.inboxes.test_gated import agent
@@ -30,7 +30,7 @@ async def test_the_ask_and_the_decision_are_said_in_words(
     state = tmp_path / "state"
     run = state / "runs" / "root"
     run.mkdir(parents=True)
-    scn = scenario(deciding(ScriptedDecision(decision="approve")))
+    scn = scenario(deciding(Take(take="approve")))
     played = await play(run, scn, inbox(product), agent(product))
     played.store.close()
     (run / "scenario.json").write_text(scn.model_dump_json())

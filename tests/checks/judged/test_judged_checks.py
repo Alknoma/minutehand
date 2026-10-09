@@ -58,9 +58,9 @@ def tickets() -> Log:
     return log
 
 
-def test_the_two_judged_checks_are_found_and_are_not_deterministic_checks() -> None:
-    assert [c.id for c in discover_judged()] == ["asked_about", "ticket_is_actionable"]
-    assert not {c.id for c in discover()} & {"asked_about", "ticket_is_actionable"}
+def test_the_judged_checks_are_found_and_are_not_deterministic_checks() -> None:
+    assert [c.id for c in discover_judged()] == ["asked_about", "conveys", "ticket_is_actionable"]
+    assert not {c.id for c in discover()} & {"asked_about", "conveys", "ticket_is_actionable"}
 
 
 async def test_an_unclear_ticket_is_a_review_finding_carrying_the_model_and_prompt_version() -> None:

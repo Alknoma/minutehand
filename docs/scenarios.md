@@ -88,7 +88,23 @@ people:
 ```
 
 `intent` is `answer` (the default), `decline`, `ask_back` or `defer`. A message whose number has no step, before the
-last step, gets no answer. Inbox decisions are written the same way (`docs/inboxes.md`).
+last step, gets no answer.
+
+Anything else a person does to an item, beyond answering in words, is a **take**: a button or a form on a message, a
+decision in the agent's product, a ticket moved, commented on or deleted, an invitation answered. A take names the
+move, and optionally the provider and the nth item there, when, and what it carries:
+
+```yaml
+    takes:
+      - {take: Approve, nth: 2}                                 # the button on her second ask, wherever it went
+      - {provider: approvals, take: reject, facts: ["the budget is spent"]}   # a model words the reason
+      - {provider: jira, take: done, after: P3D}                # each Jira ticket handed to her, three days on
+```
+
+Without a take, a model picks among what the item offers when the scenario plays its provider (`transitions_on`,
+and always for the agent's product); a delete, a comment or a note is never picked unprompted. `minutehand migrate
+<file>` rewrites an older scenario's `ticket_fates`, `press`, `presses_every` and scripted `decisions` as takes
+(`docs/design-transitions.md`, phase 4).
 
 ## The scenarios
 

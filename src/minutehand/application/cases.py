@@ -240,7 +240,6 @@ def merged(name: str, scenarios: Sequence[Scenario]) -> Scenario:
             "seed": first.seed,
             "protected_names": list(dict.fromkeys(n for s in scenarios for n in s.protected_names)),
             "people": [p.model_dump() for p in people],
-            "ticket_fates": [f.model_dump() for s in scenarios for f in s.ticket_fates],
             "expect": [e.model_dump() for s in scenarios for e in s.expect],
             "assess": [r.model_dump() for r in {r.id: r for s in reversed(scenarios) for r in s.assess}.values()],
         }

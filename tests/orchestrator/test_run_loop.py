@@ -32,7 +32,7 @@ async def test_a_36_hour_reply_and_a_3_day_ticket_fate_move_the_clock_exactly_th
 
 
 async def test_a_silent_person_never_replies_and_the_run_ends_with_nothing_pending(rig: Rig) -> None:
-    record, store, _ = await rig.run(scenario(ticket_fates=[]), rig.agent("ask_silent"))
+    record, store, _ = await rig.run(scenario(tom_finishes=False), rig.agent("ask_silent"))
 
     assert record.stop is StopReason.NOTHING_PENDING
     assert len(record.wakes) == 1
@@ -42,7 +42,7 @@ async def test_a_silent_person_never_replies_and_the_run_ends_with_nothing_pendi
 
 async def test_a_silent_person_and_a_wake_past_the_deadline_end_the_run_at_the_deadline(rig: Rig) -> None:
     record, store, clock = await rig.run(
-        scenario(ticket_fates=[]),
+        scenario(tom_finishes=False),
         rig.agent("ask_silent"),
         env=rig.env(NEXT_WAKE_AFTER_HOURS=str(15 * 24)),
     )
@@ -53,7 +53,7 @@ async def test_a_silent_person_and_a_wake_past_the_deadline_end_the_run_at_the_d
 
 
 async def test_with_nothing_pending_the_world_runs_on_to_the_deadline_without_waking_the_agent(rig: Rig) -> None:
-    record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("ask_silent"))
+    record, store, clock = await rig.run(scenario(tom_finishes=False), rig.agent("ask_silent"))
 
     assert record.stop is StopReason.NOTHING_PENDING
     assert clock.jumps == [T0 + timedelta(days=14)] and record.ended_at == T0 + timedelta(days=14)
@@ -62,7 +62,7 @@ async def test_with_nothing_pending_the_world_runs_on_to_the_deadline_without_wa
 
 
 async def test_max_wakes_stops_an_agent_that_always_asks_to_wake_again(rig: Rig) -> None:
-    record, _, _ = await rig.run(scenario(max_wakes=3, ticket_fates=[]), rig.agent("keep_waking"))
+    record, _, _ = await rig.run(scenario(max_wakes=3, tom_finishes=False), rig.agent("keep_waking"))
 
     assert record.stop is StopReason.WAKE_LIMIT
     assert [w.sim_time for w in record.wakes] == [T0, T0 + timedelta(hours=1), T0 + timedelta(hours=2)]
@@ -71,7 +71,7 @@ async def test_max_wakes_stops_an_agent_that_always_asks_to_wake_again(rig: Rig)
 async def test_a_booking_fires_at_its_time_and_a_cancelled_one_does_not(rig: Rig) -> None:
     # this agent never reads its queue: the run waits a tenth of a second for it to take the delivery
     booked = Booked(take_limit=timedelta(seconds=0.1))
-    record, store, clock = await rig.run(scenario(ticket_fates=[]), rig.agent("book", extra=[booked]))
+    record, store, clock = await rig.run(scenario(tom_finishes=False), rig.agent("book", extra=[booked]))
 
     assert rig.sched.fired == [("kept", T0 + timedelta(hours=5))]
     assert clock.jumps == [T0 + timedelta(hours=5), T0 + timedelta(days=14)]
@@ -90,7 +90,7 @@ async def test_an_agent_that_exits_non_zero_ends_the_run_agent_failed(rig: Rig) 
 
 async def test_a_happening_lands_at_its_moment_as_the_persons_change_and_wakes_nobody(rig: Rig) -> None:
     scn = scenario(
-        ticket_fates=[],
+        tom_finishes=False,
         tickets=[{"provider": "testchat", "project": "P", "title": "Sign the lease", "assignee": "tom"}],
         happenings=[
             {
@@ -113,7 +113,7 @@ async def test_a_happening_lands_at_its_moment_as_the_persons_change_and_wakes_n
 
 async def test_a_happening_on_a_provider_that_cannot_act_is_refused_before_the_run(rig: Rig) -> None:
     scn = scenario(
-        ticket_fates=[],
+        tom_finishes=False,
         tickets=[{"provider": "testsched", "project": "P", "title": "Nobody holds this"}],
         happenings=[
             {
@@ -156,7 +156,7 @@ HAPPENINGS = {
 
 
 async def test_a_person_acts_on_a_seeded_ticket_at_its_moment_without_waking_the_agent(rig: Rig) -> None:
-    record, store, clock = await rig.run(scenario(ticket_fates=[], **HAPPENINGS), rig.agent("ask_silent"))
+    record, store, clock = await rig.run(scenario(tom_finishes=False, **HAPPENINGS), rig.agent("ask_silent"))
 
     assert clock.jumps == [T0 + timedelta(days=2), T0 + timedelta(days=5), T0 + timedelta(days=14)]
     assert [w.sim_time for w in record.wakes] == [T0]
@@ -170,7 +170,7 @@ async def test_a_person_acts_on_a_seeded_ticket_at_its_moment_without_waking_the
 
 async def test_a_messaging_happening_on_a_provider_that_pushes_nothing_is_refused_before_the_run(rig: Rig) -> None:
     scn = scenario(
-        ticket_fates=[],
+        tom_finishes=False,
         happenings=[{"kind": "posts", "provider": "testsched", "person": "tom", "text": "Done", "after": "P1D"}],
     )
     with pytest.raises(RunRefused, match=r"happening 1 \(tom posts\) lands on testsched, which pushes no events"):
@@ -182,7 +182,7 @@ async def test_a_document_happening_on_a_provider_that_changes_no_documents_is_r
     rig: Rig,
 ) -> None:
     scn = scenario(
-        ticket_fates=[],
+        tom_finishes=False,
         documents=[{"provider": "testchat", "title": "Plan", "text": "draft"}],
         happenings=[
             {"kind": "document", "person": "tom", "document": "Plan", "after": "P1D", "action": {"kind": "trashed"}}
@@ -199,7 +199,7 @@ async def test_a_booked_wake_waits_until_the_agent_has_taken_its_delivery(rig: R
     run waits until the delivery is taken, so the follow-up it causes is in the booking's wake at the booking's
     moment. Before, the wake ended at once and the follow-up landed at the deadline the clock ran on to."""
     record, store, _ = await rig.run(
-        scenario(ticket_fates=[]),
+        scenario(tom_finishes=False),
         rig.agent("book_and_poll", extra=[Booked()]),
         env=rig.env(POLL_SECONDS="0.4", BACKGROUND_SECONDS="20"),
     )

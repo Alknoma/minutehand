@@ -18,7 +18,16 @@ from minutehand.checks.ledger import build
 from minutehand.domain.checks import ObligationKind
 from minutehand.domain.common import Window
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.scenario import Absence, MessagingHappening, Reminded, Take
+from minutehand.domain.scenario import (
+    Absence,
+    Answers,
+    DelayRange,
+    FactChange,
+    MessagingHappening,
+    Person,
+    Reminded,
+    Take,
+)
 from minutehand.domain.transitions import AWAITING, REPLIED, REPLY, conversations, message_offers
 from minutehand.domain.world import (
     Actor,
@@ -35,7 +44,7 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 from tests.orchestrator.rig import T0, scenario
-from tests.support.people import people_engine
+from tests.support.people import people_engine, people_model
 
 CHAT = "chat"
 SOFIA = "sofia@example.com"
@@ -187,7 +196,7 @@ async def test_a_scripted_answer_is_worded_when_planned_and_lands_at_its_moment_
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     pushes = Pushes()
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, pushes, TARGET, "secret")}, None)
 
     [booked] = (await engine.look(store, clock)).booked
@@ -213,7 +222,7 @@ async def test_a_scripted_answer_is_worded_when_planned_and_lands_at_its_moment_
 async def test_an_ask_edited_before_its_answer_is_worded_again_from_its_new_text(tmp_path: Path) -> None:
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Thinking...")
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None)
     [booked] = (await engine.look(store, clock)).booked
     first = engine.pending(booked.pending, store)
@@ -236,7 +245,7 @@ async def test_a_follow_up_on_an_answer_owed_is_no_new_ask_and_a_reminded_person
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     reminded = Reminded(sooner_within=Window(min=timedelta(hours=1), max=timedelta(hours=1)))
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"reminded": reminded}) if p.key == "sofia" else p for p in base.people]
     engine = people_engine(
         base.model_copy(update={"people": people}), {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None
@@ -263,7 +272,7 @@ async def test_a_person_away_while_someone_covers_sends_their_automatic_reply_at
     store, clock = _store(tmp_path)
     _sent(store, "m1", "Can you confirm the pricing?")
     away = [Absence(lasts=timedelta(days=3), delegate="tom", reason="on leave")]
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"absences": away}) if p.key == "sofia" else p for p in base.people]
     pushes = Pushes()
     engine = people_engine(
@@ -286,7 +295,7 @@ async def test_a_take_pinned_on_an_ask_still_counts_it_first_beside_an_automatic
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     away = [Absence(lasts=timedelta(days=3), delegate="tom", reason="on leave")]
     take = Take(provider=CHAT, take=REPLY, nth=1, after=timedelta(days=4), verbatim="Back now: yes, 40k.")
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"absences": away, "takes": [take]}) if p.key == "sofia" else p for p in base.people]
     pushes = Pushes()
     engine = people_engine(
@@ -304,7 +313,7 @@ def test_an_ask_the_script_plans_no_answer_to_opens_no_wait_and_one_it_does_open
     store, clock = _store(tmp_path)
     first = _sent(store, "m1", "Can you confirm the pricing?")
     _sent(store, "m2", "Thanks for the help last week", channel="team")  # a conversation of its own
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None)
     asyncio.run(engine.look(store, clock))
 
@@ -313,3 +322,52 @@ def test_an_ask_the_script_plans_no_answer_to_opens_no_wait_and_one_it_does_open
     # Her script answers one ask, then goes silent: the second asks her nothing. Mutation: reading every record the
     # engine holds as an ask opens a wait on the thank-you too.
     assert [o.entity for o in waits] == [first]
+
+
+async def test_gap_8_an_answer_owed_when_what_they_know_changes_says_what_they_know_when_they_send_it(
+    tmp_path: Path,
+) -> None:
+    store, clock = _store(tmp_path)
+    _sent(store, "m1", "What is the partner price?")
+    sofia = Person(
+        key="sofia",
+        name="Sofia Romano",
+        email=SOFIA,
+        facts=["the partner price is 40k a year"],
+        fact_changes=[FactChange(after=timedelta(hours=10), facts=["the partner price is 45k a year"])],
+        reply=Answers(delay=DelayRange(shortest=timedelta(hours=20), longest=timedelta(hours=20))),
+    )
+    base = scenario(tom_finishes=False)
+    scn = base.model_copy(update={"people": [p if p.key != "sofia" else sofia for p in base.people]})
+    pushes = Pushes()
+    engine = people_engine(scn, {CHAT: PushedConversations(CHAT, pushes, TARGET, "secret")}, people_model())
+    [booked] = (await engine.look(store, clock)).booked
+    assert PersonReply.model_validate_json(engine.pending(booked.pending, store).answer or "").text.startswith(
+        "The partner price is 40k"
+    )
+
+    clock.jump(T0 + timedelta(hours=20))
+    await engine.act(booked.pending, store, clock)
+
+    # Her facts changed ten hours in; her answer, owed at twenty, is written again from what she knows then.
+    # Mutation: keeping the words written when she was asked sends 40k.
+    [said] = pushes.delivered
+    assert said.text.startswith("The partner price is 45k")
+
+
+async def test_a_take_for_every_item_that_a_message_does_not_offer_leaves_it_to_be_answered(tmp_path: Path) -> None:
+    store, clock = _store(tmp_path)
+    _sent(store, "m1", "Can you confirm the pricing?")
+    everywhere = Take(take="done", after=timedelta(hours=1))
+    base = scenario(tom_finishes=False)
+    people = [p.model_copy(update={"takes": [everywhere]}) if p.key == "sofia" else p for p in base.people]
+    engine = people_engine(
+        base.model_copy(update={"people": people}), {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None
+    )
+
+    [booked] = (await engine.look(store, clock)).booked
+
+    # A message offers no "done": the take pins nothing on it, and her script answers it when it plans to.
+    # Mutation: a take for every item pinning one that does not offer it books her at an hour, to a take refused.
+    assert booked.at == T0 + timedelta(hours=36)
+    assert engine.pending(booked.pending, store).pinned is None

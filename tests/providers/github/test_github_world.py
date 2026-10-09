@@ -15,8 +15,8 @@ from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, Seed
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.ports.provider import BooksWakes, EditsTickets, HoldsTickets, Provider, PushesEvents
-from minutehand.ports.transitions import TalksToAgent
+from minutehand.ports.provider import BooksWakes, Provider, PushesEvents
+from minutehand.ports.transitions import ProvidesTransitions, TalksToAgent
 from tests.providers.github.github_world import IRIS, SCENARIO, START, Hub, body, github_seed
 
 
@@ -31,7 +31,7 @@ def test_the_provider_is_found_by_its_directory_and_claims_api_github_com() -> N
 def test_the_provider_meets_its_port_and_claims_no_other() -> None:
     provider: Provider = build()
     assert provider.manifest == MANIFEST
-    for port in (PushesEvents, HoldsTickets, EditsTickets, BooksWakes):
+    for port in (PushesEvents, ProvidesTransitions, BooksWakes):
         assert not isinstance(provider, port)
     assert isinstance(provider, TalksToAgent), "people's moves are pushed to the agent as webhooks"
 
