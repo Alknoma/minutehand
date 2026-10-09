@@ -1,0 +1,211 @@
+"""What every Web API call shares: the workspace it is answered in, the run's clock, the conversations it can see, and the
+events it sets off (`pushing`)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from pydantic import JsonValue
+
+from minutehand.adapters.providers.slack import inbound, state, wire
+from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.errors import NotServed
+from minutehand.domain.world import (
+    Actor,
+    ControlKind,
+    MessageAction,
+    MessageSnapshot,
+    Operation,
+    RecordSnapshot,
+    WorldEvent,
+)
+from minutehand.ports.clock import Clock
+from minutehand.ports.provider import Wakes
+from minutehand.ports.store import Store
+
+
+def message_actions(message: wire.SlackMessage) -> list[MessageAction]:
+    """The controls a reader can use on a message, as the domain names them."""
+    kinds = {"button": ControlKind.BUTTON, "users_select": ControlKind.USER_SELECT}
+    return [
+        MessageAction(
+            action_id=c.action_id,
+            label=c.label,
+            control=ControlKind.LINK if c.url is not None else kinds[c.type],
+            value=c.value,
+        )
+        for c in wire.controls(message.blocks)
+    ]
+
+
+class Calls:
+    def __init__(self, store: Store, clock: Clock, booking: Callable[[], Wakes | None]) -> None:
+        self._store = store
+        self._booking = booking
+        """The dispatch table the run books what falls due later in, when the provider is bound to one."""
+        self._world = SlackWorld(store)
+        """The workspace the call being answered is in: set for each call before its method runs."""
+        self._clock = clock
+        self._emitted: list[wire.EventCallback] = []
+        """The events the call being answered has set off, sent once it is answered."""
+
+    # ------------------------------------------------------------------ lookups
+
+    def _user(self, user: str) -> wire.SlackUser:
+        found = self._world.user(user) if user else None
+        if found is None:
+            raise wire.Refusal("user_not_found")
+        return found
+
+    def _channel(self, channel: str) -> wire.SlackChannel:
+        """A conversation the app can see: public channels, and anything private it is in."""
+        found = self._world.channel(channel) if channel else None
+        if found is None or ((found.is_private or found.is_im or found.is_mpim) and not self._in(found)):
+            raise wire.Refusal("channel_not_found")
+        return found
+
+    def _joined(self, channel: str) -> wire.SlackChannel:
+        found = self._channel(channel)
+        if not self._in(found):
+            raise wire.Refusal("not_in_channel")
+        return found
+
+    def _in(self, channel: wire.SlackChannel) -> bool:
+        return self._world.is_member(channel.id, self._world.bot)
+
+    def _served(self, channel: wire.SlackChannel) -> wire.SlackChannel:
+        if channel.is_im:
+            return channel
+        return channel.model_copy(update={"is_member": self._in(channel)})
+
+    def _now(self) -> int:
+        return int(self._clock.now().timestamp())
+
+    # ------------------------------------------------------------------ events
+
+    def _emit(self, event: wire.Event, seq: int, nth: int = 0) -> None:
+        """The agent's own change, at log position `seq`, sets `event` off: it is sent once the call is answered,
+        and carries that position as its `event_id` (with the `nth` of several the one change sets off)."""
+        self._emitted.append(inbound.callback(self._world, event, seq=seq, clock=self._clock, nth=nth))
+
+    def _recorded(self, text: str, resource: str = "channels") -> RecordSnapshot:
+        return RecordSnapshot(resource=resource, text=text)
+
+    def _write_channel(self, channel: wire.SlackChannel, operation: Operation, text: str) -> WorldEvent:
+        return self._world.write(
+            state.channel_ref(channel.id),
+            channel,
+            operation=operation,
+            actor=Actor.AGENT,
+            parent=self._world.team.id,
+            after=self._recorded(text),
+        )
+
+    def _summarised(self, root: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
+        """A message as a listing serves it. A thread's parent carries its reply count, repliers and latest reply: the
+        only sign in history that a thread exists. A reply carries its parent's author (`parent_user_id`), and a reply
+        broadcast to the channel its parent (`root`), as Slack computes them
+        (https://docs.slack.dev/messaging/retrieving-messages#threading,
+        https://docs.slack.dev/reference/events/message/thread_broadcast)."""
+        if root.thread_ts is not None and root.thread_ts != root.ts:
+            return self._as_reply(root, every)
+        replies = [m for m in every if m.thread_ts == root.ts and m.ts != root.ts]
+        if not replies:
+            return root
+        users = list(dict.fromkeys(m.user for m in replies))
+        return root.model_copy(
+            update={
+                "thread_ts": root.ts,
+                "reply_count": len(replies),
+                "reply_users": users,
+                "reply_users_count": len(users),
+                "latest_reply": replies[-1].ts,
+            }
+        )
+
+    def _as_reply(self, reply: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
+        parent = next((m for m in every if m.ts == reply.thread_ts), None)
+        if parent is None:
+            return reply
+        served = reply.model_copy(update={"parent_user_id": parent.user})
+        if served.subtype == "thread_broadcast":  # enum-lint: exempt Slack's own message subtype on the wire
+            return served.model_copy(update={"root": self._summarised(parent, every)})
+        return served
+
+    def _snapshot(self, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
+        return self._snapshot_in(self._world, channel, message)
+
+    def _snapshot_in(self, world: SlackWorld, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
+        return MessageSnapshot(
+            text=wire.visible_text(message.text, message.blocks),
+            channel=channel,
+            recipient_emails=world.human_emails(channel, besides=message.user),
+            thread_of=message.thread_ts,
+            actions=message_actions(message),
+        )
+
+    def _thread_of(self, channel: str, thread_ts: str | None) -> str | None:
+        """The thread a post with `thread_ts` goes in: the parent it names. A `thread_ts` naming a reply, or naming
+        no message, is refused by name: Slack's pages say only "Avoid using a reply's ts value; use its parent
+        instead" (https://docs.slack.dev/reference/methods/chat.postMessage) and list no error for either."""
+        if not thread_ts:
+            return None
+        parent = self._world.message(channel, thread_ts)
+        if parent is None:
+            raise NotServed(f"a thread_ts ({thread_ts}) that names no message in {channel}")
+        if parent.thread_ts is not None and parent.thread_ts != parent.ts:
+            raise NotServed(f"a thread_ts ({thread_ts}) that names a reply rather than its thread's parent")
+        return parent.ts
+
+    def _from_bot(
+        self,
+        text: str,
+        blocks: list[JsonValue] | None,
+        attachments: list[JsonValue] | None,
+        thread_ts: str | None,
+        *,
+        ephemeral_to: str | None = None,
+    ) -> wire.SlackMessage:
+        return self._from_bot_in(self._world, text, blocks, attachments, thread_ts, ephemeral_to=ephemeral_to)
+
+    def _from_bot_in(
+        self,
+        world: SlackWorld,
+        text: str,
+        blocks: list[JsonValue] | None,
+        attachments: list[JsonValue] | None,
+        thread_ts: str | None,
+        *,
+        ephemeral_to: str | None = None,
+    ) -> wire.SlackMessage:
+        """A message the app posts, as Slack keeps it: its blocks given ids, and the app's bot profile on it."""
+        ts = world.next_ts(self._clock)
+        return wire.SlackMessage(
+            ts=ts,
+            user=world.bot,
+            text=text,
+            team=world.team.id,
+            bot_id=world.team.bot_id,
+            app_id=world.team.app_id,
+            thread_ts=thread_ts,
+            blocks=wire.with_ids(blocks, ts),
+            attachments=attachments,
+            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team),
+            ephemeral_to=ephemeral_to,
+        )
+
+    def _destination(self, channel: str) -> wire.SlackChannel:
+        """A channel id, or a member id, which Slack answers with that member's IM with the app."""
+        if channel and self._world.channel(channel) is None and self._world.user(channel) is not None:
+            return self._conversation([channel], actor=Actor.AGENT)[0]
+        return self._channel(channel)
+
+    def _conversation(self, others: list[str], *, actor: Actor) -> tuple[wire.SlackChannel, bool]:
+        """The IM or group DM between the app and `others`, created when it does not exist yet."""
+        members = sorted({self._world.bot, *others})
+        cid = state.conversation_id(members)
+        existing = self._world.channel(cid)
+        if existing is not None:
+            return existing, False
+        channel = self._world.open_conversation(members, created=int(self._clock.now().timestamp()), actor=actor)
+        return channel, True

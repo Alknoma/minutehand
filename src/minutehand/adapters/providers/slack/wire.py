@@ -26,7 +26,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, field_validator
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 TRUNCATED_AT = 40_000
@@ -45,16 +45,29 @@ JSON = "application/json; charset=utf-8"
 """The content type of every Web API answer, refusals included."""
 
 
-class Refusal(ServiceRefusal):
-    """Slack answered `ok: false`. `error` is Slack's own code."""
+class UserRefused(Model):
+    """One user a call could not act on and why, as `conversations.invite` lists them in `errors`."""
 
-    def __init__(self, error: str) -> None:
+    user: str
+    ok: Literal[False] = False
+    error: str
+
+
+class Refusal(ServiceRefusal):
+    """Slack answered `ok: false`. `error` is Slack's own code; `errors` the per-user refusals a call that takes a
+    list of users adds beside it (https://docs.slack.dev/reference/methods/conversations.invite)."""
+
+    def __init__(self, error: str, errors: list[UserRefused] | None = None) -> None:
         super().__init__(error)
         self.error = error
+        self.errors = errors
+
+    def answer(self) -> Failed:
+        return FailedForUsers(error=self.error, errors=self.errors) if self.errors else Failed(error=self.error)
 
     def render(self, asked: Asked) -> Rendered:
         """`{"ok": false, "error": …}` at 200, as the Web API refuses."""
-        return Rendered(status=200, content_type=JSON, body=respond(Failed(error=self.error)))
+        return Rendered(status=200, content_type=JSON, body=respond(self.answer()))
 
 
 class ErrorMessages(Model):
@@ -131,6 +144,18 @@ class SlackChannel(Model):
     purpose: SlackTopic | None = None
     is_member: bool | None = Field(default=None, description="Whether the calling app is in it; set when served")
     num_members: int | None = Field(default=None, description="Its member count; set when `include_num_members` asks")
+    previous_names: list[str] = Field(default=[], description="Every name a rename replaced, oldest first")
+    unlinked: int | None = Field(default=None, description="Computed when served as a full conversation object")
+    name_normalized: str | None = Field(default=None, description="Computed when served in full")
+    is_shared: bool | None = Field(default=None, description="Computed when served in full")
+    is_frozen: bool | None = Field(default=None, description="Computed when served in full")
+    is_org_shared: bool | None = Field(default=None, description="Computed when served in full")
+    is_pending_ext_shared: bool | None = Field(default=None, description="Computed when served in full")
+    pending_shared: list[str] | None = Field(default=None, description="Computed when served in full")
+    context_team_id: str | None = Field(default=None, description="Computed when served in full")
+    is_ext_shared: bool | None = Field(default=None, description="Computed when served in full")
+    shared_team_ids: list[str] | None = Field(default=None, description="Computed when served in full")
+    pending_connected_team_ids: list[str] | None = Field(default=None, description="Computed when served in full")
 
 
 class SlackMembership(Model):
@@ -187,14 +212,37 @@ class SlackFile(Model):
     url_private: str
     url_private_download: str
     permalink: str
+    bot_id: str | None = Field(default=None, description="The bot that uploaded it, when an app did")
+    bot_user_id: str | None = None
+    alt_txt: str | None = None
+    channels: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    groups: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    ims: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    comments_count: int | None = Field(default=None, description="Computed when served; the world holds no comment")
 
 
 class SlackFileContent(Model):
-    """Minutehand's own: what a file holds, served only at its `url_private`."""
+    """Minutehand's own: the bytes a file holds, exactly as they were uploaded or seeded, served only at its
+    `url_private`."""
 
     file: str
     mimetype: str
-    text: str
+    encoded: str = Field(description="The bytes, base64")
+
+
+class SlackUpload(Model):
+    """Minutehand's own: a file the agent asked an upload URL for, from the URL's answer until the upload is
+    completed."""
+
+    file: str
+    team: str
+    ticket: str
+    filename: str
+    length: int
+    user: str
+    alt_txt: str | None = None
+    uploaded: bool = False
+    completed: bool = False
 
 
 class SlackMessage(Model):
@@ -230,6 +278,32 @@ class SlackMessage(Model):
     parent_user_id: str | None = Field(
         default=None, description="A reply's thread parent's author; computed when served"
     )
+    permalink: str | None = Field(default=None, description="Computed when a method serves it with one")
+    pinned_to: list[str] | None = Field(default=None, description="The channels it is pinned to; computed by pins.list")
+
+
+class SlackScheduled(Model):
+    """Minutehand's own: a message the agent scheduled and Slack has not posted yet, as it was scheduled."""
+
+    id: str
+    team: str
+    channel: str
+    post_at: int
+    date_created: int
+    text: str = ""
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+    thread_ts: str | None = None
+    reply_broadcast: bool = False
+
+
+class SlackPin(Model):
+    """Minutehand's own: a message pinned to its channel, when and by whom."""
+
+    channel: str
+    ts: str
+    created: int
+    created_by: str
 
 
 class SlackPostKey(Model):
@@ -299,7 +373,10 @@ class SlackTrigger(Model):
     issued: int = Field(description="Simulated seconds since the epoch")
     on_channel: str | None = None
     on_message: str | None = None
-    view: str | None = Field(default=None, description="The view opened with it; set once used")
+    view: str | None = Field(default=None, description="The view opened or pushed with it; set once used")
+    in_view: str | None = Field(
+        default=None, description="The view the interaction that issued it was in, when it was in one"
+    )
 
 
 class SlackHook(Model):
@@ -446,6 +523,40 @@ class ChannelInfoArgs(ChannelArgs):
     include_num_members: bool = False
 
 
+class CreateArgs(Model):
+    name: str = ""
+    is_private: bool = False
+
+
+class InviteArgs(ChannelArgs):
+    users: str = ""
+    force: bool = False
+
+
+class KickArgs(ChannelArgs):
+    user: str = ""
+
+
+class RenameArgs(ChannelArgs):
+    name: str = ""
+
+
+class TopicArgs(ChannelArgs):
+    topic: str | None = None
+
+
+class PurposeArgs(ChannelArgs):
+    purpose: str | None = None
+
+
+class UsersConversationsArgs(ListArgs):
+    types: str = "public_channel"
+    user: str = ""
+    exclude_archived: bool = False
+    exclude_muted: bool = False
+    team_id: str = ""
+
+
 class ConversationsOpenArgs(Model):
     users: str = ""
     channel: str = ""
@@ -509,6 +620,118 @@ class UpdateArgs(Model):
     _parse_blocks = field_validator("blocks", "attachments", mode="before")(_blocks_from_form)
 
 
+def _number_as_text(value: object) -> object:
+    """A JSON body carries a Unix timestamp as a number, a form as text."""
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) else value
+
+
+class ScheduleArgs(Model):
+    channel: str = ""
+    post_at: str = ""
+    text: str = ""
+    thread_ts: str | None = None
+    reply_broadcast: bool = False
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+
+    _parse_blocks = field_validator("blocks", "attachments", mode="before")(_blocks_from_form)
+    _parse_time = field_validator("post_at", mode="before")(_number_as_text)
+
+
+class ScheduledListArgs(ListArgs):
+    channel: str = ""
+    oldest: str = ""
+    latest: str = ""
+    team_id: str = ""
+
+    _parse_time = field_validator("oldest", "latest", mode="before")(_number_as_text)
+
+
+class DeleteScheduledArgs(Model):
+    channel: str = ""
+    scheduled_message_id: str = ""
+
+
+class UploadUrlArgs(Model):
+    filename: str = ""
+    length: str = ""
+    snippet_type: str = ""
+    alt_txt: str | None = None
+
+    _parse_length = field_validator("length", mode="before")(_number_as_text)
+
+
+class UploadedFile(Model):
+    id: str
+    title: str | None = None
+    highlight_type: str | None = None
+
+
+class CompleteUploadArgs(Model):
+    files: list[UploadedFile] = []
+    channel_id: str = ""
+    channels: str = ""
+    thread_ts: str | None = None
+    initial_comment: str = ""
+    blocks: list[JsonValue] | None = None
+    username: str = ""
+    icon_url: str = ""
+    icon_emoji: str = ""
+
+    _parse_files = field_validator("files", mode="before")(_blocks_from_form)
+    _parse_blocks = field_validator("blocks", mode="before")(_blocks_from_form)
+
+
+class FileArgs(Model):
+    file: str = ""
+    cursor: str | None = None
+    limit: int = 0
+
+
+class FilesListArgs(Model):
+    channel: str = ""
+    user: str = ""
+    types: str = "all"
+    ts_from: str = ""
+    ts_to: str = ""
+    count: int = 100
+    page: int = 1
+
+    _parse_time = field_validator("ts_from", "ts_to", mode="before")(_number_as_text)
+
+
+class PermalinkArgs(Model):
+    channel: str = ""
+    message_ts: str = ""
+
+
+class ReactionRemoveArgs(Model):
+    name: str = ""
+    channel: str = ""
+    timestamp: str = ""
+    file: str = ""
+    file_comment: str = ""
+
+
+class ReactionGetArgs(Model):
+    channel: str = ""
+    timestamp: str = ""
+    file: str = ""
+    file_comment: str = ""
+    full: bool = False
+
+
+class ReactionsListArgs(ListArgs):
+    user: str = ""
+    full: bool = False
+    team_id: str = ""
+
+
+class PinArgs(Model):
+    channel: str = ""
+    timestamp: str = ""
+
+
 class DeleteArgs(Model):
     channel: str = ""
     ts: str = ""
@@ -562,6 +785,13 @@ class ViewsUpdateArgs(Model):
     _parse_view = field_validator("view", mode="before")(_view_from_form)
 
 
+class ViewsPushArgs(Model):
+    trigger_id: str = ""
+    view: ViewSpec | None = None
+
+    _parse_view = field_validator("view", mode="before")(_view_from_form)
+
+
 class ViewsPublishArgs(Model):
     user_id: str = ""
     hash: str = ""
@@ -578,6 +808,13 @@ class OAuthArgs(Model):
     grant_type: str = ""
 
 
+MAX_VIEW_BYTES = 250_000
+"""`view_too_large`: "greater than 250kb" (https://docs.slack.dev/reference/methods/views.update), taken as 250,000
+bytes at the least."""
+UNSURE_VIEW_BYTES = 256_000
+"""Between 250,000 and 256,000 bytes a view is too large only if "kb" is 1,000 bytes, which no page says."""
+MAX_STACK = 3
+"""A modal "can hold up to 3 views at a time in a view stack" (https://docs.slack.dev/surfaces/modals)."""
 MAX_VIEW_BLOCKS = 100
 MAX_TITLE_CHARS = 24
 MAX_METADATA_CHARS = 3000
@@ -585,6 +822,11 @@ MAX_METADATA_CHARS = 3000
 
 def check_view(view: ViewSpec) -> None:
     """Refuse what Slack refuses about a view, with Slack's own code."""
+    size = len(view.model_dump_json().encode())
+    if size > UNSURE_VIEW_BYTES:
+        raise Refusal("view_too_large")
+    if size > MAX_VIEW_BYTES:
+        raise NotServed(f"a view of {size} bytes, which is too large only if a kilobyte is 1,000 bytes: no page says")
     if view.type == "modal" and view.title is None:  # enum-lint: exempt Slack's own view type on the wire
         raise Refusal("invalid_arguments")
     if view.title is not None and len(view.title.text) > MAX_TITLE_CHARS:
@@ -914,6 +1156,10 @@ class Failed(Model):
     error: str
 
 
+class FailedForUsers(Failed):
+    errors: list[UserRefused]
+
+
 class UnknownMethod(Failed):
     """What Slack answers a method name it has none for, the name echoed in `req_method` (observed:
     `tests/providers/slack/data/observed/unknown_method.http`)."""
@@ -924,6 +1170,10 @@ class UnknownMethod(Failed):
 
 class ResponseMetadata(Model):
     next_cursor: str = ""
+
+
+class ResponseMetadataWarnings(Model):
+    warnings: list[str]
 
 
 class AuthTest(Ok):
@@ -976,6 +1226,29 @@ class OneChannel(Ok):
     channel: SlackChannel
 
 
+class Joined(OneChannel):
+    """`conversations.join`, which warns when the caller is in the conversation already."""
+
+    warning: str | None = None
+    response_metadata: ResponseMetadataWarnings | None = None
+
+
+class Purposed(Ok):
+    purpose: str
+
+
+class Kicked(Ok):
+    errors: dict[str, str] = {}
+
+
+class NotInChannelNotice(Model):
+    """What `conversations.leave` answers a caller who was not in the conversation: `ok` false and no `error`
+    (https://docs.slack.dev/reference/methods/conversations.leave)."""
+
+    ok: Literal[False] = False
+    not_in_channel: Literal[True] = True
+
+
 class OpenedId(Model):
     id: str
 
@@ -1020,6 +1293,103 @@ class Deleted(Ok):
     ts: str
 
 
+class ScheduledBody(Model):
+    """The message `chat.scheduleMessage` answers: what was scheduled, as a delayed message."""
+
+    text: str
+    bot_id: str
+    type: Literal["delayed_message"] = "delayed_message"
+    subtype: Literal["bot_message"] = "bot_message"
+    blocks: list[JsonValue] | None = None
+    attachments: list[JsonValue] | None = None
+
+
+class Scheduled(Ok):
+    channel: str
+    scheduled_message_id: str
+    post_at: str
+    message: ScheduledBody
+
+
+class ScheduledItem(Model):
+    id: int
+    channel_id: str
+    post_at: int
+    date_created: int
+    text: str
+
+
+class ScheduledList(Ok):
+    scheduled_messages: list[ScheduledItem]
+    response_metadata: ResponseMetadata
+
+
+class UploadUrl(Ok):
+    upload_url: str
+    file_id: str
+
+
+class CompletedFile(Model):
+    id: str
+    title: str
+
+
+class UploadCompleted(Ok):
+    files: list[CompletedFile]
+
+
+class FileInfo(Ok):
+    file: SlackFile
+    comments: list[JsonValue] = []
+    response_metadata: ResponseMetadata
+
+
+class Paging(Model):
+    count: int
+    total: int
+    page: int
+    pages: int
+
+
+class FilesListed(Ok):
+    files: list[SlackFile]
+    paging: Paging
+
+
+class Permalink(Ok):
+    channel: str
+    permalink: str
+
+
+class ReactedMessage(Ok):
+    type: Literal["message"] = "message"
+    message: SlackMessage
+    channel: str
+
+
+class ReactedItem(Model):
+    type: Literal["message"] = "message"
+    channel: str
+    message: SlackMessage
+
+
+class ReactionsListed(Ok):
+    items: list[ReactedItem]
+    response_metadata: ResponseMetadata
+
+
+class PinnedItem(Model):
+    type: Literal["message"] = "message"
+    channel: str
+    created: int
+    created_by: str
+    message: SlackMessage
+
+
+class PinsListed(Ok):
+    items: list[PinnedItem]
+
+
 class ViewAnswered(Ok):
     view: SlackView
 
@@ -1050,7 +1420,7 @@ class RateLimitedAnswer(Failed):
     retry_after: int = Field(exclude=True)
 
 
-Response = Ok | Failed
+Response = Ok | Failed | NotInChannelNotice
 
 
 def respond(response: Response) -> bytes:
@@ -1142,6 +1512,71 @@ class MemberJoinedEvent(Model):
     event_ts: str
 
 
+class MemberLeftEvent(Model):
+    type: Literal["member_left_channel"] = "member_left_channel"
+    user: str
+    channel: str
+    channel_type: Literal["C", "G"]
+    team: str
+
+
+class CreatedChannel(Model):
+    id: str
+    name: str
+    created: int
+    creator: str
+
+
+class ChannelCreatedEvent(Model):
+    type: Literal["channel_created"] = "channel_created"
+    channel: CreatedChannel
+
+
+class RenamedChannel(Model):
+    id: str
+    name: str
+    created: int
+
+
+class ChannelRenameEvent(Model):
+    type: Literal["channel_rename"] = "channel_rename"
+    channel: RenamedChannel
+
+
+class ChannelArchiveEvent(Model):
+    type: Literal["channel_archive"] = "channel_archive"
+    channel: str
+    user: str
+
+
+class ReactionRemovedEvent(Model):
+    type: Literal["reaction_removed"] = "reaction_removed"
+    user: str
+    reaction: str
+    item_user: str
+    item: ReactionItem
+    event_ts: str
+
+
+class FileId(Model):
+    id: str
+
+
+class FileSharedEvent(Model):
+    type: Literal["file_shared"] = "file_shared"
+    channel_id: str
+    file_id: str
+    user_id: str
+    file: FileId
+    event_ts: str
+
+
+class FileDeletedEvent(Model):
+    type: Literal["file_deleted"] = "file_deleted"
+    file_id: str
+    event_ts: str
+
+
 class AppHomeOpenedEvent(Model):
     type: Literal["app_home_opened"] = "app_home_opened"
     user: str
@@ -1158,6 +1593,13 @@ Event = (
     | MessageDeletedEvent
     | ReactionAddedEvent
     | MemberJoinedEvent
+    | MemberLeftEvent
+    | ChannelCreatedEvent
+    | ChannelRenameEvent
+    | ChannelArchiveEvent
+    | ReactionRemovedEvent
+    | FileSharedEvent
+    | FileDeletedEvent
     | AppHomeOpenedEvent
 )
 
@@ -1221,14 +1663,16 @@ class SocketEnvelope(Model):
     retry_attempt: int = 0
 
 
-def envelope_body(envelope: SocketEnvelope) -> str:
+def envelope_body(envelope: SocketEnvelope | InteractiveEnvelope) -> str:
     return envelope.model_dump_json(exclude_none=True)
 
 
 class SocketAck(_Foreign):
-    """What the app sends back on its connection to acknowledge an envelope; anything else it carries is its own."""
+    """What the app sends back on its connection to acknowledge an envelope; anything else it carries is its own. Its
+    `payload` is the answer to an interaction that accepts one (a `response_action` of a `view_submission`)."""
 
     envelope_id: str
+    payload: JsonValue = None
 
 
 class UrlVerification(Model):
@@ -1311,6 +1755,17 @@ class ViewSubmission(Model):
     view: SlackView
     response_urls: list[str] = []
     is_enterprise_install: bool = False
+
+
+class InteractiveEnvelope(Model):
+    """An interaction as Socket Mode carries it: `type` `interactive`, the payload as the HTTP post would carry it, and
+    `accepts_response_payload` true, so the app's acknowledgement may hold the answer to a `view_submission`
+    (https://docs.slack.dev/apis/events-api/using-socket-mode, "Using interactive features")."""
+
+    envelope_id: str
+    payload: BlockActions | ViewSubmission
+    type: Literal["interactive"] = "interactive"
+    accepts_response_payload: bool = True
 
 
 def payload_form(payload: BlockActions | ViewSubmission) -> bytes:

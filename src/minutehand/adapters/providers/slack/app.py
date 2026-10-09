@@ -16,10 +16,11 @@ Beside the Web API, on the hosts Slack serves them from (`*.slack.com`, so the s
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from pydantic import JsonValue
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
@@ -27,19 +28,22 @@ from starlette.routing import Route
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import socket_mode, state, wire
+from minutehand.adapters.providers.slack.calls import message_actions
+from minutehand.adapters.providers.slack.file_calls import FileCalls
 from minutehand.adapters.providers.slack.methods import UNSERVED
+from minutehand.adapters.providers.slack.pushing import Listener, Pusher
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import (
     Actor,
-    ControlKind,
     EntityKind,
-    MessageAction,
     MessageSnapshot,
     Operation,
     RecordSnapshot,
 )
 from minutehand.ports.clock import Clock
+from minutehand.ports.provider import Wakes
 from minutehand.ports.store import Store
 
 _MAX_GROUP = 8
@@ -54,7 +58,15 @@ SCOPES = (
     "im:history,im:read,im:write,mpim:history,mpim:read,users:read,users:read.email"
 )
 
-Handler = Callable[[wire.Presented], wire.Ok]
+SCHEDULE_LIMIT = 120 * 24 * 60 * 60
+"""A message can be scheduled "up to 120 days into the future" (https://docs.slack.dev/reference/methods/chat.scheduleMessage)."""
+SCHEDULE_WINDOW = 5 * 60
+MAX_PER_WINDOW = 30
+"""No more than 30 messages to one channel "within a 5-minute window" (the same page)."""
+DELETE_WITHIN = 60
+"""A scheduled message cannot be deleted within 60 seconds of posting (https://docs.slack.dev/reference/methods/chat.deleteScheduledMessage)."""
+
+Handler = Callable[[wire.Presented], wire.Response]
 
 _ABSENT = frozenset({""})
 _OFF = frozenset({"", "false", "0"})
@@ -96,11 +108,26 @@ UNSERVED_ARGUMENTS: dict[str, dict[str, frozenset[str]]] = {
         "unfurled_attachments": _ABSENT,
     },
     "chat.delete": {"as_user": _OFF},
+    "chat.scheduleMessage": {
+        "as_user": _OFF,
+        "link_names": _OFF,
+        "parse": _UNPARSED,
+        "markdown_text": _ABSENT,
+        "metadata": _ABSENT,
+        "unfurl_links": _OFF,
+        "unfurl_media": _ON,
+    },
+    "chat.deleteScheduledMessage": {"as_user": _OFF},
+    "files.completeUploadExternal": {"username": _ABSENT, "icon_url": _ABSENT, "icon_emoji": _ABSENT},
+    "files.info": {"count": frozenset({"", "100"}), "page": frozenset({"", "1"}), "limit": frozenset({"", "0"})},
+    "files.list": {"show_files_hidden_by_limit": _OFF, "team_id": _ABSENT},
+    "users.conversations": {"exclude_muted": _OFF},
     "users.list": {"include_locale": _OFF},
     "users.info": {"include_locale": _OFF},
     "conversations.info": {"include_locale": _OFF},
     "conversations.open": {"prevent_creation": _OFF},
     "views.open": {"interactivity_pointer": _ABSENT},
+    "views.push": {"interactivity_pointer": _ABSENT},
     "views.publish": {"interactivity_pointer": _ABSENT},
     "oauth.v2.access": {
         "grant_type": frozenset({"", "authorization_code"}),
@@ -130,12 +157,16 @@ def _header(request: Request, name: str) -> str | None:
     return request.headers[name] if name in request.headers else None
 
 
-class SlackApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
-        self._store = store
-        self._world = SlackWorld(store)
-        """The workspace the call being answered is in: set for each call before its method runs."""
-        self._clock = clock
+class SlackApi(FileCalls):
+    def __init__(
+        self,
+        store: Store,
+        clock: Clock,
+        pusher: Pusher | None = None,
+        booking: Callable[[], Wakes | None] | None = None,
+    ) -> None:
+        super().__init__(store, clock, booking if booking is not None else lambda: None)
+        self._pusher = pusher if pusher is not None else Pusher(lambda: None)
         self._methods: dict[str, Handler] = {
             "auth.test": self.auth_test,
             "users.list": self.users_list,
@@ -148,15 +179,42 @@ class SlackApi:
             "conversations.info": self.conversations_info,
             "conversations.open": self.conversations_open,
             "conversations.members": self.conversations_members,
+            "conversations.create": self.conversations_create,
+            "conversations.join": self.conversations_join,
+            "conversations.invite": self.conversations_invite,
+            "conversations.kick": self.conversations_kick,
+            "conversations.leave": self.conversations_leave,
+            "conversations.archive": self.conversations_archive,
+            "conversations.unarchive": self.conversations_unarchive,
+            "conversations.rename": self.conversations_rename,
+            "conversations.setTopic": self.conversations_set_topic,
+            "conversations.setPurpose": self.conversations_set_purpose,
+            "users.conversations": self.users_conversations,
             "conversations.history": self.conversations_history,
             "conversations.replies": self.conversations_replies,
             "chat.postMessage": self.chat_post_message,
             "chat.postEphemeral": self.chat_post_ephemeral,
             "chat.update": self.chat_update,
             "chat.delete": self.chat_delete,
+            "chat.scheduleMessage": self.chat_schedule_message,
+            "chat.scheduledMessages.list": self.chat_scheduled_messages_list,
+            "chat.deleteScheduledMessage": self.chat_delete_scheduled_message,
             "reactions.add": self.reactions_add,
+            "reactions.remove": self.reactions_remove,
+            "reactions.get": self.reactions_get,
+            "reactions.list": self.reactions_list,
+            "chat.getPermalink": self.chat_get_permalink,
+            "files.getUploadURLExternal": self.files_get_upload_url_external,
+            "files.completeUploadExternal": self.files_complete_upload_external,
+            "files.info": self.files_info,
+            "files.list": self.files_list,
+            "files.delete": self.files_delete,
+            "pins.add": self.pins_add,
+            "pins.remove": self.pins_remove,
+            "pins.list": self.pins_list,
             "views.open": self.views_open,
             "views.update": self.views_update,
+            "views.push": self.views_push,
             "views.publish": self.views_publish,
             "oauth.v2.access": self.oauth_v2_access,
             "apps.connections.open": self.apps_connections_open,
@@ -183,14 +241,16 @@ class SlackApi:
                 _header(request, "authorization"),
             )
             self._world = SlackWorld(self._store)
+            self._emitted = []
             if method not in _UNAUTHENTICATED:
                 self._world = self._world.for_token(presented.token)
             _refuse_unserved_arguments(method, presented)
             faulted = self._fault(method, presented)
             answer = faulted if faulted is not None else self._methods[method](presented)
+            self._pusher.send(self._world, self._emitted)
         except wire.Refusal as refusal:
             answering.refused()
-            answer = wire.Failed(error=refusal.error)
+            answer = refusal.answer()
         if isinstance(answer, wire.RateLimitedAnswer):
             return Response(
                 wire.respond(answer),
@@ -231,89 +291,6 @@ class SlackApi:
 
     # ------------------------------------------------------------------ lookups
 
-    def _user(self, user: str) -> wire.SlackUser:
-        found = self._world.user(user) if user else None
-        if found is None:
-            raise wire.Refusal("user_not_found")
-        return found
-
-    def _channel(self, channel: str) -> wire.SlackChannel:
-        """A conversation the app can see: public channels, and anything private it is in."""
-        found = self._world.channel(channel) if channel else None
-        if found is None or ((found.is_private or found.is_im or found.is_mpim) and not self._in(found)):
-            raise wire.Refusal("channel_not_found")
-        return found
-
-    def _joined(self, channel: str) -> wire.SlackChannel:
-        found = self._channel(channel)
-        if not self._in(found):
-            raise wire.Refusal("not_in_channel")
-        return found
-
-    def _in(self, channel: wire.SlackChannel) -> bool:
-        return self._world.is_member(channel.id, self._world.bot)
-
-    def _served(self, channel: wire.SlackChannel) -> wire.SlackChannel:
-        if channel.is_im:
-            return channel
-        return channel.model_copy(update={"is_member": self._in(channel)})
-
-    def _snapshot(self, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
-        return self._snapshot_in(self._world, channel, message)
-
-    def _snapshot_in(self, world: SlackWorld, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
-        return MessageSnapshot(
-            text=wire.visible_text(message.text, message.blocks),
-            channel=channel,
-            recipient_emails=world.human_emails(channel, besides=message.user),
-            thread_of=message.thread_ts,
-            actions=message_actions(message),
-        )
-
-    def _summarised(self, root: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
-        """A message as a listing serves it. A thread's parent carries its reply count, repliers and latest reply: the
-        only sign in history that a thread exists. A reply carries its parent's author (`parent_user_id`), and a reply
-        broadcast to the channel its parent (`root`), as Slack computes them
-        (https://docs.slack.dev/messaging/retrieving-messages#threading,
-        https://docs.slack.dev/reference/events/message/thread_broadcast)."""
-        if root.thread_ts is not None and root.thread_ts != root.ts:
-            return self._as_reply(root, every)
-        replies = [m for m in every if m.thread_ts == root.ts and m.ts != root.ts]
-        if not replies:
-            return root
-        users = list(dict.fromkeys(m.user for m in replies))
-        return root.model_copy(
-            update={
-                "thread_ts": root.ts,
-                "reply_count": len(replies),
-                "reply_users": users,
-                "reply_users_count": len(users),
-                "latest_reply": replies[-1].ts,
-            }
-        )
-
-    def _as_reply(self, reply: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
-        parent = next((m for m in every if m.ts == reply.thread_ts), None)
-        if parent is None:
-            return reply
-        served = reply.model_copy(update={"parent_user_id": parent.user})
-        if served.subtype == "thread_broadcast":  # enum-lint: exempt Slack's own message subtype on the wire
-            return served.model_copy(update={"root": self._summarised(parent, every)})
-        return served
-
-    def _thread_of(self, channel: str, thread_ts: str | None) -> str | None:
-        """The thread a post with `thread_ts` goes in: the parent it names. A `thread_ts` naming a reply, or naming
-        no message, is refused by name: Slack's pages say only "Avoid using a reply's ts value; use its parent
-        instead" (https://docs.slack.dev/reference/methods/chat.postMessage) and list no error for either."""
-        if not thread_ts:
-            return None
-        parent = self._world.message(channel, thread_ts)
-        if parent is None:
-            raise NotServed(f"a thread_ts ({thread_ts}) that names no message in {channel}")
-        if parent.thread_ts is not None and parent.thread_ts != parent.ts:
-            raise NotServed(f"a thread_ts ({thread_ts}) that names a reply rather than its thread's parent")
-        return parent.ts
-
     # ------------------------------------------------------------------ auth, users
 
     def auth_test(self, presented: wire.Presented) -> wire.Ok:
@@ -327,9 +304,6 @@ class SlackApi:
             user_id=self._world.bot,
             bot_id=self._world.team.bot_id,
         )
-
-    def _now(self) -> int:
-        return int(self._clock.now().timestamp())
 
     def _shown(self, user: wire.SlackUser) -> wire.SlackUser:
         """The user as others see them now: an absence the scenario gives a reason for shows that reason as their
@@ -435,7 +409,7 @@ class SlackApi:
 
     def conversations_info(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.ChannelInfoArgs, presented)
-        channel = self._served(self._channel(args.channel))
+        channel = self._full(self._served(self._channel(args.channel)))
         self._world.saw(state.channel_ref(channel.id), Operation.READ)
         if args.include_num_members:
             channel = channel.model_copy(update={"num_members": len(self._world.every_member(channel.id))})
@@ -471,16 +445,6 @@ class SlackApi:
             already_open=not opened,
             channel=channel if args.return_im else wire.OpenedId(id=channel.id),
         )
-
-    def _conversation(self, others: list[str], *, actor: Actor) -> tuple[wire.SlackChannel, bool]:
-        """The IM or group DM between the app and `others`, created when it does not exist yet."""
-        members = sorted({self._world.bot, *others})
-        cid = state.conversation_id(members)
-        existing = self._world.channel(cid)
-        if existing is not None:
-            return existing, False
-        channel = self._world.open_conversation(members, created=int(self._clock.now().timestamp()), actor=actor)
-        return channel, True
 
     def conversations_members(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.MembersArgs, presented)
@@ -606,43 +570,6 @@ class SlackApi:
         self._write_ephemeral(channel.id, message, user)
         return wire.PostedEphemeral(message_ts=message.ts)
 
-    def _from_bot(
-        self,
-        text: str,
-        blocks: list[JsonValue] | None,
-        attachments: list[JsonValue] | None,
-        thread_ts: str | None,
-        *,
-        ephemeral_to: str | None = None,
-    ) -> wire.SlackMessage:
-        return self._from_bot_in(self._world, text, blocks, attachments, thread_ts, ephemeral_to=ephemeral_to)
-
-    def _from_bot_in(
-        self,
-        world: SlackWorld,
-        text: str,
-        blocks: list[JsonValue] | None,
-        attachments: list[JsonValue] | None,
-        thread_ts: str | None,
-        *,
-        ephemeral_to: str | None = None,
-    ) -> wire.SlackMessage:
-        """A message the app posts, as Slack keeps it: its blocks given ids, and the app's bot profile on it."""
-        ts = world.next_ts(self._clock)
-        return wire.SlackMessage(
-            ts=ts,
-            user=world.bot,
-            text=text,
-            team=world.team.id,
-            bot_id=world.team.bot_id,
-            app_id=world.team.app_id,
-            thread_ts=thread_ts,
-            blocks=wire.with_ids(blocks, ts),
-            attachments=attachments,
-            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team),
-            ephemeral_to=ephemeral_to,
-        )
-
     def _write_ephemeral(self, channel: str, message: wire.SlackMessage, user: wire.SlackUser) -> None:
         self._write_ephemeral_in(self._world, channel, message, user)
 
@@ -664,12 +591,6 @@ class SlackApi:
                 actions=message_actions(message),
             ),
         )
-
-    def _destination(self, channel: str) -> wire.SlackChannel:
-        """A channel id, or a member id, which Slack answers with that member's IM with the app."""
-        if channel and self._world.channel(channel) is None and self._world.user(channel) is not None:
-            return self._conversation([channel], actor=Actor.AGENT)[0]
-        return self._channel(channel)
 
     def chat_update(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.UpdateArgs, presented)
@@ -721,6 +642,195 @@ class SlackApi:
             before=self._snapshot(channel.id, message),
         )
         return wire.Deleted(channel=channel.id, ts=message.ts)
+
+    # ------------------------------------------------------------------ scheduled messages
+
+    def _scheduled(self) -> list[wire.SlackScheduled]:
+        """The messages the agent scheduled in this workspace that Slack has not posted, in the order scheduled."""
+        found = self._world.bodies(EntityKind.RECORD, state.SCHEDULED, wire.SlackScheduled)
+        return [s for s in found if s.team == self._world.team.id]
+
+    def chat_schedule_message(self, presented: wire.Presented) -> wire.Ok:
+        args = wire.read_args(wire.ScheduleArgs, presented)
+        if args.channel.startswith("#"):
+            raise NotServed(
+                "chat.scheduleMessage with a channel name, which its page allows and the fake does not serve"
+            )
+        if not args.post_at:
+            raise wire.Refusal("invalid_arguments")
+        if not args.post_at.isdecimal():
+            raise wire.Refusal("invalid_time")
+        post_at = int(args.post_at)
+        channel = self._destination(args.channel)
+        if not self._in(channel):
+            raise wire.Refusal("not_in_channel")
+        if channel.is_archived:
+            raise wire.Refusal("is_archived")
+        if not args.text and not args.blocks and not args.attachments:
+            raise wire.Refusal("no_text")
+        if len(args.text) > wire.TRUNCATED_AT:
+            raise NotServed(
+                f"chat.scheduleMessage text past {wire.TRUNCATED_AT} characters, for which its page lists msg_too_long "
+                "without a figure"
+            )
+        wire.check_message(args.text, args.blocks, refused_past=None)
+        self._check_post_at(post_at, channel.id)
+        thread_ts = self._thread_of(channel.id, args.thread_ts)
+        booking = self._booking()
+        if booking is None:
+            raise NotServed("chat.scheduleMessage in a world with no run clock to post the message on")
+        scheduled = wire.SlackScheduled(
+            id=state.scheduled_id(self._world.next_seq()),
+            team=self._world.team.id,
+            channel=channel.id,
+            post_at=post_at,
+            date_created=self._now(),
+            text=args.text,
+            blocks=args.blocks,
+            attachments=args.attachments,
+            thread_ts=thread_ts,
+            reply_broadcast=args.reply_broadcast,
+        )
+        self._world.write(
+            state.scheduled_ref(scheduled.id),
+            scheduled,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            parent=state.SCHEDULED,
+            after=RecordSnapshot(resource="scheduled_messages", text=wire.visible_text(args.text, args.blocks)),
+        )
+        booking.book(Due(at=datetime.fromtimestamp(post_at, UTC), kind=DueKind.AGENT_WAKE, ref=scheduled.id))
+        return wire.Scheduled(
+            channel=channel.id,
+            scheduled_message_id=scheduled.id,
+            post_at=str(post_at),
+            message=wire.ScheduledBody(
+                text=args.text, bot_id=self._world.team.bot_id, blocks=args.blocks, attachments=args.attachments
+            ),
+        )
+
+    def _check_post_at(self, post_at: int, channel: str) -> None:
+        now = self._now()
+        if post_at < now:
+            raise wire.Refusal("time_in_past")
+        if post_at == now:
+            raise NotServed("chat.scheduleMessage for this very second, which its page calls neither past nor future")
+        if post_at > now + SCHEDULE_LIMIT:
+            raise wire.Refusal("time_too_far")
+        near = [s for s in self._scheduled() if s.channel == channel and abs(s.post_at - post_at) < SCHEDULE_WINDOW]
+        if len(near) >= MAX_PER_WINDOW and self._window_overfull([s.post_at for s in near], post_at):
+            raise wire.Refusal("restricted_too_many")
+
+    @staticmethod
+    def _window_overfull(others: list[int], post_at: int) -> bool:
+        """Whether some span of under five minutes holds more than thirty messages once `post_at` is added."""
+        times = sorted([*others, post_at])
+        return any(times[i + MAX_PER_WINDOW] - times[i] < SCHEDULE_WINDOW for i in range(len(times) - MAX_PER_WINDOW))
+
+    def chat_scheduled_messages_list(self, presented: wire.Presented) -> wire.Ok:
+        args = wire.read_args(wire.ScheduledListArgs, presented)
+        if args.channel:
+            found = self._world.channel(args.channel)
+            if found is None or ((found.is_private or found.is_im or found.is_mpim) and not self._in(found)):
+                raise wire.Refusal("invalid_channel")
+        oldest = int(args.oldest) if args.oldest.isdecimal() else None
+        latest = int(args.latest) if args.latest.isdecimal() else None
+        if (args.oldest and oldest is None) or (args.latest and latest is None):
+            raise wire.Refusal("invalid_arguments")
+        if oldest is not None and latest is not None and oldest >= latest:
+            raise NotServed(
+                "chat.scheduledMessages.list with an oldest that is not less than latest, for which its page gives no error"
+            )
+        resume = wire.decode_cursor(args.cursor)
+        picked: list[wire.SlackScheduled] = []
+        for s in self._scheduled():
+            if (args.channel and s.channel != args.channel) or (resume is not None and s.id <= resume):
+                continue
+            if s.post_at in (oldest, latest):
+                raise NotServed(
+                    "chat.scheduledMessages.list with a bound at the moment of a scheduled message, which its page "
+                    "does not say is inside or outside the range"
+                )
+            if (oldest is not None and s.post_at < oldest) or (latest is not None and s.post_at > latest):
+                continue
+            picked.append(s)
+        limit = wire.page_size(args.limit, default=None)
+        page = picked if limit is None else picked[:limit]
+        more = limit is not None and len(picked) > limit
+        self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
+        return wire.ScheduledList(
+            scheduled_messages=[
+                wire.ScheduledItem(
+                    id=int(s.id[1:]), channel_id=s.channel, post_at=s.post_at, date_created=s.date_created, text=s.text
+                )
+                for s in page
+            ],
+            response_metadata=wire.ResponseMetadata(next_cursor=wire.encode_cursor(page[-1].id) if more else ""),
+        )
+
+    def chat_delete_scheduled_message(self, presented: wire.Presented) -> wire.Ok:
+        args = wire.read_args(wire.DeleteScheduledArgs, presented)
+        channel = self._channel(args.channel)
+        found = next((s for s in self._scheduled() if s.id == args.scheduled_message_id), None)
+        if found is None:
+            raise wire.Refusal("invalid_scheduled_message_id")
+        if found.channel != channel.id:
+            raise NotServed(
+                "chat.deleteScheduledMessage with the channel of another message, which its page does not speak of"
+            )
+        until = found.post_at - self._now()
+        if until == DELETE_WITHIN:
+            raise NotServed(
+                "chat.deleteScheduledMessage for a message 60 seconds from posting: its page does not say if that is within 60"
+            )
+        if until < DELETE_WITHIN:
+            raise wire.Refusal("invalid_scheduled_message_id")
+        self._world.delete(
+            state.scheduled_ref(found.id),
+            actor=Actor.AGENT,
+            parent=state.SCHEDULED,
+            before=RecordSnapshot(resource="scheduled_messages", text=wire.visible_text(found.text, found.blocks)),
+        )
+        booking = self._booking()
+        if booking is not None:
+            booking.cancel(found.id)
+        return wire.Ok()
+
+    def post_scheduled(self, ref: str) -> None:
+        """The moment of a scheduled message has come: it is posted as `chat.postMessage` posts, by the app, at the
+        run's clock. One already posted or deleted is left alone, so a second delivery posts nothing."""
+        found = next(
+            (
+                s
+                for team in SlackWorld(self._store).workspaces()
+                for s in SlackWorld(self._store, team).bodies(EntityKind.RECORD, state.SCHEDULED, wire.SlackScheduled)
+                if s.id == ref and s.team == team.id
+            ),
+            None,
+        )
+        if found is None:
+            return
+        self._world = SlackWorld(self._store).team_of(found.team) or self._world
+        channel = self._world.channel(found.channel)
+        self._world.delete(
+            state.scheduled_ref(found.id),
+            actor=Actor.AGENT,
+            parent=state.SCHEDULED,
+            before=RecordSnapshot(resource="scheduled_messages", text=wire.visible_text(found.text, found.blocks)),
+        )
+        if channel is None or channel.is_archived or not self._in(channel):
+            return
+        message = self._from_bot(found.text, found.blocks, found.attachments, found.thread_ts)
+        if found.thread_ts is not None and found.reply_broadcast:
+            message = message.model_copy(update={"subtype": "thread_broadcast"})
+        self._world.write(
+            state.message_ref(message.ts),
+            message,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            parent=channel.id,
+            after=self._snapshot(channel.id, message),
+        )
 
     def reactions_add(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.ReactionArgs, presented)
@@ -793,9 +903,74 @@ class SlackApi:
             raise wire.Refusal("invalid_arguments")
         wire.check_view(args.view)
         self._refuse_taken_external_id(args.view.external_id, found.view.id)
-        shown = self._view(found.view.id, args.view, root=found.view.root_view_id, version=self._version(found))
+        shown = self._view(
+            found.view.id,
+            args.view,
+            root=found.view.root_view_id,
+            version=self._version(found),
+            previous=found.view.previous_view_id,
+        )
+        shown = shown.model_copy(update={"state": self._kept_state(found.view, shown)})
         self._write_view(found.model_copy(update={"view": shown, "errors": {}}), Operation.UPDATE)
         return wire.ViewAnswered(view=shown)
+
+    @staticmethod
+    def _kept_state(was: wire.SlackView, now: wire.SlackView) -> wire.ViewState:
+        """ "Data entered or selected in `input` blocks can be preserved while updating views": it is, for each input
+        element the new view holds with the same `block_id` and `action_id`
+        (https://docs.slack.dev/reference/methods/views.update)."""
+        values = {
+            f.block_id: {f.action_id: was.state.values[f.block_id][f.action_id]}
+            for f in wire.inputs(now.blocks)
+            if f.block_id in was.state.values and f.action_id in was.state.values[f.block_id]
+        }
+        return wire.ViewState(values=values)
+
+    def views_push(self, presented: wire.Presented) -> wire.Ok:
+        """A view pushed onto the stack of the modal the interaction was in, with the `trigger_id` of an interaction
+        within it: once, within three seconds, and while the stack holds fewer than three views."""
+        args = wire.read_args(wire.ViewsPushArgs, presented)
+        if args.view is None or not args.trigger_id:
+            raise wire.Refusal("invalid_arguments")
+        trigger = self._world.body(state.trigger_ref(args.trigger_id), wire.SlackTrigger)
+        if trigger is None:
+            raise wire.Refusal("invalid_trigger_id")
+        if trigger.view is not None:
+            raise wire.Refusal("exchanged_trigger_id")
+        if self._now() > trigger.issued + _TRIGGER_LIFETIME:
+            raise wire.Refusal("expired_trigger_id")
+        if trigger.in_view is None:
+            raise NotServed(
+                "views.push with a trigger_id from an interaction that was not in a modal: its page says it comes "
+                "from one and gives no error for another"
+            )
+        below = self._world.body(state.view_ref(trigger.in_view), wire.OpenView)
+        if below is None or not below.open:
+            raise wire.Refusal("not_found")
+        if args.view.type != "modal":  # enum-lint: exempt Slack's own view type on the wire
+            raise wire.Refusal("invalid_arguments")
+        wire.check_view(args.view)
+        stack = self._stack(below.view.root_view_id)
+        if len(stack) >= wire.MAX_STACK:
+            raise wire.Refusal("push_limit_reached")
+        if stack[-1].view.id != below.view.id:
+            raise NotServed("views.push from a view that is not the top of its stack, which its page does not speak of")
+        self._refuse_taken_external_id(args.view.external_id, None)
+        view_id = state.view_id(self._world.next_seq())
+        shown = self._view(view_id, args.view, root=below.view.root_view_id, version=0, previous=below.view.id)
+        self._world.write(
+            state.trigger_ref(trigger.id),
+            trigger.model_copy(update={"view": view_id}),
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            parent=state.TRIGGERS,
+        )
+        self._write_view(wire.OpenView(view=shown, user=below.user, trigger_id=trigger.id), Operation.CREATE)
+        return wire.ViewAnswered(view=shown)
+
+    def _stack(self, root: str) -> list[wire.OpenView]:
+        """The open views of one modal, bottom first."""
+        return open_stack(self._world, root)
 
     def views_publish(self, presented: wire.Presented) -> wire.Ok:
         """A member's Home tab: one per member, replaced by every publish."""
@@ -817,7 +992,9 @@ class SlackApi:
         )
         return wire.ViewAnswered(view=shown)
 
-    def _view(self, view_id: str, spec: wire.ViewSpec, *, root: str, version: int) -> wire.SlackView:
+    def _view(
+        self, view_id: str, spec: wire.ViewSpec, *, root: str, version: int, previous: str | None = None
+    ) -> wire.SlackView:
         blocks = wire.with_ids(spec.blocks, view_id) or []
         return wire.SlackView(
             id=view_id,
@@ -835,6 +1012,7 @@ class SlackApi:
             clear_on_close=spec.clear_on_close,
             notify_on_close=spec.notify_on_close,
             submit_disabled=spec.submit_disabled,
+            previous_view_id=previous,
             root_view_id=root,
             app_id=self._world.team.app_id,
             app_installed_team_id=self._world.team.id,
@@ -918,7 +1096,7 @@ class SlackApi:
             if "download" in request.url.path.split("/")
             else {}
         )
-        return Response(content.text.encode(), media_type=content.mimetype, headers=headers)
+        return Response(base64.b64decode(content.encoded), media_type=content.mimetype, headers=headers)
 
     # ------------------------------------------------------------------ response_url
 
@@ -1010,18 +1188,18 @@ class SlackApi:
 _NOT_FOUND = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
 
 
-def message_actions(message: wire.SlackMessage) -> list[MessageAction]:
-    """The controls a reader can use on a message, as the domain names them."""
-    kinds = {"button": ControlKind.BUTTON, "users_select": ControlKind.USER_SELECT}
-    return [
-        MessageAction(
-            action_id=c.action_id,
-            label=c.label,
-            control=ControlKind.LINK if c.url is not None else kinds[c.type],
-            value=c.value,
-        )
-        for c in wire.controls(message.blocks)
+def open_stack(world: SlackWorld, root: str) -> list[wire.OpenView]:
+    """The open views of the modal whose first view is `root`, bottom first: each was pushed onto the one before."""
+    open_ones = [
+        v for v in world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView) if v.open and v.view.root_view_id == root
     ]
+    stack = [v for v in open_ones if v.view.previous_view_id is None]
+    while stack:
+        above = next((v for v in open_ones if v.view.previous_view_id == stack[-1].view.id), None)
+        if above is None:
+            break
+        stack.append(above)
+    return stack
 
 
 def write_view(world: SlackWorld, shown: wire.OpenView, operation: Operation, actor: Actor) -> None:
@@ -1045,15 +1223,41 @@ def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, incl
     return not (latest is not None and (ts > latest if inclusive else ts >= latest))
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
-    api = SlackApi(store, clock)
+class SlackApp(Starlette):
+    """The Slack app: Starlette, and `DeliversInBackground` for the events the agent's own calls set off."""
+
+    def __init__(self, api: SlackApi, pusher: Pusher, routes: list[Route]) -> None:
+        super().__init__(routes=routes)
+        self.api = api
+        self._pusher = pusher
+
+    def delivering(self) -> int:
+        return self._pusher.delivering()
+
+    async def settled(self) -> None:
+        await self._pusher.settled()
+
+
+def build_app(
+    store: Store,
+    clock: Clock,
+    listening: Callable[[], Listener | None] | None = None,
+    booking: Callable[[], Wakes | None] | None = None,
+) -> SlackApp:
+    """`listening` says where the agent takes its events, when it does (`pushing`); `booking`, the dispatch table
+    that posts what the agent scheduled when its moment comes."""
+    pusher = Pusher(listening if listening is not None else lambda: None)
+    api = SlackApi(store, clock, pusher, booking)
     endpoint: Callable[[Request], Awaitable[Response]] = api.endpoint
-    return Starlette(
+    return SlackApp(
+        api,
+        pusher,
         routes=[
             Route("/api/{method}", endpoint, methods=["GET", "POST"]),
+            Route("/upload/v1/{key}", api.upload, methods=["POST"]),
             Route("/files-pri/{key}/{name}", api.file, methods=["GET"]),
             Route("/files-pri/{key}/download/{name}", api.file, methods=["GET"]),
             Route("/actions/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
             Route("/commands/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
-        ]
+        ],
     )

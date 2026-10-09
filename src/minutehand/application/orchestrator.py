@@ -77,6 +77,7 @@ from minutehand.ports.provider import (
     ChangesDocuments,
     ConfirmsDelivery,
     HeldCalls,
+    ListensForAgent,
     NotifiesChanges,
     Provider,
     PushesEvents,
@@ -180,11 +181,13 @@ class Services:
                     f"provider {key}: manifest pushes_events={provider.manifest.pushes_events} "
                     f"but it is{'' if key in self.pushes else ' not'} given as PushesEvents"
                 )
-            if provider.manifest.books_wakes != (key in self.schedulers):
+            if provider.manifest.books_wakes != (key in self.schedulers) and not provider.manifest.books_work:
                 raise RunRefused(
                     f"provider {key}: manifest books_wakes={provider.manifest.books_wakes} "
                     f"but it is{'' if key in self.schedulers else ' not'} given as BooksWakes"
                 )
+            if key in self.schedulers and not (provider.manifest.books_wakes or provider.manifest.books_work):
+                raise RunRefused(f"provider {key} books neither wakes nor work, and is given as BooksWakes")
 
 
 @dataclass(frozen=True)
@@ -296,7 +299,9 @@ class Orchestrator:
             reaches = list(inboxes.reaches.values())
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
             refuse_untakeable(scenario, reaches)
-        if any(isinstance(w, Booked) for w in agent.wakes) and not services.schedulers:
+        if any(isinstance(w, Booked) for w in agent.wakes) and not any(
+            p.manifest.books_wakes for p in services.providers
+        ):
             raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
         if isinstance(agent.goal, GoalByMessage):
             if agent.goal.provider not in services.pushes:
@@ -477,6 +482,10 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         self.mount()
+        for key, provider in self._services.pushes.items():
+            if isinstance(provider, ListensForAgent):
+                target = next((t for t in self._agent.inbound if t.provider == key), None)
+                provider.listen(target, self._signing[key] if key in self._signing else None)
         self._calls_seen = len(self._store.calls())
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))

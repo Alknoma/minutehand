@@ -120,6 +120,17 @@ class PushesEvents(Protocol):
         ...
 
 
+@runtime_checkable
+class ListensForAgent(Protocol):
+    """A provider whose own API calls set off events the agent hears of (Slack: a channel the agent made, a member it
+    invited): it is told where the agent takes its events and the secret that signs them, once, as a run or a world
+    starts. Nothing is sent to an agent that declares no target."""
+
+    def listen(self, target: InboundTarget | None, secret: str | None) -> None:
+        """`target`, and `secret` which signs what is pushed to it; None for an agent that declares no target here."""
+        ...
+
+
 class Wakes(Protocol):
     """Where a scheduler provider registers what the agent booked. The orchestrator implements it."""
 
