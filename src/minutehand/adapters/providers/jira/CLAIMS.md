@@ -213,8 +213,9 @@ section does not allow. Not done, because the reference gives no values for a fi
 the retries (five, on 408, 409, 425, 429, 5xx, a refused connection or a timeout), and the headers
 `X-Atlassian-Webhook-Retry` and `X-Atlassian-Webhook-Flow`; the registration by `POST /rest/api/3/webhook` and
 `POST /rest/webhooks/1.0/webhook` (outside the claimed resources, 501). A comment sent as `comment_created` is not
-also sent as `jira:issue_updated`: the reference does not say it is. A person's transition made through the people
-engine is the only person-driven event sent; a `TicketHappening` is not.
+also sent as `jira:issue_updated`: the reference does not say it is. Everything a person or the scenario does to an issue
+goes through the people engine's `apply` (a `TicketHappening` among them), and each is sent as the agent's own call
+would be.
 
 ## People's transitions (`docs/design-transitions.md`)
 

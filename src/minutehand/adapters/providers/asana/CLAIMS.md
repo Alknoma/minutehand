@@ -146,8 +146,9 @@ is refused 501 naming it:
   a resource that is a workspace, team, portfolio or goal. The heartbeat every eight hours, the exponential back-off,
   and the deletion of a webhook that fails for 24 hours, `next_attempt_after` and `failure_deletion_timestamp`
   (https://developers.asana.com/docs/webhooks-guide) are not modelled: no timer is booked for them, and the fields are
-  refused by name when asked for. A delivery goes out once the call that caused a change is answered, or at a person's
-  decision; a change made by `HoldsTickets`, `EditsTickets` or a happening is delivered with the next one.
+  refused by name when asked for. A delivery goes out once the call that caused a change is answered, or once a person's
+  or the scenario's move through `apply` (a decision, a move, a comment, a reassignment, a deletion, a happening) is
+  made.
 
 ## Not carried over
 
