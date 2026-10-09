@@ -12,13 +12,13 @@ manifest, and because the tenant, its bot and its users are one directory every 
 | `login.microsoftonline.com` | `signin.py` | Token endpoint (`client_credentials`, `authorization_code`, `refresh_token`), `authorize` with no browser, OpenID metadata, key set |
 | `login.botframework.com` | `signin.py` | The Bot Framework's OpenID metadata and key set (endorsed `msteams`) |
 | `smba.trafficmanager.net` | `connector.py` | Send, reply, update, delete, create a 1:1 conversation, members, paged members, one member, team details, team channels |
-| `graph.microsoft.com` | `graph_teams.py`, `graph_files.py`, `graph_mail.py`, `graph_calendar.py`, `subscriptions.py` | Users, `/me`, teams, channels, chats, their messages and members; sites, drives, items by id and path, children, content, upload (simple and session), folders, move, rename, copy, delete, invite, sharing links, permissions, search, `delta`; `sendMail`, messages and mail folders listed, read, marked read, replied to (`reply`, `replyAll`), deleted, `delta`; events made, read, listed, changed, deleted and answered (`accept`, `tentativelyAccept`, `decline`), `calendarView`, `getSchedule`; subscriptions |
+| `graph.microsoft.com` | `graph_teams.py`, `graph_files.py`, `graph_mail.py`, `graph_calendar.py`, `subscriptions.py` | Users, `/me`, teams, `joinedTeams`, `primaryChannel`, channels, chats (made, one-on-one or group), their messages (posted, replied to, `delta`) and members; sites, drives, items by id and path, children, content, upload (simple and session), folders, move, rename, copy, delete, invite, sharing links, permissions, search, `delta`; `sendMail`, messages and mail folders listed, read, marked read, replied to (`reply`, `replyAll`), drafted (`POST /messages`, changed, `send`, `createReply`, `createReplyAll`, `createForward`), `forward`, `move`, `copy`, attachments (files, up to 3 MB), deleted, `delta`; events made (daily and weekly series too, with `instances`), read, listed, changed, deleted, cancelled and answered (`accept`, `tentativelyAccept`, `decline`), file attachments, `calendarView` and its `delta`, `getSchedule`; subscriptions |
 | `*.sharepoint.com` | `app.py` | The pre-authenticated download, upload-session and copy-monitor URLs Graph hands out |
 
 ## How it behaves
 
 - **Graph's surface is Microsoft's.** `surface.SERVED` lists the operations of Graph `v1.0`'s published OpenAPI
-  description this provider answers (127 of the 2,103 in the subset kept under `tests/data/microsoft_graph_v1/`);
+  description this provider answers (200 of the 2,103 in the subset kept under `tests/data/microsoft_graph_v1/`);
   every other call is refused by name, 501 `not_implemented`, before any surface reads it. So is any call whose
   answer Microsoft does not document (CLAIMS.md, "Refused by name"), and any property of a request body that would
   otherwise be dropped: what is sent is kept as sent, and Graph generates only what Graph assigns.
@@ -148,14 +148,14 @@ every pushed activity is.
   calendars, thumbnails, versions, check-in and check-out. `$orderby` beyond a folder's `name`,
   `lastModifiedDateTime` and `size` and what mail and events list above, `$search`, `$count`, `ConsistencyLevel`,
   an unread `$filter` clause or an `or` are 501 too.
-- Mail has no categories or flags (a `PATCH` of anything but `isRead` is 501), and `sendMail` always saves to Sent
-  Items. A message deleted from Deleted Items is gone, and `delta` does not list it as removed. A reply's `body` is
+- Mail has no categories or flags (a `PATCH` of anything but `isRead`, or of a draft's subject, body, recipients or importance, is 501), and `sendMail` always saves to Sent
+  Items. A message deleted from Deleted Items is gone, and `delta` lists it as removed. A draft or a forward has no sender or subject Graph composes, and a message with attachments is not forwarded. A reply's `body` is
   left out (Graph composes it with the quoted original, and no source says how); the run records what was written.
   A tentative or declining answer to an invitation carries no subject (only "Accepted: …" is recorded). Deletions notify no subscription.
-- Calendars have no recurrence, no online meetings, no `findMeetingTimes`, no working hours in `getSchedule`, no
+- Calendars have recurrence only as daily and weekly series (an occurrence is read, never changed), no online meetings, no `findMeetingTimes`, no working hours in `getSchedule`, no
   `Prefer: outlook.timezone` other than UTC and no Windows time zone names (501). An attendee's copy of an event
   is the organizer's one item, so an attendee cannot change or delete it (501); deleting an event sends no
-  cancellation.
+  cancellation, `cancel` does.
 - A person writes by email only in reply: `say` and messaging happenings are Teams, and need the agent to declare a
   Microsoft inbound target.
 - No lifecycle notifications (`reauthorizationRequired`, `missed`), no encrypted resource data, no rich

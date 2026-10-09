@@ -61,15 +61,24 @@ class Surface:
     webhook: str
     people: list[str]
     drafts: dict[str, str]
+    event_attachment: str
+    series: str
+    cancellable: str
 
     def concrete(self, template: str) -> str:
         """The template with the world's ids in place of its parameters."""
         path = template
         if template.endswith(("/accept", "/tentativelyAccept", "/decline")):
             path = path.replace("{event-id}", quote(self.attended, safe=":@,!"))
+        if template.endswith("/instances"):
+            path = path.replace("{event-id}", quote(self.series, safe=":@,!~"))
+        if template.endswith("/cancel"):
+            path = path.replace("{event-id}", quote(self.cancellable, safe=":@,!"))
         bound = re.search(r"/messages/\{message-id\}/(send|move|copy|attachments)", template)
         if bound is not None:
             path = path.replace("{message-id}", self.drafts[bound.group(1)]).replace("{mailFolder-id}", "drafts")
+        if "/events/{event-id}/attachments/" in template:
+            path = path.replace("{attachment-id}", self.event_attachment)
         message = self.channel_message if "/channels/" in template else self.chat_message
         path = path.replace("{chatMessage-id}", message).replace("{chatMessage-id1}", message)
         for name, value in self.ids.items():
@@ -128,6 +137,33 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 headers=me,
             )
         ).json()["id"]
+        series = await http.post(
+            f"{GRAPH}/me/events",
+            json={
+                "subject": "Standup",
+                "start": {"dateTime": "2026-09-15T09:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-09-15T09:15:00", "timeZone": "UTC"},
+                "recurrence": {
+                    "pattern": {"type": "daily", "interval": 1},
+                    "range": {"type": "numbered", "startDate": "2026-09-15", "numberOfOccurrences": 3},
+                },
+            },
+            headers=me,
+        )
+        cancellable = await http.post(
+            f"{GRAPH}/me/events",
+            json={
+                "subject": "Cancelled",
+                "start": {"dateTime": "2026-09-17T10:00:00", "timeZone": "UTC"},
+                "end": {"dateTime": "2026-09-17T11:00:00", "timeZone": "UTC"},
+            },
+            headers=me,
+        )
+        event_attachment = await http.post(
+            f"{GRAPH}/me/events/{event}/attachments",
+            json={"@odata.type": "#microsoft.graph.fileAttachment", "name": "menu.txt", "contentBytes": "aGk="},
+            headers=me,
+        )
         listed = await http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=me)
         attended = next(e["id"] for e in listed.json()["value"] if not e["isOrganizer"])
         drafts: dict[str, str] = {}
@@ -185,6 +221,9 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
             webhook=webhook.url,
             people=[owen.user.id, sofia.user.id, dania.user.id],
             drafts=drafts,
+            event_attachment=event_attachment.json()["id"],
+            series=series.json()["id"],
+            cancellable=cancellable.json()["id"],
         )
 
 
@@ -239,6 +278,8 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
     elif template.endswith("calendarView/delta()"):
         path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z"
+    elif method == "GET" and template.endswith("/instances"):
+        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/events"):
         path += "?$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/messages") and template.startswith(("/me", "/users")):

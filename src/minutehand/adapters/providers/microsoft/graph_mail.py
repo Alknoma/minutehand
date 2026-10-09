@@ -42,7 +42,7 @@ from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import Response
 
-from minutehand.adapters.providers.microsoft import wire
+from minutehand.adapters.providers.microsoft import attachments, wire
 from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, bad_request, graph_caller, query
 from minutehand.adapters.providers.microsoft.state import (
     GRAPH,
@@ -63,12 +63,10 @@ from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 10
 PAGE_MAX = 1000
-ATTACHMENT_ORDER = ("name", "size", "lastModifiedDateTime", "contentType")  # enum-lint: exempt Graph's property names
-ATTACHMENT_LIMIT = 3 * 1024 * 1024
-"""A file attached by `POST …/attachments` is under 3 MB (message-post-attachments)."""
 MESSAGE_TYPE = "#Microsoft.Graph.Message"
 REQUEST_TYPE = "#microsoft.graph.eventMessageRequest"
 RESPONSE_TYPE = "#microsoft.graph.eventMessageResponse"
+CANCELLATION_TYPE = "#microsoft.graph.eventMessage"
 FOLDER_NAMES = {
     wire.MailFolderName.INBOX: "Inbox",
     wire.MailFolderName.SENT: "Sent Items",
@@ -311,7 +309,13 @@ class Mail:
         return wire.MailMessage(
             odata_etag=weak_etag(change_key),
             changeKey=change_key,
-            odata_type=(REQUEST_TYPE if composed.meeting is wire.MeetingMessageType.REQUEST else RESPONSE_TYPE)
+            odata_type=(
+                REQUEST_TYPE
+                if composed.meeting is wire.MeetingMessageType.REQUEST
+                else CANCELLATION_TYPE
+                if composed.meeting is wire.MeetingMessageType.CANCELLED
+                else RESPONSE_TYPE
+            )
             if composed.meeting is not None
             else None,
             id=message_id,
@@ -1092,47 +1096,17 @@ class Mail:
 
     # ------------------------------------------------------------------ attachments
 
-    @staticmethod
-    def _stored_attachment(sent: wire.SentAttachment, attachment_id: str, now: str) -> wire.StoredAttachment:
-        """A file attachment as sent: refuses by name what is not a `fileAttachment` of under 3 MB with base64
-        bytes (message-post-attachments)."""
-        if sent.model_extra:
-            raise NotServed(f"the attachment properties {', '.join(sorted(sent.model_extra))}")
-        if sent.odata_type.lower().lstrip("#") != "microsoft.graph.fileattachment":
-            raise NotServed(f"an attachment of the type {sent.odata_type!r}: only fileAttachment is held")
-        try:
-            content = base64.b64decode(sent.contentBytes, validate=True)
-        except binascii.Error as e:
-            raise NotServed("an attachment whose contentBytes are not base64: Graph's answer is not documented") from e
-        if len(content) >= ATTACHMENT_LIMIT:
-            raise NotServed(
-                "an attachment of 3 MB or more: the page sends it through an upload session, which is not served"
-            )
-        return wire.StoredAttachment(
-            id=attachment_id,
-            lastModifiedDateTime=now,
-            name=sent.name,
-            contentType=sent.contentType,
-            size=len(content),
-            isInline=sent.isInline,
-            contentId=sent.contentId,
-            contentBytes=sent.contentBytes,
-        )
-
     def _stored_attachments(self, sent: list[wire.SentAttachment]) -> list[wire.StoredAttachment]:
         now = graph_time(self._clock.now())
-        return [self._stored_attachment(a, "", now) for a in sent]
+        return [attachments.kept(a, "", now) for a in sent]
 
     async def _attach(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
         """`POST …/attachments`: a file attached to a draft, 201 with the attachment."""
-        try:
-            sent = wire.read(wire.SentAttachment, await request.body())
-        except wire.Unreadable as e:
-            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        sent = await attachments.sent(request)
         if not stored.message.isDraft:
             raise NotServed("an attachment added to a message that is no draft: Graph's answer is not documented")
         now = graph_time(self._clock.now())
-        made = self._stored_attachment(
+        made = attachments.kept(
             sent, outlook_id(stored.message.id, "attachment", str(len(stored.attachments)), now), now
         )
         message = versioned(
@@ -1141,38 +1115,11 @@ class Mail:
         changed = stored.model_copy(update={"message": message, "attachments": [*stored.attachments, made]})
         self._rewrite(owner.user.id, changed, actor=Actor.AGENT)
         await self.notify(owner.user.id, changed, "updated")
-        context = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments/$entity"
-        return Response(wire.with_context(wire.dump(made), context), status_code=201, media_type=GRAPH_JSON)
+        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments"
+        return Response(wire.with_context(wire.dump(made), f"{where}/$entity"), status_code=201, media_type=GRAPH_JSON)
 
     def _attachments(self, request: Request, owner: UserRecord, stored: wire.StoredMail, rest: list[str]) -> Response:
         """`GET …/attachments` and `GET …/attachments/{id}`."""
-        for option in ("$filter", "$search", "$expand", "$count", "$top", "$skip", "$skiptoken"):
-            if option in request.query_params:
-                raise NotServed(f"{option} on attachments")
-        fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
-        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments"
         self._world.saw(message_ref(stored.message.id), Operation.READ)
-        if rest:
-            found = next((a for a in stored.attachments if a.id == rest[0]), None)
-            if found is None:
-                raise GraphRefusal(404, "ErrorItemNotFound", "The specified object was not found in the store.")
-            return Response(
-                wire.select(wire.with_context(wire.dump(found), f"{where}/$entity"), fields), media_type=GRAPH_JSON
-            )
-        held = list(stored.attachments)
-        ordered = query(request, "$orderby")
-        if ordered:
-            prop, _, direction = ordered.strip().partition(" ")
-            if prop not in ATTACHMENT_ORDER or direction.strip().lower() not in (
-                "",
-                "asc",
-                "desc",
-            ):
-                raise NotServed(f"$orderby on attachments: {ordered}")
-            held.sort(key=lambda a: getattr(a, prop) or "", reverse=direction.strip().lower() == "desc")
-        elif len(held) > 1:
-            raise NotServed(
-                "listing attachments without $orderby: Graph documents no order for them (message-list-attachments)"
-            )
-        body = wire.dump(wire.Page[wire.StoredAttachment](context=where, value=held))
-        return Response(wire.select_page(body, fields), media_type=GRAPH_JSON)
+        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments"
+        return attachments.read(request, stored.attachments, rest, where)

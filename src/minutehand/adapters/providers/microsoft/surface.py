@@ -80,11 +80,16 @@ _USER = [
             ("GET", f"{where}/events"),
             ("POST", f"{where}/events"),
             ("GET", f"{where}/events/{{event-id}}"),
+            ("GET", f"{where}/events/{{event-id}}/attachments"),
+            ("POST", f"{where}/events/{{event-id}}/attachments"),
+            ("GET", f"{where}/events/{{event-id}}/attachments/{{attachment-id}}"),
             ("PATCH", f"{where}/events/{{event-id}}"),
             ("DELETE", f"{where}/events/{{event-id}}"),
             ("POST", f"{where}/events/{{event-id}}/accept"),
             ("POST", f"{where}/events/{{event-id}}/tentativelyAccept"),
             ("POST", f"{where}/events/{{event-id}}/decline"),
+            ("POST", f"{where}/events/{{event-id}}/cancel"),
+            ("GET", f"{where}/events/{{event-id}}/instances"),
         )
     ),
 ]

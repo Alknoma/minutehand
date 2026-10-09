@@ -1046,6 +1046,7 @@ class MailFolderName(StrEnum):
 
 class MeetingMessageType(StrEnum):
     REQUEST = "meetingRequest"
+    CANCELLED = "meetingCancelled"
     ACCEPTED = "meetingAccepted"
     TENTATIVE = "meetingTentativelyAccepted"
     DECLINED = "meetingDeclined"
@@ -1259,6 +1260,33 @@ class Location(Aliased):
     displayName: str = ""
 
 
+class RecurrencePattern(Aliased):
+    """How often an event repeats (recurrencepattern): the daily and weekly types are held."""
+
+    type: Literal["daily", "weekly"]
+    interval: int
+    month: int = 0
+    dayOfMonth: int = 0
+    daysOfWeek: list[str] = []
+    firstDayOfWeek: str = "sunday"
+    index: str = "first"
+
+
+class RecurrenceRange(Aliased):
+    """Over how long an event repeats (recurrencerange)."""
+
+    type: Literal["endDate", "noEnd", "numbered"]
+    startDate: str
+    endDate: str | None = None
+    recurrenceTimeZone: str = "UTC"
+    numberOfOccurrences: int = 0
+
+
+class Recurrence(Aliased):
+    pattern: RecurrencePattern
+    range: RecurrenceRange
+
+
 class Event(Aliased):
     """An event as Graph reads it from one mailbox: `isOrganizer` and `responseStatus` are that mailbox's own."""
 
@@ -1271,6 +1299,7 @@ class Event(Aliased):
     changeKey: str
     iCalUId: str
     transactionId: str | None = None
+    hasAttachments: bool = False
     subject: str
     bodyPreview: str
     body: ItemBody
@@ -1287,6 +1316,8 @@ class Event(Aliased):
     isOnlineMeeting: bool = False
     showAs: Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"] = "busy"
     type: Literal["singleInstance", "occurrence", "exception", "seriesMaster"] = "singleInstance"
+    seriesMasterId: str | None = None
+    recurrence: Recurrence | None = None
     webLink: str
 
 
@@ -1300,6 +1331,7 @@ class StoredEvent(Model):
     ends: AwareDatetime
     conversation: str
     request: str | None = Field(default=None, description="The meeting request message, when it invited anyone")
+    attachments: list[StoredAttachment] = []
 
 
 class CalendarResource(Aliased):
@@ -1329,10 +1361,36 @@ class SentDateTime(Lenient):
     timeZone: str = "UTC"
 
 
+class SentPattern(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    type: str
+    interval: int
+    daysOfWeek: list[str] = []
+    firstDayOfWeek: str | None = None
+
+
+class SentRange(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    type: str
+    startDate: str
+    endDate: str | None = None
+    numberOfOccurrences: int | None = None
+    recurrenceTimeZone: str | None = None
+
+
+class SentRecurrence(Lenient):
+    pattern: SentPattern
+    range: SentRange
+
+
 class EventRequest(Lenient):
     """An event a caller creates or changes: every field is optional, so a PATCH reads as what it names."""
 
     model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    recurrence: SentRecurrence | None = None
 
     subject: str | None = None
     body: SentBody | None = None
@@ -1344,7 +1402,16 @@ class EventRequest(Lenient):
     isOnlineMeeting: bool | None = None
 
 
+class CancelRequest(Lenient):
+    comment: str = ""
+
+
 class EventResponseRequest(Lenient):
+    """`accept`, `tentativelyAccept` and `decline`: a parameter other than these two (`proposedNewTime`) is refused by
+    name (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     comment: str = ""
     sendResponse: bool = True
 
