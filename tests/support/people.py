@@ -8,12 +8,8 @@ from collections.abc import Mapping
 from functools import cache
 
 from examples.recipes import fake_model
-from minutehand.adapters.model.openai_compatible import (
-    API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    MODEL_VARIABLE,
-    OpenAICompatible,
-)
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier
 from minutehand.domain.scenario import ProviderKey, Scenario

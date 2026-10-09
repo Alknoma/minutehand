@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import timedelta
 
 import httpx
 from pydantic import ValidationError
@@ -118,12 +119,12 @@ async def _deliver(
     if target.delivery is Delivery.SOCKET_MODE:
         answered = await socket_mode.hub(slack.store).interact(payload)
         return b"" if answered is None else json.dumps(answered).encode()
-    return (await _send(_url(target), wire.payload_form(payload), secret, what)).content
+    return (await _send(_url(target), wire.payload_form(payload), secret, what, target.push_timeout)).content
 
 
-async def _send(url: str, body: bytes, secret: str, what: str) -> httpx.Response:
+async def _send(url: str, body: bytes, secret: str, what: str, timeout: timedelta) -> httpx.Response:
     try:
-        answered = await inbound.post_signed(url, body, "application/x-www-form-urlencoded", secret)
+        answered = await inbound.post_signed(url, body, "application/x-www-form-urlencoded", secret, timeout=timeout)
     except httpx.HTTPError as e:
         raise DeliveryRefused(url, None, repr(e), what=what) from e
     if not answered.is_success:
@@ -413,7 +414,9 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         response_url=state.response_url(hook.id, hook.secret, command=True, team=slack.team.id),
         trigger_id=trigger.id,
     )
-    answered = await _send(target.request_url(), body, secret, f"the slash command {happening.command}")
+    answered = await _send(
+        target.request_url(), body, secret, f"the slash command {happening.command}", target.push_timeout
+    )
     if not answered.content.strip():
         return
     try:

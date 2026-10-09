@@ -20,6 +20,7 @@ from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
+from minutehand.domain.templates import RUN_DIR, RUN_FILLED, RUN_PORT
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -64,7 +65,18 @@ def load_agent(path: Path, *, text: str | None = None) -> AgentUnderTest:
     """An agent file, its `checks` made absolute from the file's own folder, so a fork that reads the agent back
     from its run's folder finds them. `text`, when given, is read in place of the file's own (the file as `run-all`
     fills it), and the file still names it and places its relative paths."""
-    raw = _read(path, AgentUnderTest) if text is None else _parsed(path, text, AgentUnderTest)
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+    unfilled = [p for p in RUN_FILLED if p in text]
+    if unfilled:
+        raise FileRefused(
+            f"{path}: holds {' and '.join(unfilled)}, which only `minutehand run` and `run-all` fill, when they start "
+            "the agent's command: give the command after --, or write the port and folder out"
+        )
+    raw = _parsed(path, text, AgentUnderTest)
     return _with_checks_from(path, _validate(path, raw, AgentUnderTest))
 
 
@@ -219,11 +231,23 @@ def where(location: tuple[int | str, ...]) -> str:
     return out or "(the whole file)"
 
 
+def filled_as_run(text: str, path: Path) -> str:
+    """An agent file's text with `{run.port}` and `{run.dir}` filled with stand-ins of their kind: the lowest port
+    `run-all` hands out and the file's own folder."""
+    return text.replace(RUN_PORT, "20000").replace(RUN_DIR, str(path.resolve().parent))
+
+
 def problems(path: Path, kind: FileKind | None = None) -> tuple[FileKind | None, BaseModel | None, list[str]]:
     """Every load-time problem of one file, each naming its place in the file; the model read when there is none."""
     try:
         model = MODELS[kind] if kind is not None else AgentUnderTest
-        raw = _read(path, model)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+        # read as `run` and `run-all` read it, each placeholder they fill filled, so a field that checks what it
+        # holds (a URL's port) is checked as the run will see it
+        raw = _parsed(path, filled_as_run(text, path), model)
     except FileRefused as e:
         return kind, None, [str(e)]
     kind = kind or kind_of(raw)

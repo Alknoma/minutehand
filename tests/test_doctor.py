@@ -146,7 +146,11 @@ def test_the_doctor_warns_of_a_docker_config_that_sends_every_host_direct(tmp_pa
 
 def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say() -> None:
     configured = people_model({"MINUTEHAND_MODEL": "people-1", "MINUTEHAND_MODEL_API_KEY": "k"})
-    assert configured.configured and configured.said == "people-1 at https://api.openai.com/v1"
+    assert configured.configured and configured.said == "people-1 at https://api.openai.com/v1 (openai API)"
+    anthropic = people_model(
+        {"MINUTEHAND_MODEL": "claude-test", "MINUTEHAND_MODEL_API_KEY": "k", "MINUTEHAND_MODEL_API": "anthropic"}
+    )
+    assert anthropic.said == "claude-test at https://api.anthropic.com (anthropic API)"
     missing = people_model({})
     assert not missing.configured and "no model is configured" in missing.said and "is refused" in missing.said
     half = people_model({"MINUTEHAND_MODEL": "people-1"})

@@ -10,15 +10,12 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
-from minutehand.adapters.model.openai_compatible import (
-    API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    MODEL_VARIABLE,
-    OpenAICompatible,
-)
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import PERSON_PROMPT_VERSION, WrittenReply
 from minutehand.checks.judged.asked_about import AskedAboutVerdict
+from minutehand.checks.judged.review import ItemReview
 from minutehand.checks.ledger import build
 from minutehand.domain.checks import FindingKind, ObligationKind
 from minutehand.domain.conversation import Provenance
@@ -35,8 +32,11 @@ WRITTEN = "Yes: 40k a year, renewing in March."
 SOFIA_WRITES = Answers(delay=DelayRange(shortest=timedelta(hours=36), longest=timedelta(hours=36)))
 
 
-def the_model(received: Received) -> WrittenReply | AskedAboutVerdict:
-    """Sofia answers a question and nothing else; the judge says her question was about pricing."""
+def the_model(received: Received) -> WrittenReply | AskedAboutVerdict | ItemReview:
+    """Sofia answers a question and nothing else; the judge says her question was about pricing; the reviewer of the
+    agent's effects finds nothing wrong with them."""
+    if received.schema_name == "ItemReview":
+        return ItemReview(issues=[])
     if received.schema_name == "AskedAboutVerdict":
         message = received.last.split("Message:", 1)[1]
         return AskedAboutVerdict(asks_about="pricing" in message, rationale="It asks her to confirm the price.")

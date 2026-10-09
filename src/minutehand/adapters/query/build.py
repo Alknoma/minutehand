@@ -342,7 +342,13 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     model_rows: list[Row] = []
     for s in agent_calls:
         call = model_call(s, traces[s.span.trace_id])
-        cost = prices.cost(call.model, call.input_tokens, call.output_tokens)
+        cost = prices.cost(
+            call.model,
+            call.uncached_input_tokens,
+            call.output_tokens,
+            cache_read_tokens=call.cache_read_tokens,
+            cache_creation_tokens=call.cache_creation_tokens,
+        )
         model_rows.append(
             {
                 "side": "agent",
@@ -366,10 +372,24 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "wrote_seqs": _json(list(wrote[s.span.span_id])) if s.span.span_id in wrote else "[]",
                 "replayed": None,
                 "failure": None,
+                "cache_read_tokens": call.cache_read_tokens,
+                "cache_creation_tokens": call.cache_creation_tokens,
+                "uncached_input_tokens": call.uncached_input_tokens,
             }
         )
     for number, p in enumerate(person_calls, start=1):
-        cost = prices.cost(p.model, p.input_tokens, p.output_tokens)
+        uncached = (
+            None
+            if p.input_tokens is None
+            else p.input_tokens - (p.cache_read_tokens or 0) - (p.cache_creation_tokens or 0)
+        )
+        cost = prices.cost(
+            p.model,
+            uncached,
+            p.output_tokens,
+            cache_read_tokens=p.cache_read_tokens,
+            cache_creation_tokens=p.cache_creation_tokens,
+        )
         model_rows.append(
             {
                 "side": SIDE[p.wrote].value,
@@ -393,6 +413,9 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "wrote_seqs": _json([first_seq[p.asked]] if p.asked is not None and p.asked in first_seq else []),
                 "replayed": int(p.replayed),
                 "failure": p.failure,
+                "cache_read_tokens": p.cache_read_tokens,
+                "cache_creation_tokens": p.cache_creation_tokens,
+                "uncached_input_tokens": uncached,
             }
         )
     model_rows.sort(key=lambda r: (str(r["at"]), str(r["span_id"] or ""), int(r["person_call_id"] or 0)))

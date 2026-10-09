@@ -88,6 +88,11 @@ class Delivery(StrEnum):
     SOCKET_MODE = "socket_mode"  # the agent holds a WebSocket open to the service and takes them on it (Slack)
 
 
+PUSH_TIMEOUT = timedelta(minutes=5)
+"""How long Minutehand waits on one push to the agent by default: room for a model's turn, which a scripted agent's
+handler never needs and an LLM agent's handler often takes."""
+
+
 class InboundTarget(Model):
     """Where a provider pushes events to the agent, the way the real service would."""
 
@@ -107,6 +112,13 @@ class InboundTarget(Model):
         default=None,
         description="Where the secret that signs pushed events comes from; None signs with one made per run "
         "and given to no one, for an agent that does not verify",
+    )
+    push_timeout: timedelta = Field(
+        default=PUSH_TIMEOUT,
+        gt=timedelta(0),
+        description="How long one push to `url` or `interactivity_url` may take before it counts as unanswered and is "
+        "sent again, as the vendor retries it. The default leaves room for a model's turn handled inside the "
+        "request; Slack itself waits three seconds (PT3S), and a Socket Mode envelope is always held to that",
     )
 
     @model_validator(mode="after")

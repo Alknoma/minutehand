@@ -57,6 +57,21 @@ follow-up on it, not an ask of its own.
 where it was, what the provider calls it, the state it reached and who made it; states and names are the provider's
 own words, matched in any case.
 
+`where: {first: true}` (`each: transition` only) reads the rule for only the first transition the rest of `where`
+matches, in the run: the first approval of a request two people could approve, the first time a ticket reached Done.
+When the run made no such transition, the rule is read once anyway, at the run's end, with `transition` standing for
+that moment, so a rule like "no order before the approval" still judges a run in which no approval ever came:
+
+```yaml
+- id: never_orders_before_approval
+  each: transition
+  where: {provider: [approvals], to: [approved], first: true}
+  count: {stored: {host: api.orders.example, collection: orders}, until: transition-PT1S}
+  at_most: 0                         # with no approval at all: no order by the end of the run
+```
+
+Its finding then names "no such transition by the end of the run" as what it was read for.
+
 ### Moments
 
 A moment is an anchor and an optional ISO 8601 offset: `ask+P1D`, `deadline-PT2H`, `answer`.
@@ -91,6 +106,20 @@ rule went unread, so a rule never passes by being skipped unseen.
 ### `count`: which facts, between which moments
 
 `since` and `until` are moments, both inclusive; absent, the start and the end. Exactly one kind of fact is counted:
+
+**A count read per ask starts at the run's start unless it says `since: ask`.** `each: ask` with `count: {messages:
+{to: [person]}, until: closed}` counts every message to that person from the start of the run to this ask's close,
+the messages of their earlier asks among them: a second ask of the same person then finds the first ask's messages
+too, and a `gap_at_least` rule fires once for each ask that window covers. Write `since: ask` to count only what came
+from this ask on (`follow_ups` and `touches` are already the ask's own):
+
+```yaml
+- id: chases_sam_20h_apart
+  each: ask
+  where: {person: [sam]}
+  count: {messages: {to: [person]}, since: ask, until: closed}
+  gap_at_least: PT20H
+```
 
 | Fact | Each one is | Filters |
 |---|---|---|

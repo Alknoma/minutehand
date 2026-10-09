@@ -255,7 +255,10 @@
       "wrote TEXT",
       "wrote_seqs TEXT",
       "replayed INTEGER",
-      "failure TEXT"
+      "failure TEXT",
+      "cache_read_tokens INTEGER",
+      "cache_creation_tokens INTEGER",
+      "uncached_input_tokens INTEGER"
     ],
     "findings": [
       "finding_id INTEGER",

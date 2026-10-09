@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from minutehand.adapters.model.openai_compatible import VARIABLES
+from minutehand.adapters.model.environment import VARIABLES
 from minutehand.domain.scenario import Silent
 from tests.e2e.support import agent_under_test, scenario
 

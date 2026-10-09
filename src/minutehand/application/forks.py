@@ -391,7 +391,7 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
             3,
             ScoreLine(
                 label="slowest reaction",
-                value=f"{_lost(card.slowest_reaction)} from a wait settling to the agent's next write on it",
+                value=f"{_lost(card.slowest_reaction)} from a wait settling to the agent's next write",
             ),
         )
     return lines

@@ -37,7 +37,8 @@ git clone --depth 1 -b main https://github.com/Alknoma/minutehand
 cd minutehand/examples/follow_up
 python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand   # its Slack client and `minutehand.agent`
 
-# Rosa's words are written by a model from what the scenario says she knows. Any OpenAI-compatible API will do;
+# Rosa's words are written by a model from what the scenario says she knows. Any OpenAI-compatible API will do, or
+# Anthropic's (MINUTEHAND_MODEL_API=anthropic);
 # offline, the recipes' stand-in answers by fixed rules, the same every run:
 python3 ../recipes/fake_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline

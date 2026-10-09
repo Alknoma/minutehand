@@ -1,7 +1,11 @@
 """`minutehand`: run a scenario against an agent, read a run's findings, fork a run, list the runs.
 
     minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--seed S] [--judge] [--json] [PROXY] [-- <command...>]
-    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json] [-- <command...>]
+                                                 {run.port} and {run.dir} in the agent file and the command are
+                                                 filled once, as run-all fills them, when a command is given
+    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json]
+                     [--record-model-calls] [--model-host HOST]... [--capture-unknown [MODE]] [--upstream-ca FILE]
+                     [--proxy-host H] [--agent-proxy-host H] [--no-proxy H]... [--no-receive-telemetry] [-- <command...>]
                                                  every scenario in the folder, in parallel, each in a run of its own,
                                                  N times under seeds S, S+1, ...; {run.port} and {run.dir} in the agent
                                                  file and the command are filled per run; exits 1 when a scenario's
@@ -19,7 +23,8 @@
     minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
-                                                 it answers, and what followed
+                                                 it answers or follows up, and what followed ("action N" is a place
+                                                 among the agent's acts, never a seq)
     minutehand rm <run_id>... [--state DIR]      remove runs with their forks
     minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the
@@ -51,7 +56,8 @@ model, another provider), so it is tunnelled, edited by a fork's PromptPatch or 
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
-MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
+MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL, and MINUTEHAND_MODEL_API: openai (the default, any
+OpenAI-compatible chat-completions API) or anthropic (Anthropic's Messages API, base URL https://api.anthropic.com).
 
 A run is judged only by what its files declare: the team's rules (`assess:` in the agent file and the scenario,
 docs/assessments.md), the scenario's `expect:` and `protected_names`, and the agent's own `checks:`. With --json,
@@ -102,7 +108,7 @@ from minutehand import agent_api, mcp_relay, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
-from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.model.environment import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.query import reader as read_model
@@ -135,7 +141,7 @@ from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
-from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding
+from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, RuleRead
 from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
@@ -328,6 +334,18 @@ def _parser() -> _Parser:
         help="the first seed of each scenario's samples; default each scenario's own seed",
     )
     run_all.add_argument("--json", action="store_true")
+    run_all.add_argument(
+        "--proxy-host", default=None, help="the address each run's proxy listens on (each takes a free port)"
+    )
+    run_all.add_argument("--agent-proxy-host", default=None, help="the host the agent reaches each run's proxy at")
+    run_all.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+    )
+    run_all.add_argument(
+        "--no-receive-telemetry", action="store_true", help="receive none of the agent's telemetry in any run"
+    )
+    models(run_all)
+    capture(run_all)
     state(run_all)
 
     findings = commands.add_parser("findings", help="what the checks said about a finished run")
@@ -965,16 +983,17 @@ def _standing_compose(args: argparse.Namespace) -> dict[str, object]:
 
 def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
     scenario = load_scenario(args.scenario)
-    agent = load_agent(args.agent)
+    filled = run_all.filled_for_run(args.agent, command, state=state)
+    os.environ.update(filled.environment)  # the agent's command is started from this process's environment
     telemetry = _telemetry()
     try:
         outcomes = asyncio.run(
             session.play(
                 scenario,
-                agent,
+                filled.agent,
                 state=state,
                 samples=args.samples,
-                command=command,
+                command=filled.command,
                 telemetry=telemetry,
                 model=model_from_environment(),
                 judge=args.judge,
@@ -1001,10 +1020,25 @@ def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -
             judge=args.judge,
             samples=args.samples,
             seed=args.seed,
+            passed_on=_passed_on(args),
         )
     )
     print(batch.model_dump_json(indent=2) if args.json else run_all.described(batch))
     return batch.exit_code
+
+
+def _passed_on(args: argparse.Namespace) -> list[str]:
+    """The flags of `run-all` that each of its `minutehand run`s takes as they are. The ports are not among them:
+    runs played at once each take free ones."""
+    flags = [*(["--proxy-host", args.proxy_host] if args.proxy_host else [])]
+    flags += ["--agent-proxy-host", args.agent_proxy_host] if args.agent_proxy_host else []
+    flags += [word for host in args.no_proxy for word in ("--no-proxy", host)]
+    flags += ["--no-receive-telemetry"] if args.no_receive_telemetry else []
+    flags += ["--record-model-calls"] if args.record_model_calls else []
+    flags += [word for host in args.model_host for word in ("--model-host", host)]
+    flags += [] if args.capture_unknown == UnknownHosts.REFUSE.value else [f"--capture-unknown={args.capture_unknown}"]
+    flags += ["--upstream-ca", str(args.upstream_ca)] if args.upstream_ca is not None else []
+    return flags
 
 
 def _progress(command: str) -> Callable[[str], None]:
@@ -1285,12 +1319,28 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
         incomplete = sum(1 for f in result.simulation if f.incomplete)
         lines.append(f"\nsimulation ({incomplete} incomplete, {len(result.simulation) - incomplete} coverage)")
         lines += [_health(f) for f in result.simulation]
+    if result.rules_read:
+        lines.append("\nrules read")
+        lines += [_rule_read(r, result.findings) for r in result.rules_read]
+    if result.notes:
+        lines.append("\nnotes")
+        lines += [f"  {note}" for note in result.notes]
     lines.append("\nscorecard")
     lines += [f"  {line}" for line in _scorecard(result.effectiveness)]
     if points:
         lines.append("\ncheckpoints")
         lines += [f"  seq {p.seq}, after wake {p.wake}: {_point(p)}" for p in points]
     return "\n".join(lines)
+
+
+def _rule_read(read: RuleRead, findings: list[Finding]) -> str:
+    """One of the team's rules: how often it was read, how often it could not be, and how often it broke."""
+    broke = sum(1 for f in findings if f.check == read.rule)
+    said = f"  {read.rule}: read {read.read} time{'' if read.read == 1 else 's'}"
+    said += f", unread {read.unread}" if read.unread else ""
+    if broke:
+        return said + f", {broke} finding{'' if broke == 1 else 's'}"
+    return said + (", held" if read.read else "")
 
 
 def _point(point: ForkPoint) -> str:

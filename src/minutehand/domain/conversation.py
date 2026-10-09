@@ -91,8 +91,10 @@ class PersonCall(Model):
     )
     model: str
     prompt_version: str
-    input_tokens: int | None = None
+    input_tokens: int | None = Field(default=None, description="Every input token, cached ones included")
     output_tokens: int | None = None
+    cache_read_tokens: int | None = Field(default=None, description="Of the input, read from the prompt cache")
+    cache_creation_tokens: int | None = Field(default=None, description="Of the input, written to the prompt cache")
     answer: str | None = Field(default=None, description="The structured answer, as its JSON text; None: it failed")
     failure: str | None = Field(default=None, description="Why the call failed; the reply stays owed")
     replayed: bool = Field(default=False, description="Answered from the world's record: no model was called")

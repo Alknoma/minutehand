@@ -138,13 +138,13 @@ inbound:
      secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}}
 ```
 
-An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
+An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `push_timeout` (default `PT5M`) is how long one push to it may take before it is sent again, as the vendor retries (`docs/agent-contract.md`). `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
 
 ```yaml
   - kind: reported
     wake_url: http://platform:8025/minutehand/wake
     report_url: http://platform:8025/minutehand/report
-    wake_timeout: PT2M            # one call to wake_url or report_url (default 2 minutes)
+    wake_timeout: PT10M           # one call to wake_url or report_url (default 10 minutes: room for a model's turn)
     report_first_after: PT0.1S    # the first ask for the report; each wait doubles from here
     report_at_most_every: PT10S   # up to this
     working_limit: PT30M          # a wake still WORKING after this stops the run AGENT_FAILED, saying so
@@ -1077,7 +1077,7 @@ written}}`, `docs/assessments.md`).
 
 **A model is required whenever a person may speak.** `replier.unspoken` names everyone a model writes for (an
 `Answers` person, a script that goes on conversing, a step or decision a model words); with no model configured
-(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`), a run, a fork, and a standing world
+(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, and `MINUTEHAND_MODEL_API`: `openai`, any OpenAI-compatible chat-completions API with JSON-schema output, the default, or `anthropic`, Anthropic's Messages API with the answer as a forced tool's input), a run, a fork, and a standing world
 with `scripted_people: true` are refused before anything starts, naming each person and why. `minutehand doctor`
 says whether one is configured. Nobody goes silent mid-run for want of one.
 
@@ -1192,7 +1192,8 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = Field(
         default=None,
-        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        description="The longest stretch from a wait settling to the agent's next write anywhere a person could see "
+        "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
     messages_to_people: int = Field(default=0, ge=0)
@@ -1206,7 +1207,7 @@ Every number is a count or a stretch of time. What it no longer holds is what wa
 
 What a follow-up is, as a fact (`checks/facts.asks`): an agent write the person could see while the wait was open, a message to them or their delegate, or a change to the ask's thread or ticket. A read is not one: looking at the channel tells nobody anything. One message chasing two waits is one follow-up in `follow_ups_made`.
 
-What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent never came back, so a run stopped early makes it shorter.
+What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent wrote nothing more, so a run stopped early makes it shorter; and it counts any write after the answer as the reaction, so an agent that went on with something unrelated reads as having reacted (it once counted only writes to the wait's own person or entity, and an agent that heard an answer and at once filed the approval it was for read as 4.8 days slow).
 
 #### The verdict
 
@@ -1609,7 +1610,7 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
   An attribute's value keeps OTLP's kinds (string, bool, int, double, bytes, array, key/value list) as a union discriminated on `kind`. The run loop records the real moment each wake begins and, after its checkpoint, ends (`Store.wake_began`, `wake_ended`). `Store.receive(spans, source=)` places each span in the wake whose window holds the span's own start (`Placement.WINDOW`), or, when none does (setup, or between wakes), in the wake it arrived in (`Placement.ARRIVAL`); the arrival wake, simulated time and head of the log are kept too. Its own start and end stay the real times its SDK gave it. `Store.spans(trace_id=, wake=)` reads them back by placement, and a fork's view of its parent's spans uses the same placement.
 - **Passing it on.** When the environment Minutehand was started from already names an OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or a signal's own `…_TRACES_ENDPOINT`), every payload the receiver takes, traces, logs and metrics, read or not, is sent on to it unchanged with `OTEL_EXPORTER_OTLP_HEADERS`, in the background (`forward.py`). A failure is recorded in the run (`Store.forward_failed`, the `forward_failure` table) and never fails it. A destination that is the receiver itself is dropped rather than looped.
-- **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
+- **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens` (every input token, cached ones included), `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
 - **The join.** `application/model_calls.trace_of(event, world)`: from the `traceparent` the intercepted call carried, the agent's calling span, its ancestors to the root, every span of that trace with a `gen_ai.*` attribute, and the model call that led to the event: of the spans whose `gen_ai.operation.name` is `chat`, `text_completion` or `generate_content` (or that name no operation and carry a model), the last to END before the calling span started. With no `traceparent`, or no model call in the trace, a message is joined BY CONTENT when it can be (`JoinedBy.CONTENT`, `by_content`): its text, trimmed of whitespace at both ends and at least `CONTENT_LEAST` (20) characters, appears verbatim in what a model call placed in the same wake answered (`gen_ai.output.messages`, or any string inside it read as JSON, however deep), the call having ended before the event was written, real time; of several, the last to end. Nothing else is normalised and no likeness is scored. Otherwise it takes the last model call of the same wake that ended before the event, a wire-recorded one only if it was kept before the event's seq, and says so (`JoinedBy.WAKE`: the nearest call, not a proven cause). Every surface says which (`tests/test_model_call_join.py`).
 - **Where it shows.** `show_evidence` gives each cited event its `model_call` (model, the messages the span carries, token counts), `joined_by` and the agent's span names, and says in `telemetry` when the run received nothing. The viewer serves `GET /api/runs/{run_id}/model-calls` (each event a finding cites, joined), `GET /api/runs/{run_id}/model-calls/{span_id}` and `GET /api/runs/{run_id}/traces/{trace_id}`; its inspector shows a message's writer and, for a model call, what it was asked and answered.
 - **Privacy.** Received spans often hold whole prompts. They are kept in the run's `world.db` on the machine running Minutehand and go nowhere else except to the endpoint the agent's own environment already named.
@@ -1695,7 +1696,7 @@ Built and tested (`adapters/mcp/server.py`, `minutehand mcp`, `tests/mcp/`): ser
 | `schema()` | the read model's views and columns, and its version (`docs/querying.md`) |
 | `query_run(run_id, sql, limit, offset, prices)` | one read-only SELECT over a run's read model, a page of at most 1,000 rows |
 | `trace(run_id, person, provider, kind, since, until, wake)` | the agent's acts in order (`actions`) |
-| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers, the model call and HTTP call behind it, and the replies, follow-ups and findings after it |
+| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers (a reply), follows up (a follow-up) or comes after (another message), the model call and HTTP call behind it; the agent's acts named `action N` by their place in `actions`, apart from seqs, and the replies, follow-ups and findings after it |
 
 The command line (`cli.py`) does the same:
 

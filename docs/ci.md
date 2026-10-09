@@ -90,7 +90,11 @@ action), one step plays every scenario of a folder in parallel and fails the job
 ```
 
 Each scenario gets a port of its own and a folder of its own (`{run.port}`, `{run.dir}` in the agent file and the
-command; `MINUTEHAND_RUN_PORT`, `MINUTEHAND_RUN_DIR` in the agent's environment). Each says the verdict it is written
+command; `MINUTEHAND_RUN_PORT`, `MINUTEHAND_RUN_DIR` in the agent's environment). `minutehand run` fills them the
+same way, once, when it starts the agent's command (the folder is under `<state>/run-all/run/`); with no command to
+start, and in `env` and `doctor`, a file holding either is refused by name. `run-all` hands each of its runs
+`--record-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
+`--no-proxy` and `--no-receive-telemetry` as given; each run takes free ports of its own. Each says the verdict it is written
 to reach (`expect_outcome: passed | failed | unfinished | not_judged`, default `passed`): a scenario whose point is
 that nobody answers may expect `unfinished`, and one that shows a known bug `failed`. `run-all` prints a line per
 scenario and a timeline per person, and exits 1 when any verdict differs from its scenario's, 2 when any run could

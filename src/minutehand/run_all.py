@@ -32,13 +32,23 @@ from pydantic import Field, ValidationError
 
 from minutehand import session
 from minutehand.adapters.proxy.trust import authority
-from minutehand.application.files import FileKind, FileRefused, kind_of, load_agent, load_scenario, read_yaml
+from minutehand.application.files import (
+    FileKind,
+    FileRefused,
+    filled_as_run,
+    kind_of,
+    load_agent,
+    load_scenario,
+    read_yaml,
+)
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
+from minutehand.domain.templates import RUN_DIR, RUN_PORT
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
-PORT = "{run.port}"
-DIR = "{run.dir}"
+PORT = RUN_PORT
+DIR = RUN_DIR
 PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
 CA = "ca"
@@ -174,7 +184,40 @@ def checked_agent(agent: Path) -> None:
         text = agent.read_text(encoding="utf-8")
     except OSError as e:
         raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
-    load_agent(agent, text=_filled(text, PORTS.start, agent.resolve().parent))
+    load_agent(agent, text=filled_as_run(text, agent))
+
+
+ONE_RUN = "run"
+"""The folder under the state directory's `run-all/` that holds the folders `{run.dir}` names for `minutehand run`."""
+
+
+class FilledRun(Model):
+    """An agent file and command as `minutehand run` starts them, each placeholder filled once for the invocation."""
+
+    agent: AgentUnderTest
+    command: list[str] | None
+    environment: dict[str, str] = Field(description="Handed to the agent's command: empty when nothing was filled")
+
+
+def filled_for_run(agent: Path, command: list[str] | None, *, state: Path) -> FilledRun:
+    """`{run.port}` and `{run.dir}` in the agent file and the command, filled as `run-all` fills them for one
+    scenario: a free port and a folder of the invocation's own under the state directory. A file that holds one with
+    no command to start is refused (`load_agent`): nobody would listen on a port picked here."""
+    try:
+        text = agent.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
+    uses = any(p in text or any(p in word for word in command or []) for p in (PORT, DIR))
+    if not uses or not command:
+        return FilledRun(agent=load_agent(agent), command=command, environment={})
+    port = free_port()
+    folder = state / BATCHES / ONE_RUN / secrets.token_hex(4)
+    folder.mkdir(parents=True, exist_ok=True)
+    return FilledRun(
+        agent=load_agent(agent, text=_filled(text, port, folder)),
+        command=[_filled(word, port, folder) for word in command],
+        environment={PORT_VARIABLE: str(port), DIR_VARIABLE: str(folder)},
+    )
 
 
 async def play_all(
@@ -187,9 +230,10 @@ async def play_all(
     judge: bool = False,
     samples: int = 1,
     seed: int | None = None,
+    passed_on: list[str] | None = None,
 ) -> Batch:
     """Every scenario in `folder`, `samples` times each under seeds counted up from `seed`, at most `jobs` runs at
-    a time."""
+    a time; `passed_on`, flags each `minutehand run` takes as they are (`--record-model-calls`, the proxy's host)."""
     if samples < 1:
         raise FileRefused(f"run-all needs at least one sample of each scenario, not {samples}")
     found = scenarios_in(folder)
@@ -203,7 +247,15 @@ async def play_all(
     async def one(path: Path, sample_seed: int | None, n: int) -> SamplePlayed:
         async with gate:
             return await _play(
-                path, agent, state=state, batch=batch, command=command, judge=judge, seed=sample_seed, n=n
+                path,
+                agent,
+                state=state,
+                batch=batch,
+                command=command,
+                judge=judge,
+                seed=sample_seed,
+                n=n,
+                passed_on=passed_on or [],
             )
 
     played: list[ScenarioPlayed] = []
@@ -251,6 +303,7 @@ async def _play(
     judge: bool,
     seed: int | None,
     n: int,
+    passed_on: list[str],
 ) -> SamplePlayed:
     written = load_scenario(path)
     played_seed = (
@@ -264,11 +317,15 @@ async def _play(
     uses = PORT in text or DIR in text
     if uses:
         copy.write_text(_filled(text, port, own), encoding="utf-8")
-    argv = [sys.executable, "-m", "minutehand", "run", str(path), "--agent", str(copy if uses else agent)]
-    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
-    argv += ["--seed", str(seed)] if seed is not None else []
-    if command:
-        argv += ["--", *(_filled(word, port, own) for word in command)]
+    argv = run_argv(
+        path,
+        copy if uses else agent,
+        state=state,
+        judge=judge,
+        seed=seed,
+        passed_on=passed_on,
+        command=[_filled(word, port, own) for word in command] if command else None,
+    )
     log = own / "run.log"
     env = {**os.environ, PORT_VARIABLE: str(port), DIR_VARIABLE: str(own)}
     try:
@@ -296,6 +353,24 @@ async def _play(
         timeline=timeline(state, outcome.record.run_id),
         log=str(log),
     )
+
+
+def run_argv(
+    scenario: Path,
+    agent: Path,
+    *,
+    state: Path,
+    judge: bool,
+    seed: int | None,
+    passed_on: list[str],
+    command: list[str] | None,
+) -> list[str]:
+    """The `minutehand run` one scenario's sample is played by."""
+    argv = [sys.executable, "-m", "minutehand", "run", str(scenario), "--agent", str(agent)]
+    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
+    argv += ["--seed", str(seed)] if seed is not None else []
+    argv += passed_on
+    return argv + (["--", *command] if command else [])
 
 
 def timeline(state: Path, run_id: str) -> list[Timeline]:

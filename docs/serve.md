@@ -216,7 +216,7 @@ The clock of a world stands still. Nothing fires on its own.
   (for Slack, the signed event to the world's inbound target), recorded as actor `PERSON` and as the transition it
   is. An edit that changes what an ask says, before its answer, is put to the person again.
 - **The model** is the server's own, from its environment exactly as `run` reads it (`MINUTEHAND_MODEL`,
-  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`; a person's `model` names another), never from a request.
+  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, `MINUTEHAND_MODEL_API`: `openai` or `anthropic`; a person's `model` names another), never from a request.
   A world created with `scripted_people: true` whose people a model speaks for, on a server with no model, is
   refused 409 naming each person and what to set; `minutehand doctor` says whether one is configured.
 - **Owed, and kept.** `GET /v1/worlds/{id}` lists each answer and decision people owe with its moment and how its

@@ -79,6 +79,11 @@ class AgentReport(Model):
     commitments: list[Commitment] | None = None
 
 
+WAKE_TIMEOUT = timedelta(minutes=10)
+"""How long one call to the agent's wake or report URL may take by default: room for an LLM agent that takes a model's
+turn, or several, before it answers. A scripted agent answers in milliseconds and never comes near it."""
+
+
 class Reported(Model):
     """The agent says when it next needs to wake. Exact, and needs an endpoint or adapter.
 
@@ -92,9 +97,10 @@ class Reported(Model):
     wake_url: str
     report_url: str
     wake_timeout: timedelta = Field(
-        default=timedelta(minutes=2),
+        default=WAKE_TIMEOUT,
         gt=timedelta(0),
-        description="How long one call to wake_url or report_url may take",
+        description="How long one call to wake_url or report_url may take; the default leaves room for a model's turn "
+        "taken inside the call",
     )
     report_first_after: timedelta = Field(
         default=timedelta(milliseconds=100), gt=timedelta(0), description="The wait before the first ask for the report"
@@ -120,7 +126,9 @@ class Marked(Model):
     kind: Literal["marked"] = "marked"
     wake_url: str
     wake_timeout: timedelta = Field(
-        default=timedelta(minutes=5), gt=timedelta(0), description="How long one call to wake_url may take"
+        default=WAKE_TIMEOUT,
+        gt=timedelta(0),
+        description="How long one call to wake_url may take: the whole wake, a model's turns and all",
     )
 
 

@@ -59,8 +59,8 @@ from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import EmulatorRefused
-from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.environment import from_environment as model_from_environment
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -566,8 +566,8 @@ class Standing:
             if needing:
                 raise WorldRefused(
                     f"a model writes what {'; '.join(needing)} say, and this server has no model configured: start "
-                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set (and {BASE_URL_VARIABLE} for a service "
-                    "other than OpenAI's)"
+                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set ({API_VARIABLE}=anthropic for Anthropic's "
+                    f"Messages API, and {BASE_URL_VARIABLE} for a service other than OpenAI's or Anthropic's)"
                 )
         directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
