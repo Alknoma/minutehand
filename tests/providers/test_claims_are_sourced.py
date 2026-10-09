@@ -269,6 +269,8 @@ OPEN: dict[str, tuple[str, ...]] = {
         "JQL: a documented field (`watcher`, `component`…), function (`membersOf()`…) or operator (`WAS`, `CHANGED`) not served is refused by name (the public site answers `WAS` with no issues for an anonymous caller, `jql_was.http`; the fake does not search history)",
     ),
     "microsoft": (
+        "A list of messages, a folder's included, without `$orderby` lists newest received first (`receivedDateTime desc`)",
+        "A list of events, and the calendar view, without `$orderby` lists by start, earliest first",
         "A folder's children without `$orderby` list in the order the items were made",
         "Users without `$orderby` list in the directory's own order",
         "A team's channels list General first, then in the order they were made",

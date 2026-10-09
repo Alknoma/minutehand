@@ -128,7 +128,12 @@ async def test_filter_orderby_top_and_paging_read_the_mailbox_as_clients_ask(
     async with microsoft.http() as http:
         auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
         unordered = await http.get(f"{GRAPH}/users/{AGENT}/messages", headers=auth)
-        assert unordered.status_code == 501, "Graph documents no order for a list without $orderby"
+        assert unordered.status_code == 200
+        assert [m["subject"] for m in unordered.json()["value"]] == ["Re: Vendor review", "Lunch", "Vendor review"], (
+            "without $orderby, newest received first"
+        )
+        inbox = await http.get(f"{GRAPH}/users/{AGENT}/mailFolders/inbox/messages", headers=auth)
+        assert inbox.json()["value"][0]["subject"] == "Re: Vendor review"
         everything = (
             await http.get(
                 f"{GRAPH}/users/{AGENT}/messages", params={"$orderby": "receivedDateTime desc"}, headers=auth

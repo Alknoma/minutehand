@@ -583,9 +583,7 @@ class Mail:
             for m in self._world.mails(owner.user.id)
             if (folder is None or m.folder is folder) and all(self._holds(c, m.message) for c in clauses)
         ]
-        if not order and len(messages) > 1:
-            raise NotServed("listing messages without $orderby: Graph documents no order for them (user-list-messages)")
-        for prop, descending in reversed(order):
+        for prop, descending in reversed(order or [("receivedDateTime", True)]):
             messages.sort(key=lambda m, prop=prop: getattr(m, prop) or "", reverse=descending)
         top = query(request, "$top")
         skip = query(request, "$skip")
