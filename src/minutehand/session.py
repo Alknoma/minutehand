@@ -138,7 +138,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
-from minutehand.domain.items import TypedItem
+from minutehand.domain.items import ItemKind, TypedItem
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
@@ -307,6 +307,7 @@ async def play(
                 claims=_claims(registry, services),
                 rhythm=declared_rhythm(agent),
                 collections=declared_collections(agent),
+                messengers=declared_messengers(agent),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -409,6 +410,7 @@ async def fork(
         claims=_claims(registry, services),
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
+        messengers=declared_messengers(agent),
     )
     signing = signing_for(agent, changed.people)
 
@@ -527,6 +529,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
         claims=_Claims(registry, frozenset()),
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
+        messengers=declared_messengers(agent),
     )
     world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
     try:
@@ -1004,6 +1007,17 @@ def _claims(registry: Registry, services: Services) -> _Claims:
     return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
 
 
+def declared_messengers(agent: AgentUnderTest) -> dict[ProviderKey, ItemKind]:
+    """Every send-only host the agent file declares whose sends are read as messages to people (`acknowledge` with a
+    `message` reading), as the kind of item its messages are: an email when the reading names a subject, a chat
+    message otherwise. Their messages are assessed as any provider's are."""
+    return {
+        d.key: ItemKind.EMAIL if d.message.subject else ItemKind.CHAT_MESSAGE
+        for d in agent.outbound
+        if isinstance(d, Acknowledge) and d.message is not None
+    }
+
+
 def declared_collections(agent: AgentUnderTest) -> list[DeclaredCollection]:
     """Every collection the agent file's `store` hosts declare, as the simulation's health names them."""
     return [
@@ -1031,8 +1045,10 @@ class _Judge:
         claims: _Claims | None = None,
         rhythm: timedelta | None = None,
         collections: Sequence[DeclaredCollection] = (),
+        messengers: Mapping[ProviderKey, ItemKind] | None = None,
     ) -> None:
         self._claims = claims
+        self._messengers = dict(messengers or {})
         self._rhythm = rhythm
         self._collections = list(collections)
         self._rules = list(rules)
@@ -1060,7 +1076,7 @@ class _Judge:
                 provider = self._claims.registry.provider(manifests[key])
                 if isinstance(provider, TypesItems):
                     typers[key] = provider
-        return typed_items(events, self._scenario, manifests, typers, world, world.calls())
+        return typed_items(events, self._scenario, manifests, typers, world, world.calls(), self._messengers)
 
     def view(self, record: RunRecord, world: Store) -> RunView:
         """What every check reads of the finished run."""
@@ -1090,7 +1106,7 @@ class _Judge:
             stop=record.stop,
             calls=calls,
             typed=self._typed(world),
-            item_types=provided_types(self._manifests()),
+            item_types=provided_types(self._manifests(), self._messengers),
             rhythm=self._rhythm,
             person_calls=world.person_calls(),
             collections=self._collections,

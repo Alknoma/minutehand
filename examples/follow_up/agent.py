@@ -3,10 +3,10 @@
 This is an ordinary program. It knows Slack, through the stock `slack_sdk`, and it knows the wake
 contract every agent under Minutehand answers to, and nothing else:
 
-    POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}  "it is now `now`; go"
+    POST /wake          {"now": ..., "reason": "start" | "due" | ...}  "it is now `now`; go"
     GET  /report        -> {"status": ..., "next_wake": ... or null}   asked after every wake
                            "idle": this wake is finished; wake me again at next_wake, or never if null
-                           "done": the goal is reached
+                           "done": it says its work is finished (a run watches it to its window's end)
                            ("working" means this wake is still going, and the question is asked again)
     POST /slack/events  Slack's Events API: a message someone sent the agent, signed by Slack
 
@@ -51,7 +51,7 @@ from slack_sdk.signature import SignatureVerifier
 from minutehand.agent import store
 
 COLLEAGUE = "rosa@example.com"  # who knows the answer
-OWNER = "owen@example.com"  # who gave the agent its goal
+OWNER = "owen@example.com"  # whom it tells the outcome: its own job, as its code says
 FOLLOW_UP_AFTER = timedelta(days=2)
 
 QUESTION = "Hi Rosa, could you confirm the venue for the team offsite, please?"
@@ -110,7 +110,6 @@ class Agent:
     def wake(self, request: dict) -> None:
         now = datetime.fromisoformat(request["now"])
         if request["reason"] == "start":
-            print(f"goal: {request['goal']}", flush=True)
             self.send(COLLEAGUE, QUESTION)
             self.next_wake = now + FOLLOW_UP_AFTER if self.follows_up else None
         elif request["reason"] == "due" and self.answer is None:

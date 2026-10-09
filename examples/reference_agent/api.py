@@ -44,6 +44,11 @@ from store import Store, open_store
 
 PORT = int(os.environ.get("REFERENCE_PORT", "8790"))
 OWNER = os.environ.get("REFERENCE_OWNER", "owen@example.com")
+JOB = os.environ.get(
+    "REFERENCE_JOB",
+    "Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.",
+)
+"""Its work, as its own configuration says: the agent brings its work; the run hands it none."""
 MAIL = os.environ.get("REFERENCE_MAIL_URL", "https://api.mail.example")
 SECRET = os.environ.get("REFERENCE_MAIL_SECRET", "")
 MAIL_KEY = os.environ.get("REFERENCE_MAIL_KEY", "SG.reference-mail-key")
@@ -61,9 +66,10 @@ class Api:
     def wake(self, raw: bytes) -> None:
         request = json.loads(raw)
         with telemetry.tracer().start_as_current_span(f"wake {request['reason']}", kind=trace.SpanKind.SERVER):
-            if request.get("goal") and self.store.fact("goal") is None:
-                self.store.set_facts({"goal": request["goal"], "owner": OWNER, "started": request["now"]})
-                self._thank_owner(request["goal"], request["now"])
+            if request["reason"] == "start" and self.store.fact("goal") is None:
+                job = request.get("goal") or JOB  # an older scenario still hands it one; its own job otherwise
+                self.store.set_facts({"goal": job, "owner": OWNER, "started": request["now"]})
+                self._thank_owner(job, request["now"])
             carrier = telemetry.inject({})
             self.store.enqueue("wake", {**request, "trace": carrier})
 

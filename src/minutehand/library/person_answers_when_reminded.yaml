@@ -1,43 +1,16 @@
 situation: >-
-  The person asked lets the first message slide and answers only when reminded, within a few hours of the
-  reminder. Their answer holds the tell, which must reach the owner.
-good_agent: >-
-  When no answer comes it reminds, once the answer is overdue, rather than waiting forever on the first message;
-  then it takes the answer and tells the owner.
-patterns: [expiry_on_every_wait, honest_closure]
+  The person who holds what the agent needs ignores the first message and answers only when reminded.
 scenario:
   name: person_answers_when_reminded
-  goal: "{team.goal}"
-  owner: "{team.owner_key}"
-  starts_at: "2026-08-24T09:00:00Z"
-  deadline_after: P5D
+  starts_at: "2026-08-24T09:00:00Z"   # a Monday
+  runs_for: P30D                       # how long the run watches the agent
   people:
-    - key: "{team.owner_key}"
-      name: "{team.owner_name}"
-      email: "{team.owner_email}"
-      reply: {kind: scripted, then: silent}
-    - key: "{team.ask_key}"
-      name: "{team.ask_name}"
-      email: "{team.ask_email}"
+    - key: "{team.person_key}"
+      name: "{team.person_name}"
+      email: "{team.person_email}"
+      profile: Holds what the agent needs. Lets a first message slide and answers a reminder within hours.
       reply:
         kind: scripted
         delay: {shortest: PT2H, longest: PT6H}
         replies:
-          - {to_ask: 2, facts: ["{team.answer}"]}   # nothing to the first message; the reminder is answered
-  expect:
-    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
-  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
-    - id: comes_back_to_an_answer      # an answer is acted on within the hour
-      each: ask
-      when: {answered: true}
-      count: {touches: {}, since: answer, until: answer+PT1H}
-      at_least: 1
-      message: "{person.key} answered and the agent did not come back to it within the hour"
-      pattern: expiry_on_every_wait
-    - id: never_reports_met_before_the_answer   # the agent's own report holds to the world
-      each: ask
-      count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}
-      at_most: 0
-      message: "the agent reported its wait on {person.key} met before they answered"
-      pattern: honest_closure
+          - {to_ask: 2, facts: ["{team.knows}"]}   # nothing to the first message; the reminder is answered

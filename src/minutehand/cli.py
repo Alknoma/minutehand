@@ -32,11 +32,10 @@
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N] [--prices FILE]   the runs in a browser, on 127.0.0.1 only
     minutehand scenarios                         the scenario library: each scenario's name and situation
-    minutehand scenarios show <name>             what one is for, its checks and patterns, the values it takes
-    minutehand scenarios new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>'
-                     [--answer TEXT --tell PHRASE] [--other 'Name <email>'] [--credential-env VAR]
-                     [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
-                                                 write library scenarios out with the team's values (docs/scenarios.md)
+    minutehand scenarios show <name>             the situation one puts the agent in, and the values it takes
+    minutehand scenarios new <name>...|--all --person 'Name <email>' [--other 'Name <email>'] [--knows TEXT]
+                     [--credential-env VAR] [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
+                                                 write library worlds out with the team's people (docs/scenarios.md)
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
                      [--model-host HOST]... [--record-model-calls]
@@ -145,7 +144,7 @@ from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stab
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, RuleRead
-from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
+from minutehand.domain.library import DEFAULT_KNOWS, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
@@ -535,22 +534,15 @@ def _library_parser(library: argparse.ArgumentParser) -> None:
     new = actions.add_parser(LibraryAction.NEW.value, help="write library scenarios out, filled with the team's values")
     new.add_argument("names", nargs="*", metavar="name", help="the library scenarios to write (or --all)")
     new.add_argument("--all", action="store_true", help="write every library scenario")
-    new.add_argument("--goal", required=True, help="the goal handed to the agent, verbatim")
     new.add_argument(
-        "--owner", required=True, metavar="'NAME <EMAIL>'", help="who gives the goal and is told the outcome"
+        "--person", required=True, metavar="'NAME <EMAIL>'", help="the person of your world the situation is about"
     )
-    new.add_argument("--ask", required=True, metavar="'NAME <EMAIL>'", help="the person the agent must ask")
-    new.add_argument(
-        "--answer", default=None, help=f"what that person answers (default {DEFAULT_ANSWER!r}); give --tell with it"
-    )
-    new.add_argument(
-        "--tell", default=None, help=f"a phrase of the answer that must reach the owner (default {DEFAULT_TELL!r})"
-    )
+    new.add_argument("--knows", default=None, help=f"a fact that person holds (default {DEFAULT_KNOWS!r})")
     new.add_argument(
         "--other",
         default=f"{OTHER.name} <{OTHER.email}>",
         metavar="'NAME <EMAIL>'",
-        help="a second person: the delegate, the approver, someone who writes in (default %(default)s)",
+        help="a second person of your world: who covers, who decides, who writes in (default %(default)s)",
     )
     new.add_argument(
         "--credential-env",
@@ -780,12 +772,9 @@ def _first_sentence(text: str) -> str:
 
 def _shown(found: LibraryScenario) -> str:
     takes = {
-        "goal": "--goal",
-        "owner": "--owner",
-        "ask": "--ask",
+        "person": "--person",
         "other": "--other",
-        "answer": "--answer",
-        "tell": "--tell",
+        "knows": "--knows",
         "credential_env": "--credential-env",
         "provider": "--provider",
         "wakes": "--wakes",
@@ -796,11 +785,8 @@ def _shown(found: LibraryScenario) -> str:
             "",
             *textwrap.wrap(f"Situation: {found.situation}", 116),
             "",
-            *textwrap.wrap(f"A good agent: {found.good_agent}", 116),
-            "",
-            "assessed on: what the scenario declares, on every run (docs/assessments.md)",
-            f"rules: {', '.join(found.rules)} (optional team policy in the scenario's `assess`, yours to edit or delete)",
-            f"patterns: {', '.join(found.patterns)}",
+            "a world: it hands the agent no work; every run is assessed against the agent's own instructions and what "
+            "the scenario declares (docs/assessments.md)",
             f"takes: {' '.join(takes[u] for u in found.uses)}",
         ]
     )
@@ -810,30 +796,21 @@ def _new(args: argparse.Namespace) -> int:
     if args.all == bool(args.names):
         print("minutehand scenarios new: name the scenarios to write, or give --all", file=sys.stderr)
         return 2
-    if (args.answer is None) != (args.tell is None):
-        print(
-            "minutehand scenarios new: --answer and --tell go together: the tell is a phrase of the answer",
-            file=sys.stderr,
-        )
-        return 2
-    answered = {} if args.answer is None else {"answer": args.answer, "tell": args.tell}
     team = TeamValues(
-        goal=args.goal,
-        owner=Who.written(args.owner),
-        ask=Who.written(args.ask),
+        person=Who.written(args.person),
         other=Who.written(args.other),
         credential_env=args.credential_env,
         provider=args.provider,
         wakes=PlannedBy(args.wakes),
-        **answered,
+        **({} if args.knows is None else {"knows": args.knows}),
     )
     chosen = entries() if args.all else [entry(n) for n in args.names]
     for found in chosen:
         print(write(found, team, args.out, replace=args.force))
     print(
-        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>: every run is assessed "
-        "against what the scenario declares, with nothing more to write; its `assess` rules are optional team policy, "
-        "yours to edit or delete. minutehand validate <file> checks one without a run"
+        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>: the agent brings its own "
+        "work, and every run is assessed against its instructions and the world the scenario declares, with nothing "
+        "more to write. minutehand validate <file> checks one without a run"
     )
     return 0
 
