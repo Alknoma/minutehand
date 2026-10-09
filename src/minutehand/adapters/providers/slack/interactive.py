@@ -18,7 +18,8 @@ import httpx
 from pydantic import ValidationError
 
 from minutehand.adapters.providers.slack import inbound, state, wire
-from minutehand.adapters.providers.slack.app import message_actions, write_view
+from minutehand.adapters.providers.slack.app import write_view
+from minutehand.adapters.providers.slack.calls import message_actions
 from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld

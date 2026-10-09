@@ -154,6 +154,15 @@ def post_ref(key: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"post.{key}")
 
 
+def upload_ref(file: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"upload.{file}")
+
+
+def upload_url(team: str, file: str, ticket: str) -> str:
+    """Where the agent uploads a file's bytes: Slack's examples are `https://files.slack.com/upload/v1/` and an opaque key."""
+    return f"https://{FILES_HOST}/upload/v1/{team}-{file}-{ticket}"
+
+
 def pin_ref(channel: str, ts: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"pin.{channel}.{ts}")
 
@@ -206,6 +215,7 @@ def unlisted_email_ref(user: str) -> EntityRef:
 
 FILES = "files"
 SCHEDULED = "scheduled"
+UPLOADS = "uploads"
 EMAILS = "emails"
 POSTS = "posts"
 VIEWS = "views"
@@ -508,6 +518,15 @@ class SlackWorld:
     def file(self, file: str) -> wire.SlackFile | None:
         stored = self._store.get(file_ref(file))
         return None if stored is None or stored.parent != self.team.id else wire.parse(wire.SlackFile, stored.body)
+
+    def every_file(self) -> list[wire.SlackFile]:
+        """Every file of the workspace that has not been deleted, oldest first."""
+        found = [wire.parse(wire.SlackFile, s.body) for s in self._pages(EntityKind.DOCUMENT, self.team.id)]
+        return sorted(found, key=lambda f: (f.created, f.id))
+
+    def was_file(self, file: str) -> bool:
+        """Whether a file of this id once was, and is gone."""
+        return self._store.get(file_ref(file)) is None and bool(self._store.versions(file_ref(file)))
 
     # ------------------------------------------------------------------ writes
 

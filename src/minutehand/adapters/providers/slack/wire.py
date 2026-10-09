@@ -212,14 +212,37 @@ class SlackFile(Model):
     url_private: str
     url_private_download: str
     permalink: str
+    bot_id: str | None = Field(default=None, description="The bot that uploaded it, when an app did")
+    bot_user_id: str | None = None
+    alt_txt: str | None = None
+    channels: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    groups: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    ims: list[str] | None = Field(default=None, description="Computed when served by files.info and files.list")
+    comments_count: int | None = Field(default=None, description="Computed when served; the world holds no comment")
 
 
 class SlackFileContent(Model):
-    """Minutehand's own: what a file holds, served only at its `url_private`."""
+    """Minutehand's own: the bytes a file holds, exactly as they were uploaded or seeded, served only at its
+    `url_private`."""
 
     file: str
     mimetype: str
-    text: str
+    encoded: str = Field(description="The bytes, base64")
+
+
+class SlackUpload(Model):
+    """Minutehand's own: a file the agent asked an upload URL for, from the URL's answer until the upload is
+    completed."""
+
+    file: str
+    team: str
+    ticket: str
+    filename: str
+    length: int
+    user: str
+    alt_txt: str | None = None
+    uploaded: bool = False
+    completed: bool = False
 
 
 class SlackMessage(Model):
@@ -624,6 +647,54 @@ class ScheduledListArgs(ListArgs):
 class DeleteScheduledArgs(Model):
     channel: str = ""
     scheduled_message_id: str = ""
+
+
+class UploadUrlArgs(Model):
+    filename: str = ""
+    length: str = ""
+    snippet_type: str = ""
+    alt_txt: str | None = None
+
+    _parse_length = field_validator("length", mode="before")(_number_as_text)
+
+
+class UploadedFile(Model):
+    id: str
+    title: str | None = None
+    highlight_type: str | None = None
+
+
+class CompleteUploadArgs(Model):
+    files: list[UploadedFile] = []
+    channel_id: str = ""
+    channels: str = ""
+    thread_ts: str | None = None
+    initial_comment: str = ""
+    blocks: list[JsonValue] | None = None
+    username: str = ""
+    icon_url: str = ""
+    icon_emoji: str = ""
+
+    _parse_files = field_validator("files", mode="before")(_blocks_from_form)
+    _parse_blocks = field_validator("blocks", mode="before")(_blocks_from_form)
+
+
+class FileArgs(Model):
+    file: str = ""
+    cursor: str | None = None
+    limit: int = 0
+
+
+class FilesListArgs(Model):
+    channel: str = ""
+    user: str = ""
+    types: str = "all"
+    ts_from: str = ""
+    ts_to: str = ""
+    count: int = 100
+    page: int = 1
+
+    _parse_time = field_validator("ts_from", "ts_to", mode="before")(_number_as_text)
 
 
 class PermalinkArgs(Model):
@@ -1229,6 +1300,38 @@ class ScheduledItem(Model):
 class ScheduledList(Ok):
     scheduled_messages: list[ScheduledItem]
     response_metadata: ResponseMetadata
+
+
+class UploadUrl(Ok):
+    upload_url: str
+    file_id: str
+
+
+class CompletedFile(Model):
+    id: str
+    title: str
+
+
+class UploadCompleted(Ok):
+    files: list[CompletedFile]
+
+
+class FileInfo(Ok):
+    file: SlackFile
+    comments: list[JsonValue] = []
+    response_metadata: ResponseMetadata
+
+
+class Paging(Model):
+    count: int
+    total: int
+    page: int
+    pages: int
+
+
+class FilesListed(Ok):
+    files: list[SlackFile]
+    paging: Paging
 
 
 class Permalink(Ok):

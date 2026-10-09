@@ -113,14 +113,15 @@ async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.Ev
 
 
 def callback(
-    slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False
+    slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False, nth: int = 0
 ) -> wire.EventCallback:
     """The `event_callback` envelope, from the workspace `slack` is. `event_id` is fixed by the world event the push
-    reports; a second push for the same event (the `app_mention` beside a `message`) gets an id of its own."""
+    reports; a second push for the same event (the `app_mention` beside a `message`) gets an id of its own, and so
+    does the `nth` (from 1) of several one change sets off."""
     return wire.EventCallback(
         team_id=slack.team.id,
         api_app_id=slack.team.app_id,
-        event_id=f"Ev{seq:010d}{'M' if second else ''}",
+        event_id=f"Ev{seq:010d}{'M' if second else ''}{f'N{nth}' if nth else ''}",
         event_time=int(clock.now().timestamp()),
         authorizations=[wire.Authorization(team_id=slack.team.id, user_id=slack.bot)],
         event=event,

@@ -8,6 +8,7 @@ is in the first workspace every one of its members and authors belongs to."""
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta
 from typing import Annotated, ClassVar, Literal, Self
 from zoneinfo import ZoneInfo
@@ -485,7 +486,9 @@ def write_file(
     )
     slack.write(
         state.content_ref(file),
-        wire.SlackFileContent(file=file, mimetype=seeded.mime_type, text=seeded.text),
+        wire.SlackFileContent(
+            file=file, mimetype=seeded.mime_type, encoded=base64.b64encode(seeded.text.encode()).decode()
+        ),
         operation=Operation.CREATE,
         actor=actor,
         parent=state.FILES,

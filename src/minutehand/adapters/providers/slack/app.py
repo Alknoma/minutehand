@@ -16,11 +16,11 @@ Beside the Web API, on the hosts Slack serves them from (`*.slack.com`, so the s
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from pydantic import JsonValue
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
@@ -28,7 +28,8 @@ from starlette.routing import Route
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import socket_mode, state, wire
-from minutehand.adapters.providers.slack.message_calls import MessageCalls
+from minutehand.adapters.providers.slack.calls import message_actions
+from minutehand.adapters.providers.slack.file_calls import FileCalls
 from minutehand.adapters.providers.slack.methods import UNSERVED
 from minutehand.adapters.providers.slack.pushing import Listener, Pusher
 from minutehand.adapters.providers.slack.state import SlackWorld
@@ -36,9 +37,7 @@ from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import (
     Actor,
-    ControlKind,
     EntityKind,
-    MessageAction,
     MessageSnapshot,
     Operation,
     RecordSnapshot,
@@ -119,6 +118,9 @@ UNSERVED_ARGUMENTS: dict[str, dict[str, frozenset[str]]] = {
         "unfurl_media": _ON,
     },
     "chat.deleteScheduledMessage": {"as_user": _OFF},
+    "files.completeUploadExternal": {"username": _ABSENT, "icon_url": _ABSENT, "icon_emoji": _ABSENT},
+    "files.info": {"count": frozenset({"", "100"}), "page": frozenset({"", "1"}), "limit": frozenset({"", "0"})},
+    "files.list": {"show_files_hidden_by_limit": _OFF, "team_id": _ABSENT},
     "users.conversations": {"exclude_muted": _OFF},
     "users.list": {"include_locale": _OFF},
     "users.info": {"include_locale": _OFF},
@@ -154,7 +156,7 @@ def _header(request: Request, name: str) -> str | None:
     return request.headers[name] if name in request.headers else None
 
 
-class SlackApi(MessageCalls):
+class SlackApi(FileCalls):
     def __init__(
         self,
         store: Store,
@@ -201,6 +203,11 @@ class SlackApi(MessageCalls):
             "reactions.get": self.reactions_get,
             "reactions.list": self.reactions_list,
             "chat.getPermalink": self.chat_get_permalink,
+            "files.getUploadURLExternal": self.files_get_upload_url_external,
+            "files.completeUploadExternal": self.files_complete_upload_external,
+            "files.info": self.files_info,
+            "files.list": self.files_list,
+            "files.delete": self.files_delete,
             "pins.add": self.pins_add,
             "pins.remove": self.pins_remove,
             "pins.list": self.pins_list,
@@ -281,31 +288,6 @@ class SlackApi(MessageCalls):
         return socket_mode.open_connection(self._world)
 
     # ------------------------------------------------------------------ lookups
-
-    def _snapshot(self, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
-        return self._snapshot_in(self._world, channel, message)
-
-    def _snapshot_in(self, world: SlackWorld, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
-        return MessageSnapshot(
-            text=wire.visible_text(message.text, message.blocks),
-            channel=channel,
-            recipient_emails=world.human_emails(channel, besides=message.user),
-            thread_of=message.thread_ts,
-            actions=message_actions(message),
-        )
-
-    def _thread_of(self, channel: str, thread_ts: str | None) -> str | None:
-        """The thread a post with `thread_ts` goes in: the parent it names. A `thread_ts` naming a reply, or naming
-        no message, is refused by name: Slack's pages say only "Avoid using a reply's ts value; use its parent
-        instead" (https://docs.slack.dev/reference/methods/chat.postMessage) and list no error for either."""
-        if not thread_ts:
-            return None
-        parent = self._world.message(channel, thread_ts)
-        if parent is None:
-            raise NotServed(f"a thread_ts ({thread_ts}) that names no message in {channel}")
-        if parent.thread_ts is not None and parent.thread_ts != parent.ts:
-            raise NotServed(f"a thread_ts ({thread_ts}) that names a reply rather than its thread's parent")
-        return parent.ts
 
     # ------------------------------------------------------------------ auth, users
 
@@ -462,16 +444,6 @@ class SlackApi(MessageCalls):
             channel=channel if args.return_im else wire.OpenedId(id=channel.id),
         )
 
-    def _conversation(self, others: list[str], *, actor: Actor) -> tuple[wire.SlackChannel, bool]:
-        """The IM or group DM between the app and `others`, created when it does not exist yet."""
-        members = sorted({self._world.bot, *others})
-        cid = state.conversation_id(members)
-        existing = self._world.channel(cid)
-        if existing is not None:
-            return existing, False
-        channel = self._world.open_conversation(members, created=int(self._clock.now().timestamp()), actor=actor)
-        return channel, True
-
     def conversations_members(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.MembersArgs, presented)
         channel = self._channel(args.channel)
@@ -596,43 +568,6 @@ class SlackApi(MessageCalls):
         self._write_ephemeral(channel.id, message, user)
         return wire.PostedEphemeral(message_ts=message.ts)
 
-    def _from_bot(
-        self,
-        text: str,
-        blocks: list[JsonValue] | None,
-        attachments: list[JsonValue] | None,
-        thread_ts: str | None,
-        *,
-        ephemeral_to: str | None = None,
-    ) -> wire.SlackMessage:
-        return self._from_bot_in(self._world, text, blocks, attachments, thread_ts, ephemeral_to=ephemeral_to)
-
-    def _from_bot_in(
-        self,
-        world: SlackWorld,
-        text: str,
-        blocks: list[JsonValue] | None,
-        attachments: list[JsonValue] | None,
-        thread_ts: str | None,
-        *,
-        ephemeral_to: str | None = None,
-    ) -> wire.SlackMessage:
-        """A message the app posts, as Slack keeps it: its blocks given ids, and the app's bot profile on it."""
-        ts = world.next_ts(self._clock)
-        return wire.SlackMessage(
-            ts=ts,
-            user=world.bot,
-            text=text,
-            team=world.team.id,
-            bot_id=world.team.bot_id,
-            app_id=world.team.app_id,
-            thread_ts=thread_ts,
-            blocks=wire.with_ids(blocks, ts),
-            attachments=attachments,
-            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team),
-            ephemeral_to=ephemeral_to,
-        )
-
     def _write_ephemeral(self, channel: str, message: wire.SlackMessage, user: wire.SlackUser) -> None:
         self._write_ephemeral_in(self._world, channel, message, user)
 
@@ -654,12 +589,6 @@ class SlackApi(MessageCalls):
                 actions=message_actions(message),
             ),
         )
-
-    def _destination(self, channel: str) -> wire.SlackChannel:
-        """A channel id, or a member id, which Slack answers with that member's IM with the app."""
-        if channel and self._world.channel(channel) is None and self._world.user(channel) is not None:
-            return self._conversation([channel], actor=Actor.AGENT)[0]
-        return self._channel(channel)
 
     def chat_update(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.UpdateArgs, presented)
@@ -1097,7 +1026,7 @@ class SlackApi(MessageCalls):
             if "download" in request.url.path.split("/")
             else {}
         )
-        return Response(content.text.encode(), media_type=content.mimetype, headers=headers)
+        return Response(base64.b64decode(content.encoded), media_type=content.mimetype, headers=headers)
 
     # ------------------------------------------------------------------ response_url
 
@@ -1189,20 +1118,6 @@ class SlackApi(MessageCalls):
 _NOT_FOUND = "<!DOCTYPE html><html><head><title>Not found | Slack</title></head><body></body></html>"
 
 
-def message_actions(message: wire.SlackMessage) -> list[MessageAction]:
-    """The controls a reader can use on a message, as the domain names them."""
-    kinds = {"button": ControlKind.BUTTON, "users_select": ControlKind.USER_SELECT}
-    return [
-        MessageAction(
-            action_id=c.action_id,
-            label=c.label,
-            control=ControlKind.LINK if c.url is not None else kinds[c.type],
-            value=c.value,
-        )
-        for c in wire.controls(message.blocks)
-    ]
-
-
 def write_view(world: SlackWorld, shown: wire.OpenView, operation: Operation, actor: Actor) -> None:
     """A view in the store, recorded with the text it shows so the checks can read what the agent wrote in it."""
     title = shown.view.title.text if shown.view.title is not None else ""
@@ -1255,6 +1170,7 @@ def build_app(
         pusher,
         routes=[
             Route("/api/{method}", endpoint, methods=["GET", "POST"]),
+            Route("/upload/v1/{key}", api.upload, methods=["POST"]),
             Route("/files-pri/{key}/{name}", api.file, methods=["GET"]),
             Route("/files-pri/{key}/download/{name}", api.file, methods=["GET"]),
             Route("/actions/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
