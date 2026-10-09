@@ -376,14 +376,14 @@ async def fork(
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
-    if _contained(AgentUnderTest.model_validate_json((run_dir(state, parent_run) / AGENT).read_text(encoding="utf-8"))):
+    if _contained(stored_agent(run_dir(state, parent_run) / AGENT)):
         raise RunRefused(
             "a contained agent's sandbox clock cannot go back to a checkpoint, so its run cannot be forked"
         )
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
-    agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, agent, model)
@@ -516,7 +516,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
     outcome = load(state, run_id)
     directory = run_dir(state, run_id)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
-    agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
     registry = Registry.installed()
     judge = _Judge(
         scenario,
@@ -849,6 +849,22 @@ def scenario_of(state: Path, run_id: str) -> Scenario:
         entry = find(state, entry.parent_run)
 
 
+def stored_agent(path: Path) -> AgentUnderTest:
+    """A run's agent file as it was kept, read under today's model: a rule counting messages by what they convey
+    (`conveys:`, retired; every effect is now reviewed against the declared world) is left out, and an empty
+    `conveys` list dropped, so a run kept before the retirement still opens."""
+    kept = json.loads(path.read_text(encoding="utf-8"))
+    rules = []
+    for rule in kept.get("assess") or []:
+        messages = (rule.get("count") or {}).get("messages") if isinstance(rule, dict) else None
+        if isinstance(messages, dict) and messages.pop("conveys", None):
+            continue
+        rules.append(rule)
+    if "assess" in kept:
+        kept["assess"] = rules
+    return AgentUnderTest.model_validate(kept)
+
+
 def agent_of(state: Path, run_id: str) -> AgentUnderTest | None:
     """The agent file as this run played it, or its parent's for a fork still running; None for a run no agent file
     was written for (a standing world, a case)."""
@@ -856,7 +872,7 @@ def agent_of(state: Path, run_id: str) -> AgentUnderTest | None:
     while True:
         path = run_dir(state, entry.run_id) / AGENT
         if path.is_file():
-            return AgentUnderTest.model_validate_json(path.read_text(encoding="utf-8"))
+            return stored_agent(path)
         if entry.parent_run is None:
             return None
         entry = find(state, entry.parent_run)

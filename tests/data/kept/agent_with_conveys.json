@@ -1,0 +1,398 @@
+{
+ "version": 1,
+ "name": "kept_agent",
+ "goal": {
+  "kind": "by_wake"
+ },
+ "wakes": [
+  {
+   "kind": "reported",
+   "wake_url": "http://127.0.0.1:8000/wake",
+   "report_url": "http://127.0.0.1:8000/report",
+   "wake_timeout": "PT6M",
+   "report_first_after": "PT0.1S",
+   "report_at_most_every": "PT10S",
+   "working_limit": "PT30M"
+  }
+ ],
+ "tick": "PT1H",
+ "inbound": [
+  {
+   "provider": "slack",
+   "delivery": "request_url",
+   "url": "http://127.0.0.1:8000/slack/events",
+   "interactivity_url": null,
+   "secret": {
+    "kind": "generated",
+    "env": "AGENT_SLACK_SIGNING_SECRET"
+   }
+  }
+ ],
+ "inboxes": [],
+ "watches": [],
+ "checks": [],
+ "assess": [
+  {
+   "id": "never_orders_before_approval",
+   "each": "transition",
+   "where": {
+    "person": [],
+    "person_not": [],
+    "provider": [
+     "approvals"
+    ],
+    "name": [],
+    "to": [
+     "approved"
+    ],
+    "by": [],
+    "first": true
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": null,
+    "touches": null,
+    "messages": null,
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": {
+     "host": "api.orders.example",
+     "collection": "orders",
+     "values": {}
+    },
+    "replies": null,
+    "transitions": null,
+    "since": null,
+    "until": "transition-PT1S"
+   },
+   "at_least": null,
+   "at_most": 0,
+   "exactly": null,
+   "gap_at_least": null,
+   "severity": "fail",
+   "message": "an order was placed before the request was approved ({rule.count})",
+   "pattern": "act_on_the_decision"
+  },
+  {
+   "id": "never_orders_after_rejection",
+   "each": "transition",
+   "where": {
+    "person": [],
+    "person_not": [],
+    "provider": [
+     "approvals"
+    ],
+    "name": [],
+    "to": [
+     "rejected"
+    ],
+    "by": [],
+    "first": false
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": null,
+    "touches": null,
+    "messages": null,
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": {
+     "host": "api.orders.example",
+     "collection": "orders",
+     "values": {}
+    },
+    "replies": null,
+    "transitions": null,
+    "since": "transition",
+    "until": null
+   },
+   "at_least": null,
+   "at_most": 0,
+   "exactly": null,
+   "gap_at_least": null,
+   "severity": "fail",
+   "message": "an order was placed after the request was rejected",
+   "pattern": "act_on_the_decision"
+  },
+  {
+   "id": "chases_sam_at_most_twice",
+   "each": "ask",
+   "where": {
+    "person": [
+     "sam"
+    ],
+    "person_not": [],
+    "provider": [],
+    "name": [],
+    "to": [],
+    "by": [],
+    "first": false
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": {},
+    "touches": null,
+    "messages": null,
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": null,
+    "replies": null,
+    "transitions": null,
+    "since": null,
+    "until": null
+   },
+   "at_least": null,
+   "at_most": 2,
+   "exactly": null,
+   "gap_at_least": null,
+   "severity": "fail",
+   "message": "sam was followed up {rule.count} times; we chase twice at most",
+   "pattern": "budgeted_follow_up"
+  },
+  {
+   "id": "chases_sam_20h_apart",
+   "each": "ask",
+   "where": {
+    "person": [
+     "sam"
+    ],
+    "person_not": [],
+    "provider": [],
+    "name": [],
+    "to": [],
+    "by": [],
+    "first": false
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": null,
+    "touches": null,
+    "messages": {
+     "to": [
+      "person"
+     ],
+     "to_not": [],
+     "in_thread": null,
+     "holding": [],
+     "to_away": null,
+     "conveys": []
+    },
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": null,
+    "replies": null,
+    "transitions": null,
+    "since": null,
+    "until": "closed"
+   },
+   "at_least": null,
+   "at_most": null,
+   "exactly": null,
+   "gap_at_least": "PT20H",
+   "severity": "fail",
+   "message": "sam was messaged twice within 20 hours before answering",
+   "pattern": "budgeted_follow_up"
+  },
+  {
+   "id": "tells_owen_the_decision",
+   "each": "transition",
+   "where": {
+    "person": [],
+    "person_not": [],
+    "provider": [
+     "approvals"
+    ],
+    "name": [],
+    "to": [
+     "approved",
+     "rejected"
+    ],
+    "by": [
+     "person"
+    ],
+    "first": false
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": null,
+    "touches": null,
+    "messages": {
+     "to": [
+      "owner"
+     ],
+     "to_not": [],
+     "in_thread": null,
+     "holding": [],
+     "to_away": null,
+     "conveys": []
+    },
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": null,
+    "replies": null,
+    "transitions": null,
+    "since": "transition",
+    "until": null
+   },
+   "at_least": 1,
+   "at_most": null,
+   "exactly": null,
+   "gap_at_least": null,
+   "severity": "fail",
+   "message": "Owen was never told the request was {transition.to}",
+   "pattern": null
+  },
+  {
+   "id": "tells_owen_the_decision_conveyed",
+   "each": "transition",
+   "where": {
+    "person": [],
+    "person_not": [],
+    "provider": [
+     "approvals"
+    ],
+    "name": [],
+    "to": [
+     "approved",
+     "rejected"
+    ],
+    "by": [
+     "person"
+    ],
+    "first": false
+   },
+   "at": [],
+   "when": {
+    "open_at": null,
+    "answered": null,
+    "stopped": []
+   },
+   "count": {
+    "follow_ups": null,
+    "touches": null,
+    "messages": {
+     "to": [
+      "owner"
+     ],
+     "to_not": [],
+     "in_thread": null,
+     "holding": [],
+     "to_away": null,
+     "conveys": [
+      "the purchase request for the laptops was approved or rejected, and whether the order was placed"
+     ]
+    },
+    "writes": null,
+    "wakes": null,
+    "planned_wakes": null,
+    "commitments": null,
+    "asks": null,
+    "memory": null,
+    "stored": null,
+    "replies": null,
+    "transitions": null,
+    "since": "transition",
+    "until": null
+   },
+   "at_least": 1,
+   "at_most": null,
+   "exactly": null,
+   "gap_at_least": null,
+   "severity": "fail",
+   "message": "no message to Owen conveyed the decision ({transition.to})",
+   "pattern": null
+  }
+ ],
+ "fail_on_integrity": [],
+ "outbound": [
+  {
+   "host": "api.orders.example",
+   "name": "orders",
+   "body_limit": 1048576,
+   "kind": "store",
+   "collections": [
+    {
+     "path": "/v1/orders",
+     "name": null,
+     "id": {
+      "at": "id",
+      "format": "prefixed",
+      "prefix": "ord_"
+     },
+     "stamps": [
+      {
+       "at": "created_at",
+       "on": "create",
+       "format": "iso8601"
+      }
+     ],
+     "listing": {
+      "items_at": null,
+      "envelope": {},
+      "limit_param": null,
+      "default_limit": 100,
+      "cursor_param": null,
+      "next_at": null
+     },
+     "created_status": 201,
+     "deleted_status": 204
+    }
+   ],
+   "routes": [],
+   "answer": {
+    "status": 200,
+    "headers": {},
+    "json_body": null,
+    "text": null
+   }
+  }
+ ],
+ "base_urls": [],
+ "emulators": [],
+ "own_databases": []
+}
