@@ -18,8 +18,9 @@ import yaml
 
 from minutehand import cli
 from minutehand.domain.run import VerdictKind
-from minutehand.run_all import Batch, batches, free_port
+from minutehand.run_all import Batch, batches
 from minutehand.session import Played, reading
+from tests.ports import free_port
 from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
