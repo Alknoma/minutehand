@@ -250,7 +250,10 @@ def test_the_reference_agents_follow_up_answer_and_report(reference: Played) -> 
         2,
     )
     assert (answer["from_person"], answer["text"], answer["answers_seq"]) == ("rosa", REFERENCE_SAYS, ask["seq"])
-    told = [m for m in said if m["to_people"] == '["owen"]' and "RF-4410" in str(m["text"])]
+    # Owen is whom the agent's own configuration reports to, not a person of this world: the email reaches no one
+    # the scenario declares, and is still the agent's message.
+    told = [m for m in said if m["from_actor"] == "agent" and "RF-4410" in str(m["text"])]
+    assert all(m["to_people"] == "[]" for m in told)
     assert len(told) == 1 and int(str(told[0]["seq"])) > int(str(answer["seq"]))
     assert reference.rows("SELECT wake, reason, woken_by, reported_status FROM wakes ORDER BY wake") == [
         {"wake": 1, "reason": "start", "woken_by": None, "reported_status": "idle"},

@@ -1,5 +1,5 @@
-"""The scenario library: the situations every proactive agent meets, shipped inside the package (`minutehand/library/`,
-one YAML file each), listed, and written out with one team's values filled in.
+"""The scenario library: situations in the world every proactive agent meets, shipped inside the package
+(`minutehand/library/`, one YAML file each), listed, and written out with one team's people filled in.
 
 A written-out scenario is an ordinary scenario file, headed by a comment saying what it is for; the team owns it from
 then on and may edit it like any other.
@@ -67,11 +67,9 @@ def header(found: LibraryScenario) -> str:
     paragraphs = [
         f"{found.name}, from the Minutehand scenario library (`minutehand scenarios show {found.name}`).",
         f"Situation: {found.situation}",
-        f"A good agent: {found.good_agent}",
-        "Every run of it is assessed against what it declares below (its people, their windows, the deadline), with "
-        "nothing more to write (docs/assessments.md).",
-        f"Optional team policy (in `assess` below, yours to edit or delete): {', '.join(found.rules)}. Patterns: "
-        f"{', '.join(found.patterns)}.",
+        "A world: it hands the agent no work. The agent brings its own (its prompt, the state and items it sets), and "
+        "every run is assessed against its instructions and what this file declares, with nothing more to write "
+        "(docs/assessments.md).",
     ]
     lines: list[str] = []
     for paragraph in paragraphs:

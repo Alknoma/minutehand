@@ -472,3 +472,21 @@ def test_the_report_says_what_each_finding_is_and_what_it_was_measured_against()
     assert said[0].startswith("  refused_move: POST /v1/requests/req_64/resubmit to approvals was refused 400")
     assert said[1].startswith("    violation, measured against the service approvals's machine (approve: pending")
     assert said[1].endswith("(seq 288; call 76)")
+
+
+def test_messages_sent_through_a_declared_send_only_host_are_assessed_as_its_kind_of_item() -> None:
+    """An agent that emails through its own mail API (an `acknowledge` host reading each send as a message) has its
+    messages assessed like any provider's: the same email twice with nothing said between is a duplicate."""
+    rosa = person("rosa", Silent())
+    log = Log()
+    log.message([rosa], 1, "Could you confirm the booking?")
+    log.message([rosa], 13, "Could you confirm the booking?")
+    built = view(scenario(person("owner"), rosa), log)
+    messengers = {"chat": ItemKind.EMAIL}  # the log's messages are recorded under the host's key, "chat"
+
+    typed = typed_items(built.events, built.scenario, {}, {}, None, (), messengers)
+    assessed = built.model_copy(update={"typed": typed, "item_types": provided_types([], messengers)})
+
+    assert [t.kind for t in typed] == [ItemKind.EMAIL, ItemKind.EMAIL]
+    assert ("duplicate", "fail") in _checks(assessed)
+    assert typed_items(built.events, built.scenario, {}, {}, None, ()) == [], "undeclared, it is no item of any kind"

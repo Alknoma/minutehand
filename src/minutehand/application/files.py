@@ -216,10 +216,12 @@ def schema(kind: FileKind) -> dict[str, object]:
 
 
 def kind_of(raw: object) -> FileKind:
-    """What a file is from what it holds: people and a goal make a scenario, people alone a seed, anything else an
-    agent file."""
+    """What a file is from what it holds: people and a window to watch the agent for (`runs_for`) make a scenario, as
+    do people and an older scenario's goal and owner; people alone a seed, a standing world's; anything else an agent
+    file."""
     if isinstance(raw, dict) and "people" in raw:
-        return FileKind.SCENARIO if "goal" in raw and "owner" in raw else FileKind.SEED
+        run = "runs_for" in raw or ("goal" in raw and "owner" in raw)
+        return FileKind.SCENARIO if run else FileKind.SEED
     return FileKind.AGENT
 
 

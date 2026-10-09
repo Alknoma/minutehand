@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from datetime import timedelta
 
 from minutehand.domain.agent import AgentUnderTest, Polled
-from minutehand.domain.items import BUILT_IN, ItemKind, ProvidedTypes, TypedItem, read_as
+from minutehand.domain.items import BUILT_IN, CHAT_MESSAGE, EMAIL, ItemKind, ProvidedTypes, TypedItem, read_as
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.transitions import move_of
@@ -16,6 +16,7 @@ from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
+    MessageSnapshot,
     Operation,
     RecordedCall,
     ServiceEventSnapshot,
@@ -36,6 +37,7 @@ def typed_items(
     typers: Mapping[ProviderKey, TypesItems],
     world: Store | None,
     calls: Sequence[RecordedCall] = (),
+    messengers: Mapping[ProviderKey, ItemKind] | None = None,
 ) -> list[TypedItem]:
     """Every write in `events`, by anyone, that is an item of a kind its holder declares, read as that item: a
     declared service's moves and writes as its items, a declared store's writes as its records, and everything else
@@ -66,6 +68,8 @@ def typed_items(
             typed = read_as(event, ItemKind.SERVICE_ITEM)
         elif isinstance(after, StoredSnapshot) or event.entity.kind is EntityKind.STORED:
             typed = read_as(event, ItemKind.STORED_RECORD)
+        elif messengers and key in messengers and isinstance(after, MessageSnapshot):
+            typed = read_as(event, messengers[key])
         elif key in typers:
             typed = typers[key].typed(event, world) if world is not None else None
         elif key in manifests:
@@ -83,11 +87,17 @@ def typed_items(
     return found
 
 
-def provided_types(manifests: Sequence[Manifest]) -> list[ProvidedTypes]:
-    """The item types each provider declares, and the built-in ones of declared services and stores."""
-    return [ProvidedTypes(provider=m.key, types=m.item_types) for m in manifests if m.item_types] + [
-        ProvidedTypes(provider="", types=BUILT_IN)
-    ]
+def provided_types(
+    manifests: Sequence[Manifest], messengers: Mapping[ProviderKey, ItemKind] | None = None
+) -> list[ProvidedTypes]:
+    """The item types each provider declares, each declared send-only host's messages (`messengers`) as emails or chat
+    messages, and the built-in ones of declared services and stores."""
+    kinds = {t.kind: t for t in (EMAIL, CHAT_MESSAGE)}
+    return (
+        [ProvidedTypes(provider=m.key, types=m.item_types) for m in manifests if m.item_types]
+        + [ProvidedTypes(provider=key, types=[kinds[kind]]) for key, kind in (messengers or {}).items()]
+        + [ProvidedTypes(provider="", types=BUILT_IN)]
+    )
 
 
 def rhythm(agent: AgentUnderTest) -> timedelta | None:
