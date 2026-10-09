@@ -692,6 +692,11 @@ class Mail:
                 changed.append((stored.seq, wire.dump(self._shown(request, mail.message))))
             elif since and self._was_in(stored.entity.external_id, folder, since):
                 changed.append((stored.seq, json.dumps({"id": mail.message.id, "@removed": {"reason": "deleted"}})))
+        if since:
+            for seq, gone, history in self._world.removed_mail(owner.user.id, since):
+                before = [v for v in history if v.seq <= since]
+                if before and wire.parse(wire.StoredMail, before[-1].body).folder is folder:
+                    changed.append((seq, json.dumps({"id": gone, "@removed": {"reason": "deleted"}})))
         changed.sort(key=lambda pair: pair[0])
         prefer = request.headers["prefer"] if "prefer" in request.headers else ""
         wanted = re.search(r"odata\.maxpagesize\s*=\s*(\d+)", prefer)

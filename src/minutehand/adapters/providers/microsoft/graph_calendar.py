@@ -21,6 +21,9 @@ reply's moment.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import operator
 import re
 from collections.abc import Callable
@@ -74,6 +77,7 @@ from minutehand.ports.clock import Clock
 PAGE_DEFAULT = 10
 PAGE_MAX = 1000
 EVENT_TYPE = "#Microsoft.Graph.Event"
+EVENT_DELTA_TYPE = "#microsoft.graph.event"
 CALENDAR_SEGMENTS = frozenset({"events", "calendar", "calendars", "calendarView", "findMeetingTimes"})
 NEVER = "0001-01-01T00:00:00Z"
 
@@ -179,6 +183,8 @@ class Calendar:
             return await self._schedule(request, owner)
         if rest == ["calendarView"] and method == "GET":
             return self._view(request, owner)
+        if rest in (["calendarView", "delta"], ["calendarView", "delta()"]) and method == "GET":
+            return self._delta(request, owner)
         if rest == ["events"] and method == "GET":
             return self._listed(request, owner, self.visible(owner), "events")
         if rest == ["events"] and method == "POST":
@@ -304,6 +310,78 @@ class Calendar:
         start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
         inside = [e for e in self.visible(owner) if e.starts < end and e.ends > start]
         return self._listed(request, owner, inside, "calendarView")
+
+    # ------------------------------------------------------------------ delta
+
+    @staticmethod
+    def _delta_token(since: int, offset: int, start: datetime, end: datetime) -> str:
+        text = "|".join([str(since), str(offset), start.isoformat(), end.isoformat()])
+        return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _delta_state(token: str) -> tuple[int, int, datetime, datetime]:
+        try:
+            since, offset, start, end = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().split("|")
+            return int(since), int(offset), datetime.fromisoformat(start), datetime.fromisoformat(end)
+        except (binascii.Error, ValueError, UnicodeDecodeError) as e:
+            raise GraphRefusal(400, "invalidRequest", "The delta or skip token is not valid.") from e
+
+    def _delta(self, request: Request, owner: UserRecord) -> Response:
+        """`calendarView/delta`: the events in the window, paged by `$skiptoken` to a `@odata.deltaLink`; then the
+        events changed since. An event outside the window that was added, deleted or updated, and one deleted, is
+        `@removed` with the reason `deleted` (event-delta)."""
+        for option in ("$select", "$filter", "$orderby", "$search", "$expand", "$top", "$skip", "$count"):
+            if option in request.query_params:
+                raise NotServed(f"{option} on a calendar view delta: the page lists it unsupported or documents none")
+        token = query(request, "$skiptoken") or query(request, "$deltatoken")
+        if token:
+            since, offset, start, end = self._delta_state(token)
+        else:
+            since, offset = 0, 0
+            start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
+        changed: list[tuple[int, str]] = []
+        for seq, stored in self._world.event_versions():
+            if seq <= since or not self._sees(owner, stored):
+                continue
+            if stored.starts < end and stored.ends > start:
+                shown = self.seen_by(stored, owner, request)
+                changed.append((seq, json.dumps({"@odata.type": EVENT_DELTA_TYPE, **json.loads(wire.dump(shown))})))
+            elif since:
+                changed.append((seq, self._removed(stored)))
+        if since:
+            changed.extend(
+                (seq, self._removed(stored))
+                for seq, stored in self._world.removed_events(since)
+                if self._sees(owner, stored)
+            )
+        changed.sort(key=lambda pair: pair[0])
+        prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+        wanted = re.search(r"odata\.maxpagesize\s*=\s*(\d+)", prefer)
+        size = max(1, int(wanted.group(1))) if wanted else PAGE_DEFAULT
+        link = f"{GRAPH}/users/{owner.user.id}/calendarView/delta"
+        if offset + size < len(changed):
+            following = self._delta_token(since, offset + size, start, end)
+            closing = f'"@odata.nextLink":{json.dumps(f"{link}?$skiptoken={following}")}'
+        else:
+            done = self._delta_token(self._world.store.head(), 0, start, end)
+            closing = f'"@odata.deltaLink":{json.dumps(f"{link}?$deltatoken={done}")}'
+        body = (
+            "{"
+            + f'"@odata.context":{json.dumps(f"{GRAPH}/$metadata#Collection(event)")},'
+            + closing
+            + ',"value":['
+            + ",".join(item for _, item in changed[offset : offset + size])
+            + "]}"
+        )
+        self._world.saw(user_ref(owner.user.id), Operation.SEARCH)
+        return Response(body, media_type=GRAPH_JSON, headers=preference_applied(request))
+
+    def _sees(self, user: UserRecord, stored: wire.StoredEvent) -> bool:
+        return stored.organizer_id == user.user.id or self.attends(stored, user) is not None
+
+    @staticmethod
+    def _removed(stored: wire.StoredEvent) -> str:
+        return json.dumps({"@odata.type": EVENT_DELTA_TYPE, "id": stored.event.id, "@removed": {"reason": "deleted"}})
 
     # ------------------------------------------------------------------ making and changing
 

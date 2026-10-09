@@ -501,6 +501,8 @@ class TeamsGraph:
         roots = [m for m in every if not channel or m.replyToId is None]
         if request.method == "POST":
             return await self._post(request, conversation, rest, every, context)
+        if rest in (["delta"], ["delta()"]):
+            return self._delta(request, conversation, context)
 
         def modified(m: wire.Activity) -> str:
             return m.localTimestamp or m.timestamp
@@ -747,6 +749,62 @@ class TeamsGraph:
             status_code=201,
             media_type=GRAPH_JSON,
         )
+
+    # ------------------------------------------------------------------ messages, delta
+
+    @staticmethod
+    def _delta_token(*numbers: int) -> str:
+        return base64.urlsafe_b64encode("|".join(str(n) for n in numbers).encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _delta_numbers(token: str) -> tuple[int, int, int]:
+        try:
+            since, offset, size = (
+                int(n) for n in base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().split("|")
+            )
+        except (binascii.Error, ValueError, UnicodeDecodeError) as e:
+            raise bad_request("The delta or skip token is not valid.") from e
+        return since, offset, size
+
+    def _delta(self, request: Request, conversation: ConversationRecord, context: str) -> Response:
+        """`messages/delta`: every message, paged by `$skiptoken` to a `@odata.deltaLink`, then the messages posted
+        or changed since; a channel's replies are left to the replies operations (chatmessage-delta)."""
+        for option in request.query_params:
+            if option not in ("$top", "$skiptoken", "$deltatoken"):
+                raise NotServed(f"{option} on a message delta: only $top and the state tokens are served")
+        channel = conversation.type is wire.ConversationType.CHANNEL
+        token = query(request, "$skiptoken") or query(request, "$deltatoken")
+        top = query(request, "$top")
+        if token:
+            since, offset, size = self._delta_numbers(token)
+        else:
+            if top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX):
+                raise NotServed(f"$top={top}: the page names an upper limit of {PAGE_MAX}, and no answer to more")
+            since, offset, size = 0, 0, int(top) if top else PAGE_DEFAULT
+        changed = sorted(
+            (seq, m)
+            for seq, m in self._world.message_versions(conversation.id)
+            if seq > since and (not channel or m.replyToId is None)
+        )
+        page = changed[offset : offset + size]
+        link = f"{GRAPH}{re.sub(r'/delta(\(\))?$', '/delta', request.url.path.removeprefix('/v1.0'))}"
+        if offset + size < len(changed):
+            closing = (
+                f'"@odata.nextLink":{json.dumps(f"{link}?$skiptoken={self._delta_token(since, offset + size, size)}")}'
+            )
+        else:
+            closing = f'"@odata.deltaLink":{json.dumps(f"{link}?$deltatoken={self._delta_token(self._world.store.head(), 0, size)}")}'
+        body = (
+            "{"
+            + f'"@odata.context":{json.dumps(f"{GRAPH}/$metadata#Collection(microsoft.graph.chatMessage)")},'
+            + closing
+            + ',"value":['
+            + ",".join(wire.dump(chat_message(self._world, conversation, m)) for _, m in page)
+            + "]}"
+        )
+        del context
+        self._world.saw(conversation_ref(conversation.id), Operation.READ)
+        return Response(body, media_type=GRAPH_JSON)
 
     @staticmethod
     def _kept(asked: wire.PostedChatMessage) -> wire.GraphPosted:

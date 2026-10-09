@@ -226,6 +226,7 @@ ASKED_AS_DOCUMENTED = {
     "/drives/{drive-id}/items/{driveItem-id}/delta()": "the root: https://learn.microsoft.com/en-us/graph/api/driveitem-delta",
     "/drives/{drive-id}/items/{driveItem-id}/children": "a folder: https://learn.microsoft.com/en-us/graph/api/driveitem-list-children",
     "/me/calendarView": "a window: https://learn.microsoft.com/en-us/graph/api/user-list-calendarview",
+    "/me/calendarView/delta()": "a window: https://learn.microsoft.com/en-us/graph/api/event-delta",
 }
 """Served operations called the way their page documents them, where calling them otherwise is refused by name."""
 
@@ -236,6 +237,8 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path = path.replace(f"/items/{surface.ids['driveItem-id']}/", "/items/root/")
     if template.endswith("calendarView"):
         path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z&$orderby=start/dateTime"
+    elif template.endswith("calendarView/delta()"):
+        path += "?startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z"
     elif method == "GET" and template.endswith("/events"):
         path += "?$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/messages") and template.startswith(("/me", "/users")):

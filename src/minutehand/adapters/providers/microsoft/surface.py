@@ -71,6 +71,7 @@ _USER = [
     ("GET", "/calendars"),
     ("POST", "/calendar/getSchedule"),
     ("GET", "/calendarView"),
+    ("GET", "/calendarView/delta()"),
     ("GET", "/calendar/calendarView"),
     *(
         operation
@@ -106,6 +107,7 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
         ("GET", _CHANNEL),
         ("GET", f"{_CHANNEL}/members"),
         ("GET", f"{_CHANNEL}/messages"),
+        ("GET", f"{_CHANNEL}/messages/delta()"),
         ("POST", f"{_CHANNEL}/messages"),
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}"),
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies"),
@@ -115,6 +117,7 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/chats/{chat-id}"),
         ("GET", "/chats/{chat-id}/members"),
         ("GET", "/chats/{chat-id}/messages"),
+        ("GET", "/chats/{chat-id}/messages/delta()"),
         ("POST", "/chats/{chat-id}/messages"),
         ("GET", "/chats/{chat-id}/messages/{chatMessage-id}"),
         ("GET", "/sites"),
