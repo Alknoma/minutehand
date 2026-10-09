@@ -1,0 +1,147 @@
+"""People act on GitHub issues through the one port (`docs/design-transitions.md`): an open issue assigned to a person
+is pending on them; at their moment they close it, with their comment and the reason GitHub takes, as themselves, and
+the move is recorded once as theirs. Nobody is offered a move GitHub would refuse them."""
+
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+from minutehand.adapters.providers.github import wire
+from minutehand.adapters.providers.github.provider import GitHubProvider, build
+from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application.run_clock import RunClock
+from minutehand.domain.scenario import Scenario, Take
+from minutehand.domain.world import Actor, EntityKind, EntityRef, PendingStatus, TransitionSnapshot
+from minutehand.ports.store import Store
+from tests.providers.github.github_world import PEOPLE, SCENARIO, START, tracker_seed
+from tests.support.people import people_engine, people_model
+
+IRIS, TOMAS = PEOPLE
+
+
+def _played(take: str, *, nth: int | None = None, verbatim: str | None = "Handled.") -> Scenario:
+    """The scenario with the engine playing GitHub, and Tomas's first move pinned to `take` two hours after it waits."""
+    pinned = Take(provider="github", take=take, nth=nth, after=timedelta(hours=2), verbatim=verbatim)
+    people = [p.model_copy(update={"takes": [pinned]}) if p.key == "tomas" else p for p in SCENARIO.people]
+    return SCENARIO.model_copy(update={"transitions_on": ["github"], "people": people})
+
+
+def _world(tmp_path: Path, scenario: Scenario) -> tuple[GitHubProvider, SqliteStore, RunClock]:
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "w.db", "w", clock)
+    provider = build()
+    provider.seed_with(tracker_seed(), scenario, store)
+    return provider, store, clock
+
+
+def _moves(store: Store) -> list[TransitionSnapshot]:
+    return [e.after for e in store.events() if isinstance(e.after, TransitionSnapshot)]
+
+
+def _ref(number: int) -> EntityRef:
+    return EntityRef(provider="github", kind=EntityKind.RECORD, external_id=f"issue/lanternworks/ledger/{number:010d}")
+
+
+async def test_an_open_issue_assigned_to_a_person_is_pending_and_a_pinned_close_lands_as_theirs(tmp_path: Path) -> None:
+    scenario = _played("close")
+    provider, store, clock = _world(tmp_path, scenario)
+    engine = people_engine(scenario, {"github": provider}, people_model())
+
+    # Issue 3 is Tomas's; issue 1 is Iris's, who cannot close it (below); issue 2 is closed; the pull request is
+    # nobody's assignment. Mutation: dropping the open-state or the pull request filter books more.
+    booked = (await engine.look(store, clock)).booked
+    assert [(b.person, b.item.external_id) for b in booked] == [
+        ("iris", "issue/lanternworks/ledger/0000000001"),
+        ("tomas", "issue/lanternworks/ledger/0000000003"),
+    ]
+    [mine] = [b for b in booked if b.person == "tomas"]
+    assert mine.at == START + timedelta(hours=2)
+    assert [o.name for o in provider.legal(mine.item, Actor.PERSON, TOMAS, store)] == ["close"]
+
+    clock.jump(START + timedelta(hours=2))
+    acted = await engine.act(mine.pending, store, clock)
+
+    assert acted.transition is not None
+    [moved] = [m for m in _moves(store) if m.who == "tomas"]
+    assert (moved.name, moved.from_state, moved.to_state) == ("close", "open", "closed")
+    assert json.loads(moved.content) == {"comment": "Handled."}
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    issue = github.issue(repository, 3)
+    assert issue is not None and issue.state is wire.IssueState.CLOSED
+    assert (issue.closed_by, issue.closed_at, issue.state_reason) == ("tomas-b", "2026-08-24T12:50:03Z", None)
+    comments = [c for c in github.comments(repository) if c.issue == 3]
+    assert [(c.author, c.body) for c in comments] == [("tomas-b", "Handled.")]
+    assert engine.pending(mine.pending, store).status is PendingStatus.ACTED
+    assert provider.items_for(TOMAS, store) == [], "closed: it no longer waits on them"
+    people = [e for e in store.events() if e.entity.external_id.startswith("issue/") and e.actor is Actor.PERSON]
+    assert len(people) == 2, "the comment moves the issue's update time, then the close"
+
+
+def test_nobody_is_offered_a_move_github_would_refuse_them(tmp_path: Path) -> None:
+    """Documented: "Issue owners and users with push access or Triage role can edit an issue".
+    https://docs.github.com/en/rest/issues/issues#update-an-issue. Iris reads the ledger as an organization member and
+    did not open issue 1; Tomas pushes."""
+    provider, store, _ = _world(tmp_path, SCENARIO)
+    assert provider.legal(_ref(1), Actor.PERSON, IRIS, store) == []
+    assert [o.name for o in provider.legal(_ref(1), Actor.PERSON, TOMAS, store)] == ["close"]
+    # Mutation: dropping the role check offers Iris the close.
+    assert [o.name for o in provider.legal(_ref(3), Actor.PERSON, IRIS, store)] == ["close"], "her own issue"
+    assert [o.name for o in provider.legal(_ref(2), Actor.PERSON, TOMAS, store)] == ["reopen"]
+    assert provider.legal(_ref(4), Actor.PERSON, TOMAS, store) == [], "a pull request is reviewed, not closed, here"
+
+
+async def test_a_close_names_why_it_was_closed_and_only_as_github_takes(tmp_path: Path) -> None:
+    provider, store, clock = _world(tmp_path, SCENARIO)
+    content = json.dumps({"comment": "Not doing this.", "state_reason": "not_planned"})
+    moved = await provider.apply(_ref(3), "close", Actor.PERSON, TOMAS, content, store, clock)
+    assert (moved.name, moved.to_state, moved.who, moved.by) == ("close", "closed", "tomas", Actor.PERSON)
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    issue = github.issue(repository, 3)
+    assert issue is not None and issue.state_reason is wire.StateReason.NOT_PLANNED
+    with pytest.raises(ValueError, match="offers tomas no 'close'"):
+        await provider.apply(_ref(3), "close", Actor.PERSON, TOMAS, "{}", store, clock)
+
+
+@pytest.mark.parametrize(
+    ("content", "complaint"),
+    [
+        (json.dumps({"state_reason": "duplicate"}), "completed or not_planned"),
+        (json.dumps({"labels": "bug"}), "takes no such field"),
+    ],
+    ids=["duplicate", "unknown-field"],
+)
+async def test_a_close_with_a_reason_or_field_github_does_not_take_here_is_refused(
+    tmp_path: Path, content: str, complaint: str
+) -> None:
+    provider, store, clock = _world(tmp_path, SCENARIO)
+    with pytest.raises(ValueError, match=complaint):
+        await provider.apply(_ref(3), "close", Actor.PERSON, TOMAS, content, store, clock)
+    assert _moves(store) == []
+
+
+async def test_a_reopen_puts_the_issue_back_and_clears_who_closed_it(tmp_path: Path) -> None:
+    provider, store, clock = _world(tmp_path, SCENARIO)
+    moved = await provider.apply(
+        _ref(2), "reopen", Actor.PERSON, TOMAS, json.dumps({"comment": "Again."}), store, clock
+    )
+    assert (moved.from_state, moved.to_state) == ("closed", "open")
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    issue = github.issue(repository, 2)
+    assert issue is not None
+    assert (issue.state, issue.closed_at, issue.closed_by, issue.state_reason) == (
+        wire.IssueState.OPEN,
+        None,
+        None,
+        None,
+    )

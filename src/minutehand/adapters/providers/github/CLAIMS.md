@@ -9,7 +9,11 @@ authors saw it and no recording is held: each of those needs a credential to rec
 a call without one) and is unproven. Tests are in `tests/providers/github/`, files
 `test_github_vendor_claims_rest.py` (R), `test_github_vendor_claims_search.py` (S),
 `test_github_vendor_claims_graphql.py` (G), `test_github_vendor_claims_budget.py` (B), `test_github_refusals.py`
-(F), `test_github_coverage.py` (C) and `test_github_world_without_users.py` (W).
+(F), `test_github_coverage.py` (C), `test_github_world_without_users.py` (W), and, for what the agent writes,
+`test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E) and
+`tests/transitions/test_github_people.py` (T). **Observed** means the same of a capture committed under `tests/data/`:
+`tests/data/github_rest/observed-2026-10-09.json` holds read-only exchanges with public repositories, trimmed to what
+a claim rests on and holding no login or free text of anyone.
 
 Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Every `Authorization`, or none, is accepted, and nothing refuses a call
 for what a token was or was not issued for. The claims GitHub documents about refusing credentials are listed
@@ -86,6 +90,59 @@ under "What GitHub would refuse" below, with the tests that hold the provider to
 | A body with no string `query` is 400 | documented | G `test_a_body_without_a_query_is_refused_400` | https://docs.github.com/en/graphql/guides/forming-calls-with-graphql |
 | …and the message says a query attribute must be specified | observed, not recorded | (same test) | |
 
+## Issues, comments and labels
+
+What an agent writes is kept and answered as sent (titles, bodies, label names, comments); what GitHub assigns is
+made. Rows are written from the reference's pages and the committed description
+(`tests/providers/github/openapi/api.github.com.subset.json`); a detail the reference leaves out is refused by name
+(below) or taken from the capture above and said so.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A repository's issues list only the open ones by default, newest created first; a pull request is an issue and is marked by `pull_request` | documented | I `test_issues_list_the_open_ones_newest_first_and_mark_the_pull_request` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| `state` is open, closed or all; `labels` (comma separated, all must be on the issue), `assignee` (a login, `none`, `*`) and `creator` filter | documented | I `test_issues_filter_by_state`, I `test_issues_filter_by_labels_assignee_and_creator` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| `sort` is created, updated or comments and `direction` asc or desc (desc by default) | documented | I `test_issues_sort_by_created_updated_or_comments_in_either_direction` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| `milestone` and `type` take `none` for issues with none and `*` for issues with one; no issue here has either | documented | I `test_the_milestone_and_type_filters_follow_from_a_world_with_neither` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| `since` keeps issues updated at or after it (inclusive) | observed | I `test_issues_since_keeps_those_updated_at_or_after_it` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A comment on an issue moves its `updated_at` to the comment's moment | observed | K `test_commenting_moves_the_issue_update_time` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A pull request on the "Issues" routes has `html_url` under `/pull/` and `pull_request` with `url`, `html_url`, `diff_url`, `patch_url`, `merged_at` | observed | I `test_issues_list_the_open_ones_newest_first_and_mark_the_pull_request`, K `test_a_pull_requests_conversation_is_commented_on_through_the_issue_routes` | `tests/data/github_rest/observed-2026-10-09.json` |
+| An issue holds `state_reason`, `closed_by`, `locked`, `active_lock_reason`, `assignees`, `milestone: null` and the `*_url` fields; the provider answers them from the world | observed | I `test_an_issue_reads_with_the_urls_and_counts_github_assigns` | `tests/data/github_rest/observed-2026-10-09.json` |
+| An issue and a comment are 404 when they or their repository are not there or not visible | documented | I `test_an_issue_that_is_not_there_and_a_repository_the_caller_cannot_see_are_both_404` | https://docs.github.com/en/rest/issues/issues#get-an-issue |
+| Creating an issue answers 201 with the issue; title and body come back as sent, `title` taking a string or an integer | documented | I `test_an_issue_the_agent_opens_is_kept_and_returned_as_sent`, I `test_a_whole_number_title_is_kept_as_its_text` | https://docs.github.com/en/rest/issues/issues#create-an-issue |
+| "Only users with push access can set labels [and assignees] for new issues. [They are] silently dropped otherwise." | documented | I `test_labels_and_assignees_are_dropped_silently_without_push_access` | https://docs.github.com/en/rest/issues/issues#create-an-issue |
+| `labels` takes names or objects with a `name`; `assignee` is accepted beside `assignees` | documented | I `test_labels_may_be_objects_with_a_name_and_an_assignee_may_stand_for_assignees` | https://docs.github.com/en/rest/issues/issues#create-an-issue |
+| Omitting a required parameter, or giving one the wrong type, is 422 "Invalid request" | documented | I `test_a_request_without_a_title_or_with_the_wrong_type_is_422_invalid_request` | https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#invalid-request |
+| A body that is not JSON is 400 "Problems parsing JSON", and one that is not an object 400 "Body should be a JSON object" | documented | I `test_a_body_that_is_not_json_or_not_an_object_is_400` | https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#problems-parsing-json |
+| Updating an issue takes `state` (open, closed); closing sets `closed_at` and `closed_by`, reopening clears them; `state_reason` is "Ignored unless `state` is changed" | documented | I `test_an_issue_closed_and_reopened_records_who_when_and_why`, I `test_a_state_reason_is_ignored_unless_the_state_changes` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+| Updating replaces `labels` and `assignees` with what is sent and `[]` clears them; without push access those changes are silently dropped | documented | I `test_labels_and_assignees_replace_the_set_and_an_empty_array_clears_it`, I `test_label_and_assignee_changes_without_push_access_are_dropped_silently` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+| "Issue owners and users with push access or Triage role can edit an issue"; the reference documents 403 for the refusal and names it "Forbidden" (it gives no message, so the answer's message is that name) | documented | I `test_only_the_author_or_a_triager_may_edit_an_issue` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+| Locking takes push access, answers 204, and takes a `lock_reason` of off-topic, too heated, resolved or spam; unlocking answers 204 | documented | I `test_a_conversation_is_locked_with_a_reason_and_unlocked`, I `test_locking_takes_push_access_and_a_reason_from_the_reference` | https://docs.github.com/en/rest/issues/issues#lock-an-issue |
+| Only collaborators can comment on a locked conversation | documented | I `test_commenting_on_a_locked_conversation_without_push_access_is_refused_by_name` | https://docs.github.com/en/communities/moderating-comments-and-conversations/locking-conversations |
+| One sequence numbers a repository's issues and pull requests | documented | E `test_a_seed_that_github_could_never_hold_is_refused` | https://docs.github.com/en/rest/issues/issues#list-repository-issues |
+| An author is associated with the repository as its OWNER, a MEMBER of the owning organization, a COLLABORATOR, a CONTRIBUTOR (has committed) or NONE | documented | I `test_an_issue_reads_with_the_urls_and_counts_github_assigns`, K `test_a_comment_is_kept_and_returned_as_sent` | https://docs.github.com/en/graphql/reference/enums#commentauthorassociation |
+| Creating an issue comment answers 201, listing orders by ascending id and takes `since`, updating answers 200, deleting 204 | documented | K `test_a_comment_is_kept_and_returned_as_sent`, K `test_comments_list_by_ascending_id_and_the_issue_counts_them`, K `test_a_comment_is_edited_and_deleted_and_the_edit_moves_its_update_time` | https://docs.github.com/en/rest/issues/comments#create-an-issue-comment |
+| A repository's comments list by ascending id, or by `sort` (created, updated) and `direction` | documented | K `test_a_repositorys_comments_list_by_id_or_sorted_with_a_direction` | https://docs.github.com/en/rest/issues/comments#list-issue-comments-for-a-repository |
+| An issue comment on a pull request has `html_url` under `/pull/` and `issue_url` the issue's | observed | K `test_a_pull_requests_conversation_is_commented_on_through_the_issue_routes` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A repository's labels list alphabetically by name, upper and lower case together, whatever their ids | observed | K `test_labels_list_alphabetically_by_name_case_aside` | `tests/data/github_rest/observed-2026-10-09.json` |
+| A label's `url` encodes its name: a space is `%20`, a colon is left as it is | observed | K `test_a_label_is_created_kept_as_sent_and_found_by_name` | `tests/data/github_rest/observed-2026-10-09.json` |
+| Creating a label answers 201; a name that is taken is 422 `already_exists` ("such as label names"); the color is six hexadecimal digits and the description 100 characters or fewer | documented | K `test_a_label_is_created_kept_as_sent_and_found_by_name`, K `test_a_label_name_that_is_taken_is_422_already_exists`, K `test_a_label_with_a_color_or_description_outside_the_reference_is_422_invalid` | https://docs.github.com/en/rest/issues/labels#create-a-label |
+| A label is never archived: `archived_at` and `archived_by` are null ("or `null` if it has not been archived") | documented | C `test_a_served_operation_answers_every_field_the_description_requires` | https://docs.github.com/en/rest/issues/labels#get-a-label |
+| Adding labels returns the issue's labels, setting replaces them, removing one returns what remains, removing all answers 204; an array of names, an array of `{name}` and an object with `labels` all stand | documented | K `test_labels_are_added_set_listed_and_removed_on_an_issue` | https://docs.github.com/en/rest/issues/labels#add-labels-to-an-issue |
+| Removing a label the issue does not carry is 404 ("returns a `404 Not Found` status if the label does not exist") | documented | K `test_removing_a_label_the_issue_does_not_carry_is_404` | https://docs.github.com/en/rest/issues/labels#remove-a-label-from-an-issue |
+| An open issue assigned to a person waits on them; the issue's author and those with triage access or more may close it, and reopen it once closed; each is one move of its state in the log | documented | T `test_an_open_issue_assigned_to_a_person_is_pending_and_a_pinned_close_lands_as_theirs`, T `test_nobody_is_offered_a_move_github_would_refuse_them`, I `test_an_issue_opened_closed_and_reopened_by_the_agent_is_three_moves_of_its_state` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+| A person closes an issue as completed or not planned; `duplicate` names the issue it duplicates, which a person is not offered | documented | T `test_a_close_names_why_it_was_closed_and_only_as_github_takes` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+
+### Refused by name
+
+Each of these is the reference's, not served, and answered 501 naming the parameter: the `mentioned` and
+`issue_field_values` filters of the issue list; `milestone` (when it names one), `type`, `parent_issue_id`,
+`issue_field_values` and `duplicate_issue_id` when sent with a value; an assignee who is not a user with a role on the
+repository ("available assignees" is all the reference says); a label name the repository has not defined (the
+reference does not say what GitHub does with one); a label created without a `color` (the reference's text calls it
+required and its schema optional); a label added as a suggestion; commenting on a locked conversation without push
+access; a comment list sorted without a direction (no default is given); reopening a merged pull request; a `since` that
+is not ISO 8601 with a time zone; a `state`, `sort` or `direction` outside the reference's lists.
+
 ## `HEAD` as a ref
 
 Each place the fake accepts a ref or a SHA, and what GitHub's public reference says of `HEAD` there. Tests in
@@ -140,7 +197,7 @@ organization is a 404 (F `test_a_private_repository_without_access_is_not_found`
 
 Every operation of `tests/providers/github/openapi/api.github.com.subset.json` that is not served is answered 501,
 "minutehand's github fake does not implement <METHOD> <path>" (C `test_every_operation_the_provider_does_not_serve_is_refused_by_name`;
-169 operations, 12 served, 157 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
+169 operations, 32 served, 137 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
 is any other path. `X-GitHub-Api-Version: 2026-03-10`, which GitHub answers (recorded), is refused by name the same
 way (F `test_an_api_version_github_serves_and_this_provider_does_not_is_refused_by_name`).
 

@@ -6,8 +6,9 @@ behaviours it is pinned to, where each comes from, and the test that holds it.
 
 ## Scope
 
-It answers what one client needs: a code-reading service that holds a user's personal access token and reads
-repositories to answer questions about them. It does not stand in for GitHub at large.
+It answers what two kinds of client need: a code-reading service that holds a user's personal access token and reads
+repositories to answer questions about them, and an agent that works a repository's tracker (issues, their comments
+and labels). It does not stand in for GitHub at large.
 
 Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.githubusercontent.com`,
 `codeload.github.com`; a `download_url` or `html_url` an answer carries is refused by the proxy if followed.
@@ -27,6 +28,14 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | `GET /rate_limit` | every budget of the caller; spends none |
 | `POST /app/installations/{installation_id}/access_tokens` | 201: a `ghs_` token, `expires_at` an hour on, `permissions` as the request sent them |
 | `POST /graphql` | `viewer` and `repository` with the fields listed in `graphql.py` |
+| `GET /repos/{o}/{r}/issues?state&labels&assignee&creator&milestone&type&sort&direction&since` | issues and pull requests (marked by `pull_request`), `Link` paging; 404 for a repository the caller cannot see |
+| `POST /repos/{o}/{r}/issues` | 201; title, body, label names as sent; labels and assignees dropped without push access |
+| `GET`, `PATCH /repos/{o}/{r}/issues/{n}` | state (`closed_at`, `closed_by`, `state_reason`), title, body, labels, assignees; 403 for one who may not edit |
+| `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/lock` | 204; `lock_reason` of the four the reference lists |
+| `GET`, `POST /repos/{o}/{r}/issues/{n}/comments`, `GET /repos/{o}/{r}/issues/comments` | comments by ascending id (or `sort` and `direction`), `since` |
+| `GET`, `PATCH`, `DELETE /repos/{o}/{r}/issues/comments/{id}` | one comment; delete is 204 |
+| `GET`, `POST /repos/{o}/{r}/labels`, `GET /repos/{o}/{r}/labels/{name}` | labels by name, case aside; 422 `already_exists` |
+| `GET`, `POST`, `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/labels`, `DELETE .../labels/{name}` | list, add, set, remove all (204), remove one (the rest) |
 
 Every other method and path is refused by name: 501, "minutehand's github fake does not implement <METHOD>
 <path>", never a 404 a client would take for GitHub's answer. So is `X-GitHub-Api-Version: 2026-03-10`, a version
@@ -44,7 +53,7 @@ for a new repository's features (`has_issues` and the rest, from the create-repo
 (github/rest-api-description at `2eba8c3b`, 2026-10-08) for the reference sections this provider touches or
 would be asked for next: repositories, contents, webhooks, branches, commits, git blobs, trees, commits, refs and
 tags, search, users, rate limit, apps and installations, issues, issue comments, labels, pulls, review comments
-and reviews. It holds 169 operations: 12 served, 157 refused by name. The coverage test fails if one is neither.
+and reviews. It holds 169 operations: 32 served, 137 refused by name. The coverage test fails if one is neither.
 GraphQL is not in that description; `graphql.py` validates every query against its own schema and refuses what
 it does not answer.
 
@@ -55,15 +64,23 @@ The unserved operations a GitHub client most often calls, to serve next in this 
 2. `PUT /repos/{owner}/{repo}/contents/{path}`: committing a file, the one write a code-reading world changes by.
 3. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
    its files, and a diff.
-4. `GET /repos/{owner}/{repo}/issues`, `GET|POST /repos/{owner}/{repo}/issues/{issue_number}/comments`,
-   `POST /repos/{owner}/{repo}/issues`: the issue tracker.
-5. `GET /repos/{owner}/{repo}/pulls`, `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`,
+4. `GET /repos/{owner}/{repo}/pulls`, `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`,
    `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`: pull requests and review.
-6. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
+5. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
    `GET /repos/{owner}/{repo}/git/ref/{ref}`, `GET /repos/{owner}/{repo}/tags`.
-7. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
+6. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
    the token exchange; and webhook delivery (`X-GitHub-Event`, `X-Hub-Signature-256`) if a scenario needs GitHub to
    push.
+
+## The tracker in a seed
+
+A repository's seed may hold `labels` (name, color, description), `issues` and `pulls`, each numbered by the seed
+(`number`: GitHub numbers issues and pull requests from one sequence, and a fragment added to an open world must not
+move what the world holds), with their `comments` and, for a pull request, `reviews`, every moment an offset before
+the scenario's start. `diverged_branches` gives branches commits of their own, made at the default branch's head as
+the seed leaves it: each commit names the paths it changes (text, bytes or a delete), and a pull request's `head` is
+one of them. Ids come from names (`seed.number`), so the same seed has the same ids in every run; what the agent makes
+takes ids from counters kept in the store, from 10,000,000,000, above every id a seed derives.
 
 ## Credentials
 
@@ -101,8 +118,12 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 
 ## What it does not do
 
-- Issues, pull requests, comments, labels, webhooks, the OAuth web flow, and every app route but the token
-  exchange: refused by name (above).
+- Pull requests, webhooks, milestones, issue types, reactions, issue events and the timeline, the OAuth web flow, and
+  every app route but the token exchange: refused by name (above).
+- A repository's labels are what its seed and the agent's `POST .../labels` define: a label name an issue is given
+  that the repository has not defined is refused by name, since the reference does not say what GitHub does with one.
+  Labels list alphabetically by name, case aside (recorded). An assignee must be a user with a role on the repository.
+- An issue's `updated_at` moves with its own changes and with a comment on it (recorded), not with a lock.
 - A GraphQL query costs one point, whatever its size; GitHub prices a query by the nodes it may return.
 - Every branch and commit shows the head's files; history is a list of commits, not a sequence of trees.
 - `ETag` and `If-None-Match` are answered (a 304 to a call with an `Authorization` spends nothing); `Last-Modified`

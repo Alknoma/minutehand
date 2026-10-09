@@ -1,0 +1,745 @@
+{
+ "recorded": "2026-10-09",
+ "service": "https://api.github.com",
+ "how": "Read-only GETs of public repositories (octocat/Hello-World, octocat/Spoon-Knife, octocat/git-consortium, and one more public repository whose labels mix upper and lower case) with Accept: application/vnd.github+json and X-GitHub-Api-Version: 2022-11-28, trimmed to the fields a claim rests on; no account, login or free text of anyone is kept (a field that names one is left out or reduced to a shape).",
+ "exchanges": [
+  {
+   "claim": "`since` keeps issues updated at or after it",
+   "method": "GET",
+   "path": "/repos/octocat/Spoon-Knife/issues?state=all&since=2026-10-05T08:11:48Z&sort=updated&direction=asc",
+   "status": 200,
+   "observed": {
+    "issue": 41593,
+    "updated_at": "2026-10-05T08:11:48Z",
+    "since": "2026-10-05T08:11:48Z",
+    "listed_first": [
+     41593,
+     "2026-10-05T08:11:48Z"
+    ],
+    "since_a_second_later": "2026-10-05T08:11:49Z",
+    "listed_first_then": [
+     41594,
+     "2026-10-05T08:32:22Z"
+    ],
+    "is_the_issue_listed_at_since": true,
+    "is_the_issue_listed_a_second_after": false
+   }
+  },
+  {
+   "claim": "a comment moves the issue's `updated_at`",
+   "method": "GET",
+   "path": "/repos/octocat/git-consortium/issues/94",
+   "status": 200,
+   "observed": {
+    "number": 94,
+    "state": "open",
+    "created_at": "2025-08-16T00:54:16Z",
+    "closed_at": null,
+    "updated_at": "2025-09-10T20:38:29Z",
+    "comments": [
+     [
+      "2025-09-10T06:56:40Z",
+      "2025-09-10T06:56:40Z"
+     ],
+     [
+      "2025-09-10T20:26:03Z",
+      "2025-09-10T20:26:03Z"
+     ],
+     [
+      "2025-09-10T20:36:36Z",
+      "2025-09-10T20:36:36Z"
+     ],
+     [
+      "2025-09-10T20:37:28Z",
+      "2025-09-10T20:37:28Z"
+     ],
+     [
+      "2025-09-10T20:38:15Z",
+      "2025-09-10T20:38:15Z"
+     ],
+     [
+      "2025-09-10T20:38:29Z",
+      "2025-09-10T20:38:29Z"
+     ]
+    ]
+   }
+  },
+  {
+   "claim": "a comment moves the issue's `updated_at`",
+   "method": "GET",
+   "path": "/repos/octocat/git-consortium/issues/97",
+   "status": 200,
+   "observed": {
+    "number": 97,
+    "state": "closed",
+    "created_at": "2025-09-10T20:39:13Z",
+    "closed_at": "2025-09-10T20:39:23Z",
+    "updated_at": "2025-09-10T20:40:05Z",
+    "comments": [
+     [
+      "2025-09-10T20:40:05Z",
+      "2025-09-10T20:40:05Z"
+     ]
+    ]
+   }
+  },
+  {
+   "claim": "labels list alphabetically by name, case aside, whatever their ids",
+   "method": "GET",
+   "path": "/repos/<a public repository whose labels mix upper and lower case>/labels?per_page=100",
+   "status": 200,
+   "observed": {
+    "names_in_the_order_listed": [
+     "CLA Signed",
+     "Core Team Responded",
+     "dependencies",
+     "Difficulty: challenging",
+     "good first issue",
+     "HTML",
+     "invalid",
+     "javascript",
+     "Needs Browser Testing",
+     "Partner",
+     "Resolution: Invalid",
+     "Size: Small"
+    ],
+    "ids_in_the_order_listed": [
+     196858374,
+     8289232226,
+     1757816973,
+     760751171,
+     717031390,
+     332720629,
+     2392325672,
+     7065542027,
+     1028296852,
+     1776420141,
+     40929154,
+     3440913182
+    ],
+    "url_after_labels": {
+     "CLA Signed": "CLA%20Signed",
+     "Core Team Responded": "Core%20Team%20Responded",
+     "Difficulty: challenging": "Difficulty:%20challenging",
+     "good first issue": "good%20first%20issue",
+     "Needs Browser Testing": "Needs%20Browser%20Testing",
+     "Resolution: Invalid": "Resolution:%20Invalid",
+     "Size: Small": "Size:%20Small"
+    },
+    "keys": [
+     "archived_at",
+     "archived_by",
+     "color",
+     "default",
+     "description",
+     "id",
+     "name",
+     "node_id",
+     "url"
+    ]
+   }
+  },
+  {
+   "claim": "an issue holds these keys",
+   "method": "GET",
+   "path": "/repos/octocat/Spoon-Knife/issues/41593",
+   "status": 200,
+   "observed": {
+    "keys": [
+     "active_lock_reason",
+     "assignee",
+     "assignees",
+     "author_association",
+     "body",
+     "closed_at",
+     "closed_by",
+     "comments",
+     "comments_url",
+     "created_at",
+     "events_url",
+     "html_url",
+     "id",
+     "issue_dependencies_summary",
+     "labels",
+     "labels_url",
+     "locked",
+     "milestone",
+     "node_id",
+     "number",
+     "performed_via_github_app",
+     "pinned_comment",
+     "reactions",
+     "repository_url",
+     "state",
+     "state_reason",
+     "sub_issues_summary",
+     "timeline_url",
+     "title",
+     "updated_at",
+     "url",
+     "user"
+    ],
+    "state": "open",
+    "state_reason": null,
+    "author_association": "NONE",
+    "locked": false,
+    "active_lock_reason": null,
+    "assignees": [],
+    "milestone": null,
+    "closed_by": null,
+    "labels": [],
+    "html_url": "https://github.com/octocat/Spoon-Knife/issues/41593",
+    "url": "https://api.github.com/repos/octocat/Spoon-Knife/issues/41593",
+    "labels_url": "https://api.github.com/repos/octocat/Spoon-Knife/issues/41593/labels{/name}",
+    "comments_url": "https://api.github.com/repos/octocat/Spoon-Knife/issues/41593/comments",
+    "events_url": "https://api.github.com/repos/octocat/Spoon-Knife/issues/41593/events",
+    "repository_url": "https://api.github.com/repos/octocat/Spoon-Knife"
+   }
+  },
+  {
+   "claim": "a closed issue",
+   "method": "GET",
+   "path": "/repos/octocat/Spoon-Knife/issues/41578",
+   "status": 200,
+   "observed": {
+    "state": "closed",
+    "state_reason": "not_planned",
+    "closed_at_is_a_time": true,
+    "closed_by_keys": [
+     "avatar_url",
+     "events_url",
+     "followers_url",
+     "following_url",
+     "gists_url",
+     "gravatar_id",
+     "html_url",
+     "id",
+     "login",
+     "node_id",
+     "organizations_url",
+     "received_events_url",
+     "repos_url",
+     "site_admin",
+     "starred_url",
+     "subscriptions_url",
+     "type",
+     "url",
+     "user_view_type"
+    ]
+   }
+  },
+  {
+   "claim": "a pull request answered by the issues routes",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/issues/11480",
+   "status": 200,
+   "observed": {
+    "html_url": "https://github.com/octocat/Hello-World/pull/11480",
+    "url": "https://api.github.com/repos/octocat/Hello-World/issues/11480",
+    "pull_request": {
+     "url": "https://api.github.com/repos/octocat/Hello-World/pulls/11480",
+     "html_url": "https://github.com/octocat/Hello-World/pull/11480",
+     "diff_url": "https://github.com/octocat/Hello-World/pull/11480.diff",
+     "patch_url": "https://github.com/octocat/Hello-World/pull/11480.patch",
+     "merged_at": null
+    },
+    "draft": false,
+    "id_differs_from_pull_id": true,
+    "keys": [
+     "active_lock_reason",
+     "assignee",
+     "assignees",
+     "author_association",
+     "body",
+     "closed_at",
+     "closed_by",
+     "comments",
+     "comments_url",
+     "created_at",
+     "draft",
+     "events_url",
+     "html_url",
+     "id",
+     "labels",
+     "labels_url",
+     "locked",
+     "milestone",
+     "node_id",
+     "number",
+     "performed_via_github_app",
+     "pull_request",
+     "reactions",
+     "repository_url",
+     "state",
+     "state_reason",
+     "timeline_url",
+     "title",
+     "updated_at",
+     "url",
+     "user"
+    ]
+   }
+  },
+  {
+   "claim": "a pull request",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/11480",
+   "status": 200,
+   "observed": {
+    "keys": [
+     "_links",
+     "active_lock_reason",
+     "additions",
+     "assignee",
+     "assignees",
+     "author_association",
+     "auto_merge",
+     "base",
+     "body",
+     "changed_files",
+     "closed_at",
+     "comments",
+     "comments_url",
+     "commits",
+     "commits_url",
+     "created_at",
+     "deletions",
+     "diff_url",
+     "draft",
+     "head",
+     "html_url",
+     "id",
+     "issue_url",
+     "labels",
+     "locked",
+     "maintainer_can_modify",
+     "merge_commit_sha",
+     "mergeable",
+     "mergeable_state",
+     "merged",
+     "merged_at",
+     "merged_by",
+     "milestone",
+     "node_id",
+     "number",
+     "patch_url",
+     "rebaseable",
+     "requested_reviewers",
+     "requested_teams",
+     "review_comment_url",
+     "review_comments",
+     "review_comments_url",
+     "state",
+     "statuses_url",
+     "title",
+     "updated_at",
+     "url",
+     "user"
+    ],
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "rebaseable": true,
+    "merged_by": null,
+    "merged_at": null,
+    "commits": 2,
+    "additions": 2,
+    "deletions": 0,
+    "changed_files": 1,
+    "comments": 0,
+    "review_comments": 0,
+    "maintainer_can_modify": true,
+    "merge_commit_sha_is_set": true,
+    "base_sha_is_the_base_branch_tip": true,
+    "head_keys": [
+     "label",
+     "ref",
+     "repo",
+     "sha",
+     "user"
+    ],
+    "base_keys": [
+     "label",
+     "ref",
+     "repo",
+     "sha",
+     "user"
+    ],
+    "links": {
+     "self": "https://api.github.com/repos/octocat/Hello-World/pulls/11480",
+     "html": "https://github.com/octocat/Hello-World/pull/11480",
+     "issue": "https://api.github.com/repos/octocat/Hello-World/issues/11480",
+     "comments": "https://api.github.com/repos/octocat/Hello-World/issues/11480/comments",
+     "review_comments": "https://api.github.com/repos/octocat/Hello-World/pulls/11480/comments",
+     "review_comment": "https://api.github.com/repos/octocat/Hello-World/pulls/comments{/number}",
+     "commits": "https://api.github.com/repos/octocat/Hello-World/pulls/11480/commits",
+     "statuses": "https://api.github.com/repos/octocat/Hello-World/statuses/70f74da0f8c86b36963716d4060b092a65d0cf25"
+    },
+    "html_url": "https://github.com/octocat/Hello-World/pull/11480",
+    "diff_url": "https://github.com/octocat/Hello-World/pull/11480.diff",
+    "patch_url": "https://github.com/octocat/Hello-World/pull/11480.patch",
+    "issue_url": "https://api.github.com/repos/octocat/Hello-World/issues/11480",
+    "commits_url": "https://api.github.com/repos/octocat/Hello-World/pulls/11480/commits",
+    "review_comments_url": "https://api.github.com/repos/octocat/Hello-World/pulls/11480/comments",
+    "review_comment_url": "https://api.github.com/repos/octocat/Hello-World/pulls/comments{/number}",
+    "comments_url": "https://api.github.com/repos/octocat/Hello-World/issues/11480/comments",
+    "statuses_url": "https://api.github.com/repos/octocat/Hello-World/statuses/70f74da0f8c86b36963716d4060b092a65d0cf25",
+    "label": "AmanShaikhTech10:master",
+    "base_label": "octocat:master",
+    "auto_merge": null,
+    "requested_reviewers": [],
+    "requested_teams": []
+   }
+  },
+  {
+   "claim": "a draft pull request",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/10993",
+   "status": 200,
+   "observed": {
+    "draft": true,
+    "state": "open",
+    "mergeable": true,
+    "mergeable_state": "clean"
+   }
+  },
+  {
+   "claim": "the list answers the simple form",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls?per_page=1",
+   "status": 200,
+   "observed": {
+    "keys": [
+     "_links",
+     "active_lock_reason",
+     "assignee",
+     "assignees",
+     "author_association",
+     "auto_merge",
+     "base",
+     "body",
+     "closed_at",
+     "comments_url",
+     "commits_url",
+     "created_at",
+     "diff_url",
+     "draft",
+     "head",
+     "html_url",
+     "id",
+     "issue_url",
+     "labels",
+     "locked",
+     "merge_commit_sha",
+     "merged_at",
+     "milestone",
+     "node_id",
+     "number",
+     "patch_url",
+     "requested_reviewers",
+     "requested_teams",
+     "review_comment_url",
+     "review_comments_url",
+     "state",
+     "statuses_url",
+     "title",
+     "updated_at",
+     "url",
+     "user"
+    ]
+   }
+  },
+  {
+   "claim": "files of a pull request: a new file",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/11480/files",
+   "status": 200,
+   "observed": {
+    "files": [
+     {
+      "filename": "Hello.txt",
+      "status": "added",
+      "additions": 2,
+      "deletions": 0,
+      "changes": 2,
+      "patch": "@@ -0,0 +1,2 @@\n+Hello Git \n+Testing purpose only",
+      "sha_is_a_blob_sha": true,
+      "blob_url_shape": "https://github.com/octocat/Hello-World/blob/<head sha>/Hello.txt",
+      "raw_url_shape": "https://github.com/octocat/Hello-World/raw/<head sha>/Hello.txt",
+      "contents_url_shape": "https://api.github.com/repos/octocat/Hello-World/contents/Hello.txt?ref=<head sha>"
+     }
+    ]
+   }
+  },
+  {
+   "claim": "files of a pull request: a modified file whose last line has no newline",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/1/files",
+   "status": 200,
+   "observed": {
+    "files": [
+     {
+      "filename": "README",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 1,
+      "changes": 7,
+      "patch": "@@ -1 +1,6 @@\n-Hello World!\n\\ No newline at end of file\n+Hello World!\n+$ mkdir ~/Hello-WorldCreates a directory for your project called \"Hello-World\" in your user directory\n+$ cd ~/Hello-WorldChanges the current working directory to your newly created directory\n+$ git initSets up the necessary Git files\n+Initialized empty Git repository in /Users/your_user_directory/Hello-World/.git/\n+$ touch README\n\\ No newline at end of file"
+     }
+    ]
+   }
+  },
+  {
+   "claim": "commits of a pull request, oldest first",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/11480/commits",
+   "status": 200,
+   "observed": {
+    "commits": [
+     {
+      "sha_is_new": true,
+      "date": "2026-10-09T11:00:46Z",
+      "message": "Hello file",
+      "parents": 1,
+      "first_parent_is_the_previous": true
+     },
+     {
+      "sha_is_new": true,
+      "date": "2026-10-09T11:10:46Z",
+      "message": "Update Hello file",
+      "parents": 1,
+      "first_parent_is_the_previous": true
+     }
+    ],
+    "first_parent_of_the_first_is_the_base": true,
+    "keys": [
+     "author",
+     "comments_url",
+     "commit",
+     "committer",
+     "html_url",
+     "node_id",
+     "parents",
+     "sha",
+     "url"
+    ]
+   }
+  },
+  {
+   "claim": "review comments carry the diff up to the line",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/1/comments",
+   "status": 200,
+   "observed": {
+    "comments": [
+     {
+      "diff_hunk": "@@ -1 +1,6 @@\n-Hello World!\n\\ No newline at end of file\n+Hello World!\n+$ mkdir ~/Hello-WorldCreates a directory for your project called \"Hello-World\" in your user directory",
+      "path": "README",
+      "position": 4,
+      "original_position": 4,
+      "line": 2,
+      "original_line": null,
+      "side": "RIGHT",
+      "subject_type": "line",
+      "commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "original_commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "start_line": null,
+      "original_start_line": null,
+      "start_side": null,
+      "pull_request_review_id": null,
+      "author_association": "NONE",
+      "keys": [
+       "_links",
+       "author_association",
+       "body",
+       "commit_id",
+       "created_at",
+       "diff_hunk",
+       "html_url",
+       "id",
+       "line",
+       "node_id",
+       "original_commit_id",
+       "original_line",
+       "original_position",
+       "original_start_line",
+       "path",
+       "position",
+       "pull_request_review_id",
+       "pull_request_url",
+       "reactions",
+       "side",
+       "start_line",
+       "start_side",
+       "subject_type",
+       "updated_at",
+       "url",
+       "user"
+      ]
+     },
+     {
+      "diff_hunk": "@@ -1 +1,6 @@\n-Hello World!\n\\ No newline at end of file\n+Hello World!\n+$ mkdir ~/Hello-WorldCreates a directory for your project called \"Hello-World\" in your user directory\n+$ cd ~/Hello-WorldChanges the current working directory to your newly created directory\n+$ git initSets up the necessary Git files\n+Initialized empty Git repository in /Users/your_user_directory/Hello-World/.git/",
+      "path": "README",
+      "position": 7,
+      "original_position": 7,
+      "line": 5,
+      "original_line": null,
+      "side": "RIGHT",
+      "subject_type": "line",
+      "commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "original_commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "start_line": null,
+      "original_start_line": null,
+      "start_side": null,
+      "pull_request_review_id": null,
+      "author_association": "NONE",
+      "keys": [
+       "_links",
+       "author_association",
+       "body",
+       "commit_id",
+       "created_at",
+       "diff_hunk",
+       "html_url",
+       "id",
+       "line",
+       "node_id",
+       "original_commit_id",
+       "original_line",
+       "original_position",
+       "original_start_line",
+       "path",
+       "position",
+       "pull_request_review_id",
+       "pull_request_url",
+       "reactions",
+       "side",
+       "start_line",
+       "start_side",
+       "subject_type",
+       "updated_at",
+       "url",
+       "user"
+      ]
+     },
+     {
+      "diff_hunk": "@@ -1 +1,6 @@\n-Hello World!\n\\ No newline at end of file\n+Hello World!\n+$ mkdir ~/Hello-WorldCreates a directory for your project called \"Hello-World\" in your user directory\n+$ cd ~/Hello-WorldChanges the current working directory to your newly created directory\n+$ git initSets up the necessary Git files",
+      "path": "README",
+      "position": 6,
+      "original_position": 6,
+      "line": 4,
+      "original_line": 4,
+      "side": "RIGHT",
+      "subject_type": "line",
+      "commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "original_commit_id": "7044a8a032e85b6ab611033b2ac8af7ce85805b2",
+      "start_line": null,
+      "original_start_line": null,
+      "start_side": null,
+      "pull_request_review_id": 41231978,
+      "author_association": "NONE",
+      "keys": [
+       "_links",
+       "author_association",
+       "body",
+       "commit_id",
+       "created_at",
+       "diff_hunk",
+       "html_url",
+       "id",
+       "line",
+       "node_id",
+       "original_commit_id",
+       "original_line",
+       "original_position",
+       "original_start_line",
+       "path",
+       "position",
+       "pull_request_review_id",
+       "pull_request_url",
+       "reactions",
+       "side",
+       "start_line",
+       "start_side",
+       "subject_type",
+       "updated_at",
+       "url",
+       "user"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "claim": "a review",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/pulls/1/reviews?per_page=1",
+   "status": 200,
+   "observed": {
+    "keys": [
+     "_links",
+     "author_association",
+     "body",
+     "commit_id",
+     "html_url",
+     "id",
+     "node_id",
+     "pull_request_url",
+     "state",
+     "submitted_at",
+     "user"
+    ],
+    "state": "COMMENTED",
+    "body": "",
+    "links": [
+     "html",
+     "pull_request"
+    ],
+    "html_url_shape": "https://github.com/octocat/Hello-World/pull/<number>#pullrequestreview-<id>",
+    "commit_id_is_a_sha": true
+   }
+  },
+  {
+   "claim": "a merge commit GitHub made of a pull request",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/commits/7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+   "status": 200,
+   "observed": {
+    "message_shape": "Merge pull request #<number> from <owner>/<branch>\n\n<one paragraph>",
+    "paragraphs": 2,
+    "parents": 2,
+    "committed_when_it_was_authored": true,
+    "committer_is_the_author": true
+   }
+  },
+  {
+   "claim": "an issue comment on a pull request",
+   "method": "GET",
+   "path": "/repos/octocat/Hello-World/issues/1/comments?per_page=1",
+   "status": 200,
+   "observed": {
+    "html_url_shape": "https://github.com/octocat/Hello-World/pull/1#issuecomment-<id>",
+    "issue_url": "https://api.github.com/repos/octocat/Hello-World/issues/1",
+    "url_shape": "https://api.github.com/repos/octocat/Hello-World/issues/comments/<id>",
+    "keys": [
+     "author_association",
+     "body",
+     "created_at",
+     "html_url",
+     "id",
+     "issue_url",
+     "minimized",
+     "node_id",
+     "performed_via_github_app",
+     "reactions",
+     "updated_at",
+     "url",
+     "user"
+    ],
+    "author_association": "NONE"
+   }
+  }
+ ]
+}

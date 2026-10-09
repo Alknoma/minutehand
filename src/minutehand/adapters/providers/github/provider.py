@@ -7,9 +7,12 @@ from minutehand.adapters.providers.github.app import build_app
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.seed import GitHubSeed, github_seed, seed, write_faults, write_limits
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.adapters.providers.github.transitions import GitHubTransitions
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, fault_fragment
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import Person, Scenario
+from minutehand.domain.transitions import Offer, Transition, Waiting
+from minutehand.domain.world import Actor, EntityRef
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -44,8 +47,24 @@ class GitHubProvider:
         write_limits(github, found.limits)
         del clock
 
+    # -- transitions (`ProvidesTransitions`) -----------------------------------------------------------------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        return GitHubTransitions().items_for(person, world)
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        return GitHubTransitions().legal(item, by, who, world)
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        return await GitHubTransitions().apply(item, offer, by, who, content, world, clock)
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        return GitHubTransitions().heard_of(item, who, world, clock)
+
 
 def build() -> GitHubProvider:
-    """A `Provider` that `DeclaresFaults`: GitHub pushes nothing to the agent here, holds no tickets it answers,
-    and books nothing."""
+    """A `Provider` that `DeclaresFaults` and `ProvidesTransitions`: GitHub pushes nothing to the agent here, holds no
+    tickets it answers, and books nothing."""
     return GitHubProvider()

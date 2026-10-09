@@ -1,5 +1,5 @@
 """An open GitHub world takes every kind `GitHubSeed` holds through a fragment of it (users, organizations,
-tokens, repositories, faults, limits, budgets), and nothing it already held moves: every id GitHub seeds comes from a
+tokens, repositories with their labels, issues, branches and pull requests, faults, limits, budgets), and nothing it already held moves: every id GitHub seeds comes from a
 name (a login, `owner/name`, a path, a token's digest), and a commit's sha from its place in its own repository's
 history, which only a new repository can bring."""
 
@@ -99,6 +99,48 @@ FRAGMENTS: dict[str, object] = {
             }
         ]
     },
+    "label": {"repositories": [{"owner": "acme", "name": "notes", "labels": [{"name": "bug", "color": "d73a4a"}]}]},
+    "issue": {
+        "repositories": [
+            {
+                "owner": "acme",
+                "name": "notes",
+                "issues": [
+                    {
+                        "number": 7,
+                        "title": "Fix it",
+                        "author": "octo",
+                        "before": "PT1H",
+                        "comments": [{"author": "sofi", "body": "On it", "before": "PT30M"}],
+                    }
+                ],
+            }
+        ]
+    },
+    "branch and pull request": {
+        "repositories": [
+            {
+                "owner": "acme",
+                "name": "notes",
+                "diverged_branches": [
+                    {
+                        "name": "topic",
+                        "commits": [
+                            {
+                                "message": "Change the notes",
+                                "author": "sofi",
+                                "before": "PT1H",
+                                "changes": [{"path": "README.md", "text": "hello"}],
+                            }
+                        ],
+                    }
+                ],
+                "pulls": [
+                    {"number": 3, "title": "Change the notes", "author": "sofi", "head": "topic", "before": "PT30M"}
+                ],
+            }
+        ]
+    },
     "fault": {"faults": [{"kind": "rate_limited", "resource": "core"}]},
     "limits": {"limits": [{"repository": "acme/notes", "tree_entry_limit": 1}]},
     "budget": {"budgets": [{"login": "octo", "resource": "search", "remaining": 3}]},
@@ -115,7 +157,8 @@ def test_an_open_github_world_takes_each_kind_its_seed_holds_and_moves_nothing(k
         assert written["github"] > 0
         assert set(before) <= set(after)
         changed = {k for k in before if before[k] != after[k]}
-        assert changed == ({(EntityKind.RECORD, "repo/acme/notes")} if kind == "limits" else set())
+        grown = kind in ("limits", "branch and pull request")  # the repository gains a limit, or a branch
+        assert changed == ({(EntityKind.RECORD, "repo/acme/notes")} if grown else set())
 
 
 def test_a_person_added_to_an_open_github_world_who_has_an_account_is_given_it(tmp_path: Path) -> None:

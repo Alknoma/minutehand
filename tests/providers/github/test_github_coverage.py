@@ -12,29 +12,74 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import pytest
 
-from tests.providers.github.github_world import Hub
+from minutehand.adapters.providers.github.seed import GitHubSeed, number
+from tests.providers.github.github_world import TOMAS, Hub, tracker_seed
 
 SUBSET = Path(__file__).parent / "openapi" / "api.github.com.subset.json"
 DESCRIPTION = json.loads(SUBSET.read_text())
 
-SERVED: dict[tuple[str, str], str] = {
-    ("GET", "/user"): "/user",
-    ("GET", "/user/repos"): "/user/repos",
-    ("GET", "/repos/{owner}/{repo}"): "/repos/lanternworks/ledger",
-    ("GET", "/repos/{owner}/{repo}/languages"): "/repos/lanternworks/ledger/languages",
-    ("GET", "/repos/{owner}/{repo}/branches"): "/repos/lanternworks/ledger/branches",
-    ("GET", "/repos/{owner}/{repo}/contents/{path}"): "/repos/lanternworks/ledger/contents/README.md",
-    ("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}"): "/repos/lanternworks/ledger/git/blobs/{readme}",
-    ("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}"): "/repos/lanternworks/ledger/git/trees/main",
-    ("GET", "/repos/{owner}/{repo}/commits"): "/repos/lanternworks/ledger/commits",
-    ("GET", "/search/code"): "/search/code?q=retry",
-    ("GET", "/rate_limit"): "/rate_limit",
-    ("POST", "/app/installations/{installation_id}/access_tokens"): "/app/installations/7/access_tokens",
+
+@dataclass(frozen=True)
+class Call:
+    """A call of a served operation against the seeded world: its address, what it sends and how it must answer."""
+
+    url: str
+    json: object = None
+    status: int = 200
+
+
+LEDGER = "/repos/lanternworks/ledger"
+COMMENT = number("comment/lanternworks/ledger/1/0")
+"""The id the seed derives for the first comment on issue 1."""
+SERVED: dict[tuple[str, str], Call] = {
+    ("GET", "/user"): Call("/user"),
+    ("GET", "/user/repos"): Call("/user/repos"),
+    ("GET", "/repos/{owner}/{repo}"): Call(LEDGER),
+    ("GET", "/repos/{owner}/{repo}/languages"): Call(f"{LEDGER}/languages"),
+    ("GET", "/repos/{owner}/{repo}/branches"): Call(f"{LEDGER}/branches"),
+    ("GET", "/repos/{owner}/{repo}/contents/{path}"): Call(f"{LEDGER}/contents/README.md"),
+    ("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}"): Call(f"{LEDGER}/git/blobs/{{readme}}"),
+    ("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}"): Call(f"{LEDGER}/git/trees/main"),
+    ("GET", "/repos/{owner}/{repo}/commits"): Call(f"{LEDGER}/commits"),
+    ("GET", "/search/code"): Call("/search/code?q=retry"),
+    ("GET", "/rate_limit"): Call("/rate_limit"),
+    ("POST", "/app/installations/{installation_id}/access_tokens"): Call("/app/installations/7/access_tokens", {}, 201),
+    ("GET", "/repos/{owner}/{repo}/issues"): Call(f"{LEDGER}/issues?state=all"),
+    ("POST", "/repos/{owner}/{repo}/issues"): Call(f"{LEDGER}/issues", {"title": "A title", "body": "A body"}, 201),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}"): Call(f"{LEDGER}/issues/1"),
+    ("PATCH", "/repos/{owner}/{repo}/issues/{issue_number}"): Call(f"{LEDGER}/issues/3", {"state": "closed"}),
+    ("PUT", "/repos/{owner}/{repo}/issues/{issue_number}/lock"): Call(f"{LEDGER}/issues/1/lock", None, 204),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/lock"): Call(f"{LEDGER}/issues/1/lock", None, 204),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}/comments"): Call(f"{LEDGER}/issues/1/comments"),
+    ("POST", "/repos/{owner}/{repo}/issues/{issue_number}/comments"): Call(
+        f"{LEDGER}/issues/1/comments", {"body": "A comment"}, 201
+    ),
+    ("GET", "/repos/{owner}/{repo}/issues/comments"): Call(f"{LEDGER}/issues/comments"),
+    ("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(f"{LEDGER}/issues/comments/{COMMENT}"),
+    ("PATCH", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(
+        f"{LEDGER}/issues/comments/{COMMENT}", {"body": "Edited"}
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(
+        f"{LEDGER}/issues/comments/{COMMENT}", None, 204
+    ),
+    ("GET", "/repos/{owner}/{repo}/labels"): Call(f"{LEDGER}/labels"),
+    ("POST", "/repos/{owner}/{repo}/labels"): Call(f"{LEDGER}/labels", {"name": "new", "color": "ffffff"}, 201),
+    ("GET", "/repos/{owner}/{repo}/labels/{name}"): Call(f"{LEDGER}/labels/bug"),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(f"{LEDGER}/issues/1/labels"),
+    ("POST", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(
+        f"{LEDGER}/issues/3/labels", {"labels": ["bug"]}
+    ),
+    ("PUT", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(
+        f"{LEDGER}/issues/3/labels", {"labels": ["bug"]}
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(f"{LEDGER}/issues/1/labels", None, 204),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}"): Call(f"{LEDGER}/issues/1/labels/bug"),
 }
 """Each operation the provider serves, and a call of it against the seeded world."""
 
@@ -109,19 +154,28 @@ def _missing(schema: dict[str, object], value: object, where: str) -> list[str]:
 
 def _success_schema(method: str, path: str) -> dict[str, object] | None:
     responses = DESCRIPTION["paths"][path][method.lower()]["responses"]
-    status = next(s for s in ("200", "201") if s in responses)
+    status = next(s for s in ("200", "201", "204") if s in responses)
+    if "content" not in _resolve(responses[status]):
+        return None
     content = _resolve(responses[status])["content"]
     assert isinstance(content, dict)
     return content["application/json"]["schema"] if "application/json" in content else None
 
 
-async def _call(http: httpx.AsyncClient, method: str, url: str) -> httpx.Response:
-    return await http.request(method, url, json={} if method in ("POST", "PUT", "PATCH") else None)
+async def _call(http: httpx.AsyncClient, method: str, url: str, sent: object = None) -> httpx.Response:
+    if sent is None and method in ("POST", "PUT", "PATCH"):
+        sent = {}
+    return await http.request(method, url, json=sent)
+
+
+@pytest.fixture
+def seeded() -> GitHubSeed:
+    return tracker_seed()
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 169 operations, 12 served, 157 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 12, 157)
+    """The counts the provider's README states: 169 operations, 32 served, 137 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 32, 137)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 
@@ -129,11 +183,15 @@ def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
 async def test_a_served_operation_answers_every_field_the_description_requires(
     hub: Hub, method: str, path: str
 ) -> None:
-    async with hub.client() as http:
+    call = SERVED[(method, path)]
+    async with hub.client(TOMAS) as http:
         readme = (await http.get("/repos/lanternworks/ledger/contents/README.md")).json()["sha"]
-        answered = await _call(http, method, SERVED[(method, path)].replace("{readme}", readme))
-    assert answered.status_code in (200, 201), answered.text
+        answered = await _call(http, method, call.url.replace("{readme}", readme), call.json)
+    assert answered.status_code == call.status, answered.text
     schema = _success_schema(method, path)
+    if call.status == 204:
+        assert answered.content == b""
+        return
     assert schema is not None
     gaps = _missing(schema, answered.json(), "$")
     assert gaps == [], " ".join(gaps)
