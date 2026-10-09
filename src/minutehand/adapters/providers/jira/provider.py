@@ -14,10 +14,11 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from minutehand.adapters.providers.jira import app as jira_app
 from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
-from minutehand.adapters.providers.jira.moves import Desk
+from minutehand.adapters.providers.jira.moves import Desk, Event
 from minutehand.adapters.providers.jira.seed import JiraSeed, seed
 from minutehand.adapters.providers.jira.state import issue_ref, placed
 from minutehand.domain.errors import Rendered
@@ -170,8 +171,10 @@ class JiraProvider:
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
         """The person takes the transition through the same path as `POST /issue/{key}/transitions`, with their
-        comment as its `update.comment`, as themselves."""
-        desk = Desk(world)
+        comment as its `update.comment`, as themselves. The webhooks the site has set up are sent what it did, as they
+        are for the agent's own transition."""
+        api = jira_app.build(world, clock)
+        desk = api.desk
         issue = _located(desk, item)
         if issue is None:
             raise LookupError(f"no Jira issue {item.external_id} in this run")
@@ -189,7 +192,7 @@ class JiraProvider:
         account = _account(desk, who.email) if who is not None else None
         if account is None:
             raise ValueError("a Jira transition is taken by an account: name the person who takes it")
-        return desk.transition(
+        moved = desk.transition(
             issue,
             project,
             transition,
@@ -200,11 +203,16 @@ class JiraProvider:
             actor=by,
             who=who.key if who is not None else None,
         )
+        await api.flush()
+        return moved
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
-        """Never: the fake serves no webhooks, so the agent finds a person's move on its next read."""
-        del item, who, world, clock
-        return False
+        """Whether a webhook of the site is sent `jira:issue_updated` for the issue: then the agent is told of the
+        move. Otherwise it finds it on its next read."""
+        del who
+        desk = Desk(world)
+        issue = _located(desk, item)
+        return issue is not None and jira_app.build(world, clock).hears(issue, Event.ISSUE_UPDATED)
 
     # ------------------------------------------------------------------ a person's acts
 
