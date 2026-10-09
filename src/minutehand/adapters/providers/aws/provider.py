@@ -32,8 +32,11 @@ What the world log holds, and what it does not:
 - **moto reads the run's clock.** `aws/clock.py` points the time moto's SQS and Scheduler
   models read at the clock of the run whose call it answers, so SQS DelaySeconds,
   VisibilityTimeout, SentTimestamp and a schedule's CreationDate are the run's time. A
-  long poll that finds no message would have to wait on that clock, which does not move
-  inside a call, so it is refused by name (`LONG_POLL`); one that finds a message answers.
+  long poll that finds a message answers at once; one that finds none waits on that clock,
+  which does not move inside a call, so the proxy holds it until the run's clock reaches the
+  end of its wait or a message of its queue (`answering.waits`, `adapters.proxy.held`). In a
+  world whose clock nothing moves while a call waits (`minutehand serve`), it is refused by
+  name (`LONG_POLL`).
 - **Only AWS's surface, and only two services.** Every operation of botocore's `scheduler`
   and `sqs` models is served or refused 501 by name (`wire.SERVED`, `wire.REFUSED_BECAUSE`);
   every other AWS host, and moto's own `/moto-api`, is refused. Where moto answers a
@@ -55,6 +58,7 @@ import json
 import os
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 from asgiref.wsgi import WsgiToAsgi
 from moto import settings as moto_settings
@@ -189,19 +193,22 @@ class AwsProvider:
                 (b"x-moto-account-id", account),
                 (b"authorization", _scope(asked)),
             ]
-            with aws_clock.on(clock):
+            with aws_clock.on(clock, waits=not answering.wait_over()):
                 deliveries = self._deliveries(deleting, world) if deleting is not None else []
                 _no_credential_checks()
-                waits = False
+                waiting: aws_clock.WouldWait | None = None
                 try:
                     status, response_headers, response_body = await _call(moto, forwarded, body)
-                except aws_clock.WouldWait:
-                    waits, status, response_headers, response_body = True, 501, [], b""
+                except aws_clock.WouldWait as would:
+                    waiting, status, response_headers, response_body = would, 501, [], b""
                 if call is not None and 200 <= status < 300:
                     self._record(call, world, clock)
                 if deleting is not None and 200 <= status < 300:
                     self._taken(deleting, deliveries, world)
-            if waits:
+            if waiting is not None:
+                if answering.waits(clock.now() + timedelta(seconds=waiting.seconds), waiting.again):
+                    await _respond(send, 200, [], b"")  # dropped: the proxy holds the call, and asks again
+                    return
                 refused = NotImplementedByProvider(LONG_POLL)
                 answering.unimplemented(refused, refused.message)
                 form = _header(headers, b"content-type").startswith("application/x-www-form-urlencoded")
@@ -393,7 +400,8 @@ class AwsProvider:
 
 LONG_POLL = (
     "SQS ReceiveMessage: a long poll (WaitTimeSeconds, or the queue's ReceiveMessageWaitTimeSeconds) that finds no "
-    "visible message would wait, and the run's clock does not move inside a call; poll without a wait, or again later"
+    "visible message would wait, and nothing moves this world's clock while a call waits (a standing world's moves "
+    "only when its control API advances it); poll without a wait, or again later"
 )
 
 

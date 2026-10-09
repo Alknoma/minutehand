@@ -7,8 +7,8 @@ reference says so, at the page given; **observed** means it rests on botocore's 
 (botocore 1.43.108); **Minutehand's** means it is Minutehand's own rule for a simulated run, not a claim about AWS.
 
 Tests are in `tests/providers/aws/`: `test_aws_provider.py` (P), `test_aws_fidelity.py` (F), `test_aws_coverage.py`
-(C), `test_aws_base_url.py`, and the whole run `tests/e2e/test_booked_on_aws.py`. Every test drives stock boto3
-through the proxy.
+(C), `test_aws_base_url.py`, and the whole runs `tests/e2e/test_booked_on_aws.py` and
+`tests/e2e/test_long_poll_run.py` (E). Every test drives stock boto3 through the proxy.
 
 Pages: Scheduler API = https://docs.aws.amazon.com/scheduler/latest/APIReference/, Scheduler guide =
 https://docs.aws.amazon.com/scheduler/latest/UserGuide/, SQS API =
@@ -65,7 +65,7 @@ so nothing the caller signed with is read.
 | `ChangeMessageVisibility` hides a received message for its new timeout of the run's time | documented | F `test_a_visibility_change_runs_on_the_runs_clock` | SQS API, API_ChangeMessageVisibility.html |
 | `DelaySeconds` hides a message until the run's clock passes it | documented | F `test_a_delayed_message_appears_when_the_runs_clock_reaches_its_delay` | SQS API, API_SendMessage.html (DelaySeconds) |
 | A long poll (`WaitTimeSeconds`, or the queue's `ReceiveMessageWaitTimeSeconds`) that finds a visible message answers it at once | documented | F `test_a_long_poll_that_finds_a_message_answers_at_once` | SQS API, API_ReceiveMessage.html ("If a message is available, the call returns sooner than WaitTimeSeconds") |
-| A long poll that finds none is refused 501 by name, without waiting: it would have to wait on the run's clock, which does not move inside a call. Serving it needs the orchestrator to hold the call and move the run's clock to the earlier of the wait's end and the next due wake, then answer the call there | Minutehand's | F `test_a_long_poll_that_would_wait_is_refused_by_name_and_never_waits` | — |
+| A long poll that finds none waits on the run's clock: held by the proxy, it is answered when the run's clock reaches the end of its wait (with nothing), or sooner with a message once one is visible: sent by another call, delivered by a schedule, or visible again as a delay or a visibility timeout runs out (moto reads a message visible a millisecond after its timeout); no poll waits in real time. In a world whose clock nothing moves while a call waits (`minutehand serve`) it is refused 501 by name, without waiting | documented | E `test_a_long_poll_on_an_empty_queue_is_answered_empty_once_the_runs_clock_reaches_the_end_of_its_wait`, `test_a_long_poll_is_answered_when_the_scenarios_scheduler_delivers_to_its_queue_during_the_wait`, `test_a_long_poll_is_answered_when_a_visibility_timeout_runs_out_during_the_wait`; F `test_a_long_poll_that_would_wait_is_refused_by_name_and_never_waits` | SQS API, API_ReceiveMessage.html (WaitTimeSeconds: "The duration (in seconds) for which the call waits for a message to arrive in the queue before returning") |
 | `MaxNumberOfMessages` is 1 to 10, else `InvalidParameterValue` (moto's check) | documented | F `test_receive_takes_one_to_ten_messages_and_refuses_more` | SQS API, API_ReceiveMessage.html |
 | `DeleteMessage` takes the receipt handle of a receive; an old one may still delete (moto: it does) | documented | P `test_a_delivery_is_taken_when_the_agent_deletes_its_message_and_not_when_it_receives_it` | SQS API, API_DeleteMessage.html ("the request will succeed, but the message might not be deleted") |
 | Queue attributes the caller set are answered as it wrote them | documented (data as sent) | F `test_queue_attributes_are_answered_as_they_were_sent` | SQS API, API_GetQueueAttributes.html |
@@ -89,7 +89,7 @@ so nothing the caller signed with is read.
 | answers `SenderId` `AIDAIT2UOQQY3AUEKVGXU` for every message | the sender's principal | left out |
 | answers JSON `null` for absent members (`Description: null`) and extra members in `ListSchedules` summaries | not documented | not changed: botocore drops them; listed here |
 | refuses a cron schedule whose `StartDate` is more than 5 minutes before now ("The StartDate you specify cannot be earlier than 5 minutes ago.") | no page sets a limit: StartDate is "The date, in UTC, after which the schedule can begin invoking its target" | moto's check replaced; the date kept as sent (F `test_a_cron_schedule_whose_start_date_is_past_is_accepted_as_sent`) |
-| waits for a long poll on its own clock | (the run's clock) | refused by name when it would wait |
+| waits for a long poll on its own clock | (the run's clock) | the call held by the proxy and answered on the run's clock (`adapters/proxy/held.py`); refused by name in a standing world |
 
 ## What it does not do
 

@@ -8,7 +8,7 @@ from minutehand.adapters.agent.polled import PolledDriver
 from minutehand.adapters.agent.reach import reach_for
 from minutehand.domain.agent import AgentUnderTest, Marked
 from minutehand.domain.run import StopReason
-from minutehand.domain.world import Actor, EntityKind, NextWakeSnapshot
+from minutehand.domain.world import Actor, EntityKind, NextWakeSnapshot, Operation
 from tests.orchestrator.rig import T0, Rig, scenario
 
 
@@ -33,3 +33,12 @@ async def test_each_wake_counts_its_memory_reads_and_writes_and_none_of_them_cha
     scn = scenario(tom_finishes=False, max_wakes=3)
     record, _, _ = await rig.run(scn, rig.agent("keep_waking"))
     assert [(w.memory_reads, w.memory_writes, w.world_changes) for w in record.wakes] == [(1, 1, 0)] * 3
+
+
+async def test_each_read_of_memory_is_counted_in_its_wake_and_one_that_finds_nothing_new_is_not_kept(rig: Rig) -> None:
+    """`keep_polling` reads its state five times a wake and writes it once: five reads counted, one kept."""
+    scn = scenario(tom_finishes=False, max_wakes=3)
+    record, store, _ = await rig.run(scn, rig.agent("keep_polling"))
+    assert [(w.memory_reads, w.memory_writes) for w in record.wakes] == [(5, 1)] * 3
+    kept = [e.wake for e in store.events() if e.entity.kind is EntityKind.MEMORY and e.operation is Operation.READ]
+    assert kept == [1, 2, 3]

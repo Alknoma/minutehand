@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from google.protobuf.message import Message as ProtoMessage
@@ -128,6 +129,29 @@ class Wakes(Protocol):
 
     def cancel(self, ref: str) -> None:
         """Drop the pending booking with this `ref`; no error when there is none."""
+        ...
+
+
+class HeldCalls(Protocol):
+    """What a run lends whoever answers the agent's calls (the proxy) for a call that waits on the world: a long poll
+    that finds nothing yet (`adapters.answering.waits`). The call is held, out of every lock, until the run's clock
+    reaches `at`, or something changes the world, and is looked at again then. The orchestrator implements it: each
+    held call is an entry of its table of what is due (`PendingCall`), so the clock moves to it."""
+
+    def hold(self, ref: str, at: datetime, *, ends: bool, look: Callable[[bool], Awaitable[bool]]) -> None:
+        """Call `ref` is held: look at it again at `at`, the end of its wait when `ends`, else the next moment the
+        world may answer it by itself (a message becoming visible). `look(over)` makes one look and answers whether
+        it answered the call; `over` answers it as the world stands, the wait being over. Holding a call already
+        held moves its moment."""
+        ...
+
+    def answered(self, ref: str) -> None:
+        """Call `ref`, held, has been answered: nothing more is due for it."""
+        ...
+
+    def answering(self, settled: Callable[[], Awaitable[None]]) -> None:
+        """How to wait until every call that has reached the world is answered or held, which the run does before
+        it moves its clock: a call still being answered then would be answered at the wrong moment."""
         ...
 
 
