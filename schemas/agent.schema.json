@@ -699,7 +699,7 @@
     },
     "DeclaredStore": {
       "additionalProperties": false,
-      "description": "What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the\nagent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what\nits collection says the API assigns (`id`, `stamps`); credentials are never checked.\n\nA call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection\nwhose path it is under, else with `answer`.",
+      "description": "What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the\nagent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what\nits collection says the API assigns (`id`, `stamps`); credentials are never checked, and a field named like one\n(`token`, `password`) is kept like any other.\n\nA call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection\nwhose path it is under, else with `answer`.",
       "properties": {
         "answer": {
           "$ref": "#/$defs/Answer",
@@ -749,17 +749,6 @@
           "default": null,
           "description": "What its world events are recorded under; derived from the host when None",
           "title": "Name"
-        },
-        "redact": {
-          "default": [],
-          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
-          "items": {
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
-            "type": "string"
-          },
-          "title": "Redact",
-          "type": "array"
         },
         "routes": {
           "default": [],
