@@ -154,6 +154,15 @@ def post_ref(key: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"post.{key}")
 
 
+def pin_ref(channel: str, ts: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"pin.{channel}.{ts}")
+
+
+def pins_of(channel: str) -> str:
+    """The parent of a channel's pins: not the channel itself, whose children are its members."""
+    return f"pins.{channel}"
+
+
 def scheduled_ref(scheduled: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"scheduled.{scheduled}")
 

@@ -255,6 +255,8 @@ class SlackMessage(Model):
     parent_user_id: str | None = Field(
         default=None, description="A reply's thread parent's author; computed when served"
     )
+    permalink: str | None = Field(default=None, description="Computed when a method serves it with one")
+    pinned_to: list[str] | None = Field(default=None, description="The channels it is pinned to; computed by pins.list")
 
 
 class SlackScheduled(Model):
@@ -270,6 +272,15 @@ class SlackScheduled(Model):
     attachments: list[JsonValue] | None = None
     thread_ts: str | None = None
     reply_broadcast: bool = False
+
+
+class SlackPin(Model):
+    """Minutehand's own: a message pinned to its channel, when and by whom."""
+
+    channel: str
+    ts: str
+    created: int
+    created_by: str
 
 
 class SlackPostKey(Model):
@@ -613,6 +624,38 @@ class ScheduledListArgs(ListArgs):
 class DeleteScheduledArgs(Model):
     channel: str = ""
     scheduled_message_id: str = ""
+
+
+class PermalinkArgs(Model):
+    channel: str = ""
+    message_ts: str = ""
+
+
+class ReactionRemoveArgs(Model):
+    name: str = ""
+    channel: str = ""
+    timestamp: str = ""
+    file: str = ""
+    file_comment: str = ""
+
+
+class ReactionGetArgs(Model):
+    channel: str = ""
+    timestamp: str = ""
+    file: str = ""
+    file_comment: str = ""
+    full: bool = False
+
+
+class ReactionsListArgs(ListArgs):
+    user: str = ""
+    full: bool = False
+    team_id: str = ""
+
+
+class PinArgs(Model):
+    channel: str = ""
+    timestamp: str = ""
 
 
 class DeleteArgs(Model):
@@ -1186,6 +1229,40 @@ class ScheduledItem(Model):
 class ScheduledList(Ok):
     scheduled_messages: list[ScheduledItem]
     response_metadata: ResponseMetadata
+
+
+class Permalink(Ok):
+    channel: str
+    permalink: str
+
+
+class ReactedMessage(Ok):
+    type: Literal["message"] = "message"
+    message: SlackMessage
+    channel: str
+
+
+class ReactedItem(Model):
+    type: Literal["message"] = "message"
+    channel: str
+    message: SlackMessage
+
+
+class ReactionsListed(Ok):
+    items: list[ReactedItem]
+    response_metadata: ResponseMetadata
+
+
+class PinnedItem(Model):
+    type: Literal["message"] = "message"
+    channel: str
+    created: int
+    created_by: str
+    message: SlackMessage
+
+
+class PinsListed(Ok):
+    items: list[PinnedItem]
 
 
 class ViewAnswered(Ok):

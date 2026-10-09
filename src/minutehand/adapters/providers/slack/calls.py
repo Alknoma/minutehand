@@ -75,3 +75,34 @@ class Calls:
             parent=self._world.team.id,
             after=self._recorded(text),
         )
+
+    def _summarised(self, root: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
+        """A message as a listing serves it. A thread's parent carries its reply count, repliers and latest reply: the
+        only sign in history that a thread exists. A reply carries its parent's author (`parent_user_id`), and a reply
+        broadcast to the channel its parent (`root`), as Slack computes them
+        (https://docs.slack.dev/messaging/retrieving-messages#threading,
+        https://docs.slack.dev/reference/events/message/thread_broadcast)."""
+        if root.thread_ts is not None and root.thread_ts != root.ts:
+            return self._as_reply(root, every)
+        replies = [m for m in every if m.thread_ts == root.ts and m.ts != root.ts]
+        if not replies:
+            return root
+        users = list(dict.fromkeys(m.user for m in replies))
+        return root.model_copy(
+            update={
+                "thread_ts": root.ts,
+                "reply_count": len(replies),
+                "reply_users": users,
+                "reply_users_count": len(users),
+                "latest_reply": replies[-1].ts,
+            }
+        )
+
+    def _as_reply(self, reply: wire.SlackMessage, every: list[wire.SlackMessage]) -> wire.SlackMessage:
+        parent = next((m for m in every if m.ts == reply.thread_ts), None)
+        if parent is None:
+            return reply
+        served = reply.model_copy(update={"parent_user_id": parent.user})
+        if served.subtype == "thread_broadcast":  # enum-lint: exempt Slack's own message subtype on the wire
+            return served.model_copy(update={"root": self._summarised(parent, every)})
+        return served
