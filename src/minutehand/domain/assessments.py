@@ -1,9 +1,10 @@
-"""Assessments: how a team judges its agent, written by the team in YAML over the facts of a run.
+"""Assessments: a team's own policy, written by the team in YAML over the facts of a run.
 
-Minutehand holds no opinion of how an agent should behave. It records what happened (who was asked what and when,
-what the agent wrote and to whom, when each answer landed, what the agent planned and reported) and a run is judged
-only by the rules its own files declare: `assess:` in the agent file and in the scenario (`docs/assessments.md`).
-A run whose files declare none is reported as facts, and its verdict says nothing was assessed.
+Every run's effects are assessed against the world its files declare, with nothing written for it (`domain.items`,
+`checks/items.py`). What the world cannot imply, how often a team wants a person chased, what it wants its owner told,
+is the team's to write as rules: `assess:` in the agent file and in the scenario (`docs/assessments.md`). Minutehand
+records what happened (who was asked what and when, what the agent wrote and to whom, when each answer landed, what
+the agent planned and reported, every call it made) and the rules count it.
 
 A rule reads as one sentence: for each of something (the run, every ask, every hand-off, every person), when a
 condition holds, the number of some facts between two moments is within bounds.

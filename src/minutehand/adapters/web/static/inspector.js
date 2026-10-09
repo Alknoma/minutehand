@@ -84,6 +84,7 @@ const KINDS = {
     return head("Finding " + x.number, x.pattern ? x.pattern.title : title(f.check), (f.at ? simWhen(f.at, f.wake) : ""), ' <span class="chip ' + f.kind + '">' + esc(f.kind === "informational" ? "note" : f.kind) + "</span>") +
       section("What it found", '<p class="said">' + esc(f.message) + "</p>") +
       section("Evidence", evidence) +
+      (f.assessed ? section("Measured against the declared world", kv([["Is", esc(f.assessed.kind.replace("_", " "))], ["Item", f.assessed.item === null ? null : esc(f.assessed.item.replace("_", " "))], ["Against", esc(f.assessed.against)], ["Calls", f.calls.length ? esc(f.calls.join(", ")) : null]])) : "") +
       section("The rule", kv([["Check", esc(f.check)], ["Severity", esc(f.severity)], ["Wake", f.wake === null ? null : esc(f.wake)]])) +
       (x.pattern ? section("How a proactive agent avoids it", "<p>" + esc(x.pattern.failure) + "</p><p><b>" + esc(x.pattern.design) + "</b></p>") : "") +
       (f.judged ? section("Judged by a model", kv([["Model", esc(f.judged.model)], ["Prompt", esc(f.judged.prompt_version)]]) + '<p class="said">' + esc(f.judged.rationale) + "</p>") : "");

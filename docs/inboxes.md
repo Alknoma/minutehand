@@ -237,8 +237,7 @@ Other shapes, each over transitions:
   first approval, from either; with none, the run never moved and the rule reads the whole run.
 - **A request taken back** is the agent's `withdraw`, `by: [agent]`, never a decision.
 - **What the agent tells the requester.** `holding: ["{ask.facts}"]` needs each input of the decision word for word;
-  `conveys: ["{ask.facts}"]` needs each conveyed in any words, as a judge model reads it. A rule with `conveys` is
-  read only with a judge model (the judged check `conveys`), and its findings are for review.
+  whether a reworded relay misreports it is the shared reviewer's, with `--judge` (`docs/assessments.md`).
 
 ### `minutehand serve`: driven from outside
 

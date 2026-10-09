@@ -59,8 +59,11 @@ A model, for people whose replies it writes and for --judge, is configured by MI
 MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL, and MINUTEHAND_MODEL_API: openai (the default, any
 OpenAI-compatible chat-completions API) or anthropic (Anthropic's Messages API, base URL https://api.anthropic.com).
 
-A run is judged only by what its files declare: the team's rules (`assess:` in the agent file and the scenario,
-docs/assessments.md), the scenario's `expect:` and `protected_names`, and the agent's own `checks:`. With --json,
+Every run is assessed against the world its files declare, with nothing more to write: each effect of the agent's,
+by kind of item, against the goal, the deadline, the people's facts and windows, the services and their machines
+(docs/assessments.md); --judge adds a model's review of each, for what only meaning can tell. The team's own rules
+(`assess:`), the scenario's `expect:` and `protected_names`, and the agent's own `checks:` add policy the world
+cannot imply. With --json,
 `run`, `fork` and `findings` print one shape: {"outcomes": [...], "stability": ...}.
 
 Exit codes of `run`, `fork` and `findings`, which follow the verdict each report starts with:
@@ -73,8 +76,8 @@ Exit codes of `run`, `fork` and `findings`, which follow the verdict each report
   4  not scored: Minutehand itself failed while answering one of the agent's calls, so the run says nothing about
      the agent; any command exits 4 too when Minutehand fails, naming where its traceback was written (--debug
      prints it as well)
-  5  not judged: nothing was assessed (the files declare no rule, expectation, protected name or check of the
-     agent's own; the facts are still reported), or a check that needs wakes had none
+  5  not judged: a check that needs the agent's wakes had none (a standing world nobody stepped); every run is
+     otherwise assessed against the world its files declare, rules or none
   6  simulation incomplete: the simulated world did not play as its files declare (a service responder who can
      never act, an answer owed and never booked, a people model call that failed, a push the agent never took
      after every retry); the report's "simulation" section names each, and the agent's verdict over what did
@@ -794,7 +797,8 @@ def _shown(found: LibraryScenario) -> str:
             "",
             *textwrap.wrap(f"A good agent: {found.good_agent}", 116),
             "",
-            f"rules: {', '.join(found.rules)} (in the scenario's `assess`, yours to edit once written)",
+            "assessed on: what the scenario declares, on every run (docs/assessments.md)",
+            f"rules: {', '.join(found.rules)} (optional team policy in the scenario's `assess`, yours to edit or delete)",
             f"patterns: {', '.join(found.patterns)}",
             f"takes: {' '.join(takes[u] for u in found.uses)}",
         ]
@@ -826,8 +830,9 @@ def _new(args: argparse.Namespace) -> int:
     for found in chosen:
         print(write(found, team, args.out, replace=args.force))
     print(
-        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>; "
-        "minutehand validate <file> checks one without a run"
+        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>: every run is assessed "
+        "against what the scenario declares, with nothing more to write; its `assess` rules are optional team policy, "
+        "yours to edit or delete. minutehand validate <file> checks one without a run"
     )
     return 0
 
@@ -1356,6 +1361,14 @@ def _point(point: ForkPoint) -> str:
 def _finding(finding: Finding) -> str:
     where = f" (wake {finding.wake})" if finding.wake is not None else ""
     line = f"  {finding.check}: {finding.message}{where}"
+    if finding.assessed is not None:
+        cited = [f"seq {', '.join(str(s) for s in finding.evidence)}"] if finding.evidence else []
+        cited += [f"call {', '.join(str(c) for c in finding.calls)}"] if finding.calls else []
+        judged = f"; judged by {finding.judged.model}" if finding.judged is not None else ""
+        line += (
+            f"\n    {finding.assessed.kind.value.replace('_', ' ')}, measured against {finding.assessed.against}"
+            f"{' (' + '; '.join(cited) + ')' if cited else ''}{judged}"
+        )
     if finding.pattern is not None:
         known = pattern(finding.pattern)
         line += f"\n    pattern {known.key}: {known.title}. {known.design}"

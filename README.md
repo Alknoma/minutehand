@@ -3,9 +3,12 @@
 Minutehand runs your proactive agent through simulated days of work in a few seconds and tells you how well it
 carried the work. The agent talks to fake Slack, Teams, Asana, Jira, YouTrack, Notion, GitHub, Google Drive and others,
 with people who answer late or not at all. Minutehand owns the clock, records every change in an append-only
-log, and judges the result by the rules your team writes in YAML: when to follow up, how often, when to escalate
-and to whom. Minutehand holds no opinion of its own about how an agent should behave; a run with no rules reports
-what happened and says nothing was assessed. A failure can name the design that fixes it. A finished run can be forked
+log, and assesses every message, ticket, document, calendar event and service item the agent touched against the
+world your scenario declares: who knows what, who answers when, what a service allows, what the goal waits on, when
+the deadline falls. Write the scenario, get the assessment: too early, too late, again with nothing new, a move the
+service refuses, a fact the agent made up. Nothing is measured against an opinion of how agents should work, and
+each finding names the declaration it was held to; policy the world cannot imply (how often your team chases) is
+yours to add in YAML. A failure can name the design that fixes it. A finished run can be forked
 from a checkpoint with the prompt, the model, a person or the world changed, and played forward again.
 
 Minutehand starts the agent's own command, or reaches one already running, and points it at the fakes through its
@@ -57,9 +60,11 @@ minutehand view                  # the runs in a browser, at http://127.0.0.1:80
 Each run takes a few seconds. Runs are kept in `.minutehand/` in the folder you ran them from. The example's
 `README.md` explains both runs line by line.
 
-To try your own agent, write an agent file (`minutehand schema agent` prints its JSON Schema), a scenario, and the
-rules your team judges the agent by (`assess:`, `docs/assessments.md`), check them with `minutehand validate`, and run `minutehand doctor -- <your agent's command>` to find any HTTP
-client in the agent that would go around the proxy.
+To try your own agent, write an agent file (`minutehand schema agent` prints its JSON Schema) and a scenario: its
+goal, its people with what they know and when they answer, the services they decide through. That is all a run
+needs to be assessed (`docs/assessments.md`); rules of your team's own (`assess:`) are optional, for policy the world
+cannot imply. Check the files with `minutehand validate`, and run `minutehand doctor -- <your agent's command>` to find
+any HTTP client in the agent that would go around the proxy.
 
 ## How the agent touches Minutehand
 
@@ -178,7 +183,8 @@ built.
 `minutehand scenarios` lists a library of ready-made situations (a person goes quiet, answers late, is away with a
 delegate; an approval is rejected or never decided; a deadline moves; a scheduled wake comes late, twice or never).
 `minutehand scenarios new --all --goal ... --owner 'Name <email>' --ask 'Name <email>'` writes each out with your
-values, and with the rules that judge it in its `assess:`, yours to edit. See `docs/scenarios.md`.
+values; every run of one is assessed against what it declares. Each also carries a few rules of team policy in its
+`assess:`, optional and yours to edit or delete. See `docs/scenarios.md`.
 
 ## Develop
 

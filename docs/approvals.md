@@ -8,9 +8,11 @@ those files or a run of its lines (`tests/approvals/test_guide_blocks.py` fails 
 
 Three things hold throughout:
 
-- **Minutehand states facts and judges nothing you did not write.** Whether your agent acted too early, chased too
-  often or told the requester too late is decided only by the rules in your agent file and scenarios
-  (`docs/assessments.md`). Without rules, a run reports what happened and is `Not assessed`.
+- **Minutehand judges against the world you declared, and nothing else.** Going ahead before the approval the goal
+  waits on, a move the service's machine refuses, a chase inside the approver's reply window, an invented figure in
+  a resubmission: each is found on every run, measured against your scenario, with no rule written
+  (`docs/assessments.md`, "What every run is assessed on"). How often your team wants the requester told, or the
+  approver chased, is policy your own rules add.
 - **People's words are a model's, written from the facts you script.** You say what the approver decides and why;
   a model writes how they say it. `verbatim`, and a form's typed value, are the rare exact strings.
 - **Authentication is out of scope.** None of the examples signs anyone in; `docs/inboxes.md` shows `as_person` for
@@ -517,9 +519,8 @@ assess:
   inputs as given, the reason she wrote. `{ask.facts}` is each input, `{ask.answer}` all of them together (the
   decision's name when it carries none); for a message, `{ask.facts}` is each fact of the step, and for a press
   `{ask.answer}` is what was typed (`chat/rejected.yaml`). `holding` matches them as text, in any case. When the
-  agent may reword, `conveys:` beside `holding` takes the same phrases and has a judge model decide whether each
-  message conveys them, in any words; such a rule is read only with a judge model configured, and its findings are
-  for review (`docs/assessments.md`).
+  agent may reword, whether a relay misreports the decision is the shared reviewer's to say, run with `--judge`, with
+  no rule written (`docs/assessments.md`, "The shared reviewer").
 
 <!-- excerpt: examples/approvals/inbox/rejected.yaml -->
 ```yaml
@@ -699,16 +700,16 @@ What is awkward, unserved or needs a workaround today, each from the code or a r
 5. **Answers are not always pushed.** A Gmail answer is not pushed (`users.watch` is refused): the agent polls. A
    calendar answer is heard only through a live `events.watch` channel, or a Graph subscription on Outlook. A
    ticket's move wakes nobody, and Jira webhooks are refused.
-6. **`conveys:` needs a judge model.** Without one, a rule using it is not read, and the run says so; with one, its
-   findings are for review, not failures. `holding` stays the deterministic match.
+6. **Meaning needs a judge model.** Whether a reworded relay misreports a decision is the shared reviewer's, read
+   only with `--judge` and a model; its findings are for review, not failures. `holding` stays the deterministic
+   match.
 
 Closed by construction, each held to a run in `tests/inboxes/test_approval_gaps.py`: a write the product makes while
 handling a decision comes after it (the person's transition is recorded first); one operation with two approvers
 goes ahead on the first approval (`first: true`); a request taken back is the agent's `withdraw`, never a decision
 (`by`); a reminder brings an owed decision forward; a fork's `reply_at` pins an item's moment (`provider`); an
 answer owed when what the person knows changes is written from what they know when they send it; an away approver's
-item gets their automatic reply as a note; and a decision's answer is what it carries, matched as text by `holding`
-or in any words by `conveys`.
+item gets their automatic reply as a note; and a decision's answer is what it carries, matched as text by `holding`.
 
 ## Where it is tested
 

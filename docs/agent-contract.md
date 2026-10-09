@@ -45,7 +45,7 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **base URLs** | The agent → the proxy's `/_host/…`, for a client without a proxy | As the real host | `base_urls[]` | No |
 | **model hosts** | The agent → its model API, tunnelled or recorded | As the real host | `--model-host`, `CreateWorld.model_hosts` | No |
 | **telemetry** | The agent → Minutehand's OTLP receiver | OTLP/HTTP or gRPC | Environment Minutehand hands out | No |
-| **assessments** | Minutehand reads the team's rules over the facts of every run and fork; nothing else judges how the agent behaves | YAML rules (`docs/assessments.md`) → findings named by each rule's `id` | `assess[]` in the agent file; `assess[]` and `assess_off[]` in a scenario | No: a run with none is reported as facts, `Not assessed` |
+| **assessments** | Every run's effects on the world, by kind of item, against the world its files declare (goal, deadline, people's facts and windows, services and their machines, the agent's rhythm); the team's own rules over the facts on top | findings that name what they were measured against (`docs/assessments.md`); with `--judge`, the shared reviewer's, for review | nothing for the automatic assessment; `assess[]` in the agent file, `assess[]` and `assess_off[]` in a scenario for the team's own | No |
 | **own checks** | Minutehand runs the agent's checks after every run and fork: the escape hatch for what a rule cannot say | A class with `id`, `needs` and `run(view) -> CheckReport`, reading the facts `minutehand.checks.facts` gives (`asks`, `messages`, `writes`, `planned_wakes`, `reported`) | `checks[]`: Python files, a relative path read from the agent file's folder | No |
 
 ## The report, and how long Minutehand waits

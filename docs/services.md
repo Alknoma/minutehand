@@ -7,8 +7,10 @@ So Minutehand holds the service's state and renders what the agent observes from
 (`docs/design-transitions.md`), and the service's people act through the same people engine as a Jira assignee or a
 Calendar guest.
 
-Minutehand states facts and judges nothing the team did not write: whether the agent acted too early is a rule in the
-team's YAML. A person's words are a model's. Authentication is out of scope: any credential, or none, is let in.
+Minutehand judges the agent against the world the scenario declares, and nothing else: a move the machine refuses, an
+order placed before the state the goal waits on, an item left where only the agent could move it on, a reaction
+slower than the agent's declared rhythm, an invented figure in a resubmission (`docs/assessments.md`, "What every run
+is assessed on"); a team's own rules add policy the world cannot imply. A person's words are a model's. Authentication is out of scope: any credential, or none, is let in.
 
 ## The declaration
 

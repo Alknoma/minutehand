@@ -95,8 +95,9 @@ was due and no follow-up came within the hour. The rule names its pattern, so th
 that prevents it: give every wait a date by which you expect an answer, and wake on that date.
 
 That a follow-up is owed, and when, is this scenario's rule, not Minutehand's. Leave `assess:` out of
-`scenario_silent.yaml` and the same run is `Not assessed` (exit 5): it reports what happened, a wait on Rosa still
-open and no follow-up made, and judges none of it.
+`scenario_silent.yaml` and the run is still assessed against what the scenario declares (`docs/assessments.md`):
+a chase inside Rosa's reply window, or the same words twice, would be found; a follow-up nobody sent is not, since
+the world declares no rule that one is owed.
 
 ## Afterwards
 

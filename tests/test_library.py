@@ -110,9 +110,11 @@ def test_the_written_file_says_what_it_is_for(tmp_path: Path) -> None:
     head = text.split("\nname:")[0]
     assert head.startswith("# planned_wake_dropped, from the Minutehand scenario library")
     assert "# Situation: The person asked never answers" in head
+    flat = " ".join(line.removeprefix("# ") for line in head.splitlines())
+    assert flat.index("Every run of it is assessed against what it declares below") < flat.index("Optional team policy")
     assert (
-        "# Rules (in `assess` below, yours to edit): follows_up_when_due, planned_to_be_back_when_due,\n"
-        "# not_done_while_waiting. Patterns: expiry_on_every_wait." in head
+        "Optional team policy (in `assess` below, yours to edit or delete): follows_up_when_due, "
+        "planned_to_be_back_when_due, not_done_while_waiting. Patterns: expiry_on_every_wait." in flat
     )
     assert all(line.startswith("#") or not line for line in head.splitlines())
 

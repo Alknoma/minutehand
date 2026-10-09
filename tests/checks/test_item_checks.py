@@ -10,6 +10,7 @@ from pathlib import Path
 
 from minutehand.application.items import provided_types, typed_items
 from minutehand.checks.items import ItemChecks
+from minutehand.cli import _finding
 from minutehand.domain.checks import Finding, FindingKind, RunView
 from minutehand.domain.common import Window
 from minutehand.domain.items import (
@@ -453,3 +454,11 @@ def test_seed_3_the_deadline_passing_with_the_approval_pending_and_the_slow_resu
     assert found["deadline_missed"].message.endswith("no approvals item was approved: req_64 was pending")
     # The ask-back left the request where only the agent could move it: its reaction is its resubmit, 3 days on.
     assert "the agent moved it on (resubmit) 3 days 5 hours later" in found["late_reaction"].message
+
+
+def test_the_report_says_what_each_finding_is_and_what_it_was_measured_against() -> None:
+    [refused] = [f for f in _found(_trial("seed3_invented_quote")) if f.check == "refused_move"]
+    said = _finding(refused).splitlines()
+    assert said[0].startswith("  refused_move: POST /v1/requests/req_64/resubmit to approvals was refused 400")
+    assert said[1].startswith("    violation, measured against the service approvals's machine (approve: pending")
+    assert said[1].endswith("(seq 288; call 76)")

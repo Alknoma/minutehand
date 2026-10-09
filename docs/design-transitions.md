@@ -260,8 +260,8 @@ host nobody declared as a service with no description; the separate stand-in (`a
 - **Inboxes**: a decision with `settles: false` is a note, where an away person's automatic reply goes. A reminder
   brings an owed decision forward; a fork's `reply_at` with `provider` pins an item's moment; an owed answer is
   worded again when what the person knows changes before it is sent.
-- **Facts.** A decision's answer is its inputs as given (`{ask.answer}`, and each a fact for `{ask.facts}`); a
-  message count's `conveys` is a phrase a judge model must find conveyed (`checks/judged/conveys.py`, `conveys/1`).
+- **Facts.** A decision's answer is its inputs as given (`{ask.answer}`, and each a fact for `{ask.facts}`); whether a
+  relay misreports it in other words is the shared reviewer's (`checks/judged/review.py`, `item-review/1`).
 - **`minutehand migrate <file> [--write]`** rewrites the retired keys:
 
 | Retired | Now |

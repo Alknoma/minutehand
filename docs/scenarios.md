@@ -2,9 +2,11 @@
 
 Eleven ready-made scenarios, shipped inside the `minutehand` package, so a team gets findings on its first run
 without writing one. Each is a situation every proactive agent meets; the team fills in the goal, the owner and the
-person the agent must ask, and gets an ordinary scenario file it then owns, with the rules that judge it written
-out in its `assess:` (`docs/assessments.md`). Those rules are a starting point, not Minutehand's opinion: the team
-edits, drops or adds to them, and nothing else judges how the agent behaves.
+person the agent must ask, and gets an ordinary scenario file it then owns. Write the scenario, get the assessment:
+every run of it is assessed against what it declares, its people, their windows, the deadline, with nothing more
+to write (`docs/assessments.md`). Each file also carries a few rules of team policy in its `assess:`, a starting
+point for what the world cannot imply (how often to chase, when to escalate): optional, the team's to edit or
+delete.
 
 ```bash
 minutehand scenarios                       # the library, one line each
@@ -58,9 +60,10 @@ what the scheduler gets wrong, and what must be true at the end. It leaves to th
 Every library scenario starts on Monday 2026-08-24 at 09:00 UTC, simulated, and runs to a deadline five days later.
 A goal may name a date relative to that start with `{{start+P4D}}` (any scenario text may).
 
-A written file starts with a comment saying where it came from, the situation, what a good agent does, and the rules
-and patterns that judge it. The rest is the scenario, rules included, which the team may edit like any other.
-`minutehand scenarios show <name>` prints the same, with `rules:` naming each rule of its `assess`.
+A written file starts with a comment saying where it came from, the situation, what a good agent does, that every run
+of it is assessed against what it declares, and the optional rules and patterns of its `assess`. The rest is the
+scenario, rules included, which the team may edit like any other. `minutehand scenarios show <name>` prints the same,
+with `rules:` naming each rule of its `assess`.
 
 ## How a person is written
 
