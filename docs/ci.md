@@ -95,13 +95,14 @@ same way, once, when it starts the agent's command (the folder is under `<state>
 start, and in `env` and `doctor`, a file holding either is refused by name. `run-all` hands each of its runs
 `--record-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
 `--no-proxy` and `--no-receive-telemetry` as given; each run takes free ports of its own. Each says the verdict it is written
-to reach (`expect_outcome: passed | failed | unfinished | not_judged`, default `passed`): a scenario whose point is
-that nobody answers may expect `unfinished`, and one that shows a known bug `failed`. `run-all` prints a line per
+to reach (`expect_outcome: passed | failed | unfinished | not_judged | simulation_incomplete`, default `passed`): one
+that shows a known bug may expect `failed`; `unfinished` is only an older scenario's, one that hands the agent a
+`goal`, since a scenario that is only a world watches the agent for `runs_for` and passes when nothing failed in it. `run-all` prints a line per
 scenario and a timeline per person, and exits 1 when any verdict differs from its scenario's, 2 when any run could
 not be performed, 0 otherwise. `--json` prints the same as data.
 
 **What a single run's exit code says.** `minutehand run` exits with its verdict: 0 passed, 1 a rule, an expectation
-or a check of the agent's own failed, 3 not finished, 4 Minutehand itself failed, 5 not judged, 6 simulation
+or a check of the agent's own failed, 3 not finished (an older scenario with a `goal` only), 4 Minutehand itself failed, 5 not judged, 6 simulation
 incomplete (the simulated world did not play as its files declare; the agent's verdict over what did happen is in the
 words). Every run is
 assessed against the world its files declare (`docs/assessments.md`), so a job gates on the scenario it plays with no

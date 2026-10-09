@@ -60,7 +60,9 @@ def _still_open(world: OpenWorld) -> AgentReport:
     )
 
 
-def test_work_the_agent_still_holds_open_keeps_a_settled_world_from_passing(served: Served, state: Path) -> None:
+def test_work_the_agent_still_holds_open_is_reported_and_never_a_verdict_on_its_own(
+    served: Served, state: Path
+) -> None:
     token = "xoxb-reported-open"
     with event_receiver() as receiver:
         world = OpenWorld(served.client, served.client.create_world(_spec(token, receiver.url)))
@@ -71,8 +73,9 @@ def test_work_the_agent_still_holds_open_keeps_a_settled_world_from_passing(serv
         relayed = world.report(_still_open(world)).result.verdict
         closed = world.close().result.verdict
 
-    assert relayed.kind is VerdictKind.UNFINISHED and relayed.open_commitments == 1
-    assert closed.kind is VerdictKind.UNFINISHED and "1 commitment still open" in closed.words
+    # The agent's work never finishes: what it holds open is counted, and nothing failed, so the world passed.
+    assert relayed.kind is VerdictKind.PASSED and relayed.open_commitments == 1
+    assert closed.kind is VerdictKind.PASSED and closed.open_commitments == 1
     record = session.load(state, world.world_id).record
     assert record.stop is StopReason.CLOSED
     assert record.reported is not None and [c.key for c in record.reported.commitments or []] == ["venue"]
@@ -103,5 +106,5 @@ def test_a_report_through_any_world_of_a_case_is_the_cases(served: Served, state
         case.report(_still_open(world))
         closed = case.close().result.verdict
 
-    assert closed.kind is VerdictKind.UNFINISHED and closed.open_commitments == 1
+    assert closed.kind is VerdictKind.PASSED and closed.open_commitments == 1
     assert session.load(state, case.case_id).record.reported is not None

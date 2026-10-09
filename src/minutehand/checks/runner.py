@@ -253,6 +253,7 @@ _STOPPED = {
     StopReason.AGENT_DONE: "the agent reported it was done",
     StopReason.WAKE_LIMIT: "the run stopped at its wake limit",
     StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
+    StopReason.WINDOW_ENDED: "the run watched the agent to the end of its window",
     StopReason.NOTHING_PENDING: "the run stopped because nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
@@ -326,6 +327,9 @@ def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Ver
             f"Not judged: no check failed, but {_count(len(reasons), 'thing')} kept this run from being judged; "
             f"{how}: " + "; ".join(reasons) + "."
         )
+    elif not view.scenario.is_task:
+        kind = VerdictKind.PASSED
+        words = f"Passed: no check failed in the window; {how}."
     elif stop is StopReason.AGENT_DONE or open_work == 0:
         kind = VerdictKind.PASSED
         left = "" if stop is StopReason.AGENT_DONE else ", with nothing left open"
@@ -525,6 +529,7 @@ _STOPPED_BY = {
     StopReason.AGENT_DONE: StoppedBy.AGENT_DONE,
     StopReason.WAKE_LIMIT: StoppedBy.WAKE_LIMIT,
     StopReason.DEADLINE_PASSED: StoppedBy.DEADLINE_PASSED,
+    StopReason.WINDOW_ENDED: StoppedBy.WINDOW_ENDED,
     StopReason.NOTHING_PENDING: StoppedBy.NOTHING_PENDING,
     StopReason.AGENT_FAILED: StoppedBy.AGENT_FAILED,
     StopReason.CLOSED: StoppedBy.CLOSED,

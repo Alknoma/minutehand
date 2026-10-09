@@ -56,7 +56,7 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 |---|---|---|
 | `working` | This wake is still in progress: the agent is still acting on it (a model's turn, a tool call) | Asks again, the wait doubling from `report_first_after` to `report_at_most_every`, until the status changes; a wake still `working` after `working_limit` (default 30 minutes) stops the run `agent_failed`, saying so. Nothing is printed while it waits |
 | `idle` | This wake is over; wake me at `next_wake` (or not at all) | Checkpoints the wake and moves the clock |
-| `done` | The goal is finished | Stops the run `agent_done` |
+| `done` | The agent says its work is finished | Nothing, for a scenario that is only a world: the agent's work never finishes, and the run watches it to the end of `runs_for` (`window_ended`). An older scenario that hands the agent a `goal` stops the run `agent_done` |
 
 An agent that answers `working` for "I have work open" rather than "this wake is still running" keeps every wake
 open until `working_limit`: say `idle`, with the work in `commitments`.

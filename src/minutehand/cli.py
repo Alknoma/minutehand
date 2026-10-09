@@ -172,6 +172,7 @@ _STOPPED = {
     StopReason.AGENT_DONE: "the agent reported it was done",
     StopReason.WAKE_LIMIT: "its wake limit was reached",
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
+    StopReason.WINDOW_ENDED: "the clock reached the end of the scenario's window",
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
