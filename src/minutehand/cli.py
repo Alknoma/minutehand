@@ -3,7 +3,9 @@
     minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] [--seed S] [--judge] [--json] [PROXY] [-- <command...>]
                                                  {run.port} and {run.dir} in the agent file and the command are
                                                  filled once, as run-all fills them, when a command is given
-    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json] [-- <command...>]
+    minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json]
+                     [--record-model-calls] [--model-host HOST]... [--capture-unknown [MODE]] [--upstream-ca FILE]
+                     [--proxy-host H] [--agent-proxy-host H] [--no-proxy H]... [--no-receive-telemetry] [-- <command...>]
                                                  every scenario in the folder, in parallel, each in a run of its own,
                                                  N times under seeds S, S+1, ...; {run.port} and {run.dir} in the agent
                                                  file and the command are filled per run; exits 1 when a scenario's
@@ -325,6 +327,18 @@ def _parser() -> _Parser:
         help="the first seed of each scenario's samples; default each scenario's own seed",
     )
     run_all.add_argument("--json", action="store_true")
+    run_all.add_argument(
+        "--proxy-host", default=None, help="the address each run's proxy listens on (each takes a free port)"
+    )
+    run_all.add_argument("--agent-proxy-host", default=None, help="the host the agent reaches each run's proxy at")
+    run_all.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+    )
+    run_all.add_argument(
+        "--no-receive-telemetry", action="store_true", help="receive none of the agent's telemetry in any run"
+    )
+    models(run_all)
+    capture(run_all)
     state(run_all)
 
     findings = commands.add_parser("findings", help="what the checks said about a finished run")
@@ -997,10 +1011,25 @@ def _run_all(args: argparse.Namespace, state: Path, command: list[str] | None) -
             judge=args.judge,
             samples=args.samples,
             seed=args.seed,
+            passed_on=_passed_on(args),
         )
     )
     print(batch.model_dump_json(indent=2) if args.json else run_all.described(batch))
     return batch.exit_code
+
+
+def _passed_on(args: argparse.Namespace) -> list[str]:
+    """The flags of `run-all` that each of its `minutehand run`s takes as they are. The ports are not among them:
+    runs played at once each take free ones."""
+    flags = [*(["--proxy-host", args.proxy_host] if args.proxy_host else [])]
+    flags += ["--agent-proxy-host", args.agent_proxy_host] if args.agent_proxy_host else []
+    flags += [word for host in args.no_proxy for word in ("--no-proxy", host)]
+    flags += ["--no-receive-telemetry"] if args.no_receive_telemetry else []
+    flags += ["--record-model-calls"] if args.record_model_calls else []
+    flags += [word for host in args.model_host for word in ("--model-host", host)]
+    flags += [] if args.capture_unknown == UnknownHosts.REFUSE.value else [f"--capture-unknown={args.capture_unknown}"]
+    flags += ["--upstream-ca", str(args.upstream_ca)] if args.upstream_ca is not None else []
+    return flags
 
 
 def _progress(command: str) -> Callable[[str], None]:

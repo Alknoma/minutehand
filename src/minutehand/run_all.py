@@ -229,9 +229,10 @@ async def play_all(
     judge: bool = False,
     samples: int = 1,
     seed: int | None = None,
+    passed_on: list[str] | None = None,
 ) -> Batch:
     """Every scenario in `folder`, `samples` times each under seeds counted up from `seed`, at most `jobs` runs at
-    a time."""
+    a time; `passed_on`, flags each `minutehand run` takes as they are (`--record-model-calls`, the proxy's host)."""
     if samples < 1:
         raise FileRefused(f"run-all needs at least one sample of each scenario, not {samples}")
     found = scenarios_in(folder)
@@ -245,7 +246,15 @@ async def play_all(
     async def one(path: Path, sample_seed: int | None, n: int) -> SamplePlayed:
         async with gate:
             return await _play(
-                path, agent, state=state, batch=batch, command=command, judge=judge, seed=sample_seed, n=n
+                path,
+                agent,
+                state=state,
+                batch=batch,
+                command=command,
+                judge=judge,
+                seed=sample_seed,
+                n=n,
+                passed_on=passed_on or [],
             )
 
     played: list[ScenarioPlayed] = []
@@ -293,6 +302,7 @@ async def _play(
     judge: bool,
     seed: int | None,
     n: int,
+    passed_on: list[str],
 ) -> SamplePlayed:
     written = load_scenario(path)
     played_seed = (
@@ -306,11 +316,15 @@ async def _play(
     uses = PORT in text or DIR in text
     if uses:
         copy.write_text(_filled(text, port, own), encoding="utf-8")
-    argv = [sys.executable, "-m", "minutehand", "run", str(path), "--agent", str(copy if uses else agent)]
-    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
-    argv += ["--seed", str(seed)] if seed is not None else []
-    if command:
-        argv += ["--", *(_filled(word, port, own) for word in command)]
+    argv = run_argv(
+        path,
+        copy if uses else agent,
+        state=state,
+        judge=judge,
+        seed=seed,
+        passed_on=passed_on,
+        command=[_filled(word, port, own) for word in command] if command else None,
+    )
     log = own / "run.log"
     env = {**os.environ, PORT_VARIABLE: str(port), DIR_VARIABLE: str(own)}
     try:
@@ -338,6 +352,24 @@ async def _play(
         timeline=timeline(state, outcome.record.run_id),
         log=str(log),
     )
+
+
+def run_argv(
+    scenario: Path,
+    agent: Path,
+    *,
+    state: Path,
+    judge: bool,
+    seed: int | None,
+    passed_on: list[str],
+    command: list[str] | None,
+) -> list[str]:
+    """The `minutehand run` one scenario's sample is played by."""
+    argv = [sys.executable, "-m", "minutehand", "run", str(scenario), "--agent", str(agent)]
+    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
+    argv += ["--seed", str(seed)] if seed is not None else []
+    argv += passed_on
+    return argv + (["--", *command] if command else [])
 
 
 def timeline(state: Path, run_id: str) -> list[Timeline]:

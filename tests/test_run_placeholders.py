@@ -10,6 +10,7 @@ import pytest
 
 from minutehand import run_all
 from minutehand.application.files import FileRefused, load_agent, problems
+from minutehand.cli import _parser, _passed_on
 from minutehand.domain.agent import Reported
 
 AGENT = """\
@@ -60,3 +61,45 @@ def test_validate_reads_the_agent_file_as_a_run_fills_it(tmp_path: Path) -> None
     _, model, said = problems(_agent(tmp_path))
     assert said == []
     assert model is not None
+
+
+def test_run_all_hands_each_run_the_flags_that_record_model_calls_and_capture(tmp_path: Path) -> None:
+    args = _parser().parse_anywhere(
+        [
+            "run-all",
+            str(tmp_path),
+            "--agent",
+            "agent.yaml",
+            "--record-model-calls",
+            "--model-host",
+            "llm.internal",
+            "--capture-unknown",
+            "reads",
+            "--no-proxy",
+            "db.local",
+        ]
+    )
+    passed = _passed_on(args)
+    argv = run_all.run_argv(
+        tmp_path / "s.yaml", tmp_path / "a.yaml", state=tmp_path, judge=True, seed=3, passed_on=passed, command=["x"]
+    )
+    assert argv[3:] == [
+        "run",
+        str(tmp_path / "s.yaml"),
+        "--agent",
+        str(tmp_path / "a.yaml"),
+        "--state",
+        str(tmp_path),
+        "--json",
+        "--judge",
+        "--seed",
+        "3",
+        "--no-proxy",
+        "db.local",
+        "--record-model-calls",
+        "--model-host",
+        "llm.internal",
+        "--capture-unknown=reads",
+        "--",
+        "x",
+    ]
