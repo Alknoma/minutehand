@@ -4,7 +4,7 @@
 import { esc, when, span, seconds, words, title, plural, count, clip, median } from "./util.js";
 import { VList } from "./vlist.js";
 
-const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed" };
+const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed", simulation_incomplete: "Simulation incomplete" };
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
 const ANSWER_WORD = { provider: "fake", declaration: "declared", recording: "REPLAYED", pass_through: "real host", emulator: "emulator", model: "model", tunnel: "tunnelled", refused: "refused", minutehand: "as a person" };
 
@@ -51,6 +51,24 @@ export const VIEWS = [
         { label: "When", width: "130px", html: (x) => esc(x.finding.at ? when(x.finding.at) : "—"), sort: (x) => x.finding.at || "" },
         { label: "Evidence", width: "74px", align: "r", html: (x) => String(x.finding.evidence.length), sort: (x) => x.finding.evidence.length }
       ], f, (x) => "finding:" + x.number, 34);
+    }
+  },
+  {
+    id: "simulation", group: "Outcome", label: "Simulation",
+    count: (ctx) => { const h = ctx.base.findings.simulation || []; const bad = h.filter((x) => x.incomplete).length; return { n: bad || h.length, cls: bad ? "fail" : "" }; },
+    render(host, ctx) {
+      const fs = ctx.base.findings, h = (fs.simulation || []).map((x, i) => Object.assign({ number: i + 1 }, x));
+      if (!fs.finished) { host.innerHTML = headHtml("—", "The simulation's health is read when the run finishes."); return {}; }
+      const bad = h.filter((x) => x.incomplete).length;
+      host.innerHTML = headHtml(String(bad), "incomplete · " + plural(h.length - bad, "coverage note") + " · facts about the simulated world, never about the agent", bad ? "fail" : "pass") + '<div class="view-body" data-role="t"></div>';
+      return table(host.querySelector('[data-role="t"]'), ctx, [
+        { label: "Kind", width: "104px", html: (x) => chip(x.incomplete ? "fail" : "informational", x.incomplete ? "incomplete" : "coverage"), sort: (x) => (x.incomplete ? 0 : 1) },
+        { label: "What", width: "minmax(140px, 1fr)", html: (x) => esc(words(x.kind)) },
+        { label: "What happened", width: "minmax(220px, 2.6fr)", html: (x) => esc(x.words) },
+        { label: "Person", width: "90px", html: (x) => esc(x.person || "—") },
+        { label: "Since", width: "130px", html: (x) => esc(x.since ? when(x.since) : "—"), sort: (x) => x.since || "" },
+        { label: "Evidence", width: "74px", align: "r", html: (x) => String(x.evidence.length), sort: (x) => x.evidence.length }
+      ], h, (x) => (x.evidence.length ? "ev:" + x.evidence[0] : "health:" + x.number), 34);
     }
   },
   {

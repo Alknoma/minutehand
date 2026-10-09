@@ -104,7 +104,7 @@ a { color: inherit; }
   text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
 }
 .verdict.passed { background: var(--pass-soft); color: var(--pass); }
-.verdict.failed, .verdict.tool_failed, .verdict.environment_failed { background: var(--fail-soft); color: var(--fail); }
+.verdict.failed, .verdict.tool_failed, .verdict.environment_failed, .verdict.simulation_incomplete { background: var(--fail-soft); color: var(--fail); }
 .verdict.unfinished, .verdict.not_judged, .verdict.running { background: var(--review-soft); color: var(--review); }
 
 .headline { display: flex; gap: 4px; flex: none; }

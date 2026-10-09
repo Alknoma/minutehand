@@ -224,6 +224,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
                 findings=explained(result),
                 blocked=result.blocked,
                 notes=result.notes,
+                simulation=result.simulation,
             )
         )
 

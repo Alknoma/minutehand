@@ -273,6 +273,32 @@
       "finding_id INTEGER",
       "seq INTEGER"
     ],
+    "simulation_health": [
+      "health_id INTEGER",
+      "kind TEXT",
+      "incomplete INTEGER",
+      "words TEXT",
+      "person TEXT",
+      "provider TEXT",
+      "entity_kind TEXT",
+      "entity_id TEXT",
+      "since TEXT",
+      "evidence TEXT"
+    ],
+    "pushes": [
+      "seq INTEGER",
+      "at TEXT",
+      "wake INTEGER",
+      "provider TEXT",
+      "item TEXT",
+      "url TEXT",
+      "attempt INTEGER",
+      "retry_reason TEXT",
+      "status INTEGER",
+      "failure TEXT",
+      "seconds REAL",
+      "delivered INTEGER"
+    ],
     "spans": [
       "span_id TEXT",
       "trace_id TEXT",

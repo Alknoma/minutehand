@@ -82,7 +82,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "verdict",
                 T,
-                "passed, failed, unfinished, not_judged, tool_failed or environment_failed; NULL while it runs",
+                "passed, failed, unfinished, not_judged, tool_failed, environment_failed or simulation_incomplete; "
+                "NULL while it runs",
             ),
             _c("verdict_words", T, "The verdict in one sentence, as every surface states it"),
             _c("finished", N, "1 once the run has finished and been judged, else 0"),
@@ -497,6 +498,50 @@ VIEWS: tuple[View, ...] = (
         columns=[
             _c("finding_id", N, "findings.finding_id"),
             _c("seq", N, "events.seq"),
+        ],
+    ),
+    View(
+        name="simulation_health",
+        description="The simulated world's health, kept apart from the agent's findings: what did not play as the "
+        "files declare (incomplete: the run is simulation_incomplete) and how much of what they declare the run "
+        "reached (coverage).",
+        order="health_id",
+        columns=[
+            _c("health_id", N, "Numbered from 1, in the order the report lists them"),
+            _c(
+                "kind",
+                T,
+                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, "
+                "waits_by_declaration, never_exercised or step_never_fired",
+            ),
+            _c("incomplete", N, "1 when it makes the run simulation_incomplete; 0 for coverage"),
+            _c("words", T, "What happened, in one sentence"),
+            _c("person", T, "people.key it is about; NULL when none"),
+            _c("provider", T, "The provider or declared service of what it is about; NULL when nothing"),
+            _c("entity_kind", T, "The kind of what it is about; NULL when nothing"),
+            _c("entity_id", T, "What it is about, within its provider and kind; NULL when nothing"),
+            _c("since", T, f"When it began, simulated; NULL when it has no moment; {TIME}"),
+            _c("evidence", T, "JSON array of the seqs it cites"),
+        ],
+    ),
+    View(
+        name="pushes",
+        description="Every send of an event the world pushed to the agent (a Slack event, a declared service's push), "
+        "each retry a row of its own, with how the agent's address answered: duplicates and timeouts are counted here.",
+        order="seq",
+        columns=[
+            _c("seq", N, "events.seq of the send"),
+            _c("at", T, f"Simulated time; {TIME}"),
+            _c("wake", N, "The wake in progress"),
+            _c("provider", T, "The provider or declared service that pushed it"),
+            _c("item", T, "What it was about: a Slack event's event_id, a declared service's item id"),
+            _c("url", T, "The agent's address it was sent to"),
+            _c("attempt", N, "0 for the first send, then each retry's number"),
+            _c("retry_reason", T, "Why it was sent again, in the service's words; NULL for a first send"),
+            _c("status", N, "The address's HTTP status; NULL when none came"),
+            _c("failure", T, "Why it was not delivered; NULL when it was"),
+            _c("seconds", R, "How long the address took to answer, real time; NULL when not measured"),
+            _c("delivered", N, "1 when the address answered 2xx"),
         ],
     ),
     View(
