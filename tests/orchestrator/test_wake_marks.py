@@ -37,7 +37,7 @@ async def test_each_wake_counts_its_memory_reads_and_writes_and_none_of_them_cha
 
 async def test_each_read_of_memory_is_counted_in_its_wake_and_one_that_finds_nothing_new_is_not_kept(rig: Rig) -> None:
     """`keep_polling` reads its state five times a wake and writes it once: five reads counted, one kept."""
-    scn = scenario(ticket_fates=[], max_wakes=3)
+    scn = scenario(tom_finishes=False, max_wakes=3)
     record, store, _ = await rig.run(scn, rig.agent("keep_polling"))
     assert [(w.memory_reads, w.memory_writes) for w in record.wakes] == [(5, 1)] * 3
     kept = [e.wake for e in store.events() if e.entity.kind is EntityKind.MEMORY and e.operation is Operation.READ]
