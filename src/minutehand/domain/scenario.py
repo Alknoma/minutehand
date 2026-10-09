@@ -1010,7 +1010,16 @@ class _ScenarioBody(Model):
         description="Retired with `goal`: Person.key of whoever an older scenario says gave it. Nothing is special "
         "about this person",
     )
-    deadline_after: timedelta | None = None
+    runs_for: timedelta | None = Field(
+        default=None,
+        description="How much simulated time the run watches the agent for, from its start: a window, not a task. "
+        "The agent keeps working the whole time; the run stops when the window ends",
+    )
+    deadline_after: timedelta | None = Field(
+        default=None,
+        description="Retired with `goal`: an older scenario's deadline, also read as its window when `runs_for` is "
+        "not given",
+    )
     max_wakes: int | None = Field(
         default=None,
         ge=1,
@@ -1438,4 +1447,18 @@ class Scenario(_ScenarioBody):
 
     @property
     def deadline(self) -> datetime | None:
+        """An older scenario's deadline, which its deadline checks read; None for a scenario that is only a world."""
         return self.starts_at + self.deadline_after if self.deadline_after else None
+
+    @property
+    def window_end(self) -> datetime | None:
+        """When the run stops watching: the end of `runs_for`, else an older scenario's deadline; None for neither."""
+        if self.runs_for is not None:
+            return self.starts_at + self.runs_for
+        return self.deadline
+
+    @property
+    def is_task(self) -> bool:
+        """An older scenario that hands the agent a goal: its run may end when the agent reports done, and is
+        unfinished when work was left open. A scenario that is only a world has neither."""
+        return self.goal is not None

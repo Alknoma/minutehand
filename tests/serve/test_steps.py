@@ -57,7 +57,8 @@ def test_marked_steps_are_the_worlds_wakes_and_an_idle_one_is_seen(served: Serve
     assert [e.wake for e in sent] == [1], "the message was written in the first step"
     [seen] = [f for f in checked.findings if f.check == "no_idle_steps"]
     assert seen.kind is FindingKind.REVIEW and seen.at == start + timedelta(hours=1)
-    assert closed.result.verdict.kind is VerdictKind.UNFINISHED, closed.result.verdict.words
+    # A standing world is a world, not a task: nothing failed, so it passed, with what was left open reported.
+    assert closed.result.verdict.kind is VerdictKind.PASSED, closed.result.verdict.words
 
 
 def test_moving_the_clock_forward_infers_steps_and_a_mark_replaces_them(served: Served, state: Path) -> None:
@@ -86,7 +87,7 @@ def test_a_world_with_no_step_and_nothing_declared_is_still_assessed_against_wha
 
     verdict = closed.result.verdict
     assert closed.result.assessed_by == ["items"], "the agent's effects are assessed whether or not a rule was written"
-    assert verdict.kind is VerdictKind.UNFINISHED and closed.result.exit_code == 3
+    assert verdict.kind is VerdictKind.PASSED and closed.result.exit_code == 0 and verdict.open_waits == 1
     assert closed.result.effectiveness.waits_opened == 1, "the wait on the silent person is still a fact"
 
 

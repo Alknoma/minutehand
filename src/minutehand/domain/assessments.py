@@ -452,6 +452,7 @@ class StoppedBy(StrEnum):
     AGENT_DONE = "agent_done"
     WAKE_LIMIT = "wake_limit"
     DEADLINE_PASSED = "deadline_passed"
+    WINDOW_ENDED = "window_ended"
     NOTHING_PENDING = "nothing_pending"
     AGENT_FAILED = "agent_failed"
     CLOSED = "closed"

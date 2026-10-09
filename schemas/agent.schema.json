@@ -2578,6 +2578,7 @@
         "agent_done",
         "wake_limit",
         "deadline_passed",
+        "window_ended",
         "nothing_pending",
         "agent_failed",
         "closed",

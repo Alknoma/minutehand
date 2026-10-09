@@ -208,3 +208,23 @@ async def test_a_booked_wake_waits_until_the_agent_has_taken_its_delivery(rig: R
     [follow_up] = [e for e in store.events() if isinstance(e.after, MessageSnapshot) and e.actor is Actor.AGENT]
     assert follow_up.wake == 2 and follow_up.sim_time == T0 + timedelta(hours=5)
     assert [w.world_changes for w in record.wakes][:2] == [1, 1]
+
+
+def _world(**overrides: object) -> dict[str, object]:
+    """The pricing world with no goal, no owner and no deadline: what the agent does is its own; the run watches it."""
+    return {"goal": None, "owner": None, "deadline_after": None, "runs_for": timedelta(days=30), **overrides}
+
+
+async def test_an_agent_reporting_done_in_a_world_keeps_being_watched_to_the_end_of_the_window(rig: Rig) -> None:
+    record, _, clock = await rig.run(scenario(**_world()), rig.agent("ask_and_file"))
+
+    assert record.stop is StopReason.WINDOW_ENDED, "done ends an older scenario's task, never a world's window"
+    assert record.ended_at == T0 + timedelta(days=30) and clock.jumps[-1] == T0 + timedelta(days=30)
+    assert [w.sim_time for w in record.wakes][:2] == [T0, T0 + timedelta(hours=36)]
+
+
+async def test_a_quiet_world_runs_on_to_the_end_of_its_window_and_says_so(rig: Rig) -> None:
+    record, store, clock = await rig.run(scenario(tom_finishes=False, **_world()), rig.agent("ask_silent"))
+
+    assert record.stop is StopReason.WINDOW_ENDED
+    assert clock.jumps == [T0 + timedelta(days=30)] and store.events()[-1].sim_time == T0 + timedelta(days=30)

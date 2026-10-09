@@ -3783,6 +3783,7 @@
         "agent_done",
         "wake_limit",
         "deadline_passed",
+        "window_ended",
         "nothing_pending",
         "agent_failed",
         "closed",
@@ -4763,6 +4764,7 @@
         }
       ],
       "default": null,
+      "description": "Retired with `goal`: an older scenario's deadline, also read as its window when `runs_for` is not given",
       "title": "Deadline After"
     },
     "directions": {
@@ -5005,6 +5007,20 @@
       },
       "title": "Provider Seeds",
       "type": "array"
+    },
+    "runs_for": {
+      "anyOf": [
+        {
+          "format": "duration",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How much simulated time the run watches the agent for, from its start: a window, not a task. The agent keeps working the whole time; the run stops when the window ends",
+      "title": "Runs For"
     },
     "seed": {
       "anyOf": [
