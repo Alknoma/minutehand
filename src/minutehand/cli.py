@@ -56,7 +56,8 @@ model, another provider), so it is tunnelled, edited by a fork's PromptPatch or 
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
 A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
-MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL.
+MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL, and MINUTEHAND_MODEL_API: openai (the default, any
+OpenAI-compatible chat-completions API) or anthropic (Anthropic's Messages API, base URL https://api.anthropic.com).
 
 A run is judged only by what its files declare: the team's rules (`assess:` in the agent file and the scenario,
 docs/assessments.md), the scenario's `expect:` and `protected_names`, and the agent's own `checks:`. With --json,
@@ -102,7 +103,7 @@ from minutehand import agent_api, mcp_relay, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
-from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.model.environment import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.query import reader as read_model

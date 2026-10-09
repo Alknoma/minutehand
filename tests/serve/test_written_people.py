@@ -17,7 +17,7 @@ import pytest
 
 from examples.recipes import fake_model
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound
-from minutehand.adapters.model.openai_compatible import VARIABLES
+from minutehand.adapters.model.environment import VARIABLES
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Seed
 from minutehand.testing.background import serve_in_background

@@ -6,14 +6,8 @@ import json
 
 import pytest
 
-from minutehand.adapters.model.openai_compatible import (
-    API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    DEFAULT_BASE_URL,
-    MODEL_VARIABLE,
-    OpenAICompatible,
-    from_environment,
-)
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE, from_environment
+from minutehand.adapters.model.openai_compatible import DEFAULT_BASE_URL, OpenAICompatible
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.domain.scenario import Model

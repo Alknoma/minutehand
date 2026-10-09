@@ -49,7 +49,7 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
-from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
@@ -1084,7 +1084,8 @@ def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: Language
     if needing and model is None:
         raise RunRefused(
             f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
-            f"{API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service other than OpenAI's"
+            f"{API_KEY_VARIABLE}, {API_VARIABLE}=anthropic for Anthropic's Messages API, and {BASE_URL_VARIABLE} for "
+            "a service other than OpenAI's or Anthropic's"
         )
 
 

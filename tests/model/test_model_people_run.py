@@ -10,12 +10,8 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
-from minutehand.adapters.model.openai_compatible import (
-    API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    MODEL_VARIABLE,
-    OpenAICompatible,
-)
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import PERSON_PROMPT_VERSION, WrittenReply
 from minutehand.checks.judged.asked_about import AskedAboutVerdict

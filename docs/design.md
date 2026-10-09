@@ -1077,7 +1077,7 @@ written}}`, `docs/assessments.md`).
 
 **A model is required whenever a person may speak.** `replier.unspoken` names everyone a model writes for (an
 `Answers` person, a script that goes on conversing, a step or decision a model words); with no model configured
-(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`), a run, a fork, and a standing world
+(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, and `MINUTEHAND_MODEL_API`: `openai`, any OpenAI-compatible chat-completions API with JSON-schema output, the default, or `anthropic`, Anthropic's Messages API with the answer as a forced tool's input), a run, a fork, and a standing world
 with `scripted_people: true` are refused before anything starts, naming each person and why. `minutehand doctor`
 says whether one is configured. Nobody goes silent mid-run for want of one.
 
