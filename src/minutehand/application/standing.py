@@ -95,6 +95,7 @@ from minutehand.ports.provider import (
     EditsTickets,
     GrantsPermissions,
     HoldsTickets,
+    ListensForAgent,
     MintsInboundCredentials,
     NotifiesChanges,
     OwnsSeed,
@@ -358,6 +359,11 @@ class StandingWorld:
             found = self._provider(key)
             if isinstance(found, BooksWakes):
                 found.bind(_Unfired())
+            if isinstance(found, ListensForAgent):
+                found.listen(
+                    self._inbound[key] if key in self._inbound else None,
+                    self._signing[key] if key in self._signing else None,
+                )
             if not any(e.entity.provider == key for e in self.store.events()):
                 with _refusing():
                     found.seed(self.scenario, self.store)

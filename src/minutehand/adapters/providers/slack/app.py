@@ -27,7 +27,9 @@ from starlette.routing import Route
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.slack import socket_mode, state, wire
+from minutehand.adapters.providers.slack.conversation_calls import ConversationCalls
 from minutehand.adapters.providers.slack.methods import UNSERVED
+from minutehand.adapters.providers.slack.pushing import Listener, Pusher
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import (
@@ -54,7 +56,7 @@ SCOPES = (
     "im:history,im:read,im:write,mpim:history,mpim:read,users:read,users:read.email"
 )
 
-Handler = Callable[[wire.Presented], wire.Ok]
+Handler = Callable[[wire.Presented], wire.Response]
 
 _ABSENT = frozenset({""})
 _OFF = frozenset({"", "false", "0"})
@@ -96,6 +98,7 @@ UNSERVED_ARGUMENTS: dict[str, dict[str, frozenset[str]]] = {
         "unfurled_attachments": _ABSENT,
     },
     "chat.delete": {"as_user": _OFF},
+    "users.conversations": {"exclude_muted": _OFF},
     "users.list": {"include_locale": _OFF},
     "users.info": {"include_locale": _OFF},
     "conversations.info": {"include_locale": _OFF},
@@ -130,12 +133,10 @@ def _header(request: Request, name: str) -> str | None:
     return request.headers[name] if name in request.headers else None
 
 
-class SlackApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
-        self._store = store
-        self._world = SlackWorld(store)
-        """The workspace the call being answered is in: set for each call before its method runs."""
-        self._clock = clock
+class SlackApi(ConversationCalls):
+    def __init__(self, store: Store, clock: Clock, pusher: Pusher | None = None) -> None:
+        super().__init__(store, clock)
+        self._pusher = pusher if pusher is not None else Pusher(lambda: None)
         self._methods: dict[str, Handler] = {
             "auth.test": self.auth_test,
             "users.list": self.users_list,
@@ -148,6 +149,17 @@ class SlackApi:
             "conversations.info": self.conversations_info,
             "conversations.open": self.conversations_open,
             "conversations.members": self.conversations_members,
+            "conversations.create": self.conversations_create,
+            "conversations.join": self.conversations_join,
+            "conversations.invite": self.conversations_invite,
+            "conversations.kick": self.conversations_kick,
+            "conversations.leave": self.conversations_leave,
+            "conversations.archive": self.conversations_archive,
+            "conversations.unarchive": self.conversations_unarchive,
+            "conversations.rename": self.conversations_rename,
+            "conversations.setTopic": self.conversations_set_topic,
+            "conversations.setPurpose": self.conversations_set_purpose,
+            "users.conversations": self.users_conversations,
             "conversations.history": self.conversations_history,
             "conversations.replies": self.conversations_replies,
             "chat.postMessage": self.chat_post_message,
@@ -183,14 +195,16 @@ class SlackApi:
                 _header(request, "authorization"),
             )
             self._world = SlackWorld(self._store)
+            self._emitted = []
             if method not in _UNAUTHENTICATED:
                 self._world = self._world.for_token(presented.token)
             _refuse_unserved_arguments(method, presented)
             faulted = self._fault(method, presented)
             answer = faulted if faulted is not None else self._methods[method](presented)
+            self._pusher.send(self._world, self._emitted)
         except wire.Refusal as refusal:
             answering.refused()
-            answer = wire.Failed(error=refusal.error)
+            answer = refusal.answer()
         if isinstance(answer, wire.RateLimitedAnswer):
             return Response(
                 wire.respond(answer),
@@ -230,33 +244,6 @@ class SlackApi:
         return socket_mode.open_connection(self._world)
 
     # ------------------------------------------------------------------ lookups
-
-    def _user(self, user: str) -> wire.SlackUser:
-        found = self._world.user(user) if user else None
-        if found is None:
-            raise wire.Refusal("user_not_found")
-        return found
-
-    def _channel(self, channel: str) -> wire.SlackChannel:
-        """A conversation the app can see: public channels, and anything private it is in."""
-        found = self._world.channel(channel) if channel else None
-        if found is None or ((found.is_private or found.is_im or found.is_mpim) and not self._in(found)):
-            raise wire.Refusal("channel_not_found")
-        return found
-
-    def _joined(self, channel: str) -> wire.SlackChannel:
-        found = self._channel(channel)
-        if not self._in(found):
-            raise wire.Refusal("not_in_channel")
-        return found
-
-    def _in(self, channel: wire.SlackChannel) -> bool:
-        return self._world.is_member(channel.id, self._world.bot)
-
-    def _served(self, channel: wire.SlackChannel) -> wire.SlackChannel:
-        if channel.is_im:
-            return channel
-        return channel.model_copy(update={"is_member": self._in(channel)})
 
     def _snapshot(self, channel: str, message: wire.SlackMessage) -> MessageSnapshot:
         return self._snapshot_in(self._world, channel, message)
@@ -327,9 +314,6 @@ class SlackApi:
             user_id=self._world.bot,
             bot_id=self._world.team.bot_id,
         )
-
-    def _now(self) -> int:
-        return int(self._clock.now().timestamp())
 
     def _shown(self, user: wire.SlackUser) -> wire.SlackUser:
         """The user as others see them now: an absence the scenario gives a reason for shows that reason as their
@@ -435,7 +419,7 @@ class SlackApi:
 
     def conversations_info(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.ChannelInfoArgs, presented)
-        channel = self._served(self._channel(args.channel))
+        channel = self._full(self._served(self._channel(args.channel)))
         self._world.saw(state.channel_ref(channel.id), Operation.READ)
         if args.include_num_members:
             channel = channel.model_copy(update={"num_members": len(self._world.every_member(channel.id))})
@@ -1045,15 +1029,34 @@ def _within(ts: Decimal, *, oldest: Decimal | None, latest: Decimal | None, incl
     return not (latest is not None and (ts > latest if inclusive else ts >= latest))
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
-    api = SlackApi(store, clock)
+class SlackApp(Starlette):
+    """The Slack app: Starlette, and `DeliversInBackground` for the events the agent's own calls set off."""
+
+    def __init__(self, api: SlackApi, pusher: Pusher, routes: list[Route]) -> None:
+        super().__init__(routes=routes)
+        self.api = api
+        self._pusher = pusher
+
+    def delivering(self) -> int:
+        return self._pusher.delivering()
+
+    async def settled(self) -> None:
+        await self._pusher.settled()
+
+
+def build_app(store: Store, clock: Clock, listening: Callable[[], Listener | None] | None = None) -> SlackApp:
+    """`listening` says where the agent takes its events, when it does (`pushing`)."""
+    pusher = Pusher(listening if listening is not None else lambda: None)
+    api = SlackApi(store, clock, pusher)
     endpoint: Callable[[Request], Awaitable[Response]] = api.endpoint
-    return Starlette(
+    return SlackApp(
+        api,
+        pusher,
         routes=[
             Route("/api/{method}", endpoint, methods=["GET", "POST"]),
             Route("/files-pri/{key}/{name}", api.file, methods=["GET"]),
             Route("/files-pri/{key}/download/{name}", api.file, methods=["GET"]),
             Route("/actions/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
             Route("/commands/{team}/{hook}/{secret}", api.response_url, methods=["POST"]),
-        ]
+        ],
     )

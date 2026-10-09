@@ -81,6 +81,7 @@ from minutehand.ports.provider import (
     DeletesTickets,
     EditsTickets,
     HoldsTickets,
+    ListensForAgent,
     NotifiesChanges,
     Provider,
     PushesEvents,
@@ -427,6 +428,10 @@ class Orchestrator:
         if self._telemetry is not None:
             self._telemetry.run_started(self._store.run_id, self._scenario)
         self.mount()
+        for key, provider in self._services.pushes.items():
+            if isinstance(provider, ListensForAgent):
+                target = next((t for t in self._agent.inbound if t.provider == key), None)
+                provider.listen(target, self._signing[key] if key in self._signing else None)
         self._calls_seen = len(self._store.calls())
         for key, scheduler in self._services.schedulers.items():
             scheduler.bind(_Bookings(self, key))

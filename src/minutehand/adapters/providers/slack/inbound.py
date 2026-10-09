@@ -112,7 +112,9 @@ async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.Ev
     raise DeliveryRefused(url, status, last)
 
 
-def _event(slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False) -> wire.EventCallback:
+def callback(
+    slack: SlackWorld, event: wire.Event, *, seq: int, clock: Clock, second: bool = False
+) -> wire.EventCallback:
     """The `event_callback` envelope, from the workspace `slack` is. `event_id` is fixed by the world event the push
     reports; a second push for the same event (the `app_mention` beside a `message`) gets an id of its own."""
     return wire.EventCallback(
@@ -247,7 +249,7 @@ async def _post(
         files=files or None,
         upload=False if files else None,
     )
-    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
     if mentions and not channel.is_im:
         mention = wire.AppMentionEvent(
             user=author,
@@ -261,7 +263,7 @@ async def _post(
             files=files or None,
         )
         await push_event(
-            slack, target, _event(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret
+            slack, target, callback(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret
         )
     return ts
 
@@ -388,7 +390,7 @@ async def _edits(
             message=after,
             previous_message=before,
         )
-        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _deletes(
@@ -417,7 +419,7 @@ async def _deletes(
             event_ts=stamp,
             previous_message=before,
         )
-        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _reacts(
@@ -457,7 +459,7 @@ async def _reacts(
             item=wire.ReactionItem(channel=channel.id, ts=message.ts),
             event_ts=stamp,
         )
-        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _joins(
@@ -487,7 +489,7 @@ async def _joins(
             team=slack.team.id,
             event_ts=stamp,
         )
-        await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _adds_agent(
@@ -517,7 +519,7 @@ async def _adds_agent(
         inviter=author,
         event_ts=stamp,
     )
-    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
 
 
 async def _opens_home(
@@ -530,4 +532,4 @@ async def _opens_home(
     event = wire.AppHomeOpenedEvent(
         user=author, channel=dm.id, event_ts=stamp, view=home.view if home is not None else None
     )
-    await push_event(slack, target, _event(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)

@@ -98,6 +98,11 @@ def named_channel_id(name: str, team: str = TEAM_ID) -> str:
     return _derived("C", "channel", name) if team == TEAM_ID else _derived("C", "channel", team, name)
 
 
+def created_channel_id(seq: int, team: str = TEAM_ID) -> str:
+    """The id of a channel the agent made whose name's own id is taken, named by the log position that made it."""
+    return _derived("C", "created", str(seq)) if team == TEAM_ID else _derived("C", "created", team, str(seq))
+
+
 def conversation_id(users: list[str]) -> str:
     """An IM (two members) or a group DM (more): one id per set of members, so opening one is idempotent."""
     members = sorted(set(users))

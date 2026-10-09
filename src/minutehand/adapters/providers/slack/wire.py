@@ -45,16 +45,29 @@ JSON = "application/json; charset=utf-8"
 """The content type of every Web API answer, refusals included."""
 
 
-class Refusal(ServiceRefusal):
-    """Slack answered `ok: false`. `error` is Slack's own code."""
+class UserRefused(Model):
+    """One user a call could not act on and why, as `conversations.invite` lists them in `errors`."""
 
-    def __init__(self, error: str) -> None:
+    user: str
+    ok: Literal[False] = False
+    error: str
+
+
+class Refusal(ServiceRefusal):
+    """Slack answered `ok: false`. `error` is Slack's own code; `errors` the per-user refusals a call that takes a
+    list of users adds beside it (https://docs.slack.dev/reference/methods/conversations.invite)."""
+
+    def __init__(self, error: str, errors: list[UserRefused] | None = None) -> None:
         super().__init__(error)
         self.error = error
+        self.errors = errors
+
+    def answer(self) -> Failed:
+        return FailedForUsers(error=self.error, errors=self.errors) if self.errors else Failed(error=self.error)
 
     def render(self, asked: Asked) -> Rendered:
         """`{"ok": false, "error": …}` at 200, as the Web API refuses."""
-        return Rendered(status=200, content_type=JSON, body=respond(Failed(error=self.error)))
+        return Rendered(status=200, content_type=JSON, body=respond(self.answer()))
 
 
 class ErrorMessages(Model):
@@ -131,6 +144,18 @@ class SlackChannel(Model):
     purpose: SlackTopic | None = None
     is_member: bool | None = Field(default=None, description="Whether the calling app is in it; set when served")
     num_members: int | None = Field(default=None, description="Its member count; set when `include_num_members` asks")
+    previous_names: list[str] = Field(default=[], description="Every name a rename replaced, oldest first")
+    unlinked: int | None = Field(default=None, description="Computed when served as a full conversation object")
+    name_normalized: str | None = Field(default=None, description="Computed when served in full")
+    is_shared: bool | None = Field(default=None, description="Computed when served in full")
+    is_frozen: bool | None = Field(default=None, description="Computed when served in full")
+    is_org_shared: bool | None = Field(default=None, description="Computed when served in full")
+    is_pending_ext_shared: bool | None = Field(default=None, description="Computed when served in full")
+    pending_shared: list[str] | None = Field(default=None, description="Computed when served in full")
+    context_team_id: str | None = Field(default=None, description="Computed when served in full")
+    is_ext_shared: bool | None = Field(default=None, description="Computed when served in full")
+    shared_team_ids: list[str] | None = Field(default=None, description="Computed when served in full")
+    pending_connected_team_ids: list[str] | None = Field(default=None, description="Computed when served in full")
 
 
 class SlackMembership(Model):
@@ -444,6 +469,40 @@ class ChannelArgs(Model):
 
 class ChannelInfoArgs(ChannelArgs):
     include_num_members: bool = False
+
+
+class CreateArgs(Model):
+    name: str = ""
+    is_private: bool = False
+
+
+class InviteArgs(ChannelArgs):
+    users: str = ""
+    force: bool = False
+
+
+class KickArgs(ChannelArgs):
+    user: str = ""
+
+
+class RenameArgs(ChannelArgs):
+    name: str = ""
+
+
+class TopicArgs(ChannelArgs):
+    topic: str | None = None
+
+
+class PurposeArgs(ChannelArgs):
+    purpose: str | None = None
+
+
+class UsersConversationsArgs(ListArgs):
+    types: str = "public_channel"
+    user: str = ""
+    exclude_archived: bool = False
+    exclude_muted: bool = False
+    team_id: str = ""
 
 
 class ConversationsOpenArgs(Model):
@@ -914,6 +973,10 @@ class Failed(Model):
     error: str
 
 
+class FailedForUsers(Failed):
+    errors: list[UserRefused]
+
+
 class UnknownMethod(Failed):
     """What Slack answers a method name it has none for, the name echoed in `req_method` (observed:
     `tests/providers/slack/data/observed/unknown_method.http`)."""
@@ -924,6 +987,10 @@ class UnknownMethod(Failed):
 
 class ResponseMetadata(Model):
     next_cursor: str = ""
+
+
+class ResponseMetadataWarnings(Model):
+    warnings: list[str]
 
 
 class AuthTest(Ok):
@@ -974,6 +1041,29 @@ class ChannelList(Ok):
 
 class OneChannel(Ok):
     channel: SlackChannel
+
+
+class Joined(OneChannel):
+    """`conversations.join`, which warns when the caller is in the conversation already."""
+
+    warning: str | None = None
+    response_metadata: ResponseMetadataWarnings | None = None
+
+
+class Purposed(Ok):
+    purpose: str
+
+
+class Kicked(Ok):
+    errors: dict[str, str] = {}
+
+
+class NotInChannelNotice(Model):
+    """What `conversations.leave` answers a caller who was not in the conversation: `ok` false and no `error`
+    (https://docs.slack.dev/reference/methods/conversations.leave)."""
+
+    ok: Literal[False] = False
+    not_in_channel: Literal[True] = True
 
 
 class OpenedId(Model):
@@ -1050,7 +1140,7 @@ class RateLimitedAnswer(Failed):
     retry_after: int = Field(exclude=True)
 
 
-Response = Ok | Failed
+Response = Ok | Failed | NotInChannelNotice
 
 
 def respond(response: Response) -> bytes:
@@ -1142,6 +1232,71 @@ class MemberJoinedEvent(Model):
     event_ts: str
 
 
+class MemberLeftEvent(Model):
+    type: Literal["member_left_channel"] = "member_left_channel"
+    user: str
+    channel: str
+    channel_type: Literal["C", "G"]
+    team: str
+
+
+class CreatedChannel(Model):
+    id: str
+    name: str
+    created: int
+    creator: str
+
+
+class ChannelCreatedEvent(Model):
+    type: Literal["channel_created"] = "channel_created"
+    channel: CreatedChannel
+
+
+class RenamedChannel(Model):
+    id: str
+    name: str
+    created: int
+
+
+class ChannelRenameEvent(Model):
+    type: Literal["channel_rename"] = "channel_rename"
+    channel: RenamedChannel
+
+
+class ChannelArchiveEvent(Model):
+    type: Literal["channel_archive"] = "channel_archive"
+    channel: str
+    user: str
+
+
+class ReactionRemovedEvent(Model):
+    type: Literal["reaction_removed"] = "reaction_removed"
+    user: str
+    reaction: str
+    item_user: str
+    item: ReactionItem
+    event_ts: str
+
+
+class FileId(Model):
+    id: str
+
+
+class FileSharedEvent(Model):
+    type: Literal["file_shared"] = "file_shared"
+    channel_id: str
+    file_id: str
+    user_id: str
+    file: FileId
+    event_ts: str
+
+
+class FileDeletedEvent(Model):
+    type: Literal["file_deleted"] = "file_deleted"
+    file_id: str
+    event_ts: str
+
+
 class AppHomeOpenedEvent(Model):
     type: Literal["app_home_opened"] = "app_home_opened"
     user: str
@@ -1158,6 +1313,13 @@ Event = (
     | MessageDeletedEvent
     | ReactionAddedEvent
     | MemberJoinedEvent
+    | MemberLeftEvent
+    | ChannelCreatedEvent
+    | ChannelRenameEvent
+    | ChannelArchiveEvent
+    | ReactionRemovedEvent
+    | FileSharedEvent
+    | FileDeletedEvent
     | AppHomeOpenedEvent
 )
 

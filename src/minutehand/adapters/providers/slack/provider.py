@@ -5,6 +5,7 @@ from __future__ import annotations
 from minutehand.adapters.providers.slack import inbound, interactive, socket_mode, state, wire
 from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
+from minutehand.adapters.providers.slack.pushing import Listener
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.conversations import PushedConversations
@@ -29,8 +30,15 @@ class SlackProvider:
     manifest: Manifest = MANIFEST
     seed_model = SlackSeed
 
+    def __init__(self) -> None:
+        self._listener: Listener | None = None
+
+    def listen(self, target: InboundTarget | None, secret: str | None) -> None:
+        """`ListensForAgent`: where the agent takes its events, so the ones its own calls set off reach it."""
+        self._listener = None if target is None or secret is None else Listener(target, secret)
+
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return build_app(world, clock, lambda: self._listener)
 
     def sockets(self, world: Store, clock: Clock) -> ASGIApp:
         """Socket Mode's connections, at the URL `apps.connections.open` hands out (`socket_mode`)."""
