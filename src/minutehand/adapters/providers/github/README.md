@@ -81,12 +81,15 @@ The unserved operations a GitHub client most often calls, to serve next in this 
 ## Webhooks
 
 When the agent declares an inbound target for GitHub (`inbound: - provider: github`, a `url`, and a `secret`), each move a
-person makes is pushed to it as GitHub pushes it: `issues` (closed, reopened), `issue_comment` (created), `pull_request`
-(closed, merged or not) and `pull_request_review` (submitted), a POST of JSON with `X-GitHub-Event`,
+person makes, and each write of the agent's own through the REST API, is pushed to it as GitHub pushes it: `issues`
+(opened, closed, reopened), `issue_comment` (created), `pull_request` (opened, closed, merged or not) and
+`pull_request_review` (submitted), a POST of JSON with `X-GitHub-Event`,
 `X-GitHub-Delivery` and a `GitHub-Hookshot/` user agent, and, only where the target declares a secret,
-`X-Hub-Signature-256` and `X-Hub-Signature` (`hooks.py`). A delivery the agent does not answer with 2xx fails the run,
-and is not sent again. The agent's own writes through the API push nothing, and GitHub's webhook routes
-(`/repos/{o}/{r}/hooks`) are refused by name.
+`X-Hub-Signature-256` and `X-Hub-Signature` (`hooks.py`). A person's move is pushed before it returns, and a delivery
+the agent does not answer with 2xx fails the run; what the agent's own call sets off is pushed after the call is
+answered, in order (`ListensForAgent`, `hooks.Background`), and a delivery refused there is logged and kept. Nothing is
+sent again. A contents commit (`push`) and a diff comment (`pull_request_review_comment`) are not sent yet, and GitHub's
+webhook routes (`/repos/{o}/{r}/hooks`) are refused by name.
 
 ## The tracker in a seed
 

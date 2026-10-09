@@ -238,7 +238,8 @@ host nobody declared as a service with no description; the separate stand-in (`a
   each is one transition in the log. An agent that declares an inbound target for GitHub is pushed the webhooks GitHub
   sends (`issues`, `issue_comment`, `pull_request`, `pull_request_review`) with `X-GitHub-Event` and
   `X-GitHub-Delivery`, signed (`X-Hub-Signature-256`) only where the world declares a secret for the target, through
-  `TalksToAgent`. The agent's own writes through the API push nothing: the provider's app holds no target to push to.
+  `TalksToAgent`. The agent's own writes through the API push the same webhooks, after each call is answered, through
+  `ListensForAgent`.
 - **Not built.** Drive or Docs comment replies (the fake serves no `comments.replies`): a person cannot answer where
   the service does not, and nothing is invented for it. In Notion and SharePoint nothing waits on a person in the fakes
   (no assignment or mention is modelled), so what people do there stays a provider happening.

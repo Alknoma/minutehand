@@ -210,8 +210,13 @@ the bytes it has; to a path that is a directory, or under a file.
 
 ## Webhooks
 
-What a person does is pushed to the agent's inbound target for GitHub as GitHub pushes it. The agent's own writes through
-the API push nothing: the provider's app holds no target to push to. The webhook a repository configures has an id and a
+What a person does, and what the agent itself writes through the REST API, is pushed to the agent's inbound target for
+GitHub as GitHub pushes it (`ListensForAgent` tells the provider's app the target). A person's move is pushed before it
+returns. The agent's own call is answered first and its webhooks follow, one delivery after another in the order the
+calls set them off; GitHub documents no order of deliveries, and this one is what a replay of the run repeats. A
+delivery the agent refuses for its own call does not fail the call: it is logged and kept (`hooks.Background.refused`).
+A commit through the contents routes would be a `push` event, and a comment on a diff a `pull_request_review_comment`;
+neither is sent yet. The webhook a repository configures has an id and a
 target of its own, which the world does not hold (`POST /repos/{o}/{r}/hooks` is refused by name), so the headers that
 name it are not sent.
 
@@ -220,6 +225,9 @@ name it are not sent.
 | A delivery is a POST of JSON with `X-GitHub-Event`, `X-GitHub-Delivery` (a GUID), a `User-Agent` prefixed `GitHub-Hookshot/` and `Content-Type: application/json` | documented | H2 `test_a_delivery_carries_the_headers_the_reference_lists_and_a_signature_that_verifies` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers |
 | `X-Hub-Signature-256` and `X-Hub-Signature` are sent "if the webhook is configured with a secret", the HMAC hex digest of the body under SHA-256 and SHA-1; a target the world declares no secret for is sent neither | documented | H2 `test_a_delivery_carries_the_headers_the_reference_lists_and_a_signature_that_verifies`, H2 `test_a_target_the_world_declares_no_secret_for_is_sent_no_signature` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers |
 | A delivery that gets no 2XX within ten seconds is a failure and is not redelivered | documented | H2 `test_an_agent_that_answers_a_delivery_with_anything_but_2xx_has_failed_it`, H2 `test_an_agent_that_cannot_be_reached_has_failed_the_delivery` | https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries |
+| Opening an issue is an `issues` event (`opened`), and opening a pull request a `pull_request` event (`opened`) with `number` and the `pull_request` | documented | H2 `test_the_agents_own_writes_are_pushed_as_the_webhooks_github_sends_after_each_call` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues, https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
+| The agent's own writes (opening, commenting on, closing an issue; opening, reviewing, merging a pull request) are sent as anyone's are, `sender` the account the agent acts as ("the user that triggered the event"); an agent that declares no target is sent nothing | documented | H2 `test_the_agents_own_writes_are_pushed_as_the_webhooks_github_sends_after_each_call`, H2 `test_an_agent_that_declares_no_target_for_github_is_pushed_nothing_by_its_own_writes` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues |
+| A delivery for the agent's own write that gets no 2XX is a failure and is not redelivered; the call that set it off was answered already | documented | H2 `test_a_webhook_the_agent_refuses_for_its_own_write_is_kept_and_its_call_is_still_answered` | https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries |
 | Closing or reopening an issue is an `issues` event (`closed`, `reopened`) with `issue`, `repository` and `sender` | documented | H2 `test_closing_and_reopening_an_issue_are_issues_events_that_say_what_the_rest_route_says` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues |
 | A comment is an `issue_comment` event (`created`) with `issue`, `comment`, `repository` and `sender` | documented | H2 `test_a_comment_is_an_issue_comment_event_before_the_close_it_comes_with` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment |
 | Closing or merging a pull request is a `pull_request` event (`closed`) with `number` and the `pull_request`, which says whether it was merged | documented | H2 `test_closing_a_pull_request_is_a_pull_request_event_that_is_not_merged`, H2 `test_merging_a_pull_request_is_a_pull_request_event_that_is_merged` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
