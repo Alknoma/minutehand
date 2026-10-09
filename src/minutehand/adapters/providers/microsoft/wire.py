@@ -287,6 +287,9 @@ class Activity(Aliased):
     reactionsAdded: list[Reaction] | None = None
     reactionsRemoved: list[Reaction] | None = None
     locale: str | None = None
+    graph: GraphPosted | None = Field(
+        default=None, description="What a Graph `chatMessage` POST carried, as sent, for Graph to answer back"
+    )
 
 
 class SentActivity(Lenient):
@@ -602,6 +605,7 @@ class ChatMessage(Aliased):
     sender: IdentitySet | None = Field(
         default=None, validation_alias=AliasChoices("sender", "from"), serialization_alias="from"
     )
+    importance: Literal["normal", "high", "urgent"] = "normal"
     body: ItemBody
     attachments: list[ChatMessageAttachment] = []
     mentions: list[ChatMessageMention] = []
@@ -615,9 +619,99 @@ class ChatMessage(Aliased):
     )
 
 
-class SentChatMessage(Lenient):
+class GraphPosted(Aliased):
+    """A message sent through Graph's `chatMessage` POST, kept as sent: a bot's activity has no `contentType`,
+    `subject`, `importance` or Graph-shaped mentions and attachments to hold them."""
+
     body: ItemBody
     subject: str | None = None
+    importance: Literal["normal", "high", "urgent"] = "normal"
+    attachments: list[ChatMessageAttachment] = []
+    mentions: list[ChatMessageMention] = []
+
+
+Activity.model_rebuild()
+
+
+class PostedBody(Lenient):
+    contentType: str = "text"
+    content: str
+
+
+class PostedIdentity(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: str
+    displayName: str | None = None
+    userIdentityType: str | None = None
+
+
+class PostedMentioned(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    user: PostedIdentity | None = None
+    application: PostedIdentity | None = None
+
+
+class PostedMention(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: int
+    mentionText: str
+    mentioned: PostedMentioned
+
+
+class PostedAttachment(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    id: str
+    contentType: str
+    content: str | None = None
+    contentUrl: str | None = None
+    name: str | None = None
+
+
+class PostedChatMessage(Lenient):
+    """`POST …/messages` and `…/replies`: the properties this provider keeps; any other it names is refused by name,
+    never dropped (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    body: PostedBody
+    subject: str | None = None
+    importance: str = "normal"
+    attachments: list[PostedAttachment] = []
+    mentions: list[PostedMention] = []
+
+
+class PostedMember(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    odata_type: str = Field(
+        default="#microsoft.graph.aadUserConversationMember", validation_alias=AliasChoices("@odata.type", "odata_type")
+    )
+    roles: list[str] = []
+    user_bind: str = Field(validation_alias=AliasChoices("user@odata.bind", "user_bind"))
+
+
+class PostedChat(Lenient):
+    """`POST /chats`."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    chatType: str
+    topic: str | None = None
+    members: list[PostedMember] = []
+
+
+class JoinedTeam(Aliased):
+    """What `joinedTeams` populates of a team: `id`, `displayName`, `description`, `isArchived`, `tenantId`."""
+
+    id: str
+    displayName: str
+    description: str | None = None
+    isArchived: bool = False
+    tenantId: str
 
 
 class ConversationMember(Aliased):
@@ -952,6 +1046,7 @@ class MailFolderName(StrEnum):
 
 class MeetingMessageType(StrEnum):
     REQUEST = "meetingRequest"
+    CANCELLED = "meetingCancelled"
     ACCEPTED = "meetingAccepted"
     TENTATIVE = "meetingTentativelyAccepted"
     DECLINED = "meetingDeclined"
@@ -990,13 +1085,38 @@ class MailMessage(Aliased):
         description="Left out of a reply: Graph composes it from the comment and the quoted original, and no source "
         "says how",
     )
-    sender: Recipient
-    from_: Recipient = Field(validation_alias=AliasChoices("from_", "from"), serialization_alias="from")
+    sender: Recipient | None = Field(default=None, description="Left out of a draft: the page's example has none")
+    from_: Recipient | None = Field(
+        default=None,
+        validation_alias=AliasChoices("from_", "from"),
+        serialization_alias="from",
+        description="Left out of a draft: the page's example has none",
+    )
     toRecipients: list[Recipient]
     ccRecipients: list[Recipient] = []
     bccRecipients: list[Recipient] = []
     replyTo: list[Recipient] = []
     meetingMessageType: MeetingMessageType | None = None
+
+
+class StoredAttachment(Aliased):
+    """A file attached to a message, as Graph answers it (`fileAttachment`): its bytes are kept as the base64 text
+    that was sent."""
+
+    odata_type: Literal["#microsoft.graph.fileAttachment"] = Field(
+        default="#microsoft.graph.fileAttachment",
+        validation_alias=AliasChoices("odata_type", "@odata.type"),
+        serialization_alias="@odata.type",
+    )
+    id: str
+    lastModifiedDateTime: str
+    name: str
+    contentType: str | None = None
+    size: int
+    isInline: bool = False
+    contentId: str | None = None
+    contentLocation: str | None = None
+    contentBytes: str
 
 
 class StoredMail(Model):
@@ -1005,6 +1125,12 @@ class StoredMail(Model):
     message: MailMessage
     folder: MailFolderName
     event: str | None = Field(default=None, description="The event a meeting request invites to")
+    said: str | None = Field(
+        default=None,
+        description="What the writer of a reply or forward draft wrote, where Graph composes the body and no source "
+        "says how",
+    )
+    attachments: list[StoredAttachment] = []
 
 
 class MailFolder(Aliased):
@@ -1031,6 +1157,21 @@ class SentRecipient(Lenient):
     emailAddress: SentEmailAddress
 
 
+class SentAttachment(Lenient):
+    """A file attachment a caller sends: `name` and `contentBytes` are required (fileattachment)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    odata_type: str = Field(
+        default="#microsoft.graph.fileAttachment", validation_alias=AliasChoices("@odata.type", "odata_type")
+    )
+    name: str
+    contentBytes: str
+    contentType: str | None = None
+    isInline: bool = False
+    contentId: str | None = None
+
+
 class SentMessage(Lenient):
     """A message a caller sends: the properties this provider keeps; any other it names is refused by name, never
     dropped (`model_extra`)."""
@@ -1044,6 +1185,7 @@ class SentMessage(Lenient):
     bccRecipients: list[SentRecipient] = []
     replyTo: list[SentRecipient] = []
     importance: Literal["low", "normal", "high"] = "normal"
+    attachments: list[SentAttachment] = []
 
 
 class SendMailRequest(Lenient):
@@ -1061,11 +1203,37 @@ class ReplyRequest(Lenient):
 
 
 class MessagePatch(Lenient):
-    """What a PATCH of a message may change here: whether it is read. Anything else it names is not served."""
+    """What a PATCH of a message may change here: whether it is read, and of a draft its subject, body, recipients
+    and importance. Anything else it names is not served."""
 
     model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
 
     isRead: bool | None = None
+    subject: str | None = None
+    body: SentBody | None = None
+    toRecipients: list[SentRecipient] | None = None
+    ccRecipients: list[SentRecipient] | None = None
+    bccRecipients: list[SentRecipient] | None = None
+    replyTo: list[SentRecipient] | None = None
+    importance: Literal["low", "normal", "high"] | None = None
+
+
+class ForwardRequest(Lenient):
+    """`forward` and `createForward`: a comment or a message, and the recipients."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    comment: str | None = None
+    toRecipients: list[SentRecipient] | None = None
+    message: SentMessage | None = None
+
+
+class DestinationRequest(Lenient):
+    """`move` and `copy`."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    destinationId: str
 
 
 class ResponseKind(StrEnum):
@@ -1092,6 +1260,33 @@ class Location(Aliased):
     displayName: str = ""
 
 
+class RecurrencePattern(Aliased):
+    """How often an event repeats (recurrencepattern): the daily and weekly types are held."""
+
+    type: Literal["daily", "weekly"]
+    interval: int
+    month: int = 0
+    dayOfMonth: int = 0
+    daysOfWeek: list[str] = []
+    firstDayOfWeek: str = "sunday"
+    index: str = "first"
+
+
+class RecurrenceRange(Aliased):
+    """Over how long an event repeats (recurrencerange)."""
+
+    type: Literal["endDate", "noEnd", "numbered"]
+    startDate: str
+    endDate: str | None = None
+    recurrenceTimeZone: str = "UTC"
+    numberOfOccurrences: int = 0
+
+
+class Recurrence(Aliased):
+    pattern: RecurrencePattern
+    range: RecurrenceRange
+
+
 class Event(Aliased):
     """An event as Graph reads it from one mailbox: `isOrganizer` and `responseStatus` are that mailbox's own."""
 
@@ -1104,6 +1299,7 @@ class Event(Aliased):
     changeKey: str
     iCalUId: str
     transactionId: str | None = None
+    hasAttachments: bool = False
     subject: str
     bodyPreview: str
     body: ItemBody
@@ -1120,6 +1316,8 @@ class Event(Aliased):
     isOnlineMeeting: bool = False
     showAs: Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"] = "busy"
     type: Literal["singleInstance", "occurrence", "exception", "seriesMaster"] = "singleInstance"
+    seriesMasterId: str | None = None
+    recurrence: Recurrence | None = None
     webLink: str
 
 
@@ -1133,6 +1331,7 @@ class StoredEvent(Model):
     ends: AwareDatetime
     conversation: str
     request: str | None = Field(default=None, description="The meeting request message, when it invited anyone")
+    attachments: list[StoredAttachment] = []
 
 
 class CalendarResource(Aliased):
@@ -1162,10 +1361,36 @@ class SentDateTime(Lenient):
     timeZone: str = "UTC"
 
 
+class SentPattern(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    type: str
+    interval: int
+    daysOfWeek: list[str] = []
+    firstDayOfWeek: str | None = None
+
+
+class SentRange(Lenient):
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    type: str
+    startDate: str
+    endDate: str | None = None
+    numberOfOccurrences: int | None = None
+    recurrenceTimeZone: str | None = None
+
+
+class SentRecurrence(Lenient):
+    pattern: SentPattern
+    range: SentRange
+
+
 class EventRequest(Lenient):
     """An event a caller creates or changes: every field is optional, so a PATCH reads as what it names."""
 
     model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    recurrence: SentRecurrence | None = None
 
     subject: str | None = None
     body: SentBody | None = None
@@ -1177,7 +1402,16 @@ class EventRequest(Lenient):
     isOnlineMeeting: bool | None = None
 
 
+class CancelRequest(Lenient):
+    comment: str = ""
+
+
 class EventResponseRequest(Lenient):
+    """`accept`, `tentativelyAccept` and `decline`: a parameter other than these two (`proposedNewTime`) is refused by
+    name (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
     comment: str = ""
     sendResponse: bool = True
 

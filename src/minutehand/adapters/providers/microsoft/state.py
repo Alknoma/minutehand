@@ -498,6 +498,10 @@ class MicrosoftWorld:
         """Every live message in a conversation, oldest first: activity ids are ordered by creation."""
         return self._all(wire.Activity, EntityKind.MESSAGE, conversation)
 
+    def message_versions(self, conversation: str) -> list[tuple[int, wire.Activity]]:
+        """Every live message in a conversation with the seq of its last change."""
+        return [(s.seq, wire.parse(wire.Activity, s.body)) for s in self._pages(EntityKind.MESSAGE, conversation)]
+
     def next_activity_id(self, clock: Clock) -> str:
         """Teams' message id: the moment in milliseconds, here the simulated second and the next event's seq, so two
         messages in one instant are still distinct and ordered."""
@@ -719,6 +723,39 @@ class MicrosoftWorld:
             for u in self.users()
             for e in self._all(wire.StoredEvent, EntityKind.RECORD, CALENDAR.format(user=u.user.id))
         ]
+
+    def event_versions(self) -> list[tuple[int, wire.StoredEvent]]:
+        """Every event in every calendar of the tenant with the seq of its last change."""
+        return [
+            (s.seq, wire.parse(wire.StoredEvent, s.body))
+            for u in self.users()
+            for s in self._pages(EntityKind.RECORD, CALENDAR.format(user=u.user.id))
+        ]
+
+    def removed_events(self, since: int) -> list[tuple[int, wire.StoredEvent]]:
+        """The events deleted after `since`, as they were, with the seq of their deletion."""
+        found: list[tuple[int, wire.StoredEvent]] = []
+        for event in self.store.events(since=since):
+            if event.operation is not Operation.DELETE or event.entity.kind is not EntityKind.RECORD:
+                continue
+            history = self.store.versions(event.entity)
+            if history and self.store.get(event.entity) is None:
+                last = history[-1]
+                if any(last.parent == CALENDAR.format(user=u.user.id) for u in self.users()):
+                    found.append((event.seq, wire.parse(wire.StoredEvent, last.body)))
+        return found
+
+    def removed_mail(self, user: str, since: int) -> list[tuple[int, str, list[Stored]]]:
+        """The messages deleted from a mailbox after `since`: the seq of the deletion, the id, and the versions
+        they had."""
+        found: list[tuple[int, str, list[Stored]]] = []
+        for event in self.store.events(since=since):
+            if event.operation is not Operation.DELETE or event.entity.kind is not EntityKind.MESSAGE:
+                continue
+            history = self.store.versions(event.entity)
+            if history and self.store.get(event.entity) is None and history[-1].parent == MAILBOX.format(user=user):
+                found.append((event.seq, event.entity.external_id, history))
+        return found
 
     def write_event(
         self, stored: wire.StoredEvent, *, operation: Operation, actor: Actor, after: Snapshot | None
