@@ -118,15 +118,9 @@ _OPERATORS = ("!=", ">=", "<=", "!~", "=", "~", ">", "<")
 _WORD_END = set(" \t\r\n(),\"'=!~<>")
 
 
-class Unmatched(Exception):
-    """A query Jira reads but that names something it has not got (a field, a value, a function, an operator a
-    field does not take, a date it cannot read): the public site answers such a query 200 with no issues, never a
-    400 (recorded: `tests/providers/jira/data/observed/jql_*_unknown.http`, `jql_operator_unsupported.http`,
-    `jql_date_invalid.http`, `jql_is_not_empty_value.http`, `jql_text_no_word.http`, `jql_period_invalid.http`)."""
-
-
 SEARCH_INVALID = "Returned if the search request is invalid"
-"""The search reference's words for its 400, for a malformed query whose sentence no recording gives."""
+"""The search reference's words for its 400, for an invalid query whose sentence neither a recording nor a report
+gives (CLAIMS.md marks each such row observed-pending)."""
 
 
 def _place(text: str, at: int) -> str:
@@ -325,7 +319,7 @@ def _clause(reader: _Reader) -> Clause:
         return Clause(field=field, op=op, values=values)
     value = _value(reader)
     if op in (Op.IS, Op.IS_NOT) and value.kind is not ValueKind.EMPTY:
-        raise Unmatched(f"{field} {op.value} takes only EMPTY or NULL")
+        raise jql_error(SEARCH_INVALID)
     return Clause(field=field, op=op, values=[value])
 
 
