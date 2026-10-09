@@ -31,8 +31,8 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | `POST /app/installations/{installation_id}/access_tokens` | 201: a `ghs_` token, `expires_at` an hour on, `permissions` as the request sent them |
 | `POST /graphql` | `viewer` and `repository` with the fields listed in `graphql.py` |
 | `GET /repos/{o}/{r}/issues?state&labels&assignee&creator&milestone&type&sort&direction&since` | issues and pull requests (marked by `pull_request`), `Link` paging; 404 for a repository the caller cannot see |
-| `POST /repos/{o}/{r}/issues` | 201; title, body, label names as sent; labels and assignees dropped without push access |
-| `GET`, `PATCH /repos/{o}/{r}/issues/{n}` | state (`closed_at`, `closed_by`, `state_reason`), title, body, labels, assignees; 403 for one who may not edit |
+| `POST /repos/{o}/{r}/issues` | 201; title, body, label names as sent; labels and assignees kept as sent |
+| `GET`, `PATCH /repos/{o}/{r}/issues/{n}` | state (`closed_at`, `closed_by`, `state_reason`), title, body, labels, assignees |
 | `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/lock` | 204; `lock_reason` of the four the reference lists |
 | `GET`, `POST /repos/{o}/{r}/issues/{n}/comments`, `GET /repos/{o}/{r}/issues/comments` | comments by ascending id (or `sort` and `direction`), `since` |
 | `GET`, `PATCH`, `DELETE /repos/{o}/{r}/issues/comments/{id}` | one comment; delete is 204 |
@@ -98,6 +98,9 @@ the seed leaves it: each commit names the paths it changes (text, bytes or a del
 one of them. Ids come from names (`seed.number`), so the same seed has the same ids in every run; what the agent makes
 takes ids from counters kept in the store, from 10,000,000,000, above every id a seed derives.
 
+Authorization is out of scope: no role, scope or permission refuses a call here. What a call is judged by is its shape and
+the world: a thing that does not exist, or a private repository the caller cannot see, is a 404.
+
 ## Credentials
 
 Minutehand deliberately does not enforce credentials. Any `Authorization`, or none, is accepted, under any scheme: a token
@@ -138,7 +141,7 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
   repository webhooks and their deliveries, the OAuth web flow, and every app route but the token exchange: refused by name (above).
 - A repository's labels are what its seed and the agent's `POST .../labels` define: a label name an issue is given
   that the repository has not defined is refused by name, since the reference does not say what GitHub does with one.
-  Labels list alphabetically by name, case aside (recorded). An assignee must be a user with a role on the repository.
+  Labels list alphabetically by name, case aside (recorded). An assignee must be a user of this GitHub.
 - An issue's `updated_at` moves with its own changes and with a comment on it (recorded), not with a lock.
 - A GraphQL query costs one point, whatever its size; GitHub prices a query by the nodes it may return.
 - Every branch and commit shows the default branch's head files, except a branch with commits of its own (a seed's

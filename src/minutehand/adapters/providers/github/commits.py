@@ -25,7 +25,6 @@ if TYPE_CHECKING:
     from minutehand.adapters.providers.github.app import GitHubApi
 
 CONTENTS = "/repos/contents"
-PUSH = wire.PERMISSION_ORDER.index(wire.Permission.PUSH)
 
 
 class Commits:
@@ -192,8 +191,6 @@ class Commits:
         repository = self._api.visible(caller, owner, name, section)
         if caller.account is None:
             raise wire.requires_authentication()
-        if self._api.tracker.rank(caller, repository) < PUSH:
-            raise NotServed("committing without push access: the reference lists no status for it")
         return repository, caller.account
 
     async def put(self, request: Request, caller: Caller) -> Answered:

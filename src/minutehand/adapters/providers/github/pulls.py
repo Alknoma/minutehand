@@ -22,7 +22,7 @@ from minutehand.adapters.providers.github import content, diffs, history, state,
 from minutehand.adapters.providers.github.answers import Answered, Caller, as_json, chosen, paged, param
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
-from minutehand.adapters.providers.github.tracker import FIRST_ID, FORBIDDEN, PUSH, Tracker, moment
+from minutehand.adapters.providers.github.tracker import FIRST_ID, Tracker, moment
 from minutehand.domain.errors import NotServed
 from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import Actor, Operation
@@ -334,20 +334,6 @@ class Pulls:
         self._api.world.saw(state.repository_ref(owner, name), Operation.SEARCH)
         return as_json(list(self.present(caller, repository, pulls[start:end], full=False)), headers=links)
 
-    def may_change(self, caller: Caller, repository: wire.StoredRepository) -> bool:
-        """ "To open or update a pull request in a public repository, you must have write access to the head or the
-        source branch. For organization-owned repositories, you must be a member of the organization that owns the
-        repository." https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request"""
-        if self.tracker.rank(caller, repository) >= PUSH:
-            return True
-        owner = self._api.world.account(repository.owner)
-        return (
-            owner is not None
-            and owner.type is wire.AccountType.ORGANIZATION
-            and caller.account is not None
-            and caller.account.login.lower() in {m.lower() for m in owner.members}
-        )
-
     async def create_pull(self, request: Request, caller: Caller) -> Answered:
         section = f"{PULLS}#create-a-pull-request"
         owner, name = request.path_params["owner"], request.path_params["repo"]
@@ -373,8 +359,6 @@ class Pulls:
             raise NotServed(f"a pull request into {base}, which is not the default branch {repository.default_branch}")
         if line is None or not line.commits:
             raise NotServed(f"a pull request from {ref}, which has no commits of its own beyond {base}")
-        if not self.may_change(caller, repository):
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         world = self._api.world
         if any(
             i.pull is not None and i.pull.head == ref and i.state is wire.IssueState.OPEN
@@ -444,8 +428,6 @@ class Pulls:
         repository = self._api.visible(caller, owner, name, section)
         issue = self.pull_of(request, repository, section)
         account = self.tracker.agent(caller)
-        if not self.may_change(caller, repository):
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         sent = wire.Sent.read(await request.body(), section=section, optional=True)
         pull = issue.pull
         assert pull is not None
@@ -538,8 +520,6 @@ class Pulls:
         repository = self._api.visible(caller, owner, name, section)
         issue = self.pull_of(request, repository, section)
         account = self.tracker.agent(caller)
-        if self.tracker.rank(caller, repository) < PUSH:
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         sent = wire.Sent.read(await request.body(), section=section, optional=True)
         method = sent.text("merge_method")
         if method is not None and method != "merge":
@@ -735,10 +715,6 @@ class Pulls:
         if event is not wire.ReviewEvent.APPROVE and (body is None or not body.strip()):
             # "**Required** when using `REQUEST_CHANGES` or `COMMENT` for the `event` parameter."
             raise wire.Refusal(422, "Invalid request", section=section)
-        if event is not wire.ReviewEvent.COMMENT and issue.author.lower() == account.login.lower():
-            raise NotServed(
-                "approving or requesting changes on one's own pull request: GitHub refuses it, with no message given"
-            )
         tips = tips_of(self._api.world, repository, issue)
         if commit_id is not None and commit_id != tips.head:
             raise NotServed("a review of a commit other than the pull request's head")

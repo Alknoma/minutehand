@@ -195,23 +195,15 @@ async def test_a_pull_request_the_agent_opens_is_kept_and_returned_as_sent(hub: 
     assert user(made, "user") == "tomas-b" and issue["title"] == title and "pull_request" in issue
 
 
-async def test_an_organization_member_may_open_one_and_a_reader_of_a_user_repository_may_not(hub: Hub) -> None:
-    """Documented: "To open or update a pull request in a public repository, you must have write access to the head or
-    the source branch. For organization-owned repositories, you must be a member of the organization that owns the
-    repository." Iris reads the ledger as a member of its organization; Tomas only reads her public notes."""
+async def test_anyone_who_can_see_the_repository_may_open_one(hub: Hub) -> None:
+    """Authorization is out of scope: neither a role nor membership is asked of whoever opens a pull request."""
     async with hub.client(IRIS) as http:
         member = body(await http.post(PULLS, json={"title": "Notes", "head": "notes", "base": "main"}), 201)
     async with hub.client(TOMAS) as http:
-        refusal(
-            await http.post("/repos/iris-calder/notes/pulls", json={"title": "Fix", "head": "fix", "base": "main"}),
-            403,
-            "Forbidden",
-        )
-    async with hub.client(IRIS) as http:
-        own = body(
+        other = body(
             await http.post("/repos/iris-calder/notes/pulls", json={"title": "Fix", "head": "fix", "base": "main"}), 201
         )
-    assert member["number"] == 5 and own["number"] == 1
+    assert member["number"] == 5 and other["number"] == 1
 
 
 @pytest.mark.parametrize(
@@ -483,9 +475,9 @@ async def test_a_merge_that_cannot_be_performed_is_405_and_a_head_that_moved_409
     refusal(twice, 405, "Method Not Allowed")
 
 
-async def test_a_merge_takes_write_access_and_a_pull_request_to_merge(hub: Hub) -> None:
+async def test_a_merge_is_not_judged_by_role_and_needs_a_pull_request_to_merge(hub: Hub) -> None:
     async with hub.client(IRIS) as http:
-        refusal(await http.put(f"{PULLS}/4/merge", json={}), 403, "Forbidden")
+        assert (await http.put(f"{PULLS}/4/merge", json={})).status_code == 200
         refusal(await http.put(f"{PULLS}/1/merge", json={}), 404, "Not Found")
     async with hub.client(OUTSIDER) as http:
         refusal(await http.put(f"{PULLS}/4/merge", json={}), 404, "Not Found")

@@ -151,6 +151,8 @@ OPEN: dict[str, tuple[str, ...]] = {
         "waits for a long poll on its own clock",
     ),
     "github": (
+        "A merge \"if merge cannot be performed\" is 405 and one with a `sha` the head does not match 409; the statuses are the reference's, the wording of the message is observed-pending (answered with the status's name until a recording is made)",
+        "A `sha` that is not the file's is 409 (the reference's status); the wording of the message is observed-pending (answered \"Conflict\" until a recording is made)",
         "…its `documentation_url` is `https://docs.github.com/rest`",
         "An error body is `message`, `documentation_url` and `status` (a string), with `errors` when there are some",
         'An unknown `X-GitHub-Api-Version` is 400 "Bad Request", the reason a sentence in `errors`',

@@ -96,14 +96,14 @@ async def test_an_approval_needs_no_words_and_the_other_two_do(hub: Hub) -> None
     assert approved["body"] == ""
 
 
-async def test_the_author_may_comment_on_their_own_pull_request_and_no_more(hub: Hub) -> None:
+async def test_the_author_may_review_their_own_pull_request(hub: Hub) -> None:
+    """Nothing in the reference bars it, and who reviews is not judged (authorization is out of scope)."""
     async with hub.client(TOMAS) as http:
-        commented = body(await http.post(f"{PULL}/reviews", json={"event": "COMMENT", "body": "Note to self."}))
-        approved = await http.post(f"{PULL}/reviews", json={"event": "APPROVE"})
-        changes = await http.post(f"{PULL}/reviews", json={"event": "REQUEST_CHANGES", "body": "No."})
-    assert commented["state"] == "COMMENTED"
-    for refused in (approved, changes):
-        assert refused.status_code == 501 and "own pull request" in refused.json()["message"]
+        states = [
+            body(await http.post(f"{PULL}/reviews", json={"event": e, "body": "Mine."}))["state"]
+            for e in ("COMMENT", "APPROVE", "REQUEST_CHANGES")
+        ]
+    assert states == ["COMMENTED", "APPROVED", "CHANGES_REQUESTED"]
 
 
 @pytest.mark.parametrize(

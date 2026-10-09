@@ -32,10 +32,6 @@ FIRST_ID = 10_000_000_000
 ISSUES = "/issues/issues"
 COMMENTS = "/issues/comments"
 LABELS = "/issues/labels"
-FORBIDDEN = "Forbidden"
-"""The reference documents 403 for these refusals and names it "Forbidden"; it gives no message of its own."""
-PUSH = wire.PERMISSION_ORDER.index(wire.Permission.PUSH)
-TRIAGE = wire.PERMISSION_ORDER.index(wire.Permission.TRIAGE)
 
 
 def moment(text: str) -> str:
@@ -82,10 +78,6 @@ class Tracker:
             raise wire.requires_authentication()
         return caller.account
 
-    def rank(self, caller: Caller, repository: wire.StoredRepository) -> int:
-        role = self._api.permission(caller, repository)
-        return -1 if role is None else wire.PERMISSION_ORDER.index(role)
-
     def association(self, repository: wire.StoredRepository, login: str) -> wire.Association:
         """How an author is associated with the repository, in the words GraphQL documents for each:
         https://docs.github.com/en/graphql/reference/enums#commentauthorassociation"""
@@ -101,16 +93,14 @@ class Tracker:
             return wire.Association.CONTRIBUTOR
         return wire.Association.NONE
 
-    def assignable(self, repository: wire.StoredRepository, logins: list[str]) -> list[str]:
-        """The users to assign, as the world names them: a user with a role on the repository. Anyone else is refused
-        by name, as the reference documents no more than "available assignees"."""
+    def assignable(self, logins: list[str]) -> list[str]:
+        """The users to assign, as the world names them: a user of this GitHub. A login that names no user is refused
+        by name; what a user may be assigned is not a thing this provider judges (authorization is out of scope)."""
         found: list[str] = []
         for login in logins:
             account = self._api.world.account(login)
             if account is None or account.type is not wire.AccountType.USER:
                 raise NotServed(f"assigning {login}, who is not a user of this GitHub")
-            if self._api.world.role(account, repository) is None:
-                raise NotServed(f"assigning {login}, who has no role on {repository.full_name}")
             if account.login not in found:
                 found.append(account.login)
         return found
@@ -293,11 +283,8 @@ class Tracker:
         if not title.strip():
             raise sent.invalid()
         named = list(assignees or []) if assignees is not None else ([single] if single is not None else [])
-        # "Only users with push access can set labels [and assignees] for new issues. [They are] silently dropped
-        # otherwise." https://docs.github.com/en/rest/issues/issues#create-an-issue
-        pushes = self.rank(caller, repository) >= PUSH
-        kept_labels = self.defined(repository, labels or []) if pushes else []
-        kept_assignees = self.assignable(repository, named) if pushes else []
+        kept_labels = self.defined(repository, labels or [])
+        kept_assignees = self.assignable(named)
         issue = await self.open_issue(
             repository,
             account,
@@ -431,10 +418,6 @@ class Tracker:
         repository = self._api.visible(caller, owner, name, section)
         issue = self.issue_of(request, repository, section)
         account = self.agent(caller)
-        # "Issue owners and users with push access or Triage role can edit an issue."
-        rank = self.rank(caller, repository)
-        if issue.author.lower() != account.login.lower() and rank < TRIAGE:
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         sent = wire.Sent.read(await request.body(), section=section, optional=True)
         sent.refuse("type", why="the world holds no issue types")
         sent.refuse("issue_field_values", why="the world holds no issue fields")
@@ -448,15 +431,14 @@ class Tracker:
             changes["title"] = title
         if sent.named("body"):
             changes["body"] = sent.text("body")
-        pushes = rank >= PUSH
         labels = label_names(sent, "labels")
-        if labels is not None and pushes:
+        if labels is not None:
             changes["labels"] = self.defined(repository, labels)
         assignees = sent.texts("assignees")
         single = sent.text("assignee")
-        if (assignees is not None or single is not None) and pushes:
+        if assignees is not None or single is not None:
             named = assignees if assignees is not None else ([single] if single is not None else [])
-            changes["assignees"] = self.assignable(repository, named)
+            changes["assignees"] = self.assignable(named)
         wanted = sent.member("state", wire.IssueState)
         reason = sent.member("state_reason", wire.StateReason)
         now = wire.timestamp(self._api.clock.now())
@@ -497,8 +479,6 @@ class Tracker:
         repository = self._api.visible(caller, owner, name, section)
         issue = self.issue_of(request, repository, section)
         self.agent(caller)
-        if self.rank(caller, repository) < PUSH:
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         sent = wire.Sent.read(await request.body(), section=section, optional=True)
         reason = sent.lock_reason("lock_reason")
         locked = issue.model_copy(update={"locked": True, "lock_reason": reason})
@@ -512,8 +492,6 @@ class Tracker:
         repository = self._api.visible(caller, owner, name, section)
         issue = self.issue_of(request, repository, section)
         self.agent(caller)
-        if self.rank(caller, repository) < PUSH:
-            raise wire.Refusal(403, FORBIDDEN, section=section)
         unlocked = issue.model_copy(update={"locked": False, "lock_reason": None})
         if unlocked != issue:
             self._api.world.put_issue(repository, unlocked, operation=Operation.UPDATE, actor=Actor.AGENT)
@@ -544,10 +522,6 @@ class Tracker:
         sent = wire.Sent.read(await request.body(), section=section)
         body = sent.text("body", required=True)
         assert body is not None
-        if issue.locked and self.rank(caller, repository) < PUSH:
-            # Only collaborators comment on a locked conversation:
-            # https://docs.github.com/en/communities/moderating-comments-and-conversations/locking-conversations
-            raise NotServed("commenting on a locked conversation without push access: the reference gives no answer")
         comment = await self.post_comment(repository, issue, account, body, actor=Actor.AGENT)
         return as_json(self.comment_out(repository, comment), 201)
 

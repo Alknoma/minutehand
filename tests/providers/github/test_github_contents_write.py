@@ -300,12 +300,17 @@ async def test_a_commit_to_an_empty_repository_is_refused_by_name(hub: Hub) -> N
 # ------------------------------------------------------------------------------------------------------ what it will not do
 
 
-async def test_a_reader_cannot_commit_and_a_stranger_cannot_see_the_repository(hub: Hub) -> None:
-    async with hub.client(IRIS) as http:  # an organization member reads the ledger and does not push
-        refused = await http.put(NEW, json={"message": "m", "content": encoded(b"x")})
-    assert refused.status_code == 501 and "without push access" in refused.json()["message"]
+async def test_a_stranger_cannot_see_the_repository_and_a_reader_is_not_judged(hub: Hub) -> None:
+    """Authorization is out of scope: what a user may do is not checked, what exists is (a private repository the user
+    cannot see is a 404)."""
+    async with hub.client(IRIS) as http:  # an organization member reads the ledger
+        assert (await http.put(NEW, json={"message": "m", "content": encoded(b"x")})).status_code == 201
     async with hub.client(OUTSIDER) as http:
-        refusal(await http.put(NEW, json={"message": "m", "content": encoded(b"x")}), 404, "Not Found")
+        refusal(
+            await http.put(f"{LEDGER}/contents/docs/b.md", json={"message": "m", "content": encoded(b"x")}),
+            404,
+            "Not Found",
+        )
         refusal(await http.request("DELETE", NEW, json={"message": "m", "sha": "0" * 40}), 404, "Not Found")
 
 

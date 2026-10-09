@@ -187,19 +187,18 @@ async def test_a_whole_number_title_is_kept_as_its_text(hub: Hub) -> None:
     assert made["title"] == "404"
 
 
-async def test_labels_and_assignees_are_dropped_silently_without_push_access(hub: Hub) -> None:
-    """Documented: "Only users with push access can set labels [and assignees] for new issues. [They are] silently
-    dropped otherwise." The org member reads only; the collaborator pushes.
-    https://docs.github.com/en/rest/issues/issues#create-an-issue"""
+async def test_labels_and_assignees_are_kept_whoever_sets_them(hub: Hub) -> None:
+    """Authorization is out of scope: the labels and assignees of a new issue are kept as sent, by a reader as by a
+    collaborator."""
     sent = {"title": "T", "labels": ["bug"], "assignees": ["tomas-b"]}
     async with hub.client() as http:
         reader = body(await http.post(ISSUES, json=sent), 201)
     async with hub.client(TOMAS) as http:
         pusher = body(await http.post(ISSUES, json=sent), 201)
-    assert reader["labels"] == [] and reader["assignees"] == []
-    assert [label["name"] for label in cast(list[Json], pusher["labels"])] == ["bug"]
-    assert [a["login"] for a in cast(list[Json], pusher["assignees"])] == ["tomas-b"]
-    assert cast(Json, pusher["assignee"])["login"] == "tomas-b"
+    for made in (reader, pusher):
+        assert [label["name"] for label in cast(list[Json], made["labels"])] == ["bug"]
+        assert [a["login"] for a in cast(list[Json], made["assignees"])] == ["tomas-b"]
+        assert cast(Json, made["assignee"])["login"] == "tomas-b"
 
 
 async def test_labels_may_be_objects_with_a_name_and_an_assignee_may_stand_for_assignees(hub: Hub) -> None:
@@ -239,7 +238,6 @@ async def test_a_body_that_is_not_json_or_not_an_object_is_400(hub: Hub) -> None
         ({"title": "T", "parent_issue_id": 5}, "parent_issue_id"),
         ({"title": "T", "issue_field_values": []}, "issue_field_values"),
         ({"title": "T", "labels": ["no-such-label"]}, "no-such-label"),
-        ({"title": "T", "assignees": ["outsider"]}, "outsider"),
         ({"title": "T", "assignees": ["nobody-at-all"]}, "nobody-at-all"),
     ],
 )
@@ -314,25 +312,12 @@ async def test_labels_and_assignees_replace_the_set_and_an_empty_array_clears_it
     assert cleared["labels"] == [] and cleared["assignees"] == [] and cleared["assignee"] is None
 
 
-async def test_label_and_assignee_changes_without_push_access_are_dropped_silently(hub: Hub) -> None:
-    """Documented: "Without push access to the repository, label changes [and assignee changes] are silently
-    dropped." The org member opened issue 3; the title changes and the labels do not."""
+async def test_anyone_who_sees_an_issue_may_edit_it(hub: Hub) -> None:
+    """Authorization is out of scope: who edits an issue is not asked. Iris reads the ledger and edits Tomas's issue."""
     async with hub.client() as http:
-        changed = body(
-            await http.patch(f"{ISSUES}/3", json={"title": "Pay button", "labels": ["bug"], "assignees": []})
-        )
-    assert changed["title"] == "Pay button" and changed["labels"] == []
-    assert [a["login"] for a in cast(list[Json], changed["assignees"])] == ["tomas-b"]
-
-
-async def test_only_the_author_or_a_triager_may_edit_an_issue(hub: Hub) -> None:
-    """Documented: "Issue owners and users with push access or Triage role can edit an issue."; 403 is its refusal.
-    Issue 1 is Tomas's, who pushes; Iris reads only and may edit her own issue 3 but not his."""
-    async with hub.client() as http:
-        refusal(await http.patch(f"{ISSUES}/1", json={"title": "Mine now"}), 403, "Forbidden")
-        assert body(await http.patch(f"{ISSUES}/3", json={"title": "Mine"}))["title"] == "Mine"
-    async with hub.client(TOMAS) as http:
-        assert body(await http.patch(f"{ISSUES}/3", json={"title": "Theirs"}))["title"] == "Theirs"
+        changed = body(await http.patch(f"{ISSUES}/1", json={"title": "Mine now", "labels": ["docs"], "assignees": []}))
+    assert changed["title"] == "Mine now"
+    assert [label["name"] for label in cast(list[Json], changed["labels"])] == ["docs"] and changed["assignees"] == []
 
 
 async def test_an_edit_that_changes_nothing_leaves_the_update_time(hub: Hub) -> None:
@@ -387,23 +372,21 @@ async def test_a_conversation_is_locked_with_a_reason_and_unlocked(hub: Hub) -> 
     assert (after["locked"], after["active_lock_reason"]) == (False, None)
 
 
-async def test_locking_takes_push_access_and_a_reason_from_the_reference(hub: Hub) -> None:
-    """Documented: "Users with push access can lock an issue"; 403 refuses, and 422 a reason outside the four."""
+async def test_locking_is_not_judged_by_role_and_takes_a_reason_from_the_reference(hub: Hub) -> None:
+    """Documented: 422 refuses a reason outside the four. Who may lock is not asked (authorization is out of scope)."""
     async with hub.client() as http:
-        refusal(await http.put(f"{ISSUES}/1/lock"), 403, "Forbidden")
-        refusal(await http.delete(f"{ISSUES}/1/lock"), 403, "Forbidden")
+        assert (await http.put(f"{ISSUES}/1/lock")).status_code == 204
+        assert (await http.delete(f"{ISSUES}/1/lock")).status_code == 204
     async with hub.client(TOMAS) as http:
         refusal(await http.put(f"{ISSUES}/1/lock", json={"lock_reason": "boring"}), 422, "Invalid request")
 
 
-async def test_commenting_on_a_locked_conversation_without_push_access_is_refused_by_name(hub: Hub) -> None:
+async def test_a_locked_conversation_still_takes_a_comment(hub: Hub) -> None:
+    """Authorization is out of scope: who may comment on a locked conversation is not asked."""
     async with hub.client(TOMAS) as http:
         await http.put(f"{ISSUES}/1/lock")
-        pusher = await http.post(f"{ISSUES}/1/comments", json={"body": "still allowed"})
     async with hub.client() as http:
-        reader = await http.post(f"{ISSUES}/1/comments", json={"body": "not allowed"})
-    assert pusher.status_code == 201
-    assert reader.status_code == 501 and "locked" in reader.json()["message"]
+        assert (await http.post(f"{ISSUES}/1/comments", json={"body": "heard"})).status_code == 201
 
 
 async def test_an_issue_opened_closed_and_reopened_by_the_agent_is_three_moves_of_its_state(hub: Hub) -> None:
@@ -420,3 +403,13 @@ async def test_an_issue_opened_closed_and_reopened_by_the_agent_is_three_moves_o
         (Actor.AGENT, "close", "open", "closed", None),
         (Actor.AGENT, "reopen", "closed", "open", None),
     ]
+
+
+async def test_an_assignee_is_any_user_of_this_github_and_no_login_that_is_none(hub: Hub) -> None:
+    """Authorization is out of scope: a user with no role on the repository may be assigned; a login naming nobody is
+    refused by name."""
+    async with hub.client(TOMAS) as http:
+        made = body(await http.post(ISSUES, json={"title": "T", "assignees": ["outsider"]}), 201)
+        refused = await http.post(ISSUES, json={"title": "T", "assignees": ["nobody-at-all"]})
+    assert [a["login"] for a in cast(list[Json], made["assignees"])] == ["outsider"]
+    assert refused.status_code == 501

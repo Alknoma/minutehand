@@ -233,8 +233,8 @@ host nobody declared as a service with no description; the separate stand-in (`a
 - **GitHub**: an open issue assigned to a person waits on them, and an open pull request that asks their review (and
   has none from them) or is assigned to them. The offers are the ones the REST routes take: close or reopen an issue
   with a comment and the reason GitHub takes; approve, ask for changes or comment on a pull request (`APPROVE`,
-  `REQUEST_CHANGES`, `COMMENT`, the events a review takes); merge it where they have write access and it merges
-  cleanly; close it. Each goes through the code of its route, so the update times and the commit are the route's, and
+  `REQUEST_CHANGES`, `COMMENT`, the events a review takes); merge it where it merges
+  cleanly (and is no draft); close it. Each goes through the code of its route, so the update times and the commit are the route's, and
   each is one transition in the log. An agent that declares an inbound target for GitHub is pushed the webhooks GitHub
   sends (`issues`, `issue_comment`, `pull_request`, `pull_request_review`) with `X-GitHub-Event` and
   `X-GitHub-Delivery`, signed (`X-Hub-Signature-256`) only where the world declares a secret for the target, through

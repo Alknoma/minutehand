@@ -36,8 +36,6 @@ COMMIT_TITLE = "commit_title"
 COMMIT_MESSAGE = "commit_message"
 CLOSING_REASONS = (wire.StateReason.COMPLETED, wire.StateReason.NOT_PLANNED)
 """What a person closing an issue can say it was closed as: `duplicate` needs the issue it duplicates."""
-TRIAGE = wire.PERMISSION_ORDER.index(wire.Permission.TRIAGE)
-PUSH = wire.PERMISSION_ORDER.index(wire.Permission.PUSH)
 
 
 def account_of(world: GitHubWorld, person: Person) -> wire.StoredAccount | None:
@@ -149,10 +147,8 @@ class GitHubTransitions:
         return "\n".join(lines)
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
-        """Close an open issue, reopen a closed one: for its author and those with triage access or more ("Issue owners
-        and users with push access or Triage role can edit an issue",
-        https://docs.github.com/en/rest/issues/issues#update-an-issue). Review an open pull request, merge it where
-        they may and it merges cleanly, close it."""
+        """Close an open issue, reopen a closed one, for whoever can see it (authorization is out of scope: no role is
+        asked). Review an open pull request, merge it where it merges cleanly and is no draft, close it."""
         del by
         github = GitHubWorld(world)
         repository, issue = locate(github, item)
@@ -161,7 +157,7 @@ class GitHubTransitions:
             return []
         if issue.pull is not None:
             return self._pull_offers(github, repository, issue, account)
-        if issue.author.lower() != account.login.lower() and reaches(github, account, repository) < TRIAGE:
+        if reaches(github, account, repository) < 0:
             return []
         comment = OfferField(name=COMMENT, description="A comment added to the issue as it moves")
         if issue.state is wire.IssueState.OPEN:
@@ -187,10 +183,8 @@ class GitHubTransitions:
         issue: wire.StoredIssue,
         account: wire.StoredAccount,
     ) -> list[Offer]:
-        """The three events a review takes, for an open pull request the account can read (its author may only comment:
-        GitHub refuses a review of one's own that approves or asks for changes); a merge, for one that merges cleanly
-        and a user with write access, as the merge route requires; a close, for its author and those with triage
-        access or more."""
+        """The three events a review takes, for an open pull request the account can see (authorship bars none); a merge,
+        for one that merges cleanly and is no draft; a close."""
         reach = reaches(github, account, repository)
         if issue.state is not wire.IssueState.OPEN or reach < 0 or issue.pull is None:
             return []
@@ -201,8 +195,6 @@ class GitHubTransitions:
         }
         found: list[Offer] = []
         for event, (description, words_required) in wording.items():
-            if event is not wire.ReviewEvent.COMMENT and issue.author.lower() == account.login.lower():
-                continue
             found.append(
                 Offer(
                     name=event.value,
@@ -211,7 +203,7 @@ class GitHubTransitions:
                     description=description,
                 )
             )
-        if reach >= PUSH and not issue.pull.draft and pulls.merges_cleanly(github, repository, issue) is True:
+        if not issue.pull.draft and pulls.merges_cleanly(github, repository, issue) is True:
             found.append(
                 Offer(
                     name=MERGE,
@@ -227,15 +219,14 @@ class GitHubTransitions:
                     description="Merge the pull request",
                 )
             )
-        if issue.author.lower() == account.login.lower() or reach >= TRIAGE:
-            found.append(
-                Offer(
-                    name=CLOSE,
-                    to_state=wire.IssueState.CLOSED.value,
-                    fields=[OfferField(name=COMMENT, description="A comment added to the pull request as it closes")],
-                    description="Close the pull request without merging it",
-                )
+        found.append(
+            Offer(
+                name=CLOSE,
+                to_state=wire.IssueState.CLOSED.value,
+                fields=[OfferField(name=COMMENT, description="A comment added to the pull request as it closes")],
+                description="Close the pull request without merging it",
             )
+        )
         return found
 
     async def apply(

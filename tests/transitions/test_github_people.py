@@ -90,26 +90,20 @@ async def test_an_open_issue_assigned_to_a_person_is_pending_and_a_pinned_close_
     assert len(people) == 2, "the comment moves the issue's update time, then the close"
 
 
-def test_nobody_is_offered_a_move_github_would_refuse_them(tmp_path: Path) -> None:
-    """Documented: "Issue owners and users with push access or Triage role can edit an issue".
-    https://docs.github.com/en/rest/issues/issues#update-an-issue. Iris reads the ledger as an organization member and
-    did not open issue 1; Tomas pushes."""
+def test_what_is_offered_follows_the_item_and_never_the_role(tmp_path: Path) -> None:
+    """Authorization is out of scope: whoever can see an item is offered what its state allows. A closed issue offers a
+    reopen, an open one a close, an open pull request its review, merge and close; a closed pull request nothing."""
     provider, store, _ = _world(tmp_path, SCENARIO)
-    assert provider.legal(_ref(1), Actor.PERSON, IRIS, store) == []
-    assert [o.name for o in provider.legal(_ref(1), Actor.PERSON, TOMAS, store)] == ["close"]
-    # Mutation: dropping the role check offers Iris the close.
-    assert [o.name for o in provider.legal(_ref(3), Actor.PERSON, IRIS, store)] == ["close"], "her own issue"
-    assert [o.name for o in provider.legal(_ref(2), Actor.PERSON, TOMAS, store)] == ["reopen"]
-    assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, TOMAS, store)] == [
-        "COMMENT",
-        "merge",
-        "close",
-    ], "his own pull request: he may comment on it, and merge or close it, but not approve it"
-    assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, IRIS, store)] == [
-        "APPROVE",
-        "REQUEST_CHANGES",
-        "COMMENT",
-    ], "a reader reviews a pull request; she cannot merge it (the merge route takes write access) or close it"
+    for who in (IRIS, TOMAS):
+        assert [o.name for o in provider.legal(_ref(1), Actor.PERSON, who, store)] == ["close"]
+        assert [o.name for o in provider.legal(_ref(2), Actor.PERSON, who, store)] == ["reopen"]
+        assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, who, store)] == [
+            "APPROVE",
+            "REQUEST_CHANGES",
+            "COMMENT",
+            "merge",
+            "close",
+        ]
 
 
 async def test_a_close_names_why_it_was_closed_and_only_as_github_takes(tmp_path: Path) -> None:
@@ -179,7 +173,7 @@ async def test_a_pull_request_that_asks_a_review_is_pending_on_the_reviewer_and_
 
     booked = {b.item.external_id: b for b in (await engine.look(store, clock)).booked if b.person == "iris"}
     mine = booked["issue/lanternworks/ledger/0000000004"]
-    assert [o.name for o in provider.legal(mine.item, Actor.PERSON, IRIS, store)] == [
+    assert [o.name for o in provider.legal(mine.item, Actor.PERSON, IRIS, store)][:3] == [
         "APPROVE",
         "REQUEST_CHANGES",
         "COMMENT",
@@ -198,8 +192,9 @@ async def test_a_pull_request_that_asks_a_review_is_pending_on_the_reviewer_and_
     assert (review.pull, review.state, review.body) == (4, wire.ReviewState.APPROVED, "Looks right to me.")
     assert review.submitted_at == "2026-08-24T12:50:03Z"
     assert engine.pending(mine.pending, store).status is PendingStatus.ACTED
-    assert [w.item.external_id for w in provider.items_for(IRIS, store)] == ["issue/lanternworks/ledger/0000000001"], (
-        "reviewed: it no longer waits on her"
+    waits = {w.item.external_id[-1]: w.state for w in provider.items_for(IRIS, store)}
+    assert waits == {"1": "open", "4": "assigned"}, (
+        "reviewed: it no longer asks her review; it is still assigned to her"
     )
     people = [e for e in store.events() if e.entity.external_id.startswith("review/") and e.actor is Actor.PERSON]
     assert len(people) == 1
@@ -277,7 +272,7 @@ def _held(tmp_path: Path, seed: GitHubSeed, scenario: Scenario) -> tuple[GitHubT
 async def test_a_pull_request_assigned_to_a_person_who_may_merge_it_waits_on_them_and_a_pinned_merge_lands_as_theirs(
     tmp_path: Path,
 ) -> None:
-    """Documented: the merge route takes write access and merges a pull request that merges cleanly.
+    """Documented: the merge route merges a pull request that merges cleanly.
     https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request"""
     scenario = _played("merge", verbatim="With care.")
     port, store, clock = _held(tmp_path, _assigned_to_tomas(), scenario)
@@ -357,8 +352,6 @@ async def test_a_draft_or_conflicting_pull_request_is_not_offered_a_merge(tmp_pa
 
 async def test_a_merge_the_pull_request_cannot_make_is_refused(tmp_path: Path) -> None:
     port, store, clock = _held(tmp_path, pulls_seed(), SCENARIO)
-    with pytest.raises(ValueError, match="offers iris no 'merge'"):
-        await port.apply(_ref(4), "merge", Actor.PERSON, IRIS, "{}", store, clock)
     await port.apply(_ref(4), "merge", Actor.PERSON, TOMAS, "{}", store, clock)
     with pytest.raises(ValueError, match="offers tomas no 'merge'"):
         await port.apply(_ref(4), "merge", Actor.PERSON, TOMAS, "{}", store, clock)
