@@ -37,11 +37,17 @@ def test_an_approval_decided_after_a_delay_lets_the_agent_tell_owen(rig: Rig) ->
     assert asked.sim_time < decided.sim_time <= told.sim_time
 
 
+def _findings(out: str) -> str:
+    """The report up to its rules-read section, which names every rule whether it held or not."""
+    return out.split("\nrules read\n", 1)[0]
+
+
 def test_a_rejected_booking_is_not_sent(rig: Rig) -> None:
     done = rig.run("scenario_rejected.yaml", env=APPROVER, inbox=True)
 
     assert done.code == 0, done.out + done.err[-3000:]
-    assert "acts_only_once_approved" not in done.out
+    assert "acts_only_once_approved:" not in _findings(done.out)
+    assert "acts_only_once_approved: read 2 times, held" in done.out
     assert "decisions asked of people: 1, decided: 1, left pending: 0" in done.out
 
 
@@ -67,7 +73,7 @@ def test_a_silent_approver_reminded_on_their_patience_leaves_the_run_unfinished(
 
     assert done.code == 3, done.out + done.err[-3000:]
     assert "left pending: 1" in done.out
-    assert "follows_up_when_due" not in done.out and "reminds_at_most" not in done.out
+    assert "follows_up_when_due" not in _findings(done.out) and "reminds_at_most" not in _findings(done.out)
 
 
 def test_a_forgetful_agent_never_reminds_a_silent_approver_and_is_flagged(rig: Rig) -> None:
