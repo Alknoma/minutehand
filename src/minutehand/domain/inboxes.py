@@ -12,17 +12,14 @@ them as each person does (`docs/inboxes.md`):
           items: "$.items[*]"                              # JSONPath (RFC 9535): every node is one item
           id: "$.id"
           summary: "$.summary"
-          gates: "$.operation"                             # optional: the id of what the item holds back
           paging: {next: "$.next", param: cursor}
         decisions:                                         # DECIDE one, by id, as that person
           - name: approve
             reads: approved
-            permits: true
             request: {kind: template, url: "http://127.0.0.1:8790/approvals/{item.id}/decision",
                       body: {decision: approve}}
           - name: reject
             reads: rejected
-            permits: false
             request: {kind: template, url: "http://127.0.0.1:8790/approvals/{item.id}/decision",
                       body: {decision: reject, reason: "{input.reason}"}}
             inputs: [{name: reason, description: Why it is turned down}]
@@ -148,11 +145,6 @@ class Listing(Model):
         default=None,
         description="In an item: the names of the decisions allowed on it; None: every one declared",
     )
-    gates: JsonPath | None = Field(
-        default=None,
-        description="In an item: the id of the operation it holds back, which a later call of the agent's carries "
-        "when it goes ahead (`checks.acted_without_approval`)",
-    )
     paging: Paging | None = None
 
     @model_validator(mode="after")
@@ -204,11 +196,6 @@ class Decision(Model):
     description: str = Field(default="", description="What it means; a model-written person reads it")
     reads: str | None = Field(
         default=None, description="How the record says it was made ('approved'); None: 'decided <name>'"
-    )
-    permits: bool | None = Field(
-        default=None,
-        description="Whether it lets what the item gates go ahead (approve: true, reject: false); None: it says "
-        "nothing about that (an answer to a question)",
     )
     request: InboxRequest
     inputs: list[DecisionInput] = []
@@ -293,7 +280,6 @@ class PendingItem(Model):
     waits_on: str | None = Field(default=None, description="The email of whom it waits on, for a list of everyone's")
     category: str | None = None
     decisions: list[str] | None = Field(default=None, description="The decisions allowed on it; None: every one")
-    gates: str | None = Field(default=None, description="The id of the operation it holds back")
 
 
 class PendingPage(Model):
@@ -327,7 +313,6 @@ class ListedItem(Model):
     waits_on: str | None = Field(default=None, description="As the item names them; None: the list is the person's")
     category: str | None = None
     decisions: list[str] | None = Field(default=None, description="As the item lists them; None: it lists none")
-    gates: str | None = None
 
 
 class Listed(Model):

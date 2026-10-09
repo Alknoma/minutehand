@@ -192,10 +192,19 @@ async def test_a_decision_the_product_refuses_is_recorded_with_its_answer_and_th
     assert refused is not None and "cannot be decided now" in refused
     assert played.result.effectiveness.waits_open_at_end == 1
     assert played.result.effectiveness.decisions_made == 0
-    # Her move is recorded as a transition that left the item pending. Mutation: reading any decision as taken
-    # records it as decided.
-    [move] = [e.after for e in played.store.events() if isinstance(e.after, TransitionSnapshot)]
-    assert (move.name, move.from_state, move.to_state, move.who) == ("approve", "pending", "pending", "nadia")
+    # Her decision is her move; the product's refusal is a move of its own, by the system, back to pending, with
+    # its answer. Mutation: an inbox that takes every answer as accepted records no refusal.
+    moved = [e for e in played.store.events() if isinstance(e.after, TransitionSnapshot)]
+    moves = [
+        (t.name, t.from_state, t.to_state, e.actor, t.who)
+        for e in moved
+        if isinstance(t := e.after, TransitionSnapshot)
+    ]
+    assert moves == [
+        ("approve", "pending", "decided", Actor.PERSON, "nadia"),
+        ("refuse", "decided", "pending", Actor.SYSTEM, "approvals"),
+    ]
+    assert isinstance(moved[1].after, TransitionSnapshot) and "cannot be decided now" in moved[1].after.content
 
 
 async def test_an_item_taken_back_undecided_is_withdrawn_and_its_decision_never_made(

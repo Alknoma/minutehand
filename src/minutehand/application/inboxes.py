@@ -16,6 +16,7 @@ take naming a decision its inbox does not offer.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -24,7 +25,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import Decides, PersonReply
 from minutehand.domain.scenario import Account, Person, Scenario
-from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of, transition_change
+from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -38,11 +39,18 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.inboxes import ReachesInbox
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import record
 
 PENDING = "pending"
 """An item's state while it waits on its person: the product's own word, `ItemStatus.PENDING`."""
 DECIDED = "decided"
-"""An item's state once its person decided it and the product took the decision."""
+"""An item's state once its person decided it."""
+WITHDRAWN = "withdrawn"
+"""An item's state once the agent took it back undecided."""
+WITHDRAW = "withdraw"
+"""The agent's move that takes an item back: it left the person's list undecided."""
+REFUSE = "refuse"
+"""The product's move that turns a person's decision down: the item is pending again."""
 
 READABLE = frozenset({Account.MEMBER, Account.GUEST})
 """Accounts that can sign in to the agent's product: a bot or a deactivated account never decides anything."""
@@ -163,6 +171,20 @@ class Inboxes:
                         after=item.model_copy(update={"status": ItemStatus.WITHDRAWN}),
                     )
                 )
+                record(
+                    world,
+                    Transition(
+                        provider=name,
+                        item=ref,
+                        name=WITHDRAW,
+                        from_state=PENDING,
+                        to_state=WITHDRAWN,
+                        by=Actor.AGENT,
+                        who=None,
+                        content="{}",
+                        at=clock.now(),
+                    ),
+                )
                 held[ref] = _snapshot(event)
         return looked
 
@@ -178,7 +200,6 @@ class Inboxes:
             summary=item.summary,
             category=item.category,
             decisions=allowed,
-            gates=item.gates,
             status=ItemStatus.PENDING,
         )
         return Change(
@@ -228,8 +249,10 @@ class Inboxes:
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
-        """The person makes the decision as the product's own page would send it (`decide`): recorded as theirs,
-        decided when the product took it, still pending with its answer when it did not."""
+        """The person makes the decision as the product's own page would send it (`decide`): their move is recorded
+        before the call goes out, so whatever the product does in handling it comes after the decision; when the
+        product does not take it, the product's refusal is a move of its own (`refuse`, by the system, back to
+        pending, its answer as content)."""
         found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
         if found is None or who is None:
             raise ValueError(f"item {item.external_id} of inbox {item.provider} offers no decision {offer!r}")
@@ -241,23 +264,37 @@ class Inboxes:
             at=clock.now(),
             decides=Decides(decision=offer, inputs=inputs),
         )
+        moved = record(
+            world,
+            Transition(
+                provider=item.provider,
+                item=item,
+                name=offer,
+                from_state=PENDING,
+                to_state=DECIDED,
+                by=by,
+                who=who.key,
+                content=content,
+                at=clock.now(),
+            ),
+        )
         made = await self.decide(reply, world, clock)
-        decided = (
-            made is not None and isinstance(made.after, InboxItemSnapshot) and made.after.status is ItemStatus.DECIDED
-        )
-        moved = Transition(
-            provider=item.provider,
-            item=item,
-            name=offer,
-            from_state=PENDING,
-            to_state=DECIDED if decided else PENDING,
-            by=by,
-            who=who.key,
-            content=content,
-            at=clock.now(),
-        )
-        recorded = world.apply(transition_change(moved, at_seq=world.head() + 1))
-        return moved.model_copy(update={"seq": recorded.seq})
+        if made is not None and isinstance(made.after, InboxItemSnapshot) and made.after.refused is not None:
+            record(
+                world,
+                Transition(
+                    provider=item.provider,
+                    item=item,
+                    name=REFUSE,
+                    from_state=DECIDED,
+                    to_state=PENDING,
+                    by=Actor.SYSTEM,
+                    who=item.provider,
+                    content=json.dumps({"answer": made.after.refused}),
+                    at=clock.now(),
+                ),
+            )
+        return moved
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
         """Always: the decision is a call to the agent's own product."""
@@ -286,7 +323,6 @@ class Inboxes:
                 "status": ItemStatus.DECIDED if answer.accepted else ItemStatus.PENDING,
                 "decision": decision.name,
                 "said": decision.said,
-                "permits": decision.permits,
                 "inputs": dict(reply.decides.inputs),
                 "refused": None
                 if answer.accepted

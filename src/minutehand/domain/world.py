@@ -443,15 +443,9 @@ class InboxItemSnapshot(Model):
     summary: str = Field(description="What it asks, as the product words it")
     category: str | None = Field(default=None, description="Its kind in the product's own words, when listed")
     decisions: list[str] = Field(description="The decisions the person can make on it, by name")
-    gates: str | None = Field(
-        default=None, description="The product's id for the operation it holds back, when the inbox says where"
-    )
     status: ItemStatus
     decision: str | None = Field(default=None, description="The decision made or tried, by name")
     said: str | None = Field(default=None, description="The decision as the record says it: 'approved'")
-    permits: bool | None = Field(
-        default=None, description="Whether the decision lets what the item gates go ahead; None when it says nothing"
-    )
     inputs: dict[str, str] = Field(default={}, description="What the person gave with the decision, by input name")
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 

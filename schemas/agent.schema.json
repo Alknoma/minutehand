@@ -609,19 +609,6 @@
           "title": "Name",
           "type": "string"
         },
-        "permits": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Whether it lets what the item gates go ahead (approve: true, reject: false); None: it says nothing about that (an answer to a question)",
-          "title": "Permits"
-        },
         "reads": {
           "anyOf": [
             {
@@ -2411,6 +2398,7 @@
           "$ref": "#/$defs/Where",
           "default": {
             "by": [],
+            "first": false,
             "name": [],
             "person": [],
             "person_not": [],
@@ -2887,6 +2875,12 @@
           "title": "By",
           "type": "array"
         },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run: the first approval of an operation two people could approve",
+          "title": "First",
+          "type": "boolean"
+        },
         "name": {
           "default": [],
           "description": "For `each: transition`: named these by the provider only",
@@ -2951,19 +2945,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {
@@ -3066,21 +3047,6 @@
           "default": null,
           "description": "In an item: the names of the decisions allowed on it; None: every one declared",
           "title": "Decisions"
-        },
-        "gates": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
-          "title": "Gates"
         },
         "id": {
           "description": "In an item: its own id",

@@ -50,9 +50,12 @@ scenario:
       at_most: 2
       message: "{person.key} was reminded {rule.count} times before their answer was due"
       pattern: budgeted_follow_up
-    - id: acts_only_once_approved      # an operation an item holds back waits for its approval
-      count: {writes: {gated: true}}
+    - id: acts_only_once_approved      # what waits on the approval never reaches the owner while it is not given
+      each: ask
+      where: {person: ["{team.other_key}"]}
+      count: {messages: {to: [owner], holding: ["{team.tell}"]}}
       at_most: 0
+      message: "told the owner what waited on {person.key}'s approval, which they never gave"
       pattern: act_on_the_decision
     - id: not_done_while_waiting       # the agent does not report done while someone it asked has not answered
       when: {stopped: [agent_done]}

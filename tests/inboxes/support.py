@@ -39,7 +39,7 @@ NADIA = "nadia@example.com"
 TOKENS = {OWEN: "token-of-owen-7c1d", NADIA: "token-of-nadia-93ab"}
 
 
-def inbox(product: Product, *, everyone: bool = False, gates: bool = True, **more: object) -> HttpInbox:
+def inbox(product: Product, *, everyone: bool = False, **more: object) -> HttpInbox:
     """The product's approvals, declared as an agent file would: as each approver, with their bearer token."""
     url = f"{product.base}/everyone" if everyone else f"{product.base}/approvals?approver={{person.email}}"
     pending: dict[str, object] = {
@@ -52,8 +52,6 @@ def inbox(product: Product, *, everyone: bool = False, gates: bool = True, **mor
     }
     if everyone:
         pending["waits_on"] = "$.approver"
-    if gates:
-        pending["gates"] = "$.operation"
     decide = f"{product.base}/approvals/{{item.id}}/decision"
     return HttpInbox.model_validate(
         {
@@ -64,13 +62,11 @@ def inbox(product: Product, *, everyone: bool = False, gates: bool = True, **mor
                 {
                     "name": "approve",
                     "reads": "approved",
-                    "permits": True,
                     "request": {"kind": "template", "method": "POST", "url": decide, "body": {"decision": "approve"}},
                 },
                 {
                     "name": "reject",
                     "reads": "rejected",
-                    "permits": False,
                     "description": "Turn it down, saying why",
                     "request": {
                         "kind": "template",
@@ -126,16 +122,24 @@ def people(nadia: ReplyBehaviour | Deciding, **nadia_has: object) -> list[Person
 
 APPROVAL_RULES = """
 - id: acts_only_once_approved
-  count: {writes: {gated: true}}
+  each: ask
+  where: {person: [nadia]}
+  count: {messages: {to: [owen], holding: [LH-2291]}, until: closed-PT1S}
   at_most: 0
-  message: "went ahead with what an item held back before it was approved"
+  message: "went ahead with the booking before it was approved"
+- id: never_goes_ahead_after_a_rejection
+  each: transition
+  where: {provider: [approvals], name: [reject], by: [person]}
+  count: {messages: {to: [owen], holding: [LH-2291]}, since: transition}
+  at_most: 0
+  message: "went ahead with the booking after {transition.who} turned it down"
   pattern: act_on_the_decision
 - id: comes_back_to_a_decision
-  each: ask
-  when: {answered: true}
-  count: {touches: {}, since: answer, until: answer+PT1H}
+  each: transition
+  where: {provider: [approvals], by: [person]}
+  count: {messages: {to: [owen]}, since: transition, until: transition+PT1H}
   at_least: 1
-  message: "{person.key} decided and the agent did not come back to it within the hour"
+  message: "{transition.who} decided and the agent did not tell Owen within the hour"
 """
 """The team's rules these approval runs are judged by: go ahead only once approved, and act on a decision."""
 

@@ -1,5 +1,5 @@
-"""The team's rule `acts_only_once_approved` (`writes: {gated: true}`): the agent went ahead with what an item held
-back while it was pending or after a rejection; and the ledger reads going ahead as the reaction to the decision."""
+"""The team's rules on going ahead (`tests/inboxes/support.APPROVAL_RULES`), written over asks and transitions: the
+agent went ahead while the approval was pending, or after a rejection."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, OWEN, TOKENS, Agent, checks_named, deciding, inbox, play, scenario, sends
 
 CHECK = "acts_only_once_approved"
-WENT_AHEAD = "went ahead with what an item held back before it was approved"
+WENT_AHEAD = "went ahead with the booking before it was approved"
+AFTER_REJECTION = "never_goes_ahead_after_a_rejection"
 
 
 @pytest.fixture
@@ -39,7 +40,7 @@ def agent(product: Product, *, at_once: bool = False, send_anyway: bool = False)
                 product.raise_approval("a1", NADIA, "Send Owen the booking", "tell-1")
                 if at_once:
                     sends(store, OWEN, "Booked: LH-2291", operation="tell-1")
-                    return None, True
+                    return request.now + timedelta(days=1), False
                 return request.now + timedelta(days=1), False
             state = product.state("a1")
             if n == 2 and (state == "approved" or (send_anyway and state == "rejected")):
@@ -66,9 +67,10 @@ async def test_going_ahead_after_a_rejection_fails_the_teams_rule(tmp_path: Path
     reject = Take(take="reject", fields={"reason": "Over budget"})
     played = await play(tmp_path, scenario(deciding(reject)), inbox(product), agent(product, send_anyway=True))
 
-    assert checks_named(played.result, CHECK) == [WENT_AHEAD]
+    assert checks_named(played.result, CHECK) == []
+    assert checks_named(played.result, AFTER_REJECTION) == ["went ahead with the booking after nadia turned it down"]
     assert played.result.verdict.kind is VerdictKind.FAILED
-    assert [f.kind for f in played.result.findings if f.check == CHECK] == [FindingKind.FAIL]
+    assert [f.kind for f in played.result.findings if f.check == AFTER_REJECTION] == [FindingKind.FAIL]
 
 
 async def test_going_ahead_in_the_wake_that_asked_fails_as_while_pending(tmp_path: Path, product: Product) -> None:
@@ -76,16 +78,3 @@ async def test_going_ahead_in_the_wake_that_asked_fails_as_while_pending(tmp_pat
     played = await play(tmp_path, scenario(deciding(approve)), inbox(product), agent(product, at_once=True))
 
     assert checks_named(played.result, CHECK) == [WENT_AHEAD]
-
-
-async def test_without_a_declared_gate_nothing_is_gated_and_the_rule_counts_nothing(
-    tmp_path: Path, product: Product
-) -> None:
-    played = await play(
-        tmp_path,
-        scenario(deciding(Take(take="approve"))),
-        inbox(product, gates=False),
-        agent(product, at_once=True),
-    )
-
-    assert checks_named(played.result, CHECK) == []

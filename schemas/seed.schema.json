@@ -2732,6 +2732,7 @@
           "$ref": "#/$defs/Where",
           "default": {
             "by": [],
+            "first": false,
             "name": [],
             "person": [],
             "person_not": [],
@@ -4418,6 +4419,12 @@
           "title": "By",
           "type": "array"
         },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run: the first approval of an operation two people could approve",
+          "title": "First",
+          "type": "boolean"
+        },
         "name": {
           "default": [],
           "description": "For `each: transition`: named these by the provider only",
@@ -4534,19 +4541,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {

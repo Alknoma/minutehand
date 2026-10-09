@@ -19,7 +19,6 @@ from minutehand.checks.facts import (
     Moved,
     asks,
     ended_at,
-    gates_declared,
     messages,
     planned_wakes,
     reported,
@@ -93,8 +92,13 @@ class _Subject:
     person: Person | None = None
     ask: Ask | None = None
     moved: Moved | None = None
+    never_moved: bool = False
+    """For a rule read for the first transition of a kind (`where.first`) when there was none: its moment is the
+    run's end."""
 
     def label(self) -> str:
+        if self.never_moved:
+            return "no such transition by the end of the run"
         if self.moved is not None:
             t = self.moved.transition
             return f"the transition {t.name!r} of {t.provider} {t.item.external_id} at {t.at:%Y-%m-%d %H:%M} UTC"
@@ -175,7 +179,7 @@ class _Reader:
             return [_Subject(person=p) for p in self.view.scenario.people if self._picked(rule, p.key)]
         if rule.each is Each.TRANSITION:
             w = rule.where
-            return [
+            read = [
                 _Subject(person=self.people[m.transition.who] if m.transition.who in self.people else None, moved=m)
                 for m in self.moves
                 if _among(m.transition.provider, w.provider)
@@ -187,6 +191,9 @@ class _Reader:
                     or (m.transition.who is not None and self._picked(rule, m.transition.who))
                 )
             ]
+            if w.first:
+                return read[:1] or [_Subject(never_moved=True)]
+            return read
         found = self.asks if rule.each is Each.ASK else self.handoffs
         return [
             _Subject(person=self.people[a.person] if a.person in self.people else None, ask=a)
@@ -223,7 +230,9 @@ class _Reader:
         elif moment.anchor is Anchor.ALL_ANSWERED:
             base = self.all_answered
         elif moment.anchor is Anchor.TRANSITION:
-            assert subject.moved is not None
+            if subject.moved is None:
+                assert subject.never_moved
+                return self.end  # never made: the whole run, whatever the offset
             base = subject.moved.at
         else:
             ask = subject.ask
@@ -353,8 +362,6 @@ class _Reader:
             ]
         if count.writes is not None:
             w = count.writes
-            if w.gated is not None and not gates_declared(self.view):
-                raise _Unread  # items were asked of people and none says what it holds back
             return [
                 Fact(at=x.event.sim_time, seqs=[x.event.seq])
                 for x in self.written
@@ -363,7 +370,6 @@ class _Reader:
                 and (not w.operations or x.event.operation in {_OPERATION[o] for o in w.operations})
                 and (w.repeats_open_ticket is None or x.repeats_open_ticket == w.repeats_open_ticket)
                 and (w.in_repeated_wake is None or x.in_repeated_wake == w.in_repeated_wake)
-                and (w.gated is None or x.gated == w.gated)
             ]
         if count.wakes is not None:
             k = count.wakes

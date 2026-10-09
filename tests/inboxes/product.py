@@ -131,7 +131,7 @@ def _handler(product: Product) -> type[BaseHTTPRequestHandler]:
                     return
                 page = self._listed(product.pending(who), cursor, approver=False)
                 page["items"] = [
-                    {"id": i["id"], "summary": i["summary"], "gates": i["operation"], "decisions": i["actions"]}
+                    {"id": i["id"], "summary": i["summary"], "decisions": i["actions"]}
                     for i in page["items"]  # type: ignore[union-attr]
                 ]
                 self._send(200, page)

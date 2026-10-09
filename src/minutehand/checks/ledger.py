@@ -22,8 +22,6 @@ invitation they were sent) asked them, whoever they are, and the person's first 
 An item waiting on a person in the agent's own product (`InboxItemSnapshot`, seen by reading their inbox) is an
 ask of its own whoever the person is: a pending decision always waits on them. It settles when they decide it and
 the product takes the decision, or when the agent takes it back; a decision the product refused settles nothing.
-When the item says what it holds back (`gates`), the agent's first call carrying that id after it settled is its
-reaction.
 
 A message is the same ask as an earlier one, and so a follow-up on it rather
 than a wait of its own, when it goes to the same person in the same conversation
@@ -142,9 +140,6 @@ class _Open(Model):
     settled_at: AwareDatetime | None
     primary: EntityRef
     conversation: tuple[str, str] | None = None
-    gates: str | None = Field(
-        default=None, description="An item's gated operation: a call of the agent's carrying it reacts to the decision"
-    )
 
     def open_at(self, moment: datetime) -> bool:
         return self.settled_at is None or moment < self.settled_at
@@ -243,7 +238,6 @@ def build(
                     patience=_patience(person, decided_to),
                     settled_at=_item_settled(event.entity, events),
                     primary=event.entity,
-                    gates=after.gates,
                 )
             )
             continue
@@ -354,13 +348,6 @@ def _item_settled(item: EntityRef, events: list[WorldEvent]) -> datetime | None:
     return None
 
 
-def carries(event: WorldEvent, token: str) -> bool:
-    """Whether the call that wrote `event` names `token` (a gated operation's id) in its path or its request: the
-    agent's own wire format, read for a value its own product declared."""
-    call = event.exchange
-    return call is not None and (token in call.path or token in (call.request_body or ""))
-
-
 def _finished(ticket: EntityRef, since: int, events: list[WorldEvent]) -> datetime | None:
     """When the person holding this ticket first finished or cancelled it after `since`."""
     for event in events:
@@ -391,12 +378,6 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
             and isinstance(event.after, MessageSnapshot)
             and bool(emails.intersection(event.after.recipient_emails))
         )
-        gated = o.gates is not None and event.operation not in _READS and carries(event, o.gates)
-        if gated and not (on_entity or on_person):
-            # going ahead with what was held back reacts to the decision; it never follows the ask up
-            if o.settled_at is not None and event.sim_time >= o.settled_at and after_settled is None:
-                after_settled = event.seq
-            continue
         if not (on_entity or on_person):
             continue
         if o.settled_at is None or event.sim_time < o.settled_at:

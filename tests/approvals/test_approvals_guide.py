@@ -174,7 +174,7 @@ async def test_inbox_rejected_fails_the_heedless_agent_that_orders_anyway(
     played = await play("inbox", "rejected.yaml", tmp_path, monkeypatch, heedless=True)
 
     assert played.verdict is VerdictKind.FAILED
-    assert played.failed == ["acts_only_once_approved"]
+    assert played.failed == ["acts_only_once_approved", "never_orders_after_a_rejection"]
     assert len(played.orders) == 1
 
 

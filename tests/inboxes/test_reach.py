@@ -48,7 +48,6 @@ async def test_every_page_of_a_list_is_read_as_the_person(tmp_path: Path, produc
     listed = await reach.pending(people(deciding())[1], store, RunClock(T0))
 
     assert listed.read and [i.item_id for i in listed.items] == ["a0", "a1", "a2", "a3", "a4"]
-    assert [i.gates for i in listed.items][:2] == ["op-0", "op-1"]
     calls = store.calls()
     assert [c.exchange.path.split("cursor=")[-1] if "cursor" in c.exchange.path else "" for c in calls] == [
         "",
@@ -164,13 +163,11 @@ def by_operations(product: Product, document: Path) -> HttpInbox:
                 "items": "$.items[*]",
                 "id": "$.id",
                 "summary": "$.summary",
-                "gates": "$.operation",
                 "paging": {"next": "$.next", "param": "cursor"},
             },
             "decisions": [
                 {
                     "name": "approve",
-                    "permits": True,
                     "request": {
                         "kind": "operation",
                         "document": str(document),
@@ -205,8 +202,6 @@ async def test_an_inbox_declared_by_the_agents_own_operations_is_read_and_decide
 
     assert product.state("a1") == "approved"
     assert checks_named(played.result, "agent_contract_changed") == []
-    asked = [e.after for e in played.store.events() if isinstance(e.after, InboxItemSnapshot)]
-    assert asked[0].gates == "tell-1"
 
 
 async def test_an_answer_outside_the_agents_own_description_is_its_contract_changed_naming_the_field(
@@ -258,15 +253,13 @@ async def test_an_agent_that_implements_minutehands_default_shape_declares_no_re
                 "items": "$.items[*]",
                 "id": "$.id",
                 "summary": "$.summary",
-                "gates": "$.gates",
                 "decisions": "$.decisions",
                 "paging": {"next": "$.next", "param": "cursor"},
             },
             "decisions": [
-                {"name": "approve", "permits": True, "request": operation("decide")},
+                {"name": "approve", "request": operation("decide")},
                 {
                     "name": "reject",
-                    "permits": False,
                     "request": operation("decide"),
                     "inputs": [{"name": "reason", "description": "Why"}],
                 },

@@ -333,19 +333,6 @@
             "description": "The decisions allowed on it; None: every one",
             "title": "Decisions"
           },
-          "gates": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "The id of the operation it holds back",
-            "title": "Gates"
-          },
           "id": {
             "title": "Id",
             "type": "string"

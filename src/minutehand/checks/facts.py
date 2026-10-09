@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.checks.ledger import Away, absences, carries, recipients
+from minutehand.checks.ledger import Away, absences, recipients
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
@@ -22,8 +22,6 @@ from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
-    InboxItemSnapshot,
-    ItemStatus,
     MessageSnapshot,
     Operation,
     Snapshot,
@@ -218,11 +216,6 @@ class Written(Model):
         default=False, description="A ticket created with the title of one still open in the same project"
     )
     in_repeated_wake: bool = Field(default=False, description="Written in the second delivery of one wake")
-    gated: bool = Field(
-        default=False,
-        description="A call carrying an operation an item held back, made while the item was pending, turned down, "
-        "or taken back",
-    )
 
 
 _NOT_WRITES = frozenset(
@@ -243,13 +236,11 @@ def writes(view: RunView) -> list[Written]:
     invisible = unchanged(view.events)
     repeated = repeated_wakes(view)
     duplicates = _duplicates(view.events)
-    gated = _gated(view.events)
     return [
         Written(
             event=e,
             repeats_open_ticket=e.seq in duplicates,
             in_repeated_wake=e.wake in repeated,
-            gated=e.seq in gated,
         )
         for e in view.events
         if e.actor is Actor.AGENT
@@ -279,50 +270,6 @@ def _duplicates(events: list[WorldEvent]) -> set[int]:
         else:
             live[key] = event
     return found
-
-
-def _gated(events: list[WorldEvent]) -> set[int]:
-    """The agent's first write carrying each item's gated operation, when the item as it stood then forbade it."""
-    found: set[int] = set()
-    for opening in events:
-        item = opening.after
-        if not (
-            opening.actor is Actor.AGENT
-            and opening.operation is Operation.CREATE
-            and isinstance(item, InboxItemSnapshot)
-            and item.gates
-        ):
-            continue
-        act = next(
-            (
-                e
-                for e in events
-                if e.actor is Actor.AGENT
-                and e.operation in VISIBLE
-                and e.entity != opening.entity
-                and carries(e, item.gates)
-            ),
-            None,
-        )
-        if act is None:
-            continue
-        stood = next((e.after for e in reversed(events) if e.seq < act.seq and e.entity == opening.entity), item)
-        if isinstance(stood, InboxItemSnapshot) and (
-            stood.status in (ItemStatus.PENDING, ItemStatus.WITHDRAWN) or stood.permits is False
-        ):
-            found.add(act.seq)
-    return found
-
-
-def gates_declared(view: RunView) -> bool:
-    """Whether the run can say what went ahead unapproved: no item was asked of anyone, or one says what it holds
-    back (`pending.gates` of its inbox)."""
-    items = [
-        e.after
-        for e in view.events
-        if e.actor is Actor.AGENT and e.operation is Operation.CREATE and isinstance(e.after, InboxItemSnapshot)
-    ]
-    return not items or any(isinstance(i, InboxItemSnapshot) and i.gates for i in items)
 
 
 def repeated_wakes(view: RunView) -> set[int]:

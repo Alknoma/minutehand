@@ -546,7 +546,6 @@ def create_app(serving: Serving) -> Starlette:
                 person=item.person,
                 summary=item.summary,
                 decisions=item.decisions,
-                gates=item.gates,
                 seen_at=seen,
             )
             for ref, item, seen in live.pending_items()
