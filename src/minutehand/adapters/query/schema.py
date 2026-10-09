@@ -391,9 +391,12 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="transitions",
-        description="Every transition of an item's state, by anyone: the agent through a provider's API, a person "
-        "through the people engine, a person's own act (docs/design-transitions.md). States and names are the "
-        "provider's own words.",
+        description="Every move of an item's state, by anyone: the agent through a provider's API, a person through "
+        "the people engine, a person's own act (docs/design-transitions.md). A provider's recorded transition is "
+        "given in its own words; every other write to an item in the world is the move it made, named create, "
+        "update or delete, from the state its last write left (NULL: it did not exist) to `exists`, the "
+        "ticket's state, or `deleted`. The world as the scenario set it up, the agent's memory and the run's "
+        "own tables are no moves.",
         order="seq",
         columns=[
             _c("seq", N, "The event it is (events.seq)"),

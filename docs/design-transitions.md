@@ -94,6 +94,13 @@ fired from the dispatch table at its moment: the same `apply`, `by: PERSON`.
 
 ## 4. Facts
 
+Every write to an item in the world is a move (`domain.transitions.moves`): a provider's recorded transition in its
+own words, and every other write (the agent's message, a ticket it edits, a document, a record it stores) as the move
+it made, from the state the item's last write left to `exists`, the ticket's state, or `deleted`. The world as the
+scenario set it up, the agent's memory and the run's own tables are no moves, and a write its provider also recorded
+as a transition is that transition. The assessment language, the read model and the automatic item checks all read
+this one list.
+
 The assessment language counts `transitions` (`provider`, `to`, `from`, `by`, `who`, `reached`, `not_reached`) and
 reads a rule once per transition (`each: transition`, anchor `transition`). The read model gets `transitions` and
 `items` views. Rules across providers:
