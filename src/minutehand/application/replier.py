@@ -36,20 +36,17 @@ from minutehand.application.moments import (
     Owed,
     after_available,
     asks_of,
-    decision_text,
     draw,
     first_ask,
-    items_of,
     pinned,
-    pressed,
     refuse_unworkable_hours,
 )
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.clock import DrawnFrom
 from minutehand.domain.conversation import ModelMessage, PersonCall, Provenance, Speaker, Wrote
 from minutehand.domain.experiment import ReplyAt
-from minutehand.domain.inboxes import Decision, HttpInbox
-from minutehand.domain.people import Decides, PersonReply, Plan, Press, Writing
+from minutehand.domain.inboxes import HttpInbox
+from minutehand.domain.people import PersonReply, Plan, Press, Writing
 from minutehand.domain.scenario import (
     AfterScript,
     Answers,
@@ -60,7 +57,6 @@ from minutehand.domain.scenario import (
     Person,
     Scenario,
     Scripted,
-    ScriptedDecision,
     ScriptedReply,
     Silent,
     Speaks,
@@ -69,7 +65,6 @@ from minutehand.domain.world import (
     Actor,
     ControlKind,
     EntityRef,
-    InboxItemSnapshot,
     MessageAction,
     MessageSnapshot,
     Operation,
@@ -88,8 +83,6 @@ PERSON_PROMPT_VERSION = "person-reply/3"
 STEP_PROMPT_VERSION = "person-step/1"
 """Changes whenever STEP_PROMPT, INTENT or what the person is shown changes a word."""
 
-DECISION_PROMPT_VERSION = "person-decision/2"
-"""Changes whenever DECISION_PROMPT or what the person is shown changes a word."""
 
 SUMMARY_PROMPT_VERSION = "person-summary/1"
 """Changes whenever SUMMARY_PROMPT changes a word."""
@@ -169,21 +162,6 @@ INTENT: dict[Intent, str] = {
     Intent.DEFER: "you say you will come back to it, with what this reply says of when or why, and do not answer yet.",
 }
 
-DECISION_PROMPT = """\
-You are {who}. You are at work. A tool your team uses is waiting for you to decide something in it. You are given \
-what it asks of you, the decisions you can make, what each one takes, and what you can see of your conversations.
-
-What you know:
-{known}
-{believed}{decided}
-Rules:
-- Pick exactly one of the decisions offered, by its name exactly as listed, in "decision".
-- Fill "inputs" with one entry per input the decision takes, each by its name exactly as listed; an input it \
-does not take is never given. Write each value as you would type it, from what you know.
-- Stay consistent with what you said before.
-- You decide only from what you know{or_believe}. {helpfulness}
-- Today is {today}.
-"""
 
 SUMMARY_PROMPT = """\
 You are {who}. Below are messages from your conversations at work, oldest first. Write a short account of them \
@@ -228,18 +206,6 @@ class WrittenStep(Model):
     text: str = Field(min_length=1, description="Your reply, exactly as you would send it")
 
 
-class WrittenInput(Model):
-    name: str = Field(description="The input's name, exactly as listed")
-    value: str = Field(description="What you type into it")
-
-
-class WrittenDecision(Model):
-    """What the model answers for one item waiting on one person: the decision made, and what is given with it."""
-
-    decision: str = Field(description="The name of the decision you make, exactly as listed")
-    inputs: list[WrittenInput] = Field(default=[], description="One per input the decision takes")
-
-
 class WrittenSummary(Model):
     summary: str = Field(min_length=1, description="Your account of these messages")
 
@@ -268,22 +234,7 @@ def _needs_model(person: Person, inboxes: Sequence[HttpInbox]) -> str | None:
     written = [r.to_ask for r in behaviour.replies if r.written]
     if written:
         return f"a model writes their scripted step{'s' if len(written) > 1 else ''} to ask {written[0]}"
-    for scripted in behaviour.decisions or []:
-        for decision in _declared(scripted, inboxes):
-            if _model_inputs(scripted, decision):
-                return f"a model writes what they give with {scripted.decision!r}"
     return None
-
-
-def _declared(scripted: ScriptedDecision, inboxes: Sequence[HttpInbox]) -> list[Decision]:
-    where = [i for i in inboxes if scripted.inbox is None or i.name == scripted.inbox]
-    return [d for d in (i.decision(scripted.decision) for i in where) if d is not None]
-
-
-def _model_inputs(scripted: ScriptedDecision, decision: Decision) -> list[str]:
-    """The inputs of `decision` a model writes for this scripted decision: every one its `inputs` does not fix that
-    is required, or that its facts speak to."""
-    return [i.name for i in decision.inputs if i.name not in scripted.inputs and (i.required or scripted.facts)]
 
 
 # -- the plan ---------------------------------------------------------------------------------------------------------
@@ -332,13 +283,11 @@ class PeopleReplier:
     ) -> Plan | None:
         """What `person` does about `asked`, and when; None when they do nothing: they are silent, their script
         skips this ask or says no more, it is a follow-up on an answer they already owe, or the control their
-        script presses is not there."""
+        asked is no message (an item of the agent's own product, which the people engine decides)."""
         behaviour = person.reply
         if isinstance(behaviour, Silent):
             return None
         upto = [e for e in history if e.seq <= asked.seq]
-        if isinstance(asked.after, InboxItemSnapshot):
-            return self._plan_item(person, behaviour, asked, upto)
         if not isinstance(asked.after, MessageSnapshot):
             raise RunRefused(f"{person.key} was asked to answer {asked.entity.kind.value}, which is not a message")
         asks = asks_of(person, upto, owed)
@@ -348,55 +297,12 @@ class PeopleReplier:
         if isinstance(behaviour, Answers):
             return self._planned(person, asked, upto, nth, Writing.CONVERSING, behaviour)
         step = next((r for r in behaviour.replies if r.to_ask == nth), None)
-        if step is None and behaviour.presses_every is not None:
-            every = pressed(behaviour.presses_every, asked)
-            if every is not None:
-                return self._planned(person, asked, upto, nth, Writing.VERBATIM, behaviour, press=every)
         if step is None:
             if nth <= behaviour.last_ask or behaviour.then is AfterScript.SILENT:
                 return None
             return self._planned(person, asked, upto, nth, Writing.CONVERSING, behaviour)
-        if step.press is not None:
-            press = pressed(step.press, asked)
-            if press is None:
-                return None
-            return self._planned(person, asked, upto, nth, Writing.VERBATIM, behaviour, step=step, press=press)
         writing = Writing.VERBATIM if step.verbatim is not None else Writing.SCRIPT
         return self._planned(person, asked, upto, nth, writing, behaviour, step=step)
-
-    def _plan_item(
-        self, person: Person, behaviour: Answers | Scripted, asked: WorldEvent, upto: list[WorldEvent]
-    ) -> Plan | None:
-        item = asked.after
-        assert isinstance(item, InboxItemSnapshot)
-        if isinstance(behaviour, Answers):
-            nth = len(items_of(person, upto, None))
-            return self._planned(person, asked, upto, nth, Writing.CONVERSING, behaviour)
-        everywhere = len(items_of(person, upto, None))
-        here = len(items_of(person, upto, item.inbox))
-        applies = [d for d in behaviour.decisions or [] if d.inbox is None or d.inbox == item.inbox]
-        scripted = next(
-            (
-                d
-                for d in applies
-                if d.to_item is not None and d.to_item == (here if d.inbox is not None else everywhere)
-            ),
-            None,
-        ) or next((d for d in applies if d.to_item is None), None)
-        if scripted is None:
-            last = max((d.to_item for d in applies if d.to_item is not None), default=0)
-            counted = everywhere
-            if behaviour.then is AfterScript.SILENT or counted <= last:
-                return None
-            return self._planned(person, asked, upto, everywhere, Writing.CONVERSING, behaviour)
-        if scripted.decision not in item.decisions:
-            return None
-        declared = self._declared(item, scripted.decision)
-        writing = Writing.SCRIPT if declared is not None and _model_inputs(scripted, declared) else Writing.VERBATIM
-        return self._planned(person, asked, upto, everywhere, writing, behaviour, decision=scripted)
-
-    def _declared(self, item: InboxItemSnapshot, name: str) -> Decision | None:
-        return self._inboxes[item.inbox].decision(name) if item.inbox in self._inboxes else None
 
     def _planned(
         self,
@@ -408,11 +314,9 @@ class PeopleReplier:
         behaviour: Speaks,
         *,
         step: ScriptedReply | None = None,
-        decision: ScriptedDecision | None = None,
-        press: Press | None = None,
     ) -> Plan:
-        within = step.within if step is not None else decision.within if decision is not None else None
-        if (person.key, nth) in self._pins and not isinstance(asked.after, InboxItemSnapshot):
+        within = step.within if step is not None else None
+        if (person.key, nth) in self._pins:
             drawn = pinned(self._scenario, asked, self._pins[(person.key, nth)])
         else:
             drawn = draw(self._scenario, person, asked, upto, within=within, delay=behaviour.delay)
@@ -422,8 +326,6 @@ class PeopleReplier:
             nth=nth,
             writing=writing,
             step=step,
-            decision=decision,
-            press=press,
             drawn=drawn,
         )
 
@@ -470,13 +372,6 @@ class PeopleReplier:
             "drawn": plan.drawn,
             "writing": plan.writing,
         }
-        if isinstance(asked.after, InboxItemSnapshot):
-            return await self._decides(person, behaviour, asked, plan, history, world, clock, common)
-        if plan.press is not None:
-            text = plan.step.said[0] if plan.step is not None and plan.step.said else plan.press.label
-            if plan.press.form:
-                text = "\n".join(f.value for f in plan.press.form)
-            return PersonReply(text=text, press=plan.press, **common)
         if plan.step is not None and plan.step.verbatim is not None:
             return PersonReply(text=plan.step.verbatim, **common)
         world = _kept_in(world, person)
@@ -522,67 +417,6 @@ class PeopleReplier:
             press=press,
             written_by=Provenance(model=written.model, prompt_version=PERSON_PROMPT_VERSION),
             **common,
-        )
-
-    async def _decides(
-        self,
-        person: Person,
-        behaviour: Answers | Scripted,
-        asked: WorldEvent,
-        plan: Plan,
-        history: Sequence[WorldEvent],
-        world: Store | None,
-        clock: Clock,
-        common: dict[str, object],
-    ) -> PersonReply:
-        item = asked.after
-        assert isinstance(item, InboxItemSnapshot)
-        scripted = plan.decision
-        if plan.writing is Writing.VERBATIM:
-            assert scripted is not None
-            return PersonReply.model_validate(
-                {
-                    **common,
-                    "text": decision_text(scripted.decision, scripted.inputs),
-                    "decides": Decides(decision=scripted.decision, inputs=scripted.inputs),
-                }
-            )
-        if item.inbox not in self._inboxes:
-            raise RunRefused(f"{person.key} was asked to decide in inbox {item.inbox}, which the run does not declare")
-        declared = self._inboxes[item.inbox]
-        world = _kept_in(world, person)
-        context = await self.context(person, behaviour, asked, history, world, clock)
-        system = decision_prompt(person, behaviour, scripted, asked.sim_time, self._scenario.starts_at)
-        shown = [
-            ModelMessage(
-                speaker=Speaker.ASKER, text=asked_to_decide(item, declared, scripted) + "\n\n" + context[0].text
-            )
-        ]
-        written = await self.ask_model(
-            person, Wrote.DECISION, asked.entity, system, shown, WrittenDecision, DECISION_PROMPT_VERSION, world, clock
-        )
-        said = written.answer
-        name = scripted.decision if scripted is not None else said.decision
-        decision = declared.decision(name) if name in item.decisions else None
-        if decision is None:
-            raise RunRefused(
-                f"the model had {person.key} decide {said.decision!r}, which is not offered on the item: {item.decisions}"
-            )
-        inputs = {i.name: i.value for i in said.inputs if i.name in {d.name for d in decision.inputs}}
-        if scripted is not None:
-            inputs = {**inputs, **scripted.inputs}
-        try:
-            decision.refuse_inputs(inputs, f"the model, as {person.key},")
-        except ValueError as e:
-            raise RunRefused(str(e)) from e
-        return PersonReply.model_validate(
-            {
-                **common,
-                "text": decision_text(decision.name, inputs),
-                "decides": Decides(decision=decision.name, inputs=inputs),
-                "facts": list(scripted.facts) if scripted is not None else [],
-                "written_by": Provenance(model=written.model, prompt_version=DECISION_PROMPT_VERSION),
-            }
         )
 
     # -- what the person sees --------------------------------------------------------------------------------------
@@ -793,42 +627,6 @@ def step_prompt(person: Person, behaviour: Speaks, step: ScriptedReply, today: d
         voice=voice_rule(behaviour),
         today=today.strftime("%A %d %B %Y"),
     )
-
-
-def decision_prompt(
-    person: Person, behaviour: Speaks, scripted: ScriptedDecision | None, today: datetime, starts_at: datetime
-) -> str:
-    facts, stale = person.knows_at(today, starts_at)
-    believed = believed_part(behaviour, stale)
-    decided = ""
-    if scripted is not None:
-        why = bulleted(scripted.facts) if scripted.facts else "- what you know"
-        decided = f'\nYou have decided: "{scripted.decision}", because:\n{why}\nPick that decision.\n'
-    return DECISION_PROMPT.format(
-        who=who_is(person),
-        known=bulleted(facts),
-        believed=believed,
-        decided=decided,
-        or_believe=" or in what you believe" if believed else "",
-        helpfulness=f"With what is asked: {HELPFULNESS[behaviour.helpfulness]}",
-        today=today.strftime("%A %d %B %Y"),
-    )
-
-
-def asked_to_decide(item: InboxItemSnapshot, declared: HttpInbox, scripted: ScriptedDecision | None) -> str:
-    """The item as the person is shown it: what it asks, and each decision with what it takes."""
-    lines = [f"What it asks of you: {item.summary}", "", "The decisions you can make:"]
-    for name in item.decisions:
-        decision = declared.decision(name)
-        if decision is None:
-            continue
-        lines.append(f'- "{name}"' + (f": {decision.description}" if decision.description else ""))
-        for given in decision.inputs:
-            if scripted is not None and given.name in scripted.inputs:
-                continue
-            needed = "required" if given.required else "optional"
-            lines.append(f'    input "{given.name}" ({needed}): {given.description}')
-    return "\n".join(lines)
 
 
 def _line(turn: _Turn) -> str:

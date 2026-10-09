@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from minutehand.domain.memory import Collection, Key, SeededMemory
-from minutehand.domain.scenario import DispatchRule, Model, ReplyBehaviour, TicketState
+from minutehand.domain.scenario import DispatchRule, Model, ReplyBehaviour, Take, TicketState
 from minutehand.domain.world import EntityRef
 
 
@@ -44,6 +44,9 @@ class PersonChange(Model):
     kind: Literal["person_change"] = "person_change"
     person: str = Field(description="Person.key")
     reply: ReplyBehaviour
+    takes: list[Take] | None = Field(
+        default=None, description="What they are pinned to do from the fork onward (`Person.takes`); None: as before"
+    )
 
 
 class ReplyAt(Model):

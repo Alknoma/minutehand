@@ -51,7 +51,7 @@ async def landing(tmp_path: Path, who: Person, *, seed: int = 17, at: datetime =
     store, clock = world(tmp_path, at)
     asked = ask(store, who.email, message)
     reply = await PeopleReplier(
-        scenario(ticket_fates=[], people=[person("owner", Silent()), who], seed=seed), None
+        scenario(tom_finishes=False, people=[person("owner", Silent()), who], seed=seed), None
     ).decide(who, asked, store.events(), clock)
     assert reply is not None
     return reply.at
@@ -119,7 +119,7 @@ async def test_working_hours_are_read_in_the_persons_own_timezone(tmp_path: Path
 async def test_the_nth_ask_gets_the_nth_scripted_reply_and_an_unscripted_ask_gets_none(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     sofia = person("sofia", scripted("first", "second", hours=1))
-    replier = PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), sofia]), None)
+    replier = PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), sofia]), None)
     texts = []
     for n in (1, 2, 3):
         asked = ask(store, sofia.email, f"m{n}")
@@ -205,7 +205,7 @@ def test_a_reminder_draws_again_and_only_ever_moves_the_answer_sooner(tmp_path: 
     store, _ = world(tmp_path)
     sooner_window = Window(min=timedelta(hours=1), max=timedelta(hours=1))
     who = windowed(reminded={"sooner_within": sooner_window.model_dump()})
-    scn = scenario(ticket_fates=[], people=[person("owner", Silent()), who])
+    scn = scenario(tom_finishes=False, people=[person("owner", Silent()), who])
     follow = ask(store, who.email, "m2")
     owed_late = follow.sim_time + timedelta(hours=5)
     moved = sooner(scn, who, follow, store.events(), owed_late)
@@ -218,7 +218,7 @@ def test_a_reminder_draws_again_and_only_ever_moves_the_answer_sooner(tmp_path: 
 async def test_a_follow_up_before_the_answer_lands_is_no_new_ask(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     sofia = person("sofia", scripted("first", "second", hours=1))
-    replier = PeopleReplier(scenario(ticket_fates=[], people=[person("owner", Silent()), sofia]), None)
+    replier = PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), sofia]), None)
     first = ask(store, sofia.email, "m1")
     reply = await replier.decide(sofia, first, store.events(), clock, store)
     assert reply is not None

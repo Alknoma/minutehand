@@ -29,10 +29,8 @@ from minutehand.domain.scenario import (
     Model,
     Person,
     Scenario,
-    TicketHappening,
-    TicketState,
 )
-from minutehand.domain.world import Change, EntityRef
+from minutehand.domain.world import Change
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -166,50 +164,6 @@ class LandsReplies(Protocol):
         they wrote as their message, a control they used (`reply.press`) as its effect, and tell whoever `heard`
         names. A message no longer there is left alone and nothing is written. A press on a control the message
         does not carry raises `ValueError`: the replier offered what the provider never showed."""
-        ...
-
-
-@runtime_checkable
-class HoldsTickets(Protocol):
-    """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
-
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
-        """Move the ticket to `to` the way its assignee would, recorded as actor PERSON."""
-        ...
-
-
-@runtime_checkable
-class DeletesTickets(Protocol):
-    """A provider whose tickets a person can delete: how a `TicketFate` that deletes lands, and how a person deletes
-    a ticket the agent filed, in a world already open."""
-
-    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
-        """Delete the ticket the way its assignee would (or, unassigned, the scenario's owner), recorded as actor
-        PERSON; afterwards the service answers for it as for a ticket that never was. A ticket already gone
-        raises `LookupError`."""
-        ...
-
-
-@runtime_checkable
-class EditsTickets(Protocol):
-    """A provider whose tickets the scenario can rewrite: how a fork's `TicketEdit` lands."""
-
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None:
-        """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
-        ...
-
-
-@runtime_checkable
-class ActsOnTickets(Protocol):
-    """A provider whose seeded tickets people act on by themselves: how a `TicketHappening` lands."""
-
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
-        """Do what the happening says to the seeded ticket it names (`Scenario.happening_ticket`), as its person
-        would, recorded as actor PERSON. A ticket no longer there (the agent deleted it) is left alone and
-        nothing is written: the person finds nothing to act on. An action the provider cannot express raises:
-        the scenario asked for something this world cannot show."""
         ...
 
 

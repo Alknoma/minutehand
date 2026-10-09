@@ -537,6 +537,7 @@ class PendingSnapshot(Model):
     status: PendingStatus
     due_at: AwareDatetime | None = Field(description="When they act; None: never (silent, or nothing pinned)")
     take: str | None = Field(default=None, description="The offer a scenario pinned (`Person.takes`)")
+    pinned: int | None = Field(default=None, description="Which of the person's `takes` pinned it, by its place")
     drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
     transition: int | None = Field(default=None, description="The seq of the transition they took")
     failure: str | None = Field(default=None, description="Why their last try to act did not land")

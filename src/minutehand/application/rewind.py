@@ -47,8 +47,10 @@ from minutehand.application.orchestrator import (
     Reach,
     Scorer,
     Services,
+    acting,
     booked_due,
 )
+from minutehand.application.people import People, move
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
@@ -69,6 +71,7 @@ from minutehand.domain.experiment import (
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.transitions import ASSIGNEE, REASSIGN
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -83,6 +86,7 @@ from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
+from minutehand.ports.transitions import ProvidesTransitions
 
 WireOverride = PromptPatch | ModelSwap
 
@@ -116,7 +120,10 @@ def changed_scenario(scenario: Scenario, fork: Fork) -> Scenario:
         if isinstance(override, PersonChange):
             if override.person not in people:
                 raise RunRefused(f"the fork changes {override.person}, who is not in scenario {scenario.name}")
-            people[override.person] = people[override.person].model_copy(update={"reply": override.reply})
+            changed: dict[str, object] = {"reply": override.reply}
+            if override.takes is not None:
+                changed["takes"] = override.takes
+            people[override.person] = people[override.person].model_copy(update=changed)
         elif isinstance(override, DeadlineShift):
             if deadline_after is None:
                 raise RunRefused(f"the fork shifts the deadline of scenario {scenario.name}, which has none")
@@ -256,7 +263,7 @@ async def fork_run(
             replanning = {o.person for o in fork.overrides if isinstance(o, PersonChange | ReplyAt)}
             if replanning:
                 checkpoint = await _replanned(orchestrator, child, replanning, checkpoint, clock)
-            _edit_tickets(fork, services, changed, child, clock)
+            await _edit_tickets(fork, orchestrator.people, changed, child, clock)
         except RunRefused:
             child.discard()
             raise
@@ -312,24 +319,37 @@ def refused_by(writes: dict[int, list[WorldEvent]], at_seq: int, checkpoint: Che
 
 
 def _refuse_ticket_edits(fork: Fork, services: Services, scenario: Scenario) -> None:
-    """Every `TicketEdit` must land: on a provider that edits tickets, to a person in the scenario."""
+    """Every `TicketEdit` must land: on a provider in the run whose tickets the scenario can set, to a person in it."""
     for override in fork.overrides:
         if not isinstance(override, TicketEdit):
             continue
-        if override.entity.provider not in services.editors:
+        found = next((p for p in services.providers if p.manifest.key == override.entity.provider), None)
+        if (
+            found is None
+            or not isinstance(acting(found), ProvidesTransitions)
+            or EntityKind.TICKET not in found.manifest.kinds
+        ):
             raise RunRefused(f"the fork edits a ticket on {override.entity.provider}, which cannot edit tickets")
         if override.assignee is not None and override.assignee not in {p.key for p in scenario.people}:
             raise RunRefused(f"the fork assigns a ticket to {override.assignee}, who is not in the scenario")
 
 
-def _edit_tickets(fork: Fork, services: Services, scenario: Scenario, child: Store, clock: Clock) -> None:
+async def _edit_tickets(fork: Fork, people: People, scenario: Scenario, child: Store, clock: Clock) -> None:
+    """Each `TicketEdit`, made by the scenario through the ticket's provider (`apply`): its state set, past any
+    workflow, and its assignee changed, each recorded as the transition it is."""
     emails = {p.key: p.email for p in scenario.people}
     for override in fork.overrides:
-        if isinstance(override, TicketEdit):
-            assignee = emails[override.assignee] if override.assignee is not None else None
-            services.editors[override.entity.provider].edit(
-                override.entity, state=override.state, assignee_email=assignee, world=child, clock=clock
-            )
+        if not isinstance(override, TicketEdit):
+            continue
+        port = people.port(override.entity.provider)
+        try:
+            if override.state is not None:
+                await move(port, override.entity, override.state.value, Actor.SCENARIO, None, {}, child, clock)
+            if override.assignee is not None:
+                given = {ASSIGNEE: emails[override.assignee]}
+                await move(port, override.entity, REASSIGN, Actor.SCENARIO, None, given, child, clock)
+        except ValueError as e:
+            raise RunRefused(f"the fork's edit of {override.entity.external_id} cannot land: {e}") from e
 
 
 def _keep(directory: Path, restored: Restored, fork: Fork) -> None:

@@ -6,12 +6,12 @@ world already holds: an item seen for the first time is written as the agent ask
 as pending that is no longer listed, and that the person did not decide, is written as withdrawn by the agent.
 What is pending lives in the world's log, never in this object, so a fork or a reopened world reads it back.
 
-`decide` makes a decision a person's replier decided (`PersonReply.decides`) as that person, when it falls due,
-and writes it as their change: `DECIDED` when the product took it, still `PENDING` with the product's answer when
-it refused. A refusal never stops the run; the wait stays open.
-
-There is no default decision. `refuse_undecided` refuses, before anything runs, a person Minutehand can act as in
-an inbox whose script says nothing of deciding (`Scripted.decisions` None), naming them.
+Each inbox is a provider of the transitions port (`ports.transitions`): what is pending on a person waits on them,
+its decisions are the offers, and the people engine decides it as it decides anything (a take pins the decision; a
+model picks one otherwise). `decide` makes the decision as that person, as the product's own page sends it, and
+writes it as their change: `DECIDED` when the product took it, still `PENDING` with the product's answer when it
+refused. A refusal never stops the run; the wait stays open. `refuse_untakeable` refuses, before anything runs, a
+take naming a decision its inbox does not offer.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from minutehand.application.moments import decision_text
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import Decides, PersonReply
-from minutehand.domain.scenario import Account, AfterScript, Answers, Person, Scenario, Scripted, Silent
+from minutehand.domain.scenario import Account, Person, Scenario
 from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of, transition_change
 from minutehand.domain.world import (
     Actor,
@@ -66,44 +66,21 @@ def readers(scenario: Scenario, reach: ReachesInbox) -> list[Person]:
     return [p for p in scenario.people if p.account in READABLE and reach.can_act_as(p)]
 
 
-def refuse_undecided(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
-    """Every person who can receive items says what they do with them: a script of decisions, silence, or a model
-    (`Answers`, or a script that goes on conversing once it is used, `then: answers`). A script that says nothing of
-    items and nothing more once it is used is refused: there is no default decision. Each decision a script names
-    exists in an inbox it can apply to, and gives no input the decision does not take; what it leaves out, a model
-    writes."""
-    for reach in reaches:
-        declared = reach.declared
-        for person in readers(scenario, reach):
-            behaviour = person.reply
-            if isinstance(behaviour, Silent | Answers):
-                continue
-            assert isinstance(behaviour, Scripted)
-            if behaviour.decisions is None and behaviour.then is AfterScript.SILENT:
-                raise RunRefused(
-                    f"{person.key} can receive items in inbox {declared.name} and their script says nothing of "
-                    "deciding them and `then: silent`; there is no default decision: give them `decisions` (`[]` "
-                    "leaves every item pending), `reply: {kind: silent}`, or `then: answers` for a model to decide"
-                )
+def refuse_untakeable(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
+    """Each take pinned on an inbox (`Take.provider` its `name`) names one of its decisions and gives only inputs that
+    decision takes; what it leaves out, a model writes."""
     names = {r.declared.name: r.declared for r in reaches}
     for person in scenario.people:
-        behaviour = person.reply
-        if not isinstance(behaviour, Scripted):
-            continue
-        for scripted in behaviour.decisions or []:
-            if scripted.inbox is not None and scripted.inbox not in names:
-                raise RunRefused(f"{person.key} decides in inbox {scripted.inbox}, which the agent does not declare")
-            where = [names[scripted.inbox]] if scripted.inbox is not None else list(names.values())
-            found = [d for d in (i.decision(scripted.decision) for i in where) if d is not None]
-            if not found:
+        for take in person.takes:
+            if take.provider is None or take.provider not in names:
+                continue
+            decision = names[take.provider].decision(take.take)
+            if decision is None:
                 raise RunRefused(
-                    f"{person.key} decides {scripted.decision!r}, which no inbox "
-                    + (f"named {scripted.inbox} " if scripted.inbox else "the agent declares ")
-                    + "offers"
+                    f"{person.key} takes {take.take!r} in inbox {take.provider}, which offers no such decision"
                 )
             try:
-                for decision in found:
-                    decision.refuse_unknown_inputs(scripted.inputs, person.key)
+                decision.refuse_unknown_inputs(take.fields, person.key)
             except ValueError as e:
                 raise RunRefused(str(e)) from e
 

@@ -51,7 +51,7 @@ async def test_a_youtrack_issue_assigned_and_unresolved_is_pending_and_a_pinned_
     [booked] = (await engine.look(store, clock)).booked
     assert booked.person == "tomas" and booked.at == YOUTRACK_START + timedelta(hours=2)
     tomas = scenario.people[1]
-    assert [o.name for o in provider.legal(booked.item, Actor.PERSON, tomas, store)] == [
+    assert [o.name for o in provider.legal(booked.item, Actor.PERSON, tomas, store) if o.unprompted] == [
         "In Progress",
         "Fixed",
         "Won't fix",
@@ -100,7 +100,7 @@ async def test_an_asana_task_assigned_and_open_is_pending_and_a_pinned_move_land
     [booked] = (await engine.look(store, clock)).booked
     assert booked.person == "tomas"
     tomas = scenario.people[1]
-    assert [o.name for o in provider.legal(booked.item, Actor.PERSON, tomas, store)] == [
+    assert [o.name for o in provider.legal(booked.item, Actor.PERSON, tomas, store) if o.unprompted] == [
         "Done (completed)",
         "Cancelled (completed)",
     ]

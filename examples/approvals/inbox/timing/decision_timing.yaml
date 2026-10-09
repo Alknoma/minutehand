@@ -9,20 +9,20 @@ starts_at: "2026-08-24T09:00:00Z"
 deadline_after: P5D
 expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    takes: [{take: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
     reply:
       kind: scripted
-      decisions: [{decision: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
       then: silent
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    takes: [{take: approve, within: {min: PT1H, max: PT4H}}]
     reply:
       kind: scripted
-      decisions: [{decision: approve, within: {min: PT1H, max: PT4H}}]
       then: silent
 assess:
   - id: ordered_within_three_days

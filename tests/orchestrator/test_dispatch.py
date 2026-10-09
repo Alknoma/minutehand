@@ -41,7 +41,7 @@ def rule(
 
 async def test_a_reported_wake_made_late_is_held_back_and_delivered_late_in_its_place(rig: Rig) -> None:
     scn = scenario(
-        max_wakes=3, ticket_fates=[], dispatch=[rule(PlannedBy.REPORTED, DispatchFault.LATE, nth=1, minutes=30)]
+        max_wakes=3, tom_finishes=False, dispatch=[rule(PlannedBy.REPORTED, DispatchFault.LATE, nth=1, minutes=30)]
     )
     record, store, _ = await rig.run(scn, rig.agent("keep_waking"))
 
@@ -59,7 +59,7 @@ async def test_a_reported_wake_made_late_is_held_back_and_delivered_late_in_its_
 
 
 async def test_a_reported_wake_dropped_is_never_delivered_and_the_agent_is_not_woken_again(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.REPORTED, DispatchFault.DROPPED)])
+    scn = scenario(tom_finishes=False, dispatch=[rule(PlannedBy.REPORTED, DispatchFault.DROPPED)])
     record, store, _ = await rig.run(scn, rig.agent("keep_waking"))
 
     assert record.stop is StopReason.NOTHING_PENDING and [w.sim_time for w in record.wakes] == [T0]
@@ -74,7 +74,7 @@ async def test_a_reported_wake_dropped_is_never_delivered_and_the_agent_is_not_w
 async def test_a_wake_delivered_twice_to_an_agent_with_no_guard_is_reviewed_by_the_teams_rule(rig: Rig) -> None:
     scn = scenario(
         max_wakes=3,
-        ticket_fates=[],
+        tom_finishes=False,
         dispatch=[rule(PlannedBy.REPORTED, DispatchFault.TWICE, nth=1, minutes=10)],
     )
     record, store, _ = await rig.run(scn, rig.agent("keep_writing"))
@@ -88,7 +88,7 @@ async def test_a_wake_delivered_twice_to_an_agent_with_no_guard_is_reviewed_by_t
 
 
 async def test_a_booking_made_late_reaches_the_scheduler_late(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.BOOKED, DispatchFault.LATE, minutes=60)])
+    scn = scenario(tom_finishes=False, dispatch=[rule(PlannedBy.BOOKED, DispatchFault.LATE, minutes=60)])
     booked = Booked(take_limit=timedelta(seconds=0.1))
     await rig.run(scn, rig.agent("book", extra=[booked]))
 
@@ -103,7 +103,7 @@ async def test_a_dropped_tick_leaves_the_rhythm_going_and_a_doubled_one_starts_n
     agent = TickingAgent()
     async with serving(agent.app()) as base:
         under_test = AgentUnderTest(name="ticker", wakes=[Polled(wake_url=f"{base}/tick", every=timedelta(hours=2))])
-        scn = scenario(ticket_fates=[], deadline_after=timedelta(hours=9), dispatch=rules)
+        scn = scenario(tom_finishes=False, deadline_after=timedelta(hours=9), dispatch=rules)
         await _run(rig, scn, under_test, "polled")
 
     hours = [(t - T0).total_seconds() / 3600 for r, t in agent.ticks if r is WakeReason.TICK]
@@ -153,7 +153,7 @@ async def test_a_rule_for_the_nth_wake_wins_over_one_for_each(rig: Rig) -> None:
 
 async def test_a_wake_delivered_twice_to_an_agent_that_writes_nothing_on_it_is_not_reviewed(rig: Rig) -> None:
     scn = scenario(
-        max_wakes=3, ticket_fates=[], dispatch=[rule(PlannedBy.REPORTED, DispatchFault.TWICE, nth=1, minutes=10)]
+        max_wakes=3, tom_finishes=False, dispatch=[rule(PlannedBy.REPORTED, DispatchFault.TWICE, nth=1, minutes=10)]
     )
     record, store, _ = await rig.run(scn, rig.agent("keep_waking"))
 
@@ -163,7 +163,7 @@ async def test_a_wake_delivered_twice_to_an_agent_that_writes_nothing_on_it_is_n
 
 
 async def test_a_booking_delivered_twice_reaches_the_queue_twice_and_finishes_its_occurrence_once(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.BOOKED, DispatchFault.TWICE, minutes=1)])
+    scn = scenario(tom_finishes=False, dispatch=[rule(PlannedBy.BOOKED, DispatchFault.TWICE, minutes=1)])
     await rig.run(scn, rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))]))
 
     five = T0 + timedelta(hours=5)
@@ -172,7 +172,7 @@ async def test_a_booking_delivered_twice_reaches_the_queue_twice_and_finishes_it
 
 
 async def test_a_booking_dropped_reaches_no_queue_and_its_occurrence_is_still_finished(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[], dispatch=[rule(PlannedBy.BOOKED, DispatchFault.DROPPED)])
+    scn = scenario(tom_finishes=False, dispatch=[rule(PlannedBy.BOOKED, DispatchFault.DROPPED)])
     record, _, _ = await rig.run(scn, rig.agent("book", extra=[Booked(take_limit=timedelta(seconds=0.1))]))
 
     assert rig.sched.fired == [] and rig.sched.advanced == [("kept", T0 + timedelta(hours=5))]
@@ -180,7 +180,7 @@ async def test_a_booking_dropped_reaches_no_queue_and_its_occurrence_is_still_fi
 
 
 async def test_a_fork_that_changes_the_dispatch_rules_plays_the_same_run_with_its_wake_dropped(rig: Rig) -> None:
-    scn = scenario(max_wakes=4, ticket_fates=[])
+    scn = scenario(max_wakes=4, tom_finishes=False)
     agent = rig.agent("keep_waking")
     parent, parent_store, _ = await rig.run(scn, agent)
     assert [w.sim_time for w in parent.wakes] == [T0 + timedelta(hours=h) for h in range(4)]

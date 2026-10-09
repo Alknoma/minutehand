@@ -33,8 +33,8 @@ scenario:
         kind: scripted
         delay: {shortest: PT2H, longest: P1D}
         replies: []
-        decisions:
-          - {decision: reject, facts: ["We are not going ahead with this; it is already covered."]}
+      takes:
+        - {take: reject, facts: ["We are not going ahead with this; it is already covered."]}
   expect:
     - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
   assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent

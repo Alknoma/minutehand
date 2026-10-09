@@ -17,7 +17,7 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import WakeRequest
 from minutehand.domain.inboxes import HttpInbox
-from minutehand.domain.scenario import ScriptedDecision
+from minutehand.domain.scenario import Take
 from minutehand.domain.world import Actor, EntityKind, InboxAct, InboxItemSnapshot, ItemStatus
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, T0, TOKENS, Agent, checks_named, deciding, inbox, people, play, scenario
@@ -87,7 +87,7 @@ async def test_no_credential_reaches_the_stored_bytes(tmp_path: Path, product: P
 
         return Agent(plan=plan)
 
-    approve = ScriptedDecision(decision="approve")
+    approve = Take(take="approve")
     played = await play(tmp_path, scenario(deciding(approve, hours=1)), inbox(product), made)
     played.store.close()
 
@@ -200,7 +200,7 @@ async def test_an_inbox_declared_by_the_agents_own_operations_is_read_and_decide
 ) -> None:
     document = tmp_path / "openapi.json"
     document.write_text(json.dumps(AGENTS_OWN))
-    approve = ScriptedDecision(decision="approve")
+    approve = Take(take="approve")
     played = await play(tmp_path, scenario(deciding(approve)), by_operations(product, document), gated(product))
 
     assert product.state("a1") == "approved"
@@ -215,7 +215,7 @@ async def test_an_answer_outside_the_agents_own_description_is_its_contract_chan
     document = tmp_path / "openapi.json"
     document.write_text(json.dumps(AGENTS_OWN))
     product.numbered = True
-    approve = ScriptedDecision(decision="approve")
+    approve = Take(take="approve")
     played = await play(tmp_path, scenario(deciding(approve)), by_operations(product, document), gated(product))
 
     said = checks_named(played.result, "agent_contract_changed")
@@ -273,7 +273,7 @@ async def test_an_agent_that_implements_minutehands_default_shape_declares_no_re
             ],
         }
     )
-    reject = ScriptedDecision(decision="reject", inputs={"reason": "Not this week"})
+    reject = Take(take="reject", fields={"reason": "Not this week"})
     played = await play(tmp_path, scenario(deciding(reject)), declared, gated(product))
 
     assert product.state("a1") == "rejected" and product.approvals["a1"].reason == "Not this week"

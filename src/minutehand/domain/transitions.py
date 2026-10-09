@@ -15,7 +15,7 @@ from datetime import datetime
 from pydantic import AwareDatetime, Field, TypeAdapter, ValidationError
 
 from minutehand.domain.people import PersonReply, Press, Writing
-from minutehand.domain.scenario import FormInput, Model, ProviderKey
+from minutehand.domain.scenario import Comments, Deletes, FormInput, Model, Moves, ProviderKey, Reassigns, TicketState
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -42,6 +42,16 @@ PICKS = "picks"
 """What a control that picks a person carries: the person's key."""
 FORM = "form"
 """What a control that opens a form carries: what is typed into it, as a JSON list of `FormInput`."""
+COMMENT = "comment"
+"""A ticket's comment: the offer that adds one without moving it, and the field its words fill beside a move."""
+REASSIGN = "reassign"
+"""The offer that hands a ticket to someone else, or to nobody."""
+ASSIGNEE = "assignee"
+"""What a reassignment carries: the person's email address, or nothing for nobody."""
+DELETE = "delete"
+"""The offer that deletes a ticket."""
+DELETED = "deleted"
+"""A deleted ticket's state."""
 
 
 class OfferField(Model):
@@ -60,6 +70,18 @@ class Offer(Model):
     to_state: str = Field(description="The state the item is in after it, in the provider's own words")
     fields: list[OfferField] = Field(default=[], description="What it takes, in the order the person is shown it")
     description: str | None = Field(default=None, description="What it does, as the service shows it")
+    label: str | None = Field(
+        default=None, description="What the person sees and uses: a button's label, an invitation's 'No'"
+    )
+    means: TicketState | None = Field(
+        default=None,
+        description="For a ticket, what the state it reaches is in Minutehand's terms: open, done, cancelled",
+    )
+    unprompted: bool = Field(
+        default=True,
+        description="Whether a person may take it with nothing pinning it: False for what only the scenario has "
+        "them do (delete a ticket, hand it to someone else), never a model's pick",
+    )
 
     def field(self, name: str) -> OfferField | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -213,6 +235,7 @@ def message_offers(asked: MessageSnapshot) -> list[Offer]:
                 name=action.action_id,
                 to_state=action.value or action.action_id,
                 description=f'"{action.label}" on the message',
+                label=action.label,
                 fields=fields,
             )
         )
@@ -264,3 +287,35 @@ def answer_transition(
         content=content,
         at=at,
     )
+
+
+def ticket_acts(state: str) -> list[Offer]:
+    """What a person can do to a ticket besides moving it: comment, hand it on, delete it. Only what the scenario has
+    them do (a take, a happening), never a model's pick."""
+    return [
+        Offer(
+            name=COMMENT,
+            to_state=state,
+            fields=[OfferField(name=COMMENT, required=True, description="The comment")],
+            unprompted=False,
+        ),
+        Offer(
+            name=REASSIGN,
+            to_state=state,
+            fields=[OfferField(name=ASSIGNEE, description="Who it goes to, by their email address; empty: nobody")],
+            unprompted=False,
+        ),
+        Offer(name=DELETE, to_state=DELETED, unprompted=False),
+    ]
+
+
+def ticket_move(action: Moves | Reassigns | Comments | Deletes, emails: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """The offer a ticket happening's action takes, and what it carries: a move by what its state means, a comment,
+    a reassignment (to the address `emails` gives the person's key), a deletion."""
+    if isinstance(action, Moves):
+        return action.to.value, {}
+    if isinstance(action, Reassigns):
+        return REASSIGN, {ASSIGNEE: emails[action.to] if action.to is not None else ""}
+    if isinstance(action, Comments):
+        return COMMENT, {COMMENT: action.text}
+    return DELETE, {}

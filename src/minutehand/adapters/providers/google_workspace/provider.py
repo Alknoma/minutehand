@@ -134,6 +134,7 @@ class GoogleWorkspaceProvider:
                 Offer(
                     name=status,
                     to_state=status,
+                    label=label,
                     description=f'"{label}" on the invitation',
                     fields=[OfferField(name=TEXT, description=comment)],
                 )

@@ -13,10 +13,9 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.refusals import RunRefused
 from minutehand.domain.agent import WakeReason, WakeRequest
 from minutehand.domain.run import VerdictKind
-from minutehand.domain.scenario import Absence, AfterScript, ScriptedDecision, Silent, WorkingHours
+from minutehand.domain.scenario import Absence, AfterScript, Silent, Take, WorkingHours
 from minutehand.domain.world import (
     Actor,
     InboxItemSnapshot,
@@ -30,8 +29,8 @@ from minutehand.domain.world import (
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, OWEN, T0, TOKENS, Agent, deciding, hours, inbox, play, scenario, sends
 
-APPROVE = ScriptedDecision(decision="approve")
-REJECT = ScriptedDecision(decision="reject", inputs={"reason": "Over budget"})
+APPROVE = Take(take="approve")
+REJECT = Take(take="reject", fields={"reason": "Over budget"})
 
 
 @pytest.fixture
@@ -142,7 +141,7 @@ async def test_an_absent_approver_decides_when_back(tmp_path: Path, product: Pro
 
 
 async def test_a_decision_for_the_nth_item_wins_over_one_for_every_item(tmp_path: Path, product: Product) -> None:
-    second = ScriptedDecision(to_item=2, decision="reject", inputs={"reason": "Twice is once too many"})
+    second = Take(nth=2, take="reject", fields={"reason": "Twice is once too many"})
     scn = scenario(deciding(APPROVE, second, hours=2))
     played = await play(tmp_path, scn, inbox(product), gated_agent(product, approvals=2))
 
@@ -163,14 +162,20 @@ async def test_a_silent_approver_never_decides_and_the_ask_stays_open(tmp_path: 
     assert played.result.verdict.kind in (VerdictKind.UNFINISHED, VerdictKind.FAILED)
 
 
-async def test_an_approver_with_nothing_said_about_deciding_is_refused_naming_them(
+async def test_an_approver_who_pins_nothing_and_says_nothing_more_leaves_every_item_pending(
     tmp_path: Path, product: Product
 ) -> None:
     from minutehand.domain.scenario import Scripted
 
     scn = scenario(Scripted(then=AfterScript.SILENT))
-    with pytest.raises(RunRefused, match="nadia can receive items in inbox approvals"):
-        await play(tmp_path, scn, inbox(product), gated_agent(product))
+    played = await play(tmp_path, scn, inbox(product), gated_agent(product))
+
+    # Nothing pins her decision and no model speaks for her: the item waits on her with no moment, as a silent
+    # person's does. Mutation: an engine that has a model pick for her decides it.
+    assert [e for e in played.store.events() if e.actor is Actor.PERSON] == []
+    held = [e.after for e in played.store.events() if isinstance(e.after, PendingSnapshot)]
+    assert [(p.status, p.due_at) for p in held] == [(PendingStatus.PENDING, None)]
+    assert played.result.effectiveness.waits_open_at_end == 1
 
 
 async def test_a_decision_the_product_refuses_is_recorded_with_its_answer_and_the_wait_stays_open(

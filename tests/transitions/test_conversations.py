@@ -187,7 +187,7 @@ async def test_a_scripted_answer_is_worded_when_planned_and_lands_at_its_moment_
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     pushes = Pushes()
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, pushes, TARGET, "secret")}, None)
 
     [booked] = (await engine.look(store, clock)).booked
@@ -213,7 +213,7 @@ async def test_a_scripted_answer_is_worded_when_planned_and_lands_at_its_moment_
 async def test_an_ask_edited_before_its_answer_is_worded_again_from_its_new_text(tmp_path: Path) -> None:
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Thinking...")
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None)
     [booked] = (await engine.look(store, clock)).booked
     first = engine.pending(booked.pending, store)
@@ -236,7 +236,7 @@ async def test_a_follow_up_on_an_answer_owed_is_no_new_ask_and_a_reminded_person
     store, clock = _store(tmp_path)
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     reminded = Reminded(sooner_within=Window(min=timedelta(hours=1), max=timedelta(hours=1)))
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"reminded": reminded}) if p.key == "sofia" else p for p in base.people]
     engine = people_engine(
         base.model_copy(update={"people": people}), {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None
@@ -263,7 +263,7 @@ async def test_a_person_away_while_someone_covers_sends_their_automatic_reply_at
     store, clock = _store(tmp_path)
     _sent(store, "m1", "Can you confirm the pricing?")
     away = [Absence(lasts=timedelta(days=3), delegate="tom", reason="on leave")]
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"absences": away}) if p.key == "sofia" else p for p in base.people]
     pushes = Pushes()
     engine = people_engine(
@@ -286,7 +286,7 @@ async def test_a_take_pinned_on_an_ask_still_counts_it_first_beside_an_automatic
     asked = _sent(store, "m1", "Can you confirm the pricing?")
     away = [Absence(lasts=timedelta(days=3), delegate="tom", reason="on leave")]
     take = Take(provider=CHAT, take=REPLY, nth=1, after=timedelta(days=4), verbatim="Back now: yes, 40k.")
-    base = scenario(ticket_fates=[])
+    base = scenario(tom_finishes=False)
     people = [p.model_copy(update={"absences": away, "takes": [take]}) if p.key == "sofia" else p for p in base.people]
     pushes = Pushes()
     engine = people_engine(
@@ -304,7 +304,7 @@ def test_an_ask_the_script_plans_no_answer_to_opens_no_wait_and_one_it_does_open
     store, clock = _store(tmp_path)
     first = _sent(store, "m1", "Can you confirm the pricing?")
     _sent(store, "m2", "Thanks for the help last week", channel="team")  # a conversation of its own
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     engine = people_engine(scn, {CHAT: PushedConversations(CHAT, Pushes(), TARGET, "secret")}, None)
     asyncio.run(engine.look(store, clock))
 

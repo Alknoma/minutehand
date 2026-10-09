@@ -26,7 +26,7 @@ def drops(file: Path) -> list[str]:
 async def test_a_machine_command_runs_at_its_moment_knowing_it_and_wakes_nobody(rig: Rig, tmp_path: Path) -> None:
     grown = tmp_path / "cache-grew.txt"
     command = MachineCommand(after=timedelta(days=3), argv=drops(grown), said="the cache grows by 4 GB")
-    record, store, _ = await rig.run(scenario(ticket_fates=[], machine=[command]), rig.agent("ask_silent"))
+    record, store, _ = await rig.run(scenario(tom_finishes=False, machine=[command]), rig.agent("ask_silent"))
 
     assert grown.read_text() == (T0 + timedelta(days=3)).isoformat()
     assert [w.sim_time for w in record.wakes] == [T0], "the agent is not woken: it finds the change when it looks"
@@ -43,7 +43,7 @@ async def test_a_machine_command_that_fails_stops_the_run_as_the_environments_fa
         argv=[sys.executable, "-c", "import sys; print('disk full'); sys.exit(3)"],
         said="a download appears",
     )
-    record, _, _ = await rig.run(scenario(ticket_fates=[], machine=[broken]), rig.agent("keep_waking"))
+    record, _, _ = await rig.run(scenario(tom_finishes=False, machine=[broken]), rig.agent("keep_waking"))
 
     assert record.stop is StopReason.ENVIRONMENT_FAILED
     assert record.failure is not None and "'a download appears' exited 3: disk full" in record.failure

@@ -17,13 +17,14 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import checkpoints
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
-from minutehand.application.replier import DECISION_PROMPT_VERSION, PeopleReplier, WrittenDecision, WrittenInput
+from minutehand.application.people import TRANSITION_PROMPT_VERSION, WrittenField, WrittenTransition
+from minutehand.application.replier import PeopleReplier
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.agent import AgentReport, AgentStatus, AgentUnderTest, Command, WakeRequest
 from minutehand.domain.experiment import Fork, Override, PersonChange
-from minutehand.domain.scenario import Answers, DelayRange, ScriptedDecision
+from minutehand.domain.scenario import Answers, DelayRange, Take
 from minutehand.domain.world import Actor, InboxItemSnapshot, WorldEvent
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, T0, TOKENS, deciding, hours, inbox, play, scenario
@@ -54,8 +55,8 @@ def decided(events: list[WorldEvent]) -> list[tuple[str | None, datetime]]:
 async def test_a_model_written_approver_is_shown_the_item_and_its_decisions_and_picks_one(
     tmp_path: Path, product: Product
 ) -> None:
-    def rule(received: Received) -> WrittenDecision:
-        return WrittenDecision(decision="reject", inputs=[WrittenInput(name="reason", value="We booked one already")])
+    def rule(received: Received) -> WrittenTransition:
+        return WrittenTransition(take="reject", fields=[WrittenField(name="reason", value="We booked one already")])
 
     nadia = Answers(delay=DelayRange(shortest=hours(3), longest=hours(3)))
 
@@ -71,14 +72,16 @@ async def test_a_model_written_approver_is_shown_the_item_and_its_decisions_and_
         model = OpenAICompatible(base_url=fake.base_url, api_key="sk-test", model_id="people-1")
         played = await play(tmp_path, scenario(nadia), inbox(product), Agent(plan=raising), model=model)
 
-    asked = fake.for_schema("WrittenDecision")
+    # She is shown the item and each decision with what it takes, as any person is shown what they can do with an
+    # item (`person-transition/1`), and her pick goes through the product as she makes it.
+    asked = fake.for_schema("WrittenTransition")
     assert len(asked) == 1
     assert "Send Owen the Lakeside booking" in asked[0].last
-    assert '"approve"' in asked[0].last and 'input "reason" (required): Why it is turned down' in asked[0].last
+    assert '"approve"' in asked[0].last and 'field "reason" (required): Why it is turned down' in asked[0].last
     assert decided(played.store.events()) == [("reject", T0 + hours(3))]
     assert product.approvals["a1"].reason == "We booked one already"
-    written = played.store.replies()[0].written_by
-    assert written is not None and written.prompt_version == DECISION_PROMPT_VERSION
+    [call] = [c for c in played.store.person_calls() if c.answer is not None]
+    assert call.prompt_version == TRANSITION_PROMPT_VERSION
 
 
 @dataclass
@@ -115,7 +118,7 @@ class _Restorable:
 
 
 async def _fork(tmp_path: Path, product: Product, change: list[Override]) -> list[tuple[str | None, datetime]]:
-    scn = scenario(deciding(ScriptedDecision(decision="approve"), hours=2))
+    scn = scenario(deciding(Take(take="approve"), hours=2))
     declared = inbox(product)
     agent = AgentUnderTest(name="restorable", wakes=[Command(argv=["in-process"])], inboxes=[declared])
     driver = _Restorable(product)
@@ -168,8 +171,7 @@ async def test_a_fork_before_the_decision_replays_it(tmp_path: Path, product: Pr
 
 
 async def test_a_fork_that_changes_the_approver_has_them_reject(tmp_path: Path, product: Product) -> None:
-    rejecting = deciding(ScriptedDecision(decision="reject", inputs={"reason": "Changed my mind"}), hours=5)
-    assert await _fork(tmp_path, product, [PersonChange(person="nadia", reply=rejecting)]) == [
-        ("reject", T0 + hours(5))
-    ]
+    rejecting = deciding(Take(take="reject", fields={"reason": "Changed my mind"}), hours=5)
+    change = PersonChange(person="nadia", reply=rejecting.reply, takes=rejecting.takes)
+    assert await _fork(tmp_path, product, [change]) == [("reject", T0 + hours(5))]
     assert product.state("a1") == "rejected"

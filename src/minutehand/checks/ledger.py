@@ -260,12 +260,15 @@ def build(
         person = by_email.get(after.assignee_email) if after.assignee_email is not None else None
         if not handed or person is None or after.state in FINISHED:
             continue
-        fate = next((f for f in scenario.ticket_fates if f.assignee == person.key), None)
         take = next(
-            (t for t in person.takes if t.provider == event.entity.provider and t.nth is None and t.after is not None),
+            (
+                t
+                for t in person.takes
+                if t.provider in (None, event.entity.provider) and t.nth is None and t.after is not None
+            ),
             None,
         )
-        due = fate.after if fate is not None else take.after if take is not None else None
+        due = take.after if take is not None else None
         opened.append(
             _Open(
                 key=f"work:{event.entity.provider}:{event.entity.external_id}:{person.key}:{event.seq}",

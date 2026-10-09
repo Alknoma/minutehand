@@ -8,16 +8,15 @@ starts_at: "2026-08-24T09:00:00Z"
 deadline_after: P5D
 expect_outcome: unfinished
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
-      decisions: []                           # no decision scripted, and
-      then: silent                            # nothing more: every item left pending
+      then: silent                            # nothing pinned and nothing more: every item left pending
   - key: marta
     name: Marta Holm
     email: marta@example.com
-    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, decisions: [], then: silent}
+    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}

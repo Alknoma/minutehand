@@ -25,7 +25,7 @@ from minutehand.domain.scenario import (
     ReplyBehaviour,
     Scenario,
     Scripted,
-    ScriptedDecision,
+    Take,
 )
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchange, MessageSnapshot, Operation
 from minutehand.ports.model import Model as LanguageModel
@@ -86,18 +86,31 @@ def inbox(product: Product, *, everyone: bool = False, gates: bool = True, **mor
     )
 
 
-def deciding(*decisions: ScriptedDecision, hours: float = 2, longest: float | None = None) -> Scripted:
-    return Scripted(
-        then=AfterScript.SILENT,
-        delay=DelayRange(shortest=timedelta(hours=hours), longest=timedelta(hours=longest or hours)),
-        replies=[],
-        decisions=list(decisions),
+@dataclass(frozen=True)
+class Deciding:
+    """An approver who says nothing, takes `hours` (to `longest`) to act, and decides as `takes` pin."""
+
+    reply: Scripted
+    takes: list[Take]
+
+
+def deciding(*takes: Take, hours: float = 2, longest: float | None = None) -> Deciding:
+    return Deciding(
+        reply=Scripted(
+            then=AfterScript.SILENT,
+            delay=DelayRange(shortest=timedelta(hours=hours), longest=timedelta(hours=longest or hours)),
+            replies=[],
+        ),
+        takes=list(takes),
     )
 
 
-def people(nadia: ReplyBehaviour, **nadia_has: object) -> list[Person]:
+def people(nadia: ReplyBehaviour | Deciding, **nadia_has: object) -> list[Person]:
+    if isinstance(nadia, Deciding):
+        nadia_has = {"takes": [t.model_dump(mode="json") for t in nadia.takes], **nadia_has}
+        nadia = nadia.reply
     return [
-        Person(key="owen", name="Owen Hart", email=OWEN, reply=Scripted(then=AfterScript.SILENT, decisions=[])),
+        Person(key="owen", name="Owen Hart", email=OWEN, reply=Scripted(then=AfterScript.SILENT)),
         Person.model_validate(
             {
                 "key": "nadia",
@@ -127,7 +140,7 @@ APPROVAL_RULES = """
 """The team's rules these approval runs are judged by: go ahead only once approved, and act on a decision."""
 
 
-def scenario(nadia: ReplyBehaviour, *, days: float = 5, **nadia_has: object) -> Scenario:
+def scenario(nadia: ReplyBehaviour | Deciding, *, days: float = 5, **nadia_has: object) -> Scenario:
     return Scenario(
         name="approval",
         goal="Send Owen the booking once Nadia approves it.",
@@ -216,6 +229,7 @@ async def play(
         services=Services(providers=[]),
         replier=replier or PeopleReplier(scn, model, [declared]),
         inboxes=Inboxes(scn, [reach]),
+        model=model,
     )
     return Played(record=record, store=store, result=score(scn, store, record))
 
