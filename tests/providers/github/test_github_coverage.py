@@ -20,6 +20,7 @@ import pytest
 
 from minutehand.adapters.providers.github.seed import GitHubSeed, number
 from tests.providers.github.github_world import TOMAS, Hub, tracker_seed
+from tests.providers.github.schema import missing, resolve
 
 SUBSET = Path(__file__).parent / "openapi" / "api.github.com.subset.json"
 DESCRIPTION = json.loads(SUBSET.read_text())
@@ -127,7 +128,6 @@ PENDING: dict[str, str] = {
     'needs a credential; left out rather than made up (CLAIMS.md, "Pending a recording")',
 }
 """Required fields deliberately not answered, each with its reason, by their place in the answer."""
-INDEX = re.compile(r"\[[0-9]+\]")
 
 PLACEHOLDER = re.compile(r"\{([^}]+)\}")
 WORLD_VALUES = {"owner": "lanternworks", "repo": "ledger", "username": "iris-calder", "org": "lanternworks"}
@@ -148,47 +148,12 @@ REFUSED = [op for op in OPERATIONS if op not in SERVED]
 
 
 def _resolve(schema: dict[str, object]) -> dict[str, object]:
-    while "$ref" in schema:
-        reference = schema["$ref"]
-        assert isinstance(reference, str)
-        _, _, section, name = reference.split("/", 3)
-        schema = DESCRIPTION["components"][section][name]
-    return schema
+    return resolve(DESCRIPTION["components"], schema)
 
 
 def _missing(schema: dict[str, object], value: object, where: str) -> list[str]:
     """Every field the description requires that `value` lacks, at any depth, by its path."""
-    schema = _resolve(schema)
-    if value is None:
-        return []
-    for combined in ("oneOf", "anyOf"):
-        if combined in schema:
-            choices = schema[combined]
-            assert isinstance(choices, list)
-            each = [_missing(choice, value, where) for choice in choices]
-            return [] if any(not m for m in each) else min(each, key=len)
-    if "allOf" in schema:
-        parts = schema["allOf"]
-        assert isinstance(parts, list)
-        return [m for part in parts for m in _missing(part, value, where)]
-    if isinstance(value, list):
-        items = schema["items"] if "items" in schema else {}
-        assert isinstance(items, dict)
-        return [m for n, item in enumerate(value) for m in _missing(items, item, f"{where}[{n}]")]
-    if not isinstance(value, dict):
-        return []
-    required = schema["required"] if "required" in schema else []
-    properties = schema["properties"] if "properties" in schema else {}
-    assert isinstance(required, list) and isinstance(properties, dict)
-    gaps = [
-        f"{where}.{name}"
-        for name in required
-        if name not in value and INDEX.sub("[]", f"{where}.{name}") not in PENDING
-    ]
-    for name, held in value.items():
-        if name in properties:
-            gaps += _missing(properties[name], held, f"{where}.{name}")
-    return gaps
+    return missing(DESCRIPTION["components"], schema, value, where, PENDING)
 
 
 def _success_schema(method: str, path: str) -> dict[str, object] | None:

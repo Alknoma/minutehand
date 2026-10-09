@@ -348,12 +348,13 @@ class Tracker:
         before: wire.StoredIssue,
         after: wire.StoredIssue,
         *,
+        by: wire.StoredAccount,
         actor: Actor,
         who: str | None,
         content: str = "{}",
     ) -> wire.StoredIssue:
         """`after` kept in place of `before` when it differs, its update time the clock's; a change of state is a move
-        of the item's state, recorded."""
+        of the item's state, recorded, and a webhook if the agent has a target."""
         if after == before:
             return before
         stamped = after.model_copy(update={"updated_at": wire.timestamp(self._api.clock.now())})
@@ -361,6 +362,7 @@ class Tracker:
         if stamped.state is not before.state:
             name = "close" if stamped.state is wire.IssueState.CLOSED else "reopen"
             self.moved_to(repository, stamped, name, before.state.value, actor, who, content)
+            await self._api.hooks.state_changed(repository, before, stamped, by)
         return stamped
 
     def moved_to(
@@ -410,9 +412,9 @@ class Tracker:
             updated_at=now,
         )
         world.put_comment(repository, comment, operation=Operation.CREATE, actor=actor)
-        world.put_issue(
-            repository, issue.model_copy(update={"updated_at": now}), operation=Operation.UPDATE, actor=actor
-        )
+        touched = issue.model_copy(update={"updated_at": now})
+        world.put_issue(repository, touched, operation=Operation.UPDATE, actor=actor)
+        await self._api.hooks.comment_created(repository, touched, comment, account)
         return comment
 
     async def get_issue(self, request: Request, caller: Caller) -> Answered:
@@ -461,7 +463,7 @@ class Tracker:
         changed = issue.model_copy(update=changes)
         if wanted is not None and wanted is not issue.state:
             changed = self.moved(changed, wanted, reason, account, now)
-        changed = await self.edit_issue(repository, issue, changed, actor=Actor.AGENT, who=None)
+        changed = await self.edit_issue(repository, issue, changed, by=account, actor=Actor.AGENT, who=None)
         return as_json(self.present(repository, [changed])[0])
 
     def moved(

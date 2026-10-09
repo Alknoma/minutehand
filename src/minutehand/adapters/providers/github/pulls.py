@@ -468,7 +468,7 @@ class Pulls:
         if wanted is not None and wanted is not issue.state:
             changed = self.tracker.moved(changed, wanted, None, account, wire.timestamp(self._api.clock.now()))
             changed = self.frozen(repository, changed)
-        changed = await self.tracker.edit_issue(repository, issue, changed, actor=Actor.AGENT, who=None)
+        changed = await self.tracker.edit_issue(repository, issue, changed, by=account, actor=Actor.AGENT, who=None)
         return as_json(self.present(caller, repository, [changed], full=True)[0])
 
     def frozen(self, repository: wire.StoredRepository, issue: wire.StoredIssue) -> wire.StoredIssue:
@@ -570,6 +570,7 @@ class Pulls:
         extra: str | None,
         actor: Actor,
         who: str | None,
+        content: str = "{}",
     ) -> wire.StoredIssue:
         """The pull request merged into the default branch by a merge commit: the head's changes laid on the default
         branch's tree, a commit of two parents, the pull request closed as merged."""
@@ -632,10 +633,11 @@ class Pulls:
             to_state="merged",
             by=actor,
             who=who,
-            content="{}",
+            content=content,
             at=self._api.clock.now(),
         )
         world.store.apply(transition_change(moved, at_seq=world.store.head() + 1))
+        await self._api.hooks.state_changed(repository, issue, done, account)
         return done
 
     # ------------------------------------------------------------------ reviews
@@ -764,6 +766,7 @@ class Pulls:
             at=self._api.clock.now(),
         )
         world.store.apply(transition_change(moved, at_seq=world.store.head() + 1))
+        await self._api.hooks.review_submitted(repository, issue, review, account)
         return review
 
     # ------------------------------------------------------------------ comments on the diff

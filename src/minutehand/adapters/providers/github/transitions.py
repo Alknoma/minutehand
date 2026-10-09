@@ -1,34 +1,43 @@
 """What people do on GitHub, through the one port people act through (`ports.transitions.ProvidesTransitions`).
 
 An issue assigned to a person and still open waits on them: they close it (with a comment, and the reason GitHub
-takes for closing one) or, once it is closed, reopen it. An open pull request that asks a person for their review
-waits on them until they have given it: they approve it, ask for changes or comment (the three events a review takes).
-Each goes through the code the REST route takes, so the same validation, history and update times apply, and each is
-one move of the item's state in the log.
+takes for closing one) or, once it is closed, reopen it. An open pull request waits on a person who is asked for their
+review and has not given it, and on one it is assigned to: they approve it, ask for changes or comment (the three
+events a review takes), merge it if they may and it merges cleanly, or close it. Each goes through the code the REST
+route takes, so the same validation, history and update times apply, and each is one move of the item's state in the
+log. When the agent declares an inbound target for GitHub, each is also pushed to it as the webhooks GitHub sends
+(`hooks.py`), signed when the world declares a secret for the target.
 """
 
 from __future__ import annotations
 
 from minutehand.adapters.providers.github import pulls, state, wire
 from minutehand.adapters.providers.github.app import GitHubApi
+from minutehand.adapters.providers.github.hooks import Pusher
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.errors import NotServed
+from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Person
 from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, content_of, item_parent
 from minutehand.domain.world import Actor, EntityKind, EntityRef, TransitionSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
+REVIEW_REQUESTED = "review requested"
+ASSIGNED = "assigned"
 BODY = "body"
 COMMENT = "comment"
 REASON = "state_reason"
-REVIEW_REQUESTED = "review requested"
 CLOSE = "close"
 REOPEN = "reopen"
+MERGE = "merge"
+COMMIT_TITLE = "commit_title"
+COMMIT_MESSAGE = "commit_message"
 CLOSING_REASONS = (wire.StateReason.COMPLETED, wire.StateReason.NOT_PLANNED)
 """What a person closing an issue can say it was closed as: `duplicate` needs the issue it duplicates."""
 TRIAGE = wire.PERMISSION_ORDER.index(wire.Permission.TRIAGE)
+PUSH = wire.PERMISSION_ORDER.index(wire.Permission.PUSH)
 
 
 def account_of(world: GitHubWorld, person: Person) -> wire.StoredAccount | None:
@@ -72,11 +81,17 @@ def last_move(world: Store, item: EntityRef) -> Transition:
 
 
 class GitHubTransitions:
-    """The provider's moves for the people engine."""
+    """The provider's moves for the people engine, for one agent: when it declares an inbound target for GitHub, each
+    move is pushed there."""
+
+    def __init__(self, target: InboundTarget | None = None, secret: str | None = None) -> None:
+        # The secret signs the push only where the world declares one for the target: a target with none is sent a
+        # delivery with no signature.
+        self._pusher = None if target is None else Pusher(target, secret if target.secret is not None else None)
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
         """Every open issue assigned to the person's account, and every open pull request that asks their review and
-        has none from them, as they read it on GitHub."""
+        has none from them, or is assigned to them, as they read it on GitHub."""
         github = GitHubWorld(world)
         account = account_of(github, person)
         if account is None:
@@ -87,21 +102,26 @@ class GitHubTransitions:
                 continue
             reviewed = {(r.pull, r.author.lower()) for r in github.reviews(repository)}
             for issue in github.issues(repository):
-                item = state.issue_ref(repository.owner, repository.name, issue.number)
                 if issue.state is not wire.IssueState.OPEN:
                     continue
-                if issue.pull is None and account.login in issue.assignees:
-                    waiting.append(
-                        Waiting(item=item, state=issue.state.value, shown=self._shown(github, repository, issue))
-                    )
-                elif (
-                    issue.pull is not None
-                    and account.login in issue.pull.requested_reviewers
-                    and (issue.number, account.login.lower()) not in reviewed
-                ):
-                    waiting.append(
-                        Waiting(item=item, state=REVIEW_REQUESTED, shown=self._shown(github, repository, issue))
-                    )
+                item = state.issue_ref(repository.owner, repository.name, issue.number)
+                if issue.pull is None:
+                    if account.login in issue.assignees:
+                        waiting.append(
+                            Waiting(item=item, state=issue.state.value, shown=self._shown(github, repository, issue))
+                        )
+                    continue
+                reviewed_it = (issue.number, account.login.lower()) in reviewed
+                asked = account.login in issue.pull.requested_reviewers and not reviewed_it
+                # An assignee waits until they have reviewed it and, where they may merge or close it, for as long as it
+                # is open.
+                acts = account.login in issue.assignees and (
+                    not reviewed_it
+                    or any(o.name in (MERGE, CLOSE) for o in self._pull_offers(github, repository, issue, account))
+                )
+                if asked or acts:
+                    held = REVIEW_REQUESTED if asked else ASSIGNED
+                    waiting.append(Waiting(item=item, state=held, shown=self._shown(github, repository, issue)))
         return waiting
 
     def _shown(self, github: GitHubWorld, repository: wire.StoredRepository, issue: wire.StoredIssue) -> str:
@@ -130,8 +150,9 @@ class GitHubTransitions:
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """Close an open issue, reopen a closed one: for its author and those with triage access or more ("Issue owners
-        and users with push access or Triage role can edit an issue", https://docs.github.com/en/rest/issues/issues#update-an-issue);
-        review an open pull request."""
+        and users with push access or Triage role can edit an issue",
+        https://docs.github.com/en/rest/issues/issues#update-an-issue). Review an open pull request, merge it where
+        they may and it merges cleanly, close it."""
         del by
         github = GitHubWorld(world)
         repository, issue = locate(github, item)
@@ -139,7 +160,7 @@ class GitHubTransitions:
         if account is None:
             return []
         if issue.pull is not None:
-            return self._review_offers(github, repository, issue, account)
+            return self._pull_offers(github, repository, issue, account)
         if issue.author.lower() != account.login.lower() and reaches(github, account, repository) < TRIAGE:
             return []
         comment = OfferField(name=COMMENT, description="A comment added to the issue as it moves")
@@ -159,24 +180,27 @@ class GitHubTransitions:
             Offer(name=REOPEN, to_state=wire.IssueState.OPEN.value, fields=[comment], description="Reopen the issue")
         ]
 
-    def _review_offers(
+    def _pull_offers(
         self,
         github: GitHubWorld,
         repository: wire.StoredRepository,
         issue: wire.StoredIssue,
         account: wire.StoredAccount,
     ) -> list[Offer]:
-        """The three events a review takes, for an open pull request the account can read; its author may only
-        comment (GitHub refuses a review of one's own that approves or asks for changes)."""
-        if issue.state is not wire.IssueState.OPEN or reaches(github, account, repository) < 0:
+        """The three events a review takes, for an open pull request the account can read (its author may only comment:
+        GitHub refuses a review of one's own that approves or asks for changes); a merge, for one that merges cleanly
+        and a user with write access, as the merge route requires; a close, for its author and those with triage
+        access or more."""
+        reach = reaches(github, account, repository)
+        if issue.state is not wire.IssueState.OPEN or reach < 0 or issue.pull is None:
             return []
-        offers = {
+        wording = {
             wire.ReviewEvent.APPROVE: ("Approve the changes", False),
             wire.ReviewEvent.REQUEST_CHANGES: ("Ask for changes before it merges", True),
             wire.ReviewEvent.COMMENT: ("Comment without approving or asking for changes", True),
         }
         found: list[Offer] = []
-        for event, (description, words_required) in offers.items():
+        for event, (description, words_required) in wording.items():
             if event is not wire.ReviewEvent.COMMENT and issue.author.lower() == account.login.lower():
                 continue
             found.append(
@@ -187,13 +211,39 @@ class GitHubTransitions:
                     description=description,
                 )
             )
+        if reach >= PUSH and not issue.pull.draft and pulls.merges_cleanly(github, repository, issue) is True:
+            found.append(
+                Offer(
+                    name=MERGE,
+                    to_state="merged",
+                    fields=[
+                        OfferField(
+                            name=COMMIT_MESSAGE, description="Extra detail to append to the merge commit's message"
+                        ),
+                        OfferField(
+                            name=COMMIT_TITLE, description="The merge commit's title, in place of the automatic one"
+                        ),
+                    ],
+                    description="Merge the pull request",
+                )
+            )
+        if issue.author.lower() == account.login.lower() or reach >= TRIAGE:
+            found.append(
+                Offer(
+                    name=CLOSE,
+                    to_state=wire.IssueState.CLOSED.value,
+                    fields=[OfferField(name=COMMENT, description="A comment added to the pull request as it closes")],
+                    description="Close the pull request without merging it",
+                )
+            )
         return found
 
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
-        """The person moves the issue as `PATCH /repos/{owner}/{repo}/issues/{number}` moves it, after posting their
-        comment, if they wrote one, as `POST .../comments` posts it."""
+        """The person moves the item as its REST route moves it: `PATCH /repos/{owner}/{repo}/issues/{number}` after
+        their comment, if they wrote one, as `POST .../comments` posts it; for a pull request the review, merge or close
+        routes."""
         github = GitHubWorld(world)
         repository, issue = locate(github, item)
         if who is None or by is not Actor.PERSON:
@@ -202,10 +252,11 @@ class GitHubTransitions:
         if found is None:
             raise ValueError(f"github issue {repository.full_name}#{issue.number} offers {who.key} no {offer!r}")
         given = content_of(content, found, who.key)
-        if issue.pull is not None:
-            account = account_of(github, who)
-            assert account is not None
-            await GitHubApi(world, clock).pulls.submit_review(
+        account = account_of(github, who)
+        assert account is not None
+        api = GitHubApi(world, clock, self._pusher)
+        if issue.pull is not None and offer in {e.value for e in wire.ReviewEvent}:
+            await api.pulls.submit_review(
                 repository,
                 issue,
                 account,
@@ -215,26 +266,53 @@ class GitHubTransitions:
                 actor=Actor.PERSON,
                 who=who.key,
             )
-            return last_move(world, item)
+        elif issue.pull is not None and offer == MERGE:
+            await api.pulls.merge(
+                repository,
+                issue,
+                account,
+                title=given[COMMIT_TITLE] if COMMIT_TITLE in given else None,
+                extra=given[COMMIT_MESSAGE] if COMMIT_MESSAGE in given else None,
+                actor=Actor.PERSON,
+                who=who.key,
+                content=content,
+            )
+        else:
+            await self._move(api, github, repository, issue, offer, given, account, who, content)
+        return last_move(world, item)
+
+    async def _move(
+        self,
+        api: GitHubApi,
+        github: GitHubWorld,
+        repository: wire.StoredRepository,
+        issue: wire.StoredIssue,
+        offer: str,
+        given: dict[str, str],
+        account: wire.StoredAccount,
+        who: Person,
+        content: str,
+    ) -> None:
+        """Close or reopen: the comment first, as the page posts it, then the state."""
         reason = given[REASON] if REASON in given else None
         if reason is not None and reason not in {r.value for r in CLOSING_REASONS}:
             raise ValueError(
                 f"github closes an issue as {' or '.join(r.value for r in CLOSING_REASONS)}, not {reason!r}"
             )
-        account = account_of(github, who)
-        assert account is not None
-        api = GitHubApi(world, clock)
         if COMMENT in given and given[COMMENT].strip():
             await api.tracker.post_comment(repository, issue, account, given[COMMENT], actor=Actor.PERSON)
         before = github.issue(repository, issue.number)
         assert before is not None
         to = wire.IssueState.CLOSED if offer == CLOSE else wire.IssueState.OPEN
         why = None if reason is None else wire.StateReason(reason)
-        moved = api.tracker.moved(before, to, why, account, wire.timestamp(clock.now()))
-        await api.tracker.edit_issue(repository, before, moved, actor=Actor.PERSON, who=who.key, content=content)
-        return last_move(world, item)
+        moved = api.tracker.moved(before, to, why, account, wire.timestamp(api.clock.now()))
+        if before.pull is not None:
+            moved = api.pulls.frozen(repository, moved)
+        await api.tracker.edit_issue(
+            repository, before, moved, by=account, actor=Actor.PERSON, who=who.key, content=content
+        )
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
-        """Never yet: the agent finds a person's move on its next read."""
+        """When the agent declares a target for GitHub: GitHub pushes a webhook for each move, which is a wake."""
         del item, who, world, clock
-        return False
+        return self._pusher is not None

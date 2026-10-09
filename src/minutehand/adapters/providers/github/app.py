@@ -41,6 +41,7 @@ from minutehand.adapters.providers.github.answers import (
     param,
 )
 from minutehand.adapters.providers.github.commits import Commits
+from minutehand.adapters.providers.github.hooks import Hooks, Pusher
 from minutehand.adapters.providers.github.pulls import Pulls
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.tracker import Tracker
@@ -104,12 +105,13 @@ def _raw(file: wire.StoredFile) -> bytes:
 
 
 class GitHubApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
+    def __init__(self, store: Store, clock: Clock, pusher: Pusher | None = None) -> None:
         self.world = GitHubWorld(store)
         self.clock = clock
         self.tracker = Tracker(self)
         self.pulls = Pulls(self)
         self.commits_made = Commits(self)
+        self.hooks = Hooks(self, pusher)
 
     # ------------------------------------------------------------------ the gate
 

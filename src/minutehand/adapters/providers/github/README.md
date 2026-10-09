@@ -76,6 +76,16 @@ The unserved operations a GitHub client most often calls, to serve next in this 
    the token exchange; and webhook delivery (`X-GitHub-Event`, `X-Hub-Signature-256`) if a scenario needs GitHub to
    push.
 
+## Webhooks
+
+When the agent declares an inbound target for GitHub (`inbound: - provider: github`, a `url`, and a `secret`), each move a
+person makes is pushed to it as GitHub pushes it: `issues` (closed, reopened), `issue_comment` (created), `pull_request`
+(closed, merged or not) and `pull_request_review` (submitted), a POST of JSON with `X-GitHub-Event`,
+`X-GitHub-Delivery` and a `GitHub-Hookshot/` user agent, and, only where the target declares a secret,
+`X-Hub-Signature-256` and `X-Hub-Signature` (`hooks.py`). A delivery the agent does not answer with 2xx fails the run,
+and is not sent again. The agent's own writes through the API push nothing, and GitHub's webhook routes
+(`/repos/{o}/{r}/hooks`) are refused by name.
+
 ## The tracker in a seed
 
 A repository's seed may hold `labels` (name, color, description), `issues` and `pulls`, each numbered by the seed
@@ -122,8 +132,8 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 
 ## What it does not do
 
-- Webhooks, milestones, issue types, reactions, issue events and the timeline, review requests, pending and dismissed
-  reviews, the OAuth web flow, and every app route but the token exchange: refused by name (above).
+- Milestones, issue types, reactions, issue events and the timeline, review requests, pending and dismissed reviews,
+  repository webhooks and their deliveries, the OAuth web flow, and every app route but the token exchange: refused by name (above).
 - A repository's labels are what its seed and the agent's `POST .../labels` define: a label name an issue is given
   that the repository has not defined is refused by name, since the reference does not say what GitHub does with one.
   Labels list alphabetically by name, case aside (recorded). An assignee must be a user with a role on the repository.

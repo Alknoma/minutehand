@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, TypeVar, get_args
@@ -1426,3 +1427,35 @@ class FileCommitOut(Wire):
 
     content: ContentRefOut | None
     commit: FileCommitDetailOut
+
+
+# --------------------------------------------------------------------------- what GitHub pushes
+
+
+def as_value(entity: Wire) -> JsonValue:
+    """An answer as JSON, to be put into the body of a push."""
+    return TypeAdapter(JsonValue).validate_json(entity.model_dump_json(by_alias=True))
+
+
+class ReactionsOut(Wire):
+    """A reaction rollup: the webhook payloads of an issue and a comment require one; nothing here is reacted to."""
+
+    url: str
+    total_count: int = 0
+    plus_one: int = Field(default=0, alias="+1")
+    minus_one: int = Field(default=0, alias="-1")
+    laugh: int = 0
+    hooray: int = 0
+    confused: int = 0
+    heart: int = 0
+    rocket: int = 0
+    eyes: int = 0
+
+
+class WebhookBody(Wire):
+    """The body of a push: the keys the event carries, in the order they are written."""
+
+    keys: dict[str, JsonValue]
+
+    def encode(self) -> bytes:
+        return json.dumps(self.keys, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

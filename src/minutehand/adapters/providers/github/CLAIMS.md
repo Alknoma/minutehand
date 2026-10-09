@@ -12,7 +12,7 @@ a call without one) and is unproven. Tests are in `tests/providers/github/`, fil
 (F), `test_github_coverage.py` (C), `test_github_world_without_users.py` (W), and, for what the agent writes,
 `test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E),
 `test_github_pulls.py` (P), `test_github_reviews.py` (V), `test_github_diffs.py` (D),
-`test_github_contents_write.py` (W2) and
+`test_github_contents_write.py` (W2), `test_github_webhooks.py` (H2) and
 `tests/transitions/test_github_people.py` (T). **Observed** means the same of a capture committed under `tests/data/`:
 `tests/data/github_rest/observed-2026-10-09.json` holds read-only exchanges with public repositories, trimmed to what
 a claim rests on and holding no login or free text of anyone.
@@ -213,6 +213,26 @@ other than the head.
 A commit by a user without push access (the reference lists no status for it); to an empty repository (the reference does
 not say it makes the branch); with `content` that is not base64; with a `sha` for a path that holds no file; giving a file
 the bytes it has; to a path that is a directory, or under a file.
+
+## Webhooks
+
+What a person does is pushed to the agent's inbound target for GitHub as GitHub pushes it. The agent's own writes through
+the API push nothing: the provider's app holds no target to push to. The webhook a repository configures has an id and a
+target of its own, which the world does not hold (`POST /repos/{o}/{r}/hooks` is refused by name), so the headers that
+name it are not sent.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| A delivery is a POST of JSON with `X-GitHub-Event`, `X-GitHub-Delivery` (a GUID), a `User-Agent` prefixed `GitHub-Hookshot/` and `Content-Type: application/json` | documented | H2 `test_a_delivery_carries_the_headers_the_reference_lists_and_a_signature_that_verifies` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers |
+| `X-Hub-Signature-256` and `X-Hub-Signature` are sent "if the webhook is configured with a secret", the HMAC hex digest of the body under SHA-256 and SHA-1; a target the world declares no secret for is sent neither | documented | H2 `test_a_delivery_carries_the_headers_the_reference_lists_and_a_signature_that_verifies`, H2 `test_a_target_the_world_declares_no_secret_for_is_sent_no_signature` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers |
+| A delivery that gets no 2XX within ten seconds is a failure and is not redelivered | documented | H2 `test_an_agent_that_answers_a_delivery_with_anything_but_2xx_has_failed_it`, H2 `test_an_agent_that_cannot_be_reached_has_failed_the_delivery` | https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries |
+| Closing or reopening an issue is an `issues` event (`closed`, `reopened`) with `issue`, `repository` and `sender` | documented | H2 `test_closing_and_reopening_an_issue_are_issues_events_that_say_what_the_rest_route_says` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues |
+| A comment is an `issue_comment` event (`created`) with `issue`, `comment`, `repository` and `sender` | documented | H2 `test_a_comment_is_an_issue_comment_event_before_the_close_it_comes_with` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment |
+| Closing or merging a pull request is a `pull_request` event (`closed`) with `number` and the `pull_request`, which says whether it was merged | documented | H2 `test_closing_a_pull_request_is_a_pull_request_event_that_is_not_merged`, H2 `test_merging_a_pull_request_is_a_pull_request_event_that_is_merged` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
+| A review is a `pull_request_review` event (`submitted`) with `review` and `pull_request` | documented | H2 `test_a_review_is_a_pull_request_review_event` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request_review |
+| Every body holds each field the description of its event requires (`tests/providers/github/openapi/api.github.com.webhooks.subset.json`) | documented | H2 (each event's test, `checked`) | https://github.com/github/rest-api-description |
+| An issue or pull request in a body is the one the REST route answers, beside the keys the webhook's description requires and the route's does not (`reactions`, a null `performed_via_github_app`) | documented | H2 `test_what_a_webhook_carries_is_what_the_rest_route_answers_of_it` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues |
+| An open pull request that asks a person's review, or is assigned to them, waits on them; they may also merge it, where they may and it merges cleanly, or close it | documented | T `test_a_pull_request_assigned_to_a_person_who_may_merge_it_waits_on_them_and_a_pinned_merge_lands_as_theirs`, T `test_a_pull_request_closed_by_a_person_is_closed_not_merged_with_their_comment`, T `test_a_draft_or_conflicting_pull_request_is_not_offered_a_merge` | https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request |
 
 ## `HEAD` as a ref
 

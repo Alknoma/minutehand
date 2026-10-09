@@ -11,14 +11,16 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.providers.github import wire
-from minutehand.adapters.providers.github.provider import GitHubProvider, build
+from minutehand.adapters.providers.github.provider import build
+from minutehand.adapters.providers.github.seed import GitHubSeed
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.adapters.providers.github.transitions import GitHubTransitions
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, Scenario, Take
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, PendingStatus, TransitionSnapshot
 from minutehand.ports.store import Store
-from tests.providers.github.github_world import PEOPLE, SCENARIO, START, tracker_seed
+from tests.providers.github.github_world import PEOPLE, SCENARIO, START, pulls_seed, tracker_seed
 from tests.support.people import people_engine, people_model
 
 IRIS, TOMAS = PEOPLE
@@ -31,12 +33,14 @@ def _played(take: str, *, nth: int | None = None, verbatim: str | None = "Handle
     return SCENARIO.model_copy(update={"transitions_on": ["github"], "people": people})
 
 
-def _world(tmp_path: Path, scenario: Scenario) -> tuple[GitHubProvider, SqliteStore, RunClock]:
+def _world(tmp_path: Path, scenario: Scenario) -> tuple[GitHubTransitions, SqliteStore, RunClock]:
+    """The GitHub the scenario starts with and, for an agent that declares no inbound target for it, the port people act
+    through."""
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "w.db", "w", clock)
     provider = build()
     provider.seed_with(tracker_seed(), scenario, store)
-    return provider, store, clock
+    return provider.talking(None, None), store, clock
 
 
 def _moves(store: Store) -> list[TransitionSnapshot]:
@@ -96,12 +100,16 @@ def test_nobody_is_offered_a_move_github_would_refuse_them(tmp_path: Path) -> No
     # Mutation: dropping the role check offers Iris the close.
     assert [o.name for o in provider.legal(_ref(3), Actor.PERSON, IRIS, store)] == ["close"], "her own issue"
     assert [o.name for o in provider.legal(_ref(2), Actor.PERSON, TOMAS, store)] == ["reopen"]
-    assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, TOMAS, store)] == ["COMMENT"], "his own pull request"
+    assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, TOMAS, store)] == [
+        "COMMENT",
+        "merge",
+        "close",
+    ], "his own pull request: he may comment on it, and merge or close it, but not approve it"
     assert [o.name for o in provider.legal(_ref(4), Actor.PERSON, IRIS, store)] == [
         "APPROVE",
         "REQUEST_CHANGES",
         "COMMENT",
-    ], "a pull request is reviewed, not closed, here"
+    ], "a reader reviews a pull request; she cannot merge it (the merge route takes write access) or close it"
 
 
 async def test_a_close_names_why_it_was_closed_and_only_as_github_takes(tmp_path: Path) -> None:
@@ -240,8 +248,117 @@ async def test_a_person_whose_account_cannot_read_the_repository_is_offered_no_r
     store = SqliteStore(tmp_path / "w.db", "w", clock)
     provider = build()
     provider.seed_with(seed.model_copy(update={"users": users}), scenario, store)
-    assert provider.legal(_ref(4), Actor.PERSON, visitor, store) == [], "a private repository is a 404 to them"
-    assert provider.items_for(visitor, store) == []
+    port = provider.talking(None, None)
+    assert port.legal(_ref(4), Actor.PERSON, visitor, store) == [], "a private repository is a 404 to them"
+    assert port.items_for(visitor, store) == []
     stranger = Person(key="stranger", name="Nobody", email="stranger@example.com")
-    assert provider.legal(_ref(4), Actor.PERSON, stranger, store) == [], "no account on GitHub"
-    assert provider.items_for(stranger, store) == []
+    assert port.legal(_ref(4), Actor.PERSON, stranger, store) == [], "no account on GitHub"
+    assert port.items_for(stranger, store) == []
+
+
+def _assigned_to_tomas() -> GitHubSeed:
+    """The ledger's pull request assigned to Tomas, who pushes, in place of Iris, who only reads."""
+    seed = pulls_seed()
+    ledger = seed.repositories[0]
+    pull = ledger.pulls[0].model_copy(update={"assignees": ["tomas-b"], "requested_reviewers": []})
+    mine = ledger.model_copy(update={"pulls": [pull]})
+    return seed.model_copy(update={"repositories": [mine, *seed.repositories[1:]]})
+
+
+def _held(tmp_path: Path, seed: GitHubSeed, scenario: Scenario) -> tuple[GitHubTransitions, SqliteStore, RunClock]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    clock = RunClock(START)
+    store = SqliteStore(tmp_path / "w.db", "w", clock)
+    provider = build()
+    provider.seed_with(seed, scenario, store)
+    return provider.talking(None, None), store, clock
+
+
+async def test_a_pull_request_assigned_to_a_person_who_may_merge_it_waits_on_them_and_a_pinned_merge_lands_as_theirs(
+    tmp_path: Path,
+) -> None:
+    """Documented: the merge route takes write access and merges a pull request that merges cleanly.
+    https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request"""
+    scenario = _played("merge", verbatim="With care.")
+    port, store, clock = _held(tmp_path, _assigned_to_tomas(), scenario)
+    engine = people_engine(scenario, {"github": port}, people_model())
+
+    booked = {b.item.external_id: b for b in (await engine.look(store, clock)).booked if b.person == "tomas"}
+    assert sorted(booked) == ["issue/lanternworks/ledger/0000000003", "issue/lanternworks/ledger/0000000004"]
+    [waiting] = [w for w in port.items_for(TOMAS, store) if w.item.external_id.endswith("4")]
+    assert (
+        waiting.state == "assigned"
+        and "services/billing/config.py" in waiting.shown
+        and "+PAYMENT_TIMEOUT = 60" in waiting.shown
+    )
+    clock.jump(START + timedelta(hours=2))
+    acted = await engine.act(booked["issue/lanternworks/ledger/0000000004"].pending, store, clock)
+
+    assert acted.transition is not None
+    [moved] = [m for m in _moves(store) if m.who == "tomas" and m.name == "merge"]
+    assert (moved.from_state, moved.to_state) == ("open", "merged")
+    assert json.loads(moved.content) == {"commit_message": "With care."}
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    pull = github.issue(repository, 4)
+    assert pull is not None and pull.pull is not None and pull.pull.merged and pull.state is wire.IssueState.CLOSED
+    assert (pull.pull.merged_by, pull.closed_by) == ("tomas-b", "tomas-b")
+    assert repository.commits[0].message == (
+        "Merge pull request #4 from lanternworks/timeout\n\nRaise the payment timeout\n\nWith care."
+    )
+    assert [w.item.external_id for w in port.items_for(TOMAS, store)] == ["issue/lanternworks/ledger/0000000003"]
+
+
+async def test_a_pull_request_closed_by_a_person_is_closed_not_merged_with_their_comment(tmp_path: Path) -> None:
+    port, store, clock = _held(tmp_path, pulls_seed(), SCENARIO)
+    moved = await port.apply(_ref(4), "close", Actor.PERSON, TOMAS, json.dumps({"comment": "Not now."}), store, clock)
+    assert (moved.name, moved.from_state, moved.to_state, moved.who) == ("close", "open", "closed", "tomas")
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    pull = github.issue(repository, 4)
+    assert pull is not None and pull.pull is not None
+    assert (pull.state, pull.pull.merged, pull.closed_by) == (wire.IssueState.CLOSED, False, "tomas-b")
+    assert pull.pull.head_sha is not None and pull.pull.base_sha is not None, "a closed pull request keeps its commits"
+    assert [c.body for c in github.comments(repository) if c.issue == 4] == ["On it.", "Not now."]
+    assert repository.commits[0].message == "Add the checkout button", "nothing was merged"
+
+
+async def test_a_draft_or_conflicting_pull_request_is_not_offered_a_merge(tmp_path: Path) -> None:
+    seed = pulls_seed()
+    ledger = seed.repositories[0]
+    draft = ledger.pulls[0].model_copy(update={"draft": True})
+    drafted = seed.model_copy(
+        update={"repositories": [ledger.model_copy(update={"pulls": [draft]}), *seed.repositories[1:]]}
+    )
+    port, store, clock = _held(tmp_path / "draft", drafted, SCENARIO)
+    assert "merge" not in [o.name for o in port.legal(_ref(4), Actor.PERSON, TOMAS, store)], "a draft"
+    port, store, clock = _held(tmp_path / "clean", pulls_seed(), SCENARIO)
+    assert "merge" in [o.name for o in port.legal(_ref(4), Actor.PERSON, TOMAS, store)]
+    github = GitHubWorld(store)
+    repository = github.repository("lanternworks", "ledger")
+    assert repository is not None
+    rival = wire.StoredIssue(
+        number=5,
+        id=5,
+        title="More retries",
+        body=None,
+        author="tomas-b",
+        created_at="2026-08-24T10:50:03Z",
+        updated_at="2026-08-24T10:50:03Z",
+        pull=wire.StoredPull(id=5, head="retry-config", base="main"),
+    )
+    github.put_issue(repository, rival, operation=Operation.CREATE, actor=Actor.SCENARIO)
+    assert "merge" in [o.name for o in port.legal(_ref(5), Actor.PERSON, TOMAS, store)]
+    await port.apply(_ref(4), "merge", Actor.PERSON, TOMAS, "{}", store, clock)
+    assert "merge" not in [o.name for o in port.legal(_ref(5), Actor.PERSON, TOMAS, store)], "both changed the config"
+
+
+async def test_a_merge_the_pull_request_cannot_make_is_refused(tmp_path: Path) -> None:
+    port, store, clock = _held(tmp_path, pulls_seed(), SCENARIO)
+    with pytest.raises(ValueError, match="offers iris no 'merge'"):
+        await port.apply(_ref(4), "merge", Actor.PERSON, IRIS, "{}", store, clock)
+    await port.apply(_ref(4), "merge", Actor.PERSON, TOMAS, "{}", store, clock)
+    with pytest.raises(ValueError, match="offers tomas no 'merge'"):
+        await port.apply(_ref(4), "merge", Actor.PERSON, TOMAS, "{}", store, clock)
