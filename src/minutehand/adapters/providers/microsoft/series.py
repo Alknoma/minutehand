@@ -86,11 +86,9 @@ def dates(recurrence: wire.Recurrence) -> Iterator[date]:
     pattern, span = recurrence.pattern, recurrence.range
     begins = date.fromisoformat(span.startDate)
     last = date.fromisoformat(span.endDate) if span.type == "endDate" and span.endDate is not None else None
-    count = 0
-    for day in _days(pattern, begins):
+    for count, day in enumerate(_days(pattern, begins)):
         if (last is not None and day > last) or (span.type == "numbered" and count >= span.numberOfOccurrences):
             return
-        count += 1
         yield day
 
 
