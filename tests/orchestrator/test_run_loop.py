@@ -216,7 +216,7 @@ def _world(**overrides: object) -> dict[str, object]:
 
 
 async def test_an_agent_reporting_done_in_a_world_keeps_being_watched_to_the_end_of_the_window(rig: Rig) -> None:
-    record, _, clock = await rig.run(scenario(**_world()), rig.agent("ask_and_file"))
+    record, _, clock = await rig.run(scenario().model_copy(update=_world()), rig.agent("ask_and_file"))
 
     assert record.stop is StopReason.WINDOW_ENDED, "done ends an older scenario's task, never a world's window"
     assert record.ended_at == T0 + timedelta(days=30) and clock.jumps[-1] == T0 + timedelta(days=30)
@@ -224,7 +224,8 @@ async def test_an_agent_reporting_done_in_a_world_keeps_being_watched_to_the_end
 
 
 async def test_a_quiet_world_runs_on_to_the_end_of_its_window_and_says_so(rig: Rig) -> None:
-    record, store, clock = await rig.run(scenario(tom_finishes=False, **_world()), rig.agent("ask_silent"))
+    world = scenario(tom_finishes=False).model_copy(update=_world())
+    record, store, clock = await rig.run(world, rig.agent("ask_silent"))
 
     assert record.stop is StopReason.WINDOW_ENDED
     assert clock.jumps == [T0 + timedelta(days=30)] and store.events()[-1].sim_time == T0 + timedelta(days=30)
