@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from minutehand.adapters.providers.asana import state
+from minutehand.application.people import happen
 from minutehand.domain.scenario import TicketHappening
 from tests.providers.asana.asana_workspace import (
     CATERING,
@@ -241,7 +242,7 @@ async def test_a_person_acting_as_themselves_is_the_events_user(
             "action": {"kind": "comments", "text": "On it."},
         }
     )
-    workspace.provider.act(happening, SCENARIO, workspace.store, workspace.clock)
+    await happen(SCENARIO, workspace.provider, happening, workspace.store, workspace.clock)
     found, _, _ = await poll(client, task.gid, sync)
     assert [(e["action"], e["user"]["gid"]) for e in found] == [("added", TOMAS)]
 

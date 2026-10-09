@@ -112,7 +112,7 @@ async def test_an_approval_waits_on_its_assignee_who_decides_it_through_the_tran
     waiting = [w for w in workspace.provider.items_for(TOMAS, workspace.store) if w.item.external_id == made["gid"]]
     assert [w.state for w in waiting] == ["pending"]
     offers = workspace.provider.legal(ref(made["gid"]), Actor.PERSON, TOMAS, workspace.store)
-    assert [o.name for o in offers] == ["approved", "rejected", "changes_requested"]
+    assert [o.name for o in offers] == ["approved", "rejected", "changes_requested", "comment", "reassign", "delete"]
     done = await workspace.provider.apply(
         ref(made["gid"]),
         "changes_requested",
@@ -144,7 +144,7 @@ async def test_a_decision_the_approval_already_holds_is_refused_as_no_longer_leg
 ) -> None:
     made = await approval(client, approval_status="approved")
     offers = workspace.provider.legal(ref(made["gid"]), Actor.PERSON, TOMAS, workspace.store)
-    assert [o.name for o in offers] == ["rejected", "changes_requested"]
+    assert [o.name for o in offers] == ["rejected", "changes_requested", "comment", "reassign", "delete"]
     with pytest.raises(ValueError, match="offers no decision"):
         await workspace.provider.apply(
             ref(made["gid"]), "approved", Actor.PERSON, TOMAS, "{}", workspace.store, workspace.clock

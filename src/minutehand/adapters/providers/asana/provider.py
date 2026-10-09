@@ -158,6 +158,8 @@ class AsanaProvider:
         asana = AsanaWorld(world)
         task = _task(asana, item)
         found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
+        if found is None and task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            raise ValueError(f"asana approval {task.gid} offers no decision {offer!r}")
         if found is None:
             raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
         given = content_of(content, found, who.key if who is not None else by.value)
