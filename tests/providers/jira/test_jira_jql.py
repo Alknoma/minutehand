@@ -28,9 +28,10 @@ async def test_project_equals_a_quoted_key_or_a_name(site: Site) -> None:
     assert await keys(site, 'project = "Field Ops"') == ["FIELD-1"]
 
 
-async def test_a_project_the_caller_cannot_see_matches_nothing(site: Site) -> None:
-    """As a public site answers a project it has not got (`data/observed/jql_project_unknown.http`)."""
-    assert await keys(site, "project = VAULT") == []
+async def test_a_project_the_caller_cannot_see_is_refused_400_as_one_the_site_has_not_got(site: Site) -> None:
+    """A signed-in caller is told the value does not exist, whether the project is missing or hidden from them."""
+    body = refused(await site.http.post(f"{API}/search/jql", json={"jql": "project = VAULT"}), 400)
+    assert body == {"errorMessages": ["The value 'VAULT' does not exist for the field 'project'."], "errors": {}}
     assert "VAULT-1" not in await keys(site, "statusCategory = new")
 
 
@@ -169,27 +170,49 @@ async def test_a_query_that_cannot_be_read_is_refused_with_400(site: Site, jql: 
     assert body == {"errorMessages": [message], "errors": {}}
 
 
-@pytest.mark.parametrize(
-    "jql",
-    [
-        "colour = red",
-        'status = "Shipped"',
-        'assignee = "nobody-at-all"',
-        "assignee = noSuchFunction()",
-        "status = currentUser()",
-        "updated >= yesterday",
-        'text = "export"',
-        "status is Done",
-        "key = LAUNCH-999",
-    ],
+DATE_FORMATS = (
+    "Valid formats include: 'yyyy/MM/dd HH:mm', 'yyyy-MM-dd HH:mm', 'yyyy/MM/dd', 'yyyy-MM-dd', or a period format "
+    "e.g. '-5d', '4w 2d'."
 )
-async def test_a_query_naming_what_the_site_has_not_got_matches_nothing(site: Site, jql: str) -> None:
-    """As a public Jira Cloud site answers each (`data/observed/jql_field_unknown.http`, `jql_value_unknown.http`,
-    `jql_function_unknown.http`, `jql_function_wrong_field.http`, `jql_date_invalid.http`,
-    `jql_operator_unsupported.http`, `jql_is_not_empty_value.http`, `jql_key_unknown.http`): 200, no issues."""
-    assert ok(await site.http.post(f"{API}/search/jql", json={"jql": jql})) == {"issues": [], "isLast": True}
+SEARCH_INVALID = "Returned if the search request is invalid"
 
 
-async def test_an_order_by_field_the_site_has_not_got_is_passed_over(site: Site) -> None:
-    """As recorded (`data/observed/jql_order_field_unknown.http`): the query answers, ordered by the rest."""
-    assert sorted(await keys(site, "project = LAUNCH ORDER BY zzfield")) == ["LAUNCH-1", "LAUNCH-2"]
+@pytest.mark.parametrize(
+    ("jql", "message"),
+    [
+        ("colour = red", "Field 'colour' does not exist or you do not have permission to view it."),
+        ('status = "Shipped"', "The value 'Shipped' does not exist for the field 'status'."),
+        ('assignee = "nobody-at-all"', "The value 'nobody-at-all' does not exist for the field 'assignee'."),
+        ("project = NOPE", "The value 'NOPE' does not exist for the field 'project'."),
+        ("assignee = noSuchFunction()", "Unable to find JQL function 'noSuchFunction()'."),
+        ("status = currentUser()", "A value provided by the function 'currentUser' is invalid for the field 'status'."),
+        ('text = "export"', "The operator '=' is not supported by the 'text' field."),
+        ("updated >= yesterday", f"Date value 'yesterday' for field 'updated' is invalid. {DATE_FORMATS}"),
+        ("due = 2026-02-30", f"Date value '2026-02-30' for field 'due' is invalid. {DATE_FORMATS}"),
+        ("key = LAUNCH-999", "Issue does not exist or you do not have permission to see it."),
+        ("status is Done", SEARCH_INVALID),
+        ('summary ~ "?"', SEARCH_INVALID),
+        ("created >= startOfDay(-1x)", SEARCH_INVALID),
+        ("project = LAUNCH ORDER BY zzfield", "Field 'zzfield' does not exist or you do not have permission to view it."),
+    ],
+)  # fmt: skip
+async def test_a_query_naming_what_the_site_has_not_got_is_refused_400_as_for_a_signed_in_caller(
+    site: Site, jql: str, message: str
+) -> None:
+    """Every caller is signed in (any credential acts), so each is Jira's 400 for a signed-in caller, not the 200 with
+    no issues an anonymous caller gets (`data/observed/jql_*_unknown.http` and the rest); CLAIMS.md cites each
+    sentence, and marks the reference's words observed-pending. GET and the approximate count answer the same."""
+    expected = {"errorMessages": [message], "errors": {}}
+    assert refused(await site.http.post(f"{API}/search/jql", json={"jql": jql}), 400) == expected
+    assert refused(await site.http.get(f"{API}/search/jql", params={"jql": jql}), 400) == expected
+    assert refused(await site.http.post(f"{API}/search/approximate-count", json={"jql": jql}), 400) == expected
+
+
+async def test_keys_in_a_list_answer_those_that_exist(site: Site) -> None:
+    """`issuekey in (...)` answers the issues it finds rather than failing the search on a missing one."""
+    assert await keys(site, "key in (LAUNCH-1, LAUNCH-999)") == ["LAUNCH-1"]
+
+
+async def test_ordering_by_a_field_searched_but_not_sorted_here_is_refused_501_naming_it(site: Site) -> None:
+    answer = await site.http.post(f"{API}/search/jql", json={"jql": "project = LAUNCH ORDER BY labels"})
+    assert answer.status_code == 501 and "labels" in answer.text

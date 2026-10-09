@@ -2,9 +2,8 @@
 written to, the run's world, so what the agent writes it reads back unchanged.
 
 An item is the JSON object the agent sent, kept with every field and value as sent; Minutehand writes into it only
-what its collection declares the API assigns (the id, and stamps from the run's clock), and replaces credential
-fields and the declaration's `redact` paths with `[redacted]` before the store sees it, as it does for every kept
-body. It lives in the world's log as a `STORED` entity under the declaration's name, listed under the collection's
+what its collection declares the API assigns (the id, and stamps from the run's clock); a field named like a
+credential (`token`, `password`) is kept and returned like any other. It lives in the world's log as a `STORED` entity under the declaration's name, listed under the collection's
 path as called, so a fork sees the items as they stood at its checkpoint and an assessment counts them
 (`stored:`). Nothing here reads a credential: every call is let in.
 """
@@ -214,10 +213,9 @@ def _list(declaration: DeclaredStore, found: _Found, path: str, store: Store) ->
 
 
 def _object(declaration: DeclaredStore, collection: Collection, body: str | None) -> dict[str, object] | Kept:
-    """The item the agent sent, its credential fields and declared `redact` paths replaced; refused when it is not
-    a JSON object."""
+    """The item the agent sent, every field as sent; refused when it is not a JSON object."""
     try:
-        parsed: object = json.loads(capture.redacted(body, JSON, declaration.redact)) if body else None
+        parsed: object = json.loads(body) if body else None
     except json.JSONDecodeError:
         parsed = None
     if not isinstance(parsed, dict):

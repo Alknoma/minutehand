@@ -124,8 +124,10 @@ Built and tested (`docs/design.md`, "What exists", counts the tests for each par
   a run (follow-ups, messages, writes, wakes, the wakes the agent planned, what it reported, the keys of its memory) between moments
   (`ask+P1D`, `answer`, `due`, `deadline`) against bounds. `docs/assessments.md` writes a real agent's policy whole,
   and the fourteen behaviours Minutehand once judged by itself as rules a team may copy.
-- What the scenario says must be true at the end (`expect:`), protected names, and the run's integrity (calls that
-  went around the proxy, an agent answering against its own API description). The scorecard counts facts only.
+- What the scenario says must be true at the end (`expect:`) and protected names. The run's integrity (calls that
+  went around the proxy, an agent answering against its own API description, a call nothing answered) is stated for
+  review and fails a run only when the agent file or the scenario names it in `fail_on_integrity`. The scorecard
+  counts facts only.
 - Checks of the agent's own in Python, kept beside its agent file (`checks:`), reading the same facts
   (`minutehand.checks.facts`).
 - `minutehand run-all <folder>` plays every scenario of a folder in parallel, each with its own port and folder for

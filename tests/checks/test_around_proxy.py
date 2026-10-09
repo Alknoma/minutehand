@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.checks.around_proxy import WentAroundProxy
+from minutehand.domain.assessments import IntegrityCheck
 from minutehand.domain.checks import AroundProxy, FindingKind, RunView
 from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.domain.telemetry import Attribute, Placement, ReceivedSpan, SpanSource, StoredSpan, StringValue
@@ -113,10 +114,16 @@ def _view(*, around: list[AroundProxy] | None, uncalled: list[ProviderKey]) -> R
     return RunView(scenario=scenario, events=[], wakes=[ONE_WAKE], around_proxy=around, uncalled_providers=uncalled)
 
 
-def test_calls_that_went_around_fail_the_run_with_the_fixes() -> None:
+def test_calls_that_went_around_are_a_review_with_the_fixes_and_fail_only_when_the_user_names_them() -> None:
     went = AroundProxy(host="slack.com", provider="slack", by_agent=2, through_proxy=0, around=2, example=_example())
-    [finding] = WentAroundProxy().run(_view(around=[went], uncalled=["slack"])).findings
+    [stated] = WentAroundProxy().run(_view(around=[went], uncalled=["slack"])).findings
+    assert stated.kind is FindingKind.REVIEW
+    named = _view(around=[went], uncalled=["slack"]).model_copy(
+        update={"fail_on_integrity": [IntegrityCheck.AROUND_PROXY]}
+    )
+    [finding] = WentAroundProxy().run(named).findings
     assert finding.kind is FindingKind.FAIL
+    assert stated.message == finding.message
     assert finding.message.startswith(
         "the agent's own telemetry shows 2 calls to slack.com (slack) and the proxy saw 0: 2 went around Minutehand"
     )

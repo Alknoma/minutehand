@@ -3,13 +3,15 @@
 An inbox declared by an operation of the agent's OpenAPI document (`domain.inboxes.OperationRequest`) is checked
 against that document on every answer: a field missing, retyped or renamed means the agent's contract changed under
 whoever relies on it, and what Minutehand read from it cannot be trusted. Each such answer is one failure, naming the
-operation and the field. An inbox declared by a template has no document to hold the agent to, and is never read
+operation and the field: a review, or a failure when the agent file or the scenario names it in
+`fail_on_integrity`. An inbox declared by a template has no document to hold the agent to, and is never read
 here.
 """
 
 from __future__ import annotations
 
-from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
+from minutehand.domain.assessments import IntegrityCheck
+from minutehand.domain.checks import CheckReport, Finding, Needs, RunView
 
 
 class AgentContractChanged:
@@ -18,6 +20,7 @@ class AgentContractChanged:
     pattern = None
 
     def run(self, view: RunView) -> CheckReport:
+        kind, severity = view.integrity(IntegrityCheck.AGENT_CONTRACT_CHANGED)
         findings: list[Finding] = []
         seen: set[str] = set()
         for call in view.contract_breaks:
@@ -28,8 +31,8 @@ class AgentContractChanged:
             findings.append(
                 Finding(
                     check=self.id,
-                    severity=Severity.ERROR,
-                    kind=FindingKind.FAIL,
+                    severity=severity,
+                    kind=kind,
                     message=f"the agent's contract changed: {said}",
                     pattern=self.pattern,
                 )

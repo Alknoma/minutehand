@@ -78,7 +78,17 @@ async def test_a_stored_contact_reads_back_as_sent_lists_patches_and_deletes_and
         routes=[Route(method="POST", path="/v1/contacts/search", answer=Answer(json_body={"total": 0}))],
         answer=Answer(status=404, json_body={"message": "no such route"}),
     )
-    ana = {"name": "Ana Ruiz", "email": "ana@example.com", "tags": ["vip", "lisbon"], "score": 1.5, "notes": None}
+    # Fields named like credentials are data like any other: kept and returned verbatim.
+    ana = {
+        "name": "Ana Ruiz",
+        "email": "ana@example.com",
+        "tags": ["vip", "lisbon"],
+        "score": 1.5,
+        "notes": None,
+        "token": "tok-ana-1",
+        "password": "hunter2",
+        "portal": {"api_key": "k-123", "secret": "s-456"},
+    }
     ben = {"name": "Ben Ode", "email": "ben@example.com"}
     async with (
         model_api(authority, host=V6) as real,
@@ -147,6 +157,13 @@ async def test_a_stored_contact_reads_back_as_sent_lists_patches_and_deletes_and
     snapshot = writes[2].after
     assert isinstance(snapshot, StoredSnapshot) and (snapshot.host, snapshot.collection) == (V6, "contacts")
     assert snapshot.item == patched.body
+    assert snapshot.item is not None
+    stored_ana = json.loads(snapshot.item)
+    assert (stored_ana["token"], stored_ana["password"], stored_ana["portal"]) == (
+        "tok-ana-1",
+        "hunter2",
+        {"api_key": "k-123", "secret": "s-456"},
+    )
     calls = store.calls()
     assert all(c.exchange.captured is not None for c in calls)
     assert {c.exchange.captured.mode for c in calls if c.exchange.captured} == {CaptureMode.STORE}
@@ -209,6 +226,13 @@ def test_a_store_declaration_that_cannot_be_read_one_way_is_refused(
     with pytest.raises(ValidationError, match=r".") as refused:
         DeclaredStore.model_validate({"host": "api.crm.example", "kind": "store", "collections": collections})
     assert refusal in str(refused.value)
+
+
+def test_a_store_declaring_redact_is_refused_naming_the_removed_key() -> None:
+    with pytest.raises(ValidationError, match="`redact` was removed from `store`"):
+        DeclaredStore.model_validate(
+            {"host": V6, "kind": "store", "collections": [{"path": "/v1/contacts"}], "redact": ["token"]}
+        )
 
 
 # -- a host a provider claims -------------------------------------------------------------------------------------

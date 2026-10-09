@@ -15,28 +15,17 @@ from opentelemetry.sdk.trace import TracerProvider
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.checks.judged.asked_about import ASKED_ABOUT_PROMPT_VERSION, AskedAboutVerdict
-from minutehand.checks.judged.ticket_is_actionable import TICKET_PROMPT_VERSION, TicketVerdict
 from minutehand.checks.runner import NO_MODEL, RunResult, discover, discover_judged, evaluate, evaluate_judged
-from minutehand.domain.checks import FindingKind, Severity
-from minutehand.domain.conversation import Judgement
-from minutehand.domain.run import StopReason
-from minutehand.domain.scenario import Expectation, PersonAsked, TicketCreated
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.checks import FindingKind
+from minutehand.domain.scenario import Expectation, PersonAsked
 from tests.checks.world import Log, person, scenario, view
 from tests.model.fake_completions import Answer, FakeCompletions, Received, fake_completions
 
 OWNER, SOFIA, TOM = person("owner"), person("sofia"), person("tom")
-CLEAR = "Sign the Acme order form by Friday 11 September"
-VAGUE = "Contract stuff"
 
 
-def judge(received: Received) -> TicketVerdict | AskedAboutVerdict:
-    """A ticket is clear when its title names a deadline; a message asks about pricing when it says price."""
-    if received.schema_name == "TicketVerdict":
-        clear = "by Friday" in received.last
-        return TicketVerdict(
-            knows_what=clear, knows_by_when=clear, rationale="Clear." if clear else "No task and no date."
-        )
+def judge(received: Received) -> AskedAboutVerdict:
+    """A message asks about pricing when it says price."""
     message = received.last.split("Message:", 1)[1]
     return AskedAboutVerdict(
         asks_about="price" in message, rationale="It asks for the price." if "price" in message else "It does not."
@@ -44,74 +33,42 @@ def judge(received: Received) -> TicketVerdict | AskedAboutVerdict:
 
 
 def judged_blocked(result: RunResult) -> list[str]:
-    return [b for b in result.blocked if b.split(":")[0] in {"asked_about", "ticket_is_actionable"}]
+    return [b for b in result.blocked if b.split(":")[0] in {"asked_about"}]
 
 
 def model(fake: FakeCompletions) -> OpenAICompatible:
     return OpenAICompatible(base_url=fake.base_url, api_key="sk-judged", model_id="judge-1")
 
 
-def tickets() -> Log:
+def asked_sofia() -> tuple[list[Expectation], Log]:
+    """A scenario's own `about` expectation, and the agent's message it is judged on."""
     log = Log()
-    log.ticket(CLEAR, TOM, 1)
-    log.ticket(VAGUE, TOM, 2)
-    return log
+    log.message([SOFIA], 1, text="What is the price?")
+    return [PersonAsked(person="sofia", about="the price")], log
 
 
-def test_the_judged_checks_are_found_and_are_not_deterministic_checks() -> None:
-    assert [c.id for c in discover_judged()] == ["asked_about", "conveys", "ticket_is_actionable"]
-    assert not {c.id for c in discover()} & {"asked_about", "conveys", "ticket_is_actionable"}
+def test_the_only_judged_checks_are_the_ones_a_scenario_or_its_team_asks_for_and_they_are_not_deterministic() -> None:
+    """Nothing judges a run from Minutehand's side: the judged checks read only a scenario's `about` and the
+    team's own `conveys` rules."""
+    assert [c.id for c in discover_judged()] == ["asked_about", "conveys"]
+    assert not {c.id for c in discover()} & {"asked_about", "conveys"}
 
 
-async def test_an_unclear_ticket_is_a_review_finding_carrying_the_model_and_prompt_version() -> None:
-    world = view(scenario(OWNER, TOM, expect=[TicketCreated(assignee="tom")]), tickets())
-    async with fake_completions(judge) as fake:
-        result = await evaluate_judged(world, model(fake), stop=StopReason.AGENT_DONE)
-
-    [finding] = [f for f in result.findings if f.check == "ticket_is_actionable"]
-    assert finding.kind is FindingKind.REVIEW and finding.severity is Severity.WARNING
-    assert finding.judged == Judgement(
-        model="judge-1", prompt_version=TICKET_PROMPT_VERSION, rationale="No task and no date."
-    )
-    assert finding.evidence == [2] and VAGUE in finding.message and "what is asked or by when" in finding.message
-    assert result.exit_code == 0
-    shown = [r.last for r in fake.for_schema("TicketVerdict")]
-    assert len(shown) == 2 and all("Assigned to: Tom" in s for s in shown)
-    assert all(r.temperature == 0 for r in fake.received)
-
-
-async def test_a_ticket_a_deterministic_check_failed_is_not_judged() -> None:
+async def test_a_run_whose_scenario_asks_nothing_judged_asks_the_model_nothing() -> None:
     log = Log()
-    log.ticket("Review the Acne order form by Friday", TOM, 1)
-    log.ticket(VAGUE, TOM, 2)
-    world = view(scenario(OWNER, TOM).model_copy(update={"protected_names": ["Acme"]}), log)
+    log.ticket("Contract stuff", TOM, 1)
+    log.message([SOFIA], 2, text="What is the price?")
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(world, model(fake), stop=None)
-
-    assert [f.check for f in result.findings if f.kind is FindingKind.FAIL] == ["near_miss_name"]
-    assert [VAGUE in r.last for r in fake.for_schema("TicketVerdict")] == [True]
-
-
-async def test_a_deleted_ticket_is_not_judged_and_an_edited_one_is_judged_as_it_ended() -> None:
-    log = Log()
-    gone = log.ticket(VAGUE, TOM, 1)
-    log._add(2, Actor.AGENT, Operation.DELETE, gone.entity, None, 1)
-    edited = log.ticket(VAGUE, TOM, 3)
-    log.ticket(CLEAR, TOM, 4, operation=Operation.UPDATE, external_id=edited.entity.external_id)
-    async with fake_completions(judge) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake), stop=None)
-
-    assert [CLEAR in r.last for r in fake.for_schema("TicketVerdict")] == [True]
-    assert [f for f in result.findings if f.check == "ticket_is_actionable"] == []
+        result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM), log), model(fake), stop=None)
+    assert fake.received == [] and judged_blocked(result) == []
+    assert [f for f in result.findings if f.kind is not FindingKind.INFORMATIONAL] == []
 
 
 async def test_with_no_model_every_judged_check_is_blocked_and_nothing_is_asked() -> None:
-    expect: list[Expectation] = [PersonAsked(person="sofia", about="the price")]
-    log = tickets()
-    log.message([SOFIA], 3, text="What is the price?")
+    expect, log = asked_sofia()
     result = await evaluate_judged(view(scenario(OWNER, SOFIA, TOM, expect=expect), log), None, stop=None)
 
-    assert judged_blocked(result) == [f"asked_about: {NO_MODEL}", f"ticket_is_actionable: {NO_MODEL}"]
+    assert judged_blocked(result) == [f"asked_about: {NO_MODEL}"]
     assert [f for f in result.findings if f.kind is not FindingKind.INFORMATIONAL] == []
     assert (result.effectiveness.expectations_met, result.effectiveness.expectations_total) == (0, 1)
 
@@ -157,9 +114,10 @@ async def test_asked_about_counts_only_the_messages_the_model_says_ask_about_it(
 
 async def test_a_model_that_fails_blocks_the_check_it_failed_in() -> None:
     async with fake_completions(lambda _: Answer(status=500, body='{"error": "down"}')) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake), stop=None)
+        expect, log = asked_sofia()
+        result = await evaluate_judged(view(scenario(OWNER, SOFIA, expect=expect), log), model(fake), stop=None)
     [blocked] = judged_blocked(result)
-    assert blocked.startswith("ticket_is_actionable: the model failed:") and "answered 500" in blocked
+    assert blocked.startswith("asked_about: the model failed:") and "answered 500" in blocked
 
 
 async def test_a_judged_finding_is_exported_with_its_model_and_prompt_version() -> None:
@@ -168,38 +126,37 @@ async def test_a_judged_finding_is_exported_with_its_model_and_prompt_version() 
     logs.add_log_record_processor(SimpleLogRecordProcessor(exporter))
     telemetry = OtelTelemetry(TracerProvider(), logs, MeterProvider(metric_readers=[InMemoryMetricReader()]))
     async with fake_completions(judge) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), tickets()), model(fake), stop=None)
+        _, log = asked_sofia()
+        expect: list[Expectation] = [PersonAsked(person="sofia", about="the price", at_least=2)]
+        result = await evaluate_judged(view(scenario(OWNER, SOFIA, expect=expect), log), model(fake), stop=None)
 
     for finding in result.findings:
         telemetry.found(finding)
     [record] = [
         r.log_record
         for r in exporter.get_finished_logs()
-        if r.log_record.attributes is not None and r.log_record.attributes["minutehand.check"] == "ticket_is_actionable"
+        if r.log_record.attributes is not None and r.log_record.attributes["minutehand.check"] == "asked_about"
     ]
     assert record.attributes is not None
     assert record.attributes["minutehand.judge.model"] == "judge-1"
-    assert record.attributes["minutehand.judge.prompt_version"] == TICKET_PROMPT_VERSION
+    assert record.attributes["minutehand.judge.prompt_version"] == ASKED_ABOUT_PROMPT_VERSION
     assert record.attributes["minutehand.finding.kind"] == FindingKind.REVIEW.value
     unjudged = [
         r.log_record.attributes
         for r in exporter.get_finished_logs()
-        if r.log_record.attributes is not None and r.log_record.attributes["minutehand.check"] != "ticket_is_actionable"
+        if r.log_record.attributes is not None and r.log_record.attributes["minutehand.check"] != "asked_about"
     ]
     assert all(a is not None and "minutehand.judge.model" not in a for a in unjudged)
 
 
-@pytest.mark.parametrize(
-    "bad", ['{"knows_what": true}', '{"knows_what": "maybe", "knows_by_when": true, "rationale": ""}']
-)
+@pytest.mark.parametrize("bad", ['{"asks_about": true}', '{"asks_about": "maybe", "rationale": ""}'])
 async def test_a_verdict_that_does_not_validate_is_asked_for_again(bad: str) -> None:
-    def once_bad(received: Received) -> str | TicketVerdict:
-        return bad if len(fake.received) == 1 else TicketVerdict(knows_what=True, knows_by_when=True, rationale="ok")
+    def once_bad(received: Received) -> str | AskedAboutVerdict:
+        return bad if len(fake.received) == 1 else AskedAboutVerdict(asks_about=True, rationale="ok")
 
-    log = Log()
-    log.ticket(CLEAR, TOM, 1)
+    expect, log = asked_sofia()
     async with fake_completions(once_bad) as fake:
-        result = await evaluate_judged(view(scenario(OWNER, TOM), log), model(fake), stop=None)
+        result = await evaluate_judged(view(scenario(OWNER, SOFIA, expect=expect), log), model(fake), stop=None)
     assert len(fake.received) == 2 and judged_blocked(result) == []
 
 
