@@ -15,7 +15,7 @@ from minutehand.adapters.providers.github.seed import GitHubSeed, SeedFile, Seed
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.ports.provider import BooksWakes, Provider, PushesEvents
+from minutehand.ports.provider import BooksWakes, ListensForAgent, Provider, PushesEvents
 from minutehand.ports.transitions import ProvidesTransitions, TalksToAgent
 from tests.providers.github.github_world import IRIS, SCENARIO, START, Hub, body, github_seed
 
@@ -34,6 +34,7 @@ def test_the_provider_meets_its_port_and_claims_no_other() -> None:
     for port in (PushesEvents, ProvidesTransitions, BooksWakes):
         assert not isinstance(provider, port)
     assert isinstance(provider, TalksToAgent), "people's moves are pushed to the agent as webhooks"
+    assert isinstance(provider, ListensForAgent), "the agent's own writes are pushed to it as webhooks"
 
 
 def test_a_scenario_alone_seeds_an_empty_github(tmp_path: Path) -> None:

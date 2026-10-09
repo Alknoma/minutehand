@@ -123,7 +123,7 @@ class PushesEvents(Protocol):
 @runtime_checkable
 class ListensForAgent(Protocol):
     """A provider whose own API calls set off events the agent hears of (Slack: a channel the agent made, a member it
-    invited): it is told where the agent takes its events and the secret that signs them, once, as a run or a world
+    invited; GitHub: an issue or a pull request the agent opened, closed, merged, reviewed or commented on): it is told where the agent takes its events and the secret that signs them, once, as a run or a world
     starts. Nothing is sent to an agent that declares no target."""
 
     def listen(self, target: InboundTarget | None, secret: str | None) -> None:
