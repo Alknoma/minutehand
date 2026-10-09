@@ -186,14 +186,14 @@ parameter it gives a served method is served or answers 501 naming it (`calendar
 
 Tests are in `tests/providers/google_workspace/test_calendar_push.py`, each driving Google's own client
 (`events().watch`, `channels().stop`) in a process of its own through the proxy, told to an HTTPS receiver of the
-test's whose certificate the run's CA signed. The machinery is Drive's `changes.watch` channel's, shared
+test's; its certificate is never checked (docs/design.md, "Authentication is out of scope"). The machinery is Drive's `changes.watch` channel's, shared
 (`channels.py`).
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
 | `POST /calendar/v3/calendars/{calendarId}/events/watch` takes `id`, `type` (`web_hook` or `webhook`), `address`, and optionally `token` and `params.ttl`, and answers a Channel: `kind` `api#channel`, `id`, `resourceId`, `resourceUri`, `token`, `expiration` in epoch milliseconds | documented | `test_a_watch_is_told_sync_then_exists_for_the_agents_own_change_and_a_guests_answer` | https://developers.google.com/workspace/calendar/api/v3/reference/events/watch |
 | The address "must use HTTPS"; an `http://` one is a 400 "WebHook callback must be HTTPS: <address>", whose envelope names no reason since no recorded answer shows one | observed | `test_an_http_address_a_past_expiration_and_a_ttl_that_is_no_number_are_refused` | https://developers.google.com/workspace/calendar/api/guides/push; https://stackoverflow.com/q/43484709, https://github.com/janeczku/calibre-web/issues/502 |
-| A push verifies the receiver's certificate ("a valid SSL certificate"); one the run does not trust is not reached | documented | `test_a_receiver_whose_certificate_the_run_does_not_trust_is_not_reached` | https://developers.google.com/workspace/calendar/api/guides/push |
+| Google asks for "a valid SSL certificate" on the receiver; Minutehand does no transport authentication, so a push reaches a receiver whatever certificate it serves, self-signed included (a deliberate departure, docs/design.md "Authentication is out of scope") | documented | `test_a_receiver_whose_certificate_the_run_does_not_trust_is_still_told_sync_then_exists` | https://developers.google.com/workspace/calendar/api/guides/push |
 | A watch may ask an `expiration`; where Google has a limit of its own "the more restrictive value is used", as it is between an `expiration` and a `params.ttl` | documented | `test_a_channel_past_its_expiry_is_told_nothing_more` | https://developers.google.com/workspace/calendar/api/guides/push |
 | A channel lives `params.ttl` seconds, "Default is 604800 seconds" | documented | `test_a_watch_is_told_sync_then_exists_for_the_agents_own_change_and_a_guests_answer` | https://developers.google.com/workspace/calendar/api/v3/reference/events/watch |
 | A longer `ttl` is cut to 30 days | observed | `test_a_channel_past_its_expiry_is_told_nothing_more` | https://stackoverflow.com/q/64986662, https://stackoverflow.com/a/65001852 |

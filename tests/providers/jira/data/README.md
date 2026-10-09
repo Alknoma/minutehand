@@ -7,8 +7,10 @@ Jira Cloud site that lets anonymous callers read (`/rest/api/3/...`; its project
 write refusals are recorded too; `comment_body_not_a_document.http` carries the anonymous caller's refusal beside
 the body's.
 
-These are answers to an anonymous caller. Where a signed-in caller may be answered otherwise (a query naming a
-field the site has not got answered with no issues, not a 400), nothing here says so; the fake answers as recorded.
+These are answers to an anonymous caller. Where a signed-in caller is answered otherwise, the fake answers as the
+signed-in caller is answered, since every caller of the fake is signed in: an invalid query (`jql_field_unknown.http`
+and the other recordings of invalid JQL answered 200 with no issues) is a 400 there, cited in `CLAIMS.md`, and
+these recordings are kept only as the anonymous answer.
 
 | File | Request |
 |---|---|

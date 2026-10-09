@@ -1491,7 +1491,7 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         limit = declaration.body_limit if declaration is not None else BODY_LIMIT
-        paths = declaration.redact if declaration is not None else []
+        paths = capture.redacted_paths(declaration)
         asked = capture.keep(
             request.get_content(strict=False) or b"", _first_header(request, "content-type"), limit=limit, paths=paths
         )

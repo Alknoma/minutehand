@@ -399,6 +399,20 @@ class Where(Model):
         return bool(self.provider or self.name or self.to or self.by or self.first)
 
 
+class IntegrityCheck(StrEnum):
+    """A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails
+    the run only when the agent file or the scenario names it in `fail_on_integrity`."""
+
+    AROUND_PROXY = "around_proxy"  # the agent's own telemetry shows calls to a faked host that went around the proxy
+    AGENT_CONTRACT_CHANGED = "agent_contract_changed"  # the agent's product answered outside its own API description
+    UNMATCHED_CALL = "unmatched_call"  # a call to a host no provider claims and nothing declares
+
+
+def integrity_fails(agent: list[IntegrityCheck], scenario: list[IntegrityCheck]) -> list[IntegrityCheck]:
+    """The integrity facts that fail the run: those the agent file names, and those the scenario adds."""
+    return list(dict.fromkeys([*agent, *scenario]))
+
+
 class StoppedBy(StrEnum):
     """How the run stopped, as a rule may name it (`domain.run.StopReason`)."""
 
