@@ -290,6 +290,8 @@ class Mover(StrEnum):
 
     AGENT = "agent"
     PERSON = "person"
+    SYSTEM = "system"  # a declared service's own actor: a warehouse, a payment processor
+    TIMER = "timer"  # a declared service's timer
 
 
 class Transitions(Model):

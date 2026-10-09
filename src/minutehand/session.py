@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import secrets
 import shutil
@@ -39,7 +40,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import Field
+import httpx
+from pydantic import Field, JsonValue
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -55,6 +57,7 @@ from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
+from minutehand.adapters.pushing import HttpPushes
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
@@ -66,6 +69,7 @@ from minutehand.application.checkpoint import CHECKPOINT, AgentState, checkpoint
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
+from minutehand.application.files import FileRefused, load_document, read_yaml
 from minutehand.application.forks import (
     ForkAccount,
     Outcomes,
@@ -91,6 +95,7 @@ from minutehand.application.rewind import (
     refused_by,
 )
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk, unvoiced
 from minutehand.application.steps import steps
 from minutehand.application.traffic import SeenCall
 from minutehand.checks.patterns import PATTERNS
@@ -117,21 +122,13 @@ from minutehand.domain.agent import (
 )
 from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
 from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
+from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import (
-    GeneratedSecret,
-    Model,
-    Person,
-    ProviderKey,
-    Scenario,
-    SecretFromEnvironment,
-    SigningSecret,
-    WrittenScenario,
-)
+from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
@@ -265,12 +262,17 @@ async def play(
     routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
     routes: dict[str, Running] = {}
-    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts).with_emulators(routes)
+    desk = desk_for(scenario, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    capturing = (
+        capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
+        .with_emulators(routes)
+        .with_services(desk)
+    )
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
     async with (
-        intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
+        intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
     ):
         for sample in range(samples):
@@ -322,7 +324,8 @@ async def play(
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
                     outside=own_files,
-                    people=people_for(scenario, services, model),
+                    people=people_for(scenario, services, model, desk),
+                    desk=desk,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -392,9 +395,10 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     routes: dict[str, Running] = {}
-    capturing = capturing.with_emulators(routes)
+    desk = desk_for(changed, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    capturing = capturing.with_emulators(routes).with_services(desk)
     async with (
-        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
+        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
     ):
         scorer.receiver = proxy.receiver
@@ -427,7 +431,8 @@ async def fork(
                     reach=reach_for(agent, env=env),
                     services=services,
                     replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
-                    people_for=lambda s: people_for(s, services, model),
+                    people_for=lambda s: people_for(s, services, model, desk),
+                    desk=desk,
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,
@@ -1035,24 +1040,61 @@ def capturing_for(
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
 
 
-def people_for(scenario: Scenario, services: Services, model: LanguageModel | None) -> People | None:
-    """The people engine over the providers the scenario names in `transitions_on`; None when it names none."""
-    if not scenario.transitions_on:
+def people_for(
+    scenario: Scenario, services: Services, model: LanguageModel | None, desk: ServiceDesk | None
+) -> People | None:
+    """The people engine over the providers the scenario names in `transitions_on` and its declared services; None
+    when it has neither."""
+    if not scenario.played():
         return None
     by_key = {p.manifest.key: p for p in services.providers}
 
-    def provider(key: ProviderKey) -> Provider:
-        if key not in by_key:
-            raise RunRefused(f"the scenario has people act through transitions on {key}, which is not in the run")
-        return by_key[key]
+    def provider(key: ProviderKey) -> object:
+        if key in by_key:
+            return by_key[key]
+        if desk is not None and any(s.key == key for s in scenario.services):
+            return desk.provider(key)
+        raise RunRefused(f"the scenario has people act through transitions on {key}, which is not in the run")
 
     return People(scenario, provider, model)
+
+
+def desk_for(
+    scenario: Scenario, agent: AgentUnderTest | None, model: LanguageModel | None, *, undeclared: bool = False
+) -> ServiceDesk | None:
+    """The scenario's declared services (`docs/services.md`), with each one's OpenAPI document read once, from its
+    file or its URL, and, with `undeclared` (`--capture-unknown model`), every host nobody declared answered as a
+    service with no description; None when there is neither. Refused when a service's host is also one of the
+    agent's outbound hosts."""
+    if not scenario.services and not undeclared:
+        return None
+    declared = {d.host for d in agent.outbound} if agent is not None else set()
+    clashing = sorted(s.host for s in scenario.services if s.host in declared)
+    if clashing:
+        raise RunRefused(
+            f"{', '.join(clashing)} is declared both as a service of the scenario and as an outbound host of the agent "
+            "file: declare it once"
+        )
+    documents: dict[str, JsonValue] = {}
+    for service in scenario.services:
+        if service.openapi is None:
+            continue
+        try:
+            if service.openapi.startswith(("http://", "https://")):
+                fetched = httpx.get(service.openapi, timeout=30, follow_redirects=True)
+                fetched.raise_for_status()
+                documents[service.key] = json.loads(json.dumps(read_yaml(fetched.text, service.openapi), default=str))
+            else:
+                documents[service.key] = load_document(service.openapi)
+        except (httpx.HTTPError, FileRefused) as e:
+            raise RunRefused(f"service {service.key}: its OpenAPI document {service.openapi}: {e}") from e
+    return ServiceDesk(scenario, model, documents=documents, pushes=HttpPushes(), undeclared=undeclared)
 
 
 def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: LanguageModel | None) -> None:
     """A person whose words a model writes (conversing, a script step's words, a decision's reasons) needs a model;
     without one the run is refused before it starts, naming each and why."""
-    needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario)]
+    needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario), *unvoiced(scenario)]
     if needing and model is None:
         raise RunRefused(
             f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
@@ -1447,7 +1489,6 @@ async def intercepting(
     listen: Listen,
     *,
     capturing: Capturing | None = None,
-    model: LanguageModel | None = None,
 ) -> AsyncIterator[Intercepting]:
     """The proxy and the receiver, on the same host. The receiver holds the agent's memory and, unless `listen`
     turns it off, takes its telemetry, passing it on to wherever this process's own environment sent OTLP before
@@ -1464,7 +1505,6 @@ async def intercepting(
         record_model_calls=listen.record_model_calls,
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
-        model=model,
         redirect_port=listen.transparent_port,
     ) as proxy:
         receiver = Receiver(

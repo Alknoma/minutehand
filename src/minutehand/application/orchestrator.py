@@ -24,6 +24,7 @@ from minutehand.application.checkpoint import (
     PendingHappening,
     PendingMachine,
     PendingReply,
+    PendingService,
     PendingTimer,
     PendingTransition,
     PendingWake,
@@ -40,6 +41,7 @@ from minutehand.application.people import People
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.sandbox import SandboxClock
+from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
@@ -242,13 +244,16 @@ class Orchestrator:
         inboxes: Inboxes | None = None,
         outside: OutsideState | None = None,
         people: People | None = None,
+        desk: ServiceDesk | None = None,
     ) -> None:
         refuse_fates_beside_the_engine(scenario, [p.manifest for p in services.providers])
-        if scenario.transitions_on and people is None:
+        if scenario.played() and people is None:
             raise RunRefused(
-                f"the scenario has people act through transitions on {', '.join(scenario.transitions_on)}, and the "
+                f"the scenario has people act through transitions on {', '.join(scenario.played())}, and the "
                 "run was given no people engine"
             )
+        if scenario.services and desk is None:
+            raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
         if inboxes is not None:
             reaches = list(inboxes.reaches.values())
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
@@ -284,6 +289,7 @@ class Orchestrator:
         self._inboxes = inboxes
         self._outside = outside
         self._engine = people
+        self._desk = desk
         self._untaken: list[EntityRef] = []
         self._mounted = False
         self._last_report: AgentReport | None = None
@@ -634,6 +640,10 @@ class Orchestrator:
             if isinstance(item, PendingTransition):
                 await self._move(item.pending)
         for item in fired:
+            if isinstance(item, PendingService):
+                assert self._desk is not None
+                await self._desk.fire(item, self._store, self._clock)
+        for item in fired:
             if not isinstance(item, PendingFate):
                 continue
             if item.becomes is None:
@@ -748,6 +758,9 @@ class Orchestrator:
         if isinstance(pending, PendingTransition):
             assert self._engine is not None
             return not self._engine.heard_of(pending.pending, self._store, self._clock)
+        if isinstance(pending, PendingService):
+            assert self._desk is not None
+            return not self._desk.heard(pending, self._store)
         if isinstance(pending, PendingReply):
             reply = self._replies[pending.reply]
             if reply.decides is not None or reply.in_reply_to.provider in self._channels:
@@ -776,7 +789,7 @@ class Orchestrator:
         directions: list[str] = []
         for item in fired:
             if isinstance(item, PendingReply) or (
-                isinstance(item, PendingHappening | PendingTransition) and not self._unheard(item)
+                isinstance(item, PendingHappening | PendingTransition | PendingService) and not self._unheard(item)
             ):
                 reasons.add(WakeReason.PERSON_REPLIED)
             elif isinstance(item, PendingDirection):
@@ -953,6 +966,10 @@ class Orchestrator:
         decided afresh on the new text. What waits on a person where the people engine plays them is the engine's:
         looked at first, booked at its moment, and never put to the replier."""
         await self._retry()
+        if self._desk is not None:
+            for event in new:
+                for owed in self._desk.bookings(event, self._store):
+                    self._dues.enter(owed)
         await self._transitions()
         history: list[WorldEvent] | None = None
         shown: dict[EntityRef, WorldEvent] = {}
@@ -1358,6 +1375,7 @@ async def run_scenario(
     inboxes: Inboxes | None = None,
     outside: OutsideState | None = None,
     people: People | None = None,
+    desk: ServiceDesk | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which a sandbox whose clock Minutehand owns needs to fall idle;
@@ -1383,4 +1401,5 @@ async def run_scenario(
         inboxes=inboxes,
         outside=outside,
         people=people,
+        desk=desk,
     ).run()

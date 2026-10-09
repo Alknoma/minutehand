@@ -268,7 +268,11 @@
           "next_wake",
           "stored",
           "transition",
-          "pending"
+          "pending",
+          "service_record",
+          "service_item",
+          "service_event",
+          "push"
         ],
         "title": "EntityKind",
         "type": "string"

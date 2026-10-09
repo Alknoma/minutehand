@@ -18,6 +18,7 @@ class DueKind(StrEnum):
     HAPPENING = "happening"
     MACHINE = "machine"
     TRANSITION = "transition"
+    SERVICE = "service"
 
 
 class Due(Model):
@@ -64,6 +65,7 @@ class DueSource(StrEnum):
     MACHINE = "machine"  # something the scenario does to the agent's own machine
     TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
     TRANSITION = "transition"  # a person's move on an item pending on them (`application.people`)
+    SERVICE = "service"  # a declared service's own move on an item: a timer's, or a system actor's
 
 
 PLANNED_BY = {

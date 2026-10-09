@@ -88,11 +88,12 @@ from minutehand.application.standing import (
 from minutehand.application.steps import Stepping, steps
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import AgentReport, AgentStatus
+from minutehand.domain.common import GeneratedSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
+from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.telemetry import ReceivedSpan
 from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
@@ -121,6 +122,7 @@ from minutehand.session import (
     Listen,
     agent_environment,
     collect,
+    desk_for,
     reading_file,
     run_dir,
     scenario_of,
@@ -550,6 +552,10 @@ class Standing:
         the step its case is in, or, under no case label, stepped on its own."""
         scenario = spec.seed.starting(now)
         inboxes = _inboxes(spec, scenario)
+        try:
+            desk = desk_for(scenario, None, self.model)
+        except RunRefused as e:
+            raise WorldRefused(str(e)) from e
         if spec.scripted_people and self.model is None:
             needing = unspoken(scenario, spec.inboxes)
             if needing:
@@ -572,6 +578,7 @@ class Standing:
                 scripted=spec.scripted_people,
                 inboxes=inboxes,
                 model=self.model,
+                desk=desk,
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
@@ -597,7 +604,7 @@ class Standing:
                 clock=clock,
                 app_for=lambda m: self._faulted(world_id, standing.app_for(m), m),
                 provider_for=lambda m: standing.provider(m.key),
-                capturing=capturing.for_people(scenario.people),
+                capturing=capturing.for_people(scenario.people).with_services(desk),
             ),
             opened=time.monotonic(),
             faults=[_Armed(f, f.times) for f in spec.faults],

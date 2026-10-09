@@ -29,7 +29,8 @@ from typing import Self
 
 from pydantic import Field, JsonValue, model_validator
 
-from minutehand.domain.scenario import Model, PlannedBy, ProviderKey, VariableName, WrittenScenario
+from minutehand.domain.common import VariableName
+from minutehand.domain.scenario import Model, PlannedBy, ProviderKey, WrittenScenario
 from minutehand.domain.templates import fill, named
 
 NAMESPACE = "team"

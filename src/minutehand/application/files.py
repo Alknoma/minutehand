@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
@@ -57,7 +57,7 @@ class FileRefused(ValueError):
 
 def load_scenario(path: Path) -> WrittenScenario:
     """A scenario file; one without `starts_at` starts when the run does."""
-    return _load(path, WrittenScenario, called="Scenario")
+    return with_documents_from(path, _load(path, WrittenScenario, called="Scenario"))
 
 
 def load_agent(path: Path) -> AgentUnderTest:
@@ -74,6 +74,35 @@ def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
             "watches": [str((base / w).resolve()) for w in agent.watches],
         }
     )
+
+
+_S = TypeVar("_S", WrittenScenario, Seed)
+
+
+def with_documents_from(path: Path, scenario: _S) -> _S:
+    """A scenario whose services' OpenAPI documents are named by file, each made absolute from the scenario's own
+    folder, so a fork that reads the scenario back from its run's folder finds them. A URL is left as written."""
+    base = path.resolve().parent
+    services = [
+        s.model_copy(update={"openapi": str((base / s.openapi).resolve())})
+        if s.openapi is not None and not s.openapi.startswith(("http://", "https://"))
+        else s
+        for s in scenario.services
+    ]
+    return scenario.model_copy(update={"services": services})
+
+
+def load_document(where: str) -> JsonValue:
+    """An OpenAPI document from a file, JSON or YAML."""
+    path = Path(where)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{where}: the service's OpenAPI document could not be read: {e}") from e
+    found = read_yaml(text, where)
+    if not isinstance(found, dict):
+        raise FileRefused(f"{where}: an OpenAPI document is a mapping at its top")
+    return json.loads(json.dumps(found, default=str))
 
 
 def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:
@@ -136,7 +165,7 @@ def load_prices(path: Path) -> Prices:
 
 def load_seed(path: Path) -> Seed:
     """A standing world's seed: a scenario file with nothing to achieve."""
-    return _load(path, Seed)
+    return with_documents_from(path, _load(path, Seed))
 
 
 class FileKind(StrEnum):

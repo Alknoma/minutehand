@@ -22,6 +22,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from minutehand.application.checkpoint import PendingService
 from minutehand.application.further_seed import Scratch, land
 from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_undecided
 from minutehand.application.model_calls import per_wake
@@ -31,6 +32,7 @@ from minutehand.application.people import People, needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
 from minutehand.domain.agent import AgentReport
@@ -178,6 +180,8 @@ class _Owed:
     fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
+    service: PendingService | None = None
+    """A declared service's timer or system move on one of its items."""
     transition: EntityRef | None = None
     """The people engine's record of an item pending on a person, who acts on it then (`application.people`)."""
 
@@ -208,6 +212,7 @@ class StandingWorld:
         scripted: bool,
         inboxes: Inboxes | None = None,
         model: LanguageModel | None = None,
+        desk: ServiceDesk | None = None,
     ) -> None:
         """`provider` builds a provider by key; it is seeded into this world the first time it is had.
         `signing` is the secret each inbound target's events are signed with. `scripted` lets the scenario's
@@ -241,6 +246,8 @@ class StandingWorld:
         self._people = {p.email: p for p in scenario.people}
         self.inboxes = inboxes
         self._model = model
+        self.desk = desk
+        """The world's declared services (`application.services`): what the proxy answers them from."""
         self._replier = self._people_for(scenario) if scripted else None
         self._engine: People | None = None
         self._owed: list[_Owed] = []
@@ -265,12 +272,12 @@ class StandingWorld:
         step: the first, or, for a world joining a case, the case's step in progress."""
         for key in named:
             self.provider(key)
-        if self.scripted and self.scenario.transitions_on:
+        if self.scripted and self.scenario.played():
             try:
                 refuse_fates_beside_the_engine(
                     self.scenario, [self.provider(k).manifest for k in self.scenario.transitions_on]
                 )
-                self._engine = People(self.scenario, self.provider, self._model)
+                self._engine = People(self.scenario, self._played, self._model)
             except RunRefused as e:
                 raise WorldRefused(str(e)) from e
         for n, happening in enumerate(self.scenario.happenings, start=1):
@@ -289,6 +296,12 @@ class StandingWorld:
 
     def close(self) -> None:
         self.end_wake()
+
+    def _played(self, key: ProviderKey) -> object:
+        """A provider the people engine plays: one of the world's, or a declared service at its desk."""
+        if self.desk is not None and any(s.key == key for s in self.scenario.services):
+            return self.desk.provider(key)
+        return self.provider(key)
 
     def enter_wake(self, wake: int) -> None:
         """A step begins: the wake in progress ends and `wake`'s window opens."""
@@ -562,6 +575,11 @@ class StandingWorld:
         new = self.store.events(since=self._seen)
         if new:
             self._seen = new[-1].seq
+        if self.desk is not None and self.scripted:
+            for event in new:
+                for owed in self.desk.bookings(event, self.store):
+                    what = f"{owed.service} item {owed.item}: {owed.transition}"
+                    self._owed.append(_Owed(at=owed.due.at, what=what, service=owed))
         if self._replier is None:
             return
         self._transitions()
@@ -674,6 +692,10 @@ class StandingWorld:
 
     async def _fire(self, owed: _Owed) -> bool:
         """Carry out one thing owed; False when a person's words could not be written, and they still owe them."""
+        if owed.service is not None:
+            assert self.desk is not None
+            await self.desk.fire(owed.service, self.store, self.clock)
+            return True
         if owed.transition is not None:
             assert self._engine is not None
             acted = await self._engine.act(owed.transition, self.store, self.clock)

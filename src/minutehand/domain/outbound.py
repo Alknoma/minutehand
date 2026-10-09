@@ -38,7 +38,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
 
-from minutehand.domain.scenario import Model, ProviderKey, SigningSecret
+from minutehand.domain.common import ProviderKey, SigningSecret
+from minutehand.domain.model import Model
 
 
 class UnknownHosts(StrEnum):

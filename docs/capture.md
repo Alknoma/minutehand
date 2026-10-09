@@ -153,6 +153,13 @@ emulator is refused, since what it holds is outside the record (`docs/external-e
 
 ## Discovery: `--capture-unknown`
 
+**Answered as a service: `--capture-unknown model`.** A write to an undeclared host, and every call to it after, is
+answered as a service nobody declared (`docs/services.md`): its machine proposed by the model from the first write,
+each item the agent creates there held in the run's log, every answer rendered from that state under a shape fixed
+by the route's first answer, and nothing sent anywhere. A read before any write is passed through and kept, as
+`--capture-unknown reads` does. Each such call is kept `service` with no declaration (`declared_as` empty), and the
+run's suggestions list the host. A run with no model configured is refused before it starts.
+
 **Only reads: `--capture-unknown reads`.** A GET, HEAD or OPTIONS to an undeclared host is passed through and kept, as below; any other method is refused with 502 and recorded, as without the flag, so nothing is written anywhere real. A read an API sends as a POST (GraphQL, an RPC) is refused: declare its host. `UnknownHosts.READS`, `tests/capture/test_modes.py`.
 
 For an agent's first run, when nobody knows yet what it calls: `minutehand run … --capture-unknown` (and `fork`,

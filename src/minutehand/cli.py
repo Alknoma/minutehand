@@ -250,8 +250,9 @@ def _parser() -> argparse.ArgumentParser:
             default=UnknownHosts.REFUSE.value,
             choices=[u.value for u in UnknownHosts],
             help="pass through and keep calls to a host nobody claims or declares, rather than refusing them: 'all' "
-            "(the default when the flag is given) or only 'reads' (GET, HEAD, OPTIONS; a write is refused, so nothing "
-            "is sent anywhere real); the run ends with the hosts it saw and a declaration for each",
+            "(the default when the flag is given), only 'reads' (GET, HEAD, OPTIONS; a write is refused, so nothing "
+            "is sent anywhere real), or 'model' (a write, and every call after it, answered as a service nobody "
+            "declared, from its state: docs/services.md); the run ends with the hosts it saw and a declaration for each",
         )
         sub.add_argument(
             "--upstream-ca",

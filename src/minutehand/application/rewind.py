@@ -46,6 +46,7 @@ from minutehand.application.people import People
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
@@ -147,6 +148,7 @@ async def fork_run(
     services: Services,
     replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
     people_for: Callable[[Scenario], People | None] = lambda _: None,
+    desk: ServiceDesk | None = None,
     state_dir: Path,
     wire: OnTheWire | None = None,
     telemetry: Telemetry | None = None,
@@ -229,6 +231,7 @@ async def fork_run(
                 inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
                 outside=outside,
                 people=people_for(changed),
+                desk=desk,
             )
             orchestrator.mount()
             edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]
