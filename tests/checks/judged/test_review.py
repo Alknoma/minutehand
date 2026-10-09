@@ -7,17 +7,21 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.kept import KeptModel
 from minutehand.application.run_clock import RunClock
+from minutehand.checks.judged.asked_about import AskedAboutVerdict
 from minutehand.checks.judged.review import REVIEW_PROMPT_VERSION, Review, shown_to_reviewer
 from minutehand.checks.runner import evaluate, evaluate_judged
 from minutehand.domain.checks import FindingKind, RunView
 from minutehand.domain.conversation import SIDE, Side, Wrote
 from minutehand.domain.items import CALENDAR_EVENT, EMAIL, AssessedKind, ItemKind, ProvidedTypes, TypedItem
+from minutehand.domain.scenario import PersonAsked
 from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
 from minutehand.ports.model import JudgedCheck
 from tests.checks.world import Log, at, person, scenario, view
+from tests.model.fake_completions import Received, fake_completions
 from tests.support.people import people_model
 
 TRIAL = Path(__file__).parents[2] / "data" / "trial"
@@ -129,3 +133,28 @@ def test_a_run_not_asked_to_judge_says_its_effects_were_not_reviewed() -> None:
     # A run with no effect of the agent's has nothing to review, and says nothing of it.
     quiet = evaluate(view(scenario(person("owner")), Log()), stop=None)
     assert not any(n.startswith("review:") for n in quiet.notes)
+
+
+async def test_a_judged_checks_calls_are_kept_with_the_world_as_a_judges(tmp_path: Path) -> None:
+    """`asked_about` asks its model through the world's record too, so its calls are in `model_calls` (side `judge`)."""
+    sofia = person("sofia")
+    log = Log()
+    log.message([sofia], 1, text="What is the price?")
+    built = view(scenario(person("owner"), sofia, expect=[PersonAsked(person="sofia", about="the price")]), log)
+    store = SqliteStore(tmp_path / "world.db", "run", RunClock(at(0)))
+
+    def verdict(received: Received) -> AskedAboutVerdict:
+        return AskedAboutVerdict(asks_about=True, rationale="It asks for the price.")
+
+    async with fake_completions(verdict) as fake:
+        model = OpenAICompatible(base_url=fake.base_url, api_key="sk-judge", model_id="judge-1")
+
+        def kept(check: JudgedCheck) -> KeptModel:
+            return KeptModel(
+                model, store, wrote=check.wrote, prompt_version=check.prompt_version, sim_time=at(2), wake=1
+            )
+
+        await evaluate_judged(built, model, stop=None, kept=kept)
+    [call] = store.person_calls()
+    store.close()
+    assert call.wrote is Wrote.JUDGEMENT and SIDE[call.wrote] is Side.JUDGE and call.model == "judge-1"
