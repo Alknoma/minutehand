@@ -229,6 +229,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "A part's bytes are served inline in `body.data`, never as an attachment id.",
     ),
     "jira": (
+        "A day is eight hours and a week five days when `timeSpent` is read and written",
         "A body missing `key`, `name` or the lead is a 400 naming each, keyed `projectKey`, `projectName`, `leadAccountId`",
         "An empty body names every missing field in one 400",
         "With neither a type nor a template, the 400 names `projectTypeKey`",

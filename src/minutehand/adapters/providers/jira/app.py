@@ -1558,12 +1558,13 @@ class JiraApi:
         if _param(call.request, "startedBefore") is not None:
             found = [w for w in found if int(w.started.timestamp() * 1000) < before]
         start, most = _page(call.request, 0)
+        page = found[start : start + most]
         self._world.saw(state.issue_ref(issue.id), Operation.READ)
         return 200, {
             "startAt": start,
             "maxResults": most,
-            "total": len(found),
-            "worklogs": [self.worklog(call, w) for w in found[start : start + most]],
+            "total": len(page),
+            "worklogs": [self.worklog(call, w) for w in page],
         }
 
     def worklog_get(self, call: Call) -> Answer:

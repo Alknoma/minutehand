@@ -170,7 +170,9 @@ async def test_worklogs_list_oldest_created_first_and_filter_on_when_they_starte
     early = await _log(site, timeSpent="1h", started="2026-08-20T09:00:00.000+0000")
     late = await _log(site, timeSpent="2h", started="2026-08-26T09:00:00.000+0000")
     page = ok(await site.http.get(LOG, params={"maxResults": "1", "startAt": "1"}))
-    assert [w["id"] for w in page["worklogs"]] == [late["id"]] and page["total"] == 2
+    assert [w["id"] for w in page["worklogs"]] == [late["id"]] and page["total"] == 1, (
+        "total is the results on the page"
+    )
     cut = "1787562000000"  # 2026-08-24T09:00:00Z in milliseconds
     after = ok(await site.http.get(LOG, params={"maxResults": "50", "startedAfter": cut}))
     before = ok(await site.http.get(LOG, params={"maxResults": "50", "startedBefore": cut}))

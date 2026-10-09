@@ -96,8 +96,10 @@ dependencies combined"."""
 EVENTS_AT_MOST = 100
 """https://developers.asana.com/reference/getevents: "Asana limits a single sync token to 100 events"."""
 ASSET_PATH = "/app/asana/-/get_asset"
-"""Where an attachment's bytes are read: the form of Asana's documented `permanent_url`
-(`https://app.asana.com/app/asana/-/get_asset?asset_id=1234567890`, `AttachmentResponse` in the OpenAPI subset)."""
+"""Where an attachment's bytes are read, on a host this fake answers. Asana documents only that `download_url` is the
+URL of the content (its example is on an S3 host); the host and path here are this fake's, not Asana's."""
+DOWNLOAD_SECONDS = 120
+"""`AttachmentResponse.download_url`: "this URL may only be valid for two minutes from the time of retrieval"."""
 _NEEDS_TEAM = "Missing required team field"
 """Reported of the real service: https://forum.asana.com/t/31198."""
 
@@ -215,9 +217,10 @@ def _at(value: str) -> datetime:
 class View:
     """The world as one caller sees it during one request: lookups, refusals, and representations."""
 
-    def __init__(self, world: AsanaWorld, caller: wire.AsanaUser) -> None:
+    def __init__(self, world: AsanaWorld, caller: wire.AsanaUser, now: datetime) -> None:
         self.world = world
         self.caller = caller
+        self.now = now
         self._users: dict[str, wire.UserOut] = {}
         self._projects: dict[str, wire.ProjectOut] = {}
         self._children: dict[str, list[wire.AsanaTask]] | None = None
@@ -570,7 +573,10 @@ class View:
             name=attachment.name,
             created_at=attachment.created_at,
             size=attachment.size,
-            download_url=f"https://app.asana.com{ASSET_PATH}?asset_id={attachment.gid}",
+            download_url=(
+                f"https://app.asana.com{ASSET_PATH}?asset_id={attachment.gid}"
+                f"&expires={int(self.now.timestamp()) + DOWNLOAD_SECONDS}"
+            ),
             parent=wire.AttachmentParentOut(
                 gid=task.gid,
                 resource_subtype=task.resource_subtype,
@@ -705,7 +711,7 @@ class AsanaApi:
         return endpoint
 
     def _view(self, caller: wire.AsanaUser) -> View:
-        return View(self._world, caller)
+        return View(self._world, caller, self._clock.now())
 
     # ------------------------------------------------------------------ sign-in
 
@@ -1559,6 +1565,11 @@ class AsanaApi:
         if asset is None:
             raise wire.undocumented("get_asset without an asset_id")
         found = view.attachment(asset, field="asset_id")
+        expires = _query(request).text("expires")
+        if expires is None or not expires.isdigit():
+            raise wire.undocumented("get_asset without the expiry its download_url carries")
+        if int(expires) < int(view.now.timestamp()):
+            raise wire.undocumented("a download_url used after the two minutes it may be valid for")
         self._world.saw(state.record_ref(found.gid), Operation.READ)
         return Response(base64.b64decode(found.content), media_type=found.content_type)
 
@@ -1655,6 +1666,7 @@ class AsanaApi:
             resource=subscribed.gid,
             target=sent.target,
             secret=secret,
+            active=True,
             filters=sent.filters,
             workspace=workspace,
             created_by=caller.gid,

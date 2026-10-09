@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -11,6 +12,7 @@ import pytest
 from minutehand.adapters.providers.asana import wire
 from tests.providers.asana.asana_workspace import (
     VENUE,
+    Workspace,
     body,
     client,
     create,
@@ -139,3 +141,27 @@ async def test_a_file_over_the_size_limit_is_refused_by_name(
     answered = await upload(client, str(task["gid"]), content=b"x" * 11)
     assert "an attachment over 100MB" in unserved(answered)
     assert got(await upload(client, str(task["gid"]), content=b"x" * 10))["size"] == 10
+
+
+async def test_a_download_url_is_good_for_two_minutes_and_refused_by_name_after(
+    client: httpx.AsyncClient, workspace: Workspace
+) -> None:
+    task = await create(client, name="Pack", projects=[VENUE])
+    made = got(await upload(client, str(task["gid"])))
+    parts = urlsplit(str(made["download_url"]))
+    where = parts.path + "?" + parts.query
+    workspace.clock.jump(workspace.clock.now() + timedelta(seconds=119))
+    assert (await client.get(where)).content == BYTES
+    workspace.clock.jump(workspace.clock.now() + timedelta(seconds=2))
+    assert "after the two minutes" in unserved(await client.get(where))
+    fresh = got(await client.get(f"/attachments/{made['gid']}"))
+    assert (
+        await client.get(urlsplit(str(fresh["download_url"])).path + "?" + urlsplit(str(fresh["download_url"])).query)
+    ).content == BYTES
+
+
+async def test_a_download_url_without_its_expiry_is_refused_by_name(client: httpx.AsyncClient) -> None:
+    task = await create(client, name="Pack", projects=[VENUE])
+    made = got(await upload(client, str(task["gid"])))
+    answer = await client.get(urlsplit(str(made["download_url"])).path, params={"asset_id": str(made["gid"])})
+    assert "without the expiry" in unserved(answer)

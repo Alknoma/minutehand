@@ -9,8 +9,11 @@ Written from https://developers.asana.com/docs/webhooks-guide and `createWebhook
 - **Deliveries.** A POST whose JSON body is `{"events": [...]}`, signed: `X-Hook-Signature` is "a SHA256 HMAC
   signature computed on the request body using the shared secret transmitted during the handshake".
 - **Heartbeat.** "Heartbeats deliver empty payloads initially after handshake": the first delivery to a webhook is
-  `{"events": []}`, and the webhook is `active` and has a `last_success_at` once it is answered. The heartbeat
-  every eight hours after is not sent: it is a timer, and none is booked.
+  `{"events": []}`, and the webhook has a `last_success_at` once it is answered. The heartbeat every eight hours
+  after is not sent: it is a timer, and none is booked.
+- **Active.** The webhook is established, and `active`, once the handshake completes ("Once the handshake has
+  completed, Asana returns a `201 Created` response as the webhook is successfully established"; `active` is false
+  when the webhook "isn't currently receiving events"). A delivery's answer does not change it.
 - **Filters.** "If a webhook event passes any of the filters the event will be delivered".
 - **Failure.** A delivery the target does not answer 2xx is recorded (`last_failure_at`, `last_failure_content`,
   `delivery_retry_count`) and its events stay owed, sent again with the next delivery. Asana's exponential back-off
@@ -104,9 +107,7 @@ async def deliver(world: state.AsanaWorld, clock: Clock) -> None:
             continue
         if failure is None:
             cursor = max([hook.cursor, *(e.gid for e in heard)], key=int)
-            changed = latest.model_copy(
-                update={"active": True, "last_success_at": now, "delivery_retry_count": 0, "cursor": cursor}
-            )
+            changed = latest.model_copy(update={"last_success_at": now, "delivery_retry_count": 0, "cursor": cursor})
         else:
             changed = latest.model_copy(
                 update={

@@ -1302,9 +1302,8 @@ def duration(seconds: int) -> str:
 
 
 HOURS_A_DAY = 8
-"""A day of work is eight hours and a week five days: the example values Atlassian's time tracking page gives for
-the two settings (https://confluence.atlassian.com/display/ADMINJIRASERVER/Configuring+time+tracking), which
-`duration` has always assumed."""
+"""A day of work is eight hours and a week five days. Atlassian documents no default (hours per day and days per
+week are site settings), so this is unsourced: `CLAIMS.md` lists it and `test_claims_are_sourced.OPEN` ratchets it."""
 _UNIT_SECONDS = {"d": HOURS_A_DAY * 3600, "h": 3600, "m": 60}
 _DURATION = re.compile(r"^\s*(?:(\d+)\s*([dhm]?)\s*)+$")
 _PART = re.compile(r"(\d+)\s*([dhm]?)")

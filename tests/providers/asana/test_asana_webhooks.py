@@ -79,13 +79,13 @@ async def test_creating_a_webhook_completes_the_handshake_and_answers_with_the_s
         assert (shown["resource"], shown["target"], shown["active"]) == (
             {"gid": VENUE, "resource_type": "project", "name": "Venue Move"},
             hook.url,
-            False,
+            True,
         )
         assert answered.headers["location"].endswith(f"/webhooks/{shown['gid']}")
         await wired.settle()
 
 
-async def test_the_first_delivery_is_an_empty_signed_heartbeat_that_makes_the_webhook_active(wired: Wired) -> None:
+async def test_the_first_delivery_is_an_empty_signed_heartbeat_that_sets_last_success_at(wired: Wired) -> None:
     with target() as hook:
         made = (await subscribe(wired, VENUE, hook.url)).json()
         await wired.settle()
@@ -93,7 +93,7 @@ async def test_the_first_delivery_is_an_empty_signed_heartbeat_that_makes_the_we
         assert beat.events() == []
         assert beat.headers["X-Hook-Signature"] == signed(made["X-Hook-Secret"], beat.body)
         read = got(await wired.client.get(f"/webhooks/{made['data']['gid']}"))
-        assert read["active"] is True and read["last_success_at"] is not None
+        assert read["active"] is True and read["last_success_at"] is not None, "active from the handshake on"
         assert read["delivery_retry_count"] == 0
 
 
