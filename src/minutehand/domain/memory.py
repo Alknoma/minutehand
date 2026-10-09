@@ -2,7 +2,8 @@
 
 Each write is an entity version in the world's log (`EntityKind.MEMORY`, actor AGENT, the wake and simulated moment
 it was made in), so the memory as of any seq is a query of the log, and a fork, which shares its parent's log up to
-its checkpoint, starts from exactly the memory the parent had there. Each read is an event with no version. A run
+its checkpoint, starts from exactly the memory the parent had there. Each read is counted in its wake, and kept as an
+event with no version when it finds something new (`application.memory.Reads`). A run
 starts from the scenario's `memory:` (`SeededMemory`), written as actor SCENARIO before the first wake.
 
 The receiver takes the agent's calls (`StoreCall`, `WakeMark`) as JSON on `/minutehand/agent/store` and

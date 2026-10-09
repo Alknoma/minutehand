@@ -31,7 +31,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, HeldCalls
 from minutehand.ports.store import Store
 from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
 from tests.support.people import people_model
@@ -83,9 +83,20 @@ class Mounted:
     board: Switchboard
     receiver: Receiver
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
-        self.board.mount(world, clock, apps, scenario=scenario)
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        self.board.mount(world, clock, apps, scenario=scenario, holds=holds)
         self.receiver.mount(world, clock)
+
+    def memory_reads(self, wake: int) -> int:
+        return self.receiver.memory_reads(wake)
 
     def flush(self) -> None:
         self.board.flush()

@@ -303,7 +303,7 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "source",
                 T,
-                "reported, booked, polled, reply, happening, direction, machine, timer, transition or service",
+                "reported, booked, polled, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it)",
             ),
             _c("due_at", T, f"When it was due; {TIME}"),
             _c("entered_at", T, "When it entered the table"),
@@ -319,7 +319,9 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="memory",
-        description="The agent's memory (`minutehand.agent.store`) over time: every get, listing, write and delete.",
+        description="The agent's memory (`minutehand.agent.store`) over time: every write and delete, and each get or "
+        "listing that was the first of its key in its wake or found something other than the last one kept "
+        "(`wakes.memory_reads` counts every one).",
         order="seq",
         columns=[
             _c("seq", N, "The event"),

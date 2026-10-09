@@ -129,7 +129,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "`ChangeMessageVisibility` hides a received message for its new timeout of the run's time",
         "`DelaySeconds` hides a message until the run's clock passes it",
         "A long poll (`WaitTimeSeconds`, or the queue's `ReceiveMessageWaitTimeSeconds`) that finds a visible message answers it at once",
-        "A long poll that finds none is refused 501 by name, without waiting: it would have to wait on the run's clock, which does not move inside a call. Serving it needs the orchestrator to hold the call and move the run's clock to the earlier of the wait's end and the next due wake, then answer the call there",
+        "A long poll that finds none waits on the run's clock: held by the proxy, it is answered when the run's clock reaches the end of its wait (with nothing), or sooner with a message once one is visible: sent by another call, delivered by a schedule, or visible again as a delay or a visibility timeout runs out (moto reads a message visible a millisecond after its timeout); no poll waits in real time. In a world whose clock nothing moves while a call waits (`minutehand serve`) it is refused 501 by name, without waiting",
         "`MaxNumberOfMessages` is 1 to 10, else `InvalidParameterValue` (moto's check)",
         "`DeleteMessage` takes the receipt handle of a receive; an old one may still delete (moto: it does)",
         "Queue attributes the caller set are answered as it wrote them",

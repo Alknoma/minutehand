@@ -281,7 +281,7 @@ The run loop's table of what is due next, every entry as it last stood: what ent
 | `due_id` | INTEGER | The entry, numbered in the order it entered |
 | `kind` | TEXT | agent_wake, person_reply, direction, happening, machine, transition or service |
 | `ref` | TEXT | What it refers to, in the run loop's words |
-| `source` | TEXT | reported, booked, polled, reply, happening, direction, machine, timer, transition or service |
+| `source` | TEXT | reported, booked, polled, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it) |
 | `due_at` | TEXT | When it was due; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `entered_at` | TEXT | When it entered the table |
 | `entered_wake` | INTEGER | The wake in progress then; 0 is setup |
@@ -295,7 +295,7 @@ The run loop's table of what is due next, every entry as it last stood: what ent
 
 ### `memory`
 
-The agent's memory (`minutehand.agent.store`) over time: every get, listing, write and delete. Kept in the order `seq`.
+The agent's memory (`minutehand.agent.store`) over time: every write and delete, and each get or listing that was the first of its key in its wake or found something other than the last one kept (`wakes.memory_reads` counts every one). Kept in the order `seq`.
 
 | Column | Type | What it holds |
 |---|---|---|
