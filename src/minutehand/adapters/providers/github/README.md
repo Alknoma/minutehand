@@ -7,8 +7,10 @@ behaviours it is pinned to, where each comes from, and the test that holds it.
 ## Scope
 
 It answers what two kinds of client need: a code-reading service that holds a user's personal access token and reads
-repositories to answer questions about them, and an agent that works a repository's tracker (issues, their comments
-and labels). It does not stand in for GitHub at large.
+repositories to answer questions about them, and an agent that works a repository's tracker and its changes: issues,
+their comments and labels, pull requests with their files, commits, reviews and merges, and commits to files. People
+(a scenario's) act on that tracker through the transitions port, and the agent is told of what they do by webhooks.
+It does not stand in for GitHub at large.
 
 Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.githubusercontent.com`,
 `codeload.github.com`; a `download_url` or `html_url` an answer carries is refused by the proxy if followed.
@@ -70,11 +72,11 @@ The unserved operations a GitHub client most often calls, to serve next in this 
    property asks for both).
 2. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
    its files, and a diff.
-4. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
+3. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
    `GET /repos/{owner}/{repo}/git/ref/{ref}`, `GET /repos/{owner}/{repo}/tags`.
-5. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
-   the token exchange; and webhook delivery (`X-GitHub-Event`, `X-Hub-Signature-256`) if a scenario needs GitHub to
-   push.
+4. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
+   the token exchange. After them, `POST /repos/{owner}/{repo}/git/refs` and `POST /repos/{owner}/{repo}/pulls/{n}/requested_reviewers`
+   (the latter is not in the committed description yet): an agent that makes its own branch and asks for a review.
 
 ## Webhooks
 
