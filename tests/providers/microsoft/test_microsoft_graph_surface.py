@@ -60,12 +60,16 @@ class Surface:
     attended: str
     webhook: str
     people: list[str]
+    drafts: dict[str, str]
 
     def concrete(self, template: str) -> str:
         """The template with the world's ids in place of its parameters."""
         path = template
         if template.endswith(("/accept", "/tentativelyAccept", "/decline")):
             path = path.replace("{event-id}", quote(self.attended, safe=":@,!"))
+        bound = re.search(r"/messages/\{message-id\}/(send|move|copy|attachments)", template)
+        if bound is not None:
+            path = path.replace("{message-id}", self.drafts[bound.group(1)]).replace("{mailFolder-id}", "drafts")
         message = self.channel_message if "/channels/" in template else self.chat_message
         path = path.replace("{chatMessage-id}", message).replace("{chatMessage-id1}", message)
         for name, value in self.ids.items():
@@ -126,6 +130,20 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
         ).json()["id"]
         listed = await http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=me)
         attended = next(e["id"] for e in listed.json()["value"] if not e["isOrganizer"])
+        drafts: dict[str, str] = {}
+        for kind in ("send", "move", "copy", "attachments"):
+            drafts[kind] = (
+                await http.post(
+                    f"{GRAPH}/me/messages",
+                    json={"subject": kind, "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+                    headers=me,
+                )
+            ).json()["id"]
+        attached = await http.post(
+            f"{GRAPH}/me/messages/{drafts['attachments']}/attachments",
+            json={"@odata.type": "#microsoft.graph.fileAttachment", "name": "a.txt", "contentBytes": "aGk="},
+            headers=me,
+        )
         expires = (tenant.clock.now() + timedelta(minutes=30)).isoformat()
         subscription = (
             await http.post(
@@ -158,6 +176,7 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 "mailFolder-id": "sentitems",
                 "event-id": event,
                 "subscription-id": subscription,
+                "attachment-id": attached.json()["id"],
                 "q": "Brief",
             },
             chat_message=chat_message,
@@ -165,6 +184,7 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
             attended=attended,
             webhook=webhook.url,
             people=[owen.user.id, sofia.user.id, dania.user.id],
+            drafts=drafts,
         )
 
 
@@ -186,6 +206,11 @@ BODIES: dict[str, object] = {
     },
     "/messages": {"body": {"content": "Hello"}},
     "/replies": {"body": {"content": "Hello"}},
+    "{message-id}/move": {"destinationId": "deleteditems"},
+    "{message-id}/copy": {"destinationId": "deleteditems"},
+    "/forward": {"toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+    "/createForward": {"toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]},
+    "/attachments": {"@odata.type": "#microsoft.graph.fileAttachment", "name": "b.txt", "contentBytes": "aGk="},
     "/getPresencesByUserId": {"ids": ["00000000-0000-0000-0000-000000000000"]},
     "/getSchedule": {
         "schedules": ["owen@example.com"],
@@ -215,6 +240,8 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path += "?$orderby=start/dateTime"
     elif method == "GET" and template.endswith("/messages") and template.startswith(("/me", "/users")):
         path += "?$orderby=receivedDateTime desc"
+    elif method == "GET" and template.endswith("/attachments"):
+        path += "?$orderby=name"
     if template == "/sites" and method == "GET":
         path += "?search=*"
     posting = method == "POST" and template.endswith(("/messages", "/replies")) and not template.startswith("/me")

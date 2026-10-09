@@ -86,7 +86,11 @@ async def test_a_message_posted_to_a_chat_is_kept_as_sent_read_back_and_notified
         "importance": "high",
         "body": {"contentType": "html", "content": html},
         "mentions": [
-            {"id": 0, "mentionText": "Sofia", "mentioned": {"user": {"id": posting.user("sofia"), "displayName": "Sofia"}}}
+            {
+                "id": 0,
+                "mentionText": "Sofia",
+                "mentioned": {"user": {"id": posting.user("sofia"), "displayName": "Sofia"}},
+            }
         ],
         "attachments": [{"id": "74d20c7f", "contentType": "application/vnd.microsoft.card.thumbnail", "content": card}],
     }
@@ -100,7 +104,9 @@ async def test_a_message_posted_to_a_chat_is_kept_as_sent_read_back_and_notified
     assert made["attachments"] == [
         {"id": "74d20c7f", "contentType": "application/vnd.microsoft.card.thumbnail", "content": card}
     ], "a card's content stays the string it was sent as"
-    assert made["mentions"][0]["mentionText"] == "Sofia" and made["mentions"][0]["mentioned"]["user"]["id"] == posting.user("sofia")
+    assert made["mentions"][0]["mentionText"] == "Sofia" and made["mentions"][0]["mentioned"]["user"][
+        "id"
+    ] == posting.user("sofia")
     assert made["createdDateTime"] == "2026-09-14T08:30:00.000Z" and made["etag"] == made["id"]
     read = await posting.http.get(f"{GRAPH}/chats/{chat}/messages/{made['id']}", headers=posting.owen)
     assert {k: v for k, v in read.json().items() if k != "@odata.context"} == {
@@ -126,7 +132,9 @@ async def test_a_text_body_defaults_to_text_and_pages_with_others(posting: Posti
         assert posted.json()["body"] == {"contentType": "text", "content": f"note {n}"}
         assert posted.json()["importance"] == "normal"
         ids.append(posted.json()["id"])
-    first = (await posting.http.get(f"{GRAPH}/chats/{chat}/messages", params={"$top": "2"}, headers=posting.owen)).json()
+    first = (
+        await posting.http.get(f"{GRAPH}/chats/{chat}/messages", params={"$top": "2"}, headers=posting.owen)
+    ).json()
     assert [m["id"] for m in first["value"]] == [ids[2], ids[1]]
     second = (await posting.http.get(first["@odata.nextLink"], headers=posting.owen)).json()
     assert [m["id"] for m in second["value"]] == [ids[0]] and "@odata.nextLink" not in second
@@ -141,10 +149,14 @@ async def test_a_channel_post_and_a_reply_round_trip_and_notify(posting: Posting
     assert root.json()["channelIdentity"] == {"teamId": posting.team, "channelId": posting.general}
     _later(posting)
     reply = await posting.http.post(
-        f"{url}/{root.json()['id']}/replies", json={"body": {"content": "Yes", "contentType": "html"}}, headers=posting.sofia
+        f"{url}/{root.json()['id']}/replies",
+        json={"body": {"content": "Yes", "contentType": "html"}},
+        headers=posting.sofia,
     )
     assert reply.status_code == 201, reply.text
-    assert reply.json()["replyToId"] == root.json()["id"] and reply.json()["from"]["user"]["displayName"] == "Sofia Romano"
+    assert (
+        reply.json()["replyToId"] == root.json()["id"] and reply.json()["from"]["user"]["displayName"] == "Sofia Romano"
+    )
     assert "replies/$entity" in reply.json()["@odata.context"]
     listed = (await posting.http.get(url, params={"$expand": "replies"}, headers=posting.owen)).json()["value"]
     assert [m["id"] for m in listed] == [root.json()["id"]]
@@ -167,14 +179,18 @@ async def test_what_graph_documents_no_answer_to_is_refused_by_name(posting: Pos
         url, json={"body": {"content": "x"}, "hostedContents": [{"temporaryId": "1"}]}, headers=posting.owen
     )
     assert hosted.status_code == 501 and "hostedContents" in hosted.json()["error"]["message"]
-    kind = await posting.http.post(url, json={"body": {"contentType": "markdown", "content": "x"}}, headers=posting.owen)
+    kind = await posting.http.post(
+        url, json={"body": {"contentType": "markdown", "content": "x"}}, headers=posting.owen
+    )
     assert kind.status_code == 501
     stranger = await posting.http.post(
         f"{GRAPH}/chats/{posting.chat_of('sofia')}/messages", json={"body": {"content": "x"}}, headers=posting.owen
     )
     assert stranger.status_code == 501 and "no member" in stranger.json()["error"]["message"]
     nested = await posting.http.post(
-        f"{GRAPH}/teams/{posting.team}/channels/{posting.general}/messages", json={"body": {"content": "r"}}, headers=posting.owen
+        f"{GRAPH}/teams/{posting.team}/channels/{posting.general}/messages",
+        json={"body": {"content": "r"}},
+        headers=posting.owen,
     )
     again = await posting.http.post(
         f"{GRAPH}/teams/{posting.team}/channels/{posting.general}/messages/{nested.json()['id']}/replies",
@@ -219,7 +235,9 @@ async def test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_wit
     assert group.json()["id"].endswith("@thread.v2")
     theirs = (await posting.http.get(f"{GRAPH}/chats", headers=posting.sofia)).json()["value"]
     assert {c["id"] for c in theirs} >= {chat["id"], group.json()["id"]}
-    listed = (await posting.http.get(f"{GRAPH}/chats/{group.json()['id']}/members", headers=posting.owen)).json()["value"]
+    listed = (await posting.http.get(f"{GRAPH}/chats/{group.json()['id']}/members", headers=posting.owen)).json()[
+        "value"
+    ]
     assert sorted(m["userId"] for m in listed) == sorted([owen, sofia, dania])
     spoken = await posting.http.post(
         f"{GRAPH}/chats/{chat['id']}/messages", json={"body": {"content": "Hi Sofia"}}, headers=posting.owen

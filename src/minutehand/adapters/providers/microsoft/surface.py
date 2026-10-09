@@ -45,7 +45,27 @@ _USER = [
     *(
         ("POST", f"{folder}/messages/{{message-id}}/{action}")
         for folder in ("", "/mailFolders/{mailFolder-id}")
-        for action in ("reply", "replyAll")
+        for action in (
+            "reply",
+            "replyAll",
+            "send",
+            "createReply",
+            "createReplyAll",
+            "createForward",
+            "forward",
+            "move",
+            "copy",
+        )
+    ),
+    ("POST", "/messages"),
+    *(
+        (method, f"{folder}/messages/{{message-id}}/attachments")
+        for folder in ("", "/mailFolders/{mailFolder-id}")
+        for method in ("GET", "POST")
+    ),
+    *(
+        ("GET", f"{folder}/messages/{{message-id}}/attachments/{{attachment-id}}")
+        for folder in ("", "/mailFolders/{mailFolder-id}")
     ),
     ("GET", "/calendar"),
     ("GET", "/calendars"),

@@ -167,21 +167,19 @@ async def test_a_replys_body_graph_composes_is_left_out_and_the_run_records_what
 async def test_message_properties_that_would_be_dropped_are_refused_by_name_and_nothing_is_sent(
     outlook: Outlook,
 ) -> None:
-    attachment = {"@odata.type": "#microsoft.graph.fileAttachment", "name": "a.txt", "contentBytes": "SGk="}
     refused = await outlook.http.post(
         f"{GRAPH}/me/sendMail",
         json={
             "message": {
                 "subject": "Brief",
                 "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}],
-                "attachments": [attachment],
                 "categories": ["Red"],
             }
         },
         headers=outlook.me,
     )
     assert refused.status_code == 501
-    assert "attachments, categories" in refused.json()["error"]["message"]
+    assert "categories" in refused.json()["error"]["message"]
     listed = (
         await outlook.http.get(
             f"{GRAPH}/me/mailFolders/sentitems/messages", params={"$orderby": "sentDateTime"}, headers=outlook.me

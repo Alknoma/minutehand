@@ -551,7 +551,6 @@ class TeamsGraph:
             return self._page(request, replies_of(root.id), f"{GRAPH}/$metadata#{context}('{root.id}')/replies")
         raise NotServed(f"the segment '{'/'.join(rest[1:])}'")
 
-
     # ------------------------------------------------------------------ joined teams
 
     def _joined_teams(self, request: Request, user: UserRecord) -> Response:
@@ -586,25 +585,35 @@ class TeamsGraph:
         try:
             asked = wire.read(wire.PostedChat, await request.body())
         except wire.Unreadable as e:
-            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not documented") from e
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
         if asked.model_extra:
-            raise NotServed(f"the chat properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent")
+            raise NotServed(
+                f"the chat properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent"
+            )
         for member in asked.members:
             if member.model_extra:
                 raise NotServed(f"the member properties {', '.join(sorted(member.model_extra))}")
             if member.odata_type.lower() != "#microsoft.graph.aadUserConversationMember".lower():
                 raise NotServed(f"a member of the type {member.odata_type!r}: only aadUserConversationMember is held")
             if member.roles != ["owner"]:
-                raise NotServed(f"the member roles {member.roles}: only owner is held, as no guest user is in the tenant")
+                raise NotServed(
+                    f"the member roles {member.roles}: only owner is held, as no guest user is in the tenant"
+                )
         people = list(dict.fromkeys(self._member_user(m).user.id for m in asked.members))
         if len(people) != len(asked.members):
             raise NotServed("a chat naming one user twice: Graph's answer is not documented")
         if claims.oid not in people:
-            raise NotServed("a chat that leaves out the user making it: the page requires them in members, and no answer")
+            raise NotServed(
+                "a chat that leaves out the user making it: the page requires them in members, and no answer"
+            )
         tenant = self._user(claims.oid).tenant_id
         if asked.chatType == "oneOnOne":
             if len(people) != 2 or asked.topic is not None:
-                raise NotServed("a oneOnOne chat of other than two members, or with a topic: Graph's answer is not documented")
+                raise NotServed(
+                    "a oneOnOne chat of other than two members, or with a topic: Graph's answer is not documented"
+                )
             existing = next(
                 (
                     c
@@ -680,7 +689,9 @@ class TeamsGraph:
         try:
             asked = wire.read(wire.PostedChatMessage, await request.body())
         except wire.Unreadable as e:
-            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not documented") from e
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
         posted = self._kept(asked)
         activity = wire.Activity(
             type=wire.ActivityType.MESSAGE,
@@ -698,7 +709,11 @@ class TeamsGraph:
             text=posted.body.content,
             attachments=[
                 wire.Attachment(
-                    contentType=a.contentType, content=json.loads(a.content), id=a.id, name=a.name, contentUrl=a.contentUrl
+                    contentType=a.contentType,
+                    content=json.loads(a.content),
+                    id=a.id,
+                    name=a.name,
+                    contentUrl=a.contentUrl,
                 )
                 for a in posted.attachments
                 if a.contentType == wire.ADAPTIVE_CARD and a.content is not None
@@ -737,7 +752,9 @@ class TeamsGraph:
     def _kept(asked: wire.PostedChatMessage) -> wire.GraphPosted:
         """What a posted message carries, as sent; a property this provider would not keep is refused by name."""
         if asked.model_extra:
-            raise NotServed(f"the message properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent")
+            raise NotServed(
+                f"the message properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent"
+            )
         if asked.body.contentType not in ("text", "html"):
             raise NotServed(f"the body content type {asked.body.contentType!r}: chatMessage names text and html")
         if asked.importance not in ("normal", "high", "urgent"):
@@ -749,7 +766,9 @@ class TeamsGraph:
                 try:
                     json.loads(item.content)
                 except ValueError as e:
-                    raise NotServed("an Adaptive Card attachment whose content is not JSON: Graph's answer is not documented") from e
+                    raise NotServed(
+                        "an Adaptive Card attachment whose content is not JSON: Graph's answer is not documented"
+                    ) from e
         mentions: list[wire.ChatMessageMention] = []
         for mention in asked.mentions:
             if mention.model_extra or mention.mentioned.model_extra:

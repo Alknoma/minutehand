@@ -1084,13 +1084,38 @@ class MailMessage(Aliased):
         description="Left out of a reply: Graph composes it from the comment and the quoted original, and no source "
         "says how",
     )
-    sender: Recipient
-    from_: Recipient = Field(validation_alias=AliasChoices("from_", "from"), serialization_alias="from")
+    sender: Recipient | None = Field(default=None, description="Left out of a draft: the page's example has none")
+    from_: Recipient | None = Field(
+        default=None,
+        validation_alias=AliasChoices("from_", "from"),
+        serialization_alias="from",
+        description="Left out of a draft: the page's example has none",
+    )
     toRecipients: list[Recipient]
     ccRecipients: list[Recipient] = []
     bccRecipients: list[Recipient] = []
     replyTo: list[Recipient] = []
     meetingMessageType: MeetingMessageType | None = None
+
+
+class StoredAttachment(Aliased):
+    """A file attached to a message, as Graph answers it (`fileAttachment`): its bytes are kept as the base64 text
+    that was sent."""
+
+    odata_type: Literal["#microsoft.graph.fileAttachment"] = Field(
+        default="#microsoft.graph.fileAttachment",
+        validation_alias=AliasChoices("odata_type", "@odata.type"),
+        serialization_alias="@odata.type",
+    )
+    id: str
+    lastModifiedDateTime: str
+    name: str
+    contentType: str | None = None
+    size: int
+    isInline: bool = False
+    contentId: str | None = None
+    contentLocation: str | None = None
+    contentBytes: str
 
 
 class StoredMail(Model):
@@ -1099,6 +1124,12 @@ class StoredMail(Model):
     message: MailMessage
     folder: MailFolderName
     event: str | None = Field(default=None, description="The event a meeting request invites to")
+    said: str | None = Field(
+        default=None,
+        description="What the writer of a reply or forward draft wrote, where Graph composes the body and no source "
+        "says how",
+    )
+    attachments: list[StoredAttachment] = []
 
 
 class MailFolder(Aliased):
@@ -1125,6 +1156,21 @@ class SentRecipient(Lenient):
     emailAddress: SentEmailAddress
 
 
+class SentAttachment(Lenient):
+    """A file attachment a caller sends: `name` and `contentBytes` are required (fileattachment)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    odata_type: str = Field(
+        default="#microsoft.graph.fileAttachment", validation_alias=AliasChoices("@odata.type", "odata_type")
+    )
+    name: str
+    contentBytes: str
+    contentType: str | None = None
+    isInline: bool = False
+    contentId: str | None = None
+
+
 class SentMessage(Lenient):
     """A message a caller sends: the properties this provider keeps; any other it names is refused by name, never
     dropped (`model_extra`)."""
@@ -1138,6 +1184,7 @@ class SentMessage(Lenient):
     bccRecipients: list[SentRecipient] = []
     replyTo: list[SentRecipient] = []
     importance: Literal["low", "normal", "high"] = "normal"
+    attachments: list[SentAttachment] = []
 
 
 class SendMailRequest(Lenient):
@@ -1155,11 +1202,37 @@ class ReplyRequest(Lenient):
 
 
 class MessagePatch(Lenient):
-    """What a PATCH of a message may change here: whether it is read. Anything else it names is not served."""
+    """What a PATCH of a message may change here: whether it is read, and of a draft its subject, body, recipients
+    and importance. Anything else it names is not served."""
 
     model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
 
     isRead: bool | None = None
+    subject: str | None = None
+    body: SentBody | None = None
+    toRecipients: list[SentRecipient] | None = None
+    ccRecipients: list[SentRecipient] | None = None
+    bccRecipients: list[SentRecipient] | None = None
+    replyTo: list[SentRecipient] | None = None
+    importance: Literal["low", "normal", "high"] | None = None
+
+
+class ForwardRequest(Lenient):
+    """`forward` and `createForward`: a comment or a message, and the recipients."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    comment: str | None = None
+    toRecipients: list[SentRecipient] | None = None
+    message: SentMessage | None = None
+
+
+class DestinationRequest(Lenient):
+    """`move` and `copy`."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    destinationId: str
 
 
 class ResponseKind(StrEnum):
