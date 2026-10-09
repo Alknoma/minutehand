@@ -55,7 +55,7 @@ async def test_the_views_hold_each_move_and_each_item_held_pending(tmp_path: Pat
         ["jira", "ticket", "Start work", "To Do", "In Progress", "person", "tomas", json.dumps({"comment": "On it."}),
          "2026-08-24T12:50:03.000Z"],
     ]  # fmt: skip
-    assert "On it." in moves.rows[0][7]
+    assert "On it." in str(moves.rows[0][7])
     items = query(
         db, "SELECT person, nth, state, status, due_at, take, drawn_from, closed_at FROM items ORDER BY person"
     )
