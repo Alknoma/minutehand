@@ -10,7 +10,10 @@ with the attributes OpenTelemetry's GenAI conventions name:
     gen_ai.system_instructions             the system prompt, as parts
     gen_ai.input.messages                  the messages sent, each a role and its parts
     gen_ai.output.messages                 the messages answered, each a role, its parts and finish reason
-    gen_ai.usage.input_tokens, gen_ai.usage.output_tokens
+    gen_ai.usage.input_tokens              every input token, cached ones included, as the conventions ask
+    gen_ai.usage.cache_read.input_tokens   of those, the ones read from the vendor's prompt cache
+    gen_ai.usage.cache_creation.input_tokens   of those, the ones written to it (Anthropic's only)
+    gen_ai.usage.output_tokens
     minutehand.request.body                the request body, byte for byte
     minutehand.response.body               the answer's body, byte for byte (a stream as its events arrived)
 
@@ -129,6 +132,20 @@ class _Call:
     outputs: list[dict[str, object]] = field(default_factory=list)
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+
+    def all_input(self) -> int | None:
+        """Every input token, cached ones included. Anthropic's `input_tokens` counts only the tokens after the last
+        cache breakpoint, with `cache_read_input_tokens` and `cache_creation_input_tokens` beside it
+        (https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#tracking-cache-performance), so the
+        three are summed; OpenAI's `prompt_tokens` (chat) and `input_tokens` (responses) already include the
+        cached tokens they detail (https://platform.openai.com/docs/guides/prompt-caching)."""
+        if self.input_tokens is None:
+            return None
+        if self.shape is Shape.MESSAGES:
+            return self.input_tokens + (self.cache_read_tokens or 0) + (self.cache_creation_tokens or 0)
+        return self.input_tokens
 
 
 def _read_request(call: _Call, request: object) -> None:
@@ -165,12 +182,22 @@ def _read_request(call: _Call, request: object) -> None:
 
 
 def _usage(call: _Call, usage: object) -> None:
+    """The counts one answer, or one event of a stream, gives; a later event's count replaces an earlier one's."""
     for key in ("input_tokens", "prompt_tokens"):
         if _int(_member(usage, key)) is not None:
             call.input_tokens = _int(_member(usage, key))
     for key in ("output_tokens", "completion_tokens"):
         if _int(_member(usage, key)) is not None:
             call.output_tokens = _int(_member(usage, key))
+    if call.shape is Shape.MESSAGES:
+        read = _int(_member(usage, "cache_read_input_tokens"))
+        written = _int(_member(usage, "cache_creation_input_tokens"))
+        call.cache_read_tokens = read if read is not None else call.cache_read_tokens
+        call.cache_creation_tokens = written if written is not None else call.cache_creation_tokens
+        return
+    details = _member(usage, "prompt_tokens_details" if call.shape is Shape.CHAT else "input_tokens_details")
+    cached = _int(_member(details, "cached_tokens"))
+    call.cache_read_tokens = cached if cached is not None else call.cache_read_tokens
 
 
 def _read_answer(call: _Call, answer: object) -> None:
@@ -352,7 +379,9 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
         if parts:
             attributes.append((key, StringValue(value=json.dumps(parts, ensure_ascii=False))))
     for key, count in (
-        ("gen_ai.usage.input_tokens", call.input_tokens),
+        ("gen_ai.usage.input_tokens", call.all_input()),
+        ("gen_ai.usage.cache_read.input_tokens", call.cache_read_tokens),
+        ("gen_ai.usage.cache_creation.input_tokens", call.cache_creation_tokens),
         ("gen_ai.usage.output_tokens", call.output_tokens),
     ):
         if count is not None:

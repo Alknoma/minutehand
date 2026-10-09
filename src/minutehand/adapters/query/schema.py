@@ -453,7 +453,12 @@ VIEWS: tuple[View, ...] = (
             _c("duration_ms", R, "In milliseconds (agent)"),
             _c("model", T, "The model"),
             _c("prompt_version", T, "The prompt's version (person)"),
-            _c("input_tokens", N, "Tokens in, as reported"),
+            _c(
+                "input_tokens",
+                N,
+                "Every input token, as reported, cached ones included (an Anthropic call's input_tokens, "
+                "cache_read_input_tokens and cache_creation_input_tokens summed)",
+            ),
             _c("output_tokens", N, "Tokens out, as reported"),
             _c("cost", R, "From the prices the user declared for this model (--prices); NULL when none was declared"),
             _c("currency", T, "The declared price's currency"),
@@ -470,6 +475,17 @@ VIEWS: tuple[View, ...] = (
             ),
             _c("replayed", N, "1 for a person's call answered from the record: no model was called"),
             _c("failure", T, "Why a person's call failed"),
+            _c("cache_read_tokens", N, "Of input_tokens, those read from the prompt cache; NULL when not reported"),
+            _c(
+                "cache_creation_tokens",
+                N,
+                "Of input_tokens, those written to the prompt cache (Anthropic); NULL when not reported",
+            ),
+            _c(
+                "uncached_input_tokens",
+                N,
+                "Of input_tokens, those billed at the base input rate: input_tokens less both cached counts",
+            ),
         ],
     ),
     View(

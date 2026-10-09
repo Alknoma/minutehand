@@ -63,8 +63,23 @@ class ModelCall(Model):
     system_instructions: str | None = None
     input_messages: str | None = Field(description="gen_ai.input.messages as the span carries it, usually JSON")
     output_messages: str | None = Field(description="gen_ai.output.messages as the span carries it, usually JSON")
-    input_tokens: int | None
+    input_tokens: int | None = Field(
+        description="gen_ai.usage.input_tokens: every input token, cached ones included, as the GenAI conventions ask"
+    )
     output_tokens: int | None
+    cache_read_tokens: int | None = Field(
+        default=None, description="gen_ai.usage.cache_read.input_tokens: of the input, read from the prompt cache"
+    )
+    cache_creation_tokens: int | None = Field(
+        default=None, description="gen_ai.usage.cache_creation.input_tokens: of the input, written to the prompt cache"
+    )
+
+    @property
+    def uncached_input_tokens(self) -> int | None:
+        """The input tokens billed at the model's base rate: every input token but the cached ones."""
+        if self.input_tokens is None:
+            return None
+        return self.input_tokens - (self.cache_read_tokens or 0) - (self.cache_creation_tokens or 0)
 
 
 class EventTrace(Model):
@@ -156,6 +171,8 @@ def model_call(stored: StoredSpan, logged: list[StoredSpan] | None = None) -> Mo
         output_messages=answered,
         input_tokens=_count(_first(stored, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens")),
         output_tokens=_count(_first(stored, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")),
+        cache_read_tokens=_count(span.attribute("gen_ai.usage.cache_read.input_tokens")),
+        cache_creation_tokens=_count(span.attribute("gen_ai.usage.cache_creation.input_tokens")),
     )
 
 

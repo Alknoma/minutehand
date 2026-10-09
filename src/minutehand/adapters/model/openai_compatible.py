@@ -79,9 +79,14 @@ class _Choice(_Answered):
     finish_reason: str | None = None
 
 
+class _PromptDetails(_Answered):
+    cached_tokens: int | None = None
+
+
 class _Usage(_Answered):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    prompt_tokens_details: _PromptDetails | None = None
 
 
 class _Completion(_Answered):
@@ -127,17 +132,28 @@ class _Spent:
     def __init__(self) -> None:
         self.input: int | None = None
         self.output: int | None = None
+        self.cached: int | None = None
 
     def add(self, usage: _Usage | None) -> None:
+        """`prompt_tokens` counts every input token, the cached ones `prompt_tokens_details.cached_tokens` names
+        among them (https://platform.openai.com/docs/guides/prompt-caching)."""
         if usage is None:
             return
         if usage.prompt_tokens is not None:
             self.input = (self.input or 0) + usage.prompt_tokens
         if usage.completion_tokens is not None:
             self.output = (self.output or 0) + usage.completion_tokens
+        if usage.prompt_tokens_details is not None and usage.prompt_tokens_details.cached_tokens is not None:
+            self.cached = (self.cached or 0) + usage.prompt_tokens_details.cached_tokens
 
     def answered(self, answer: AnswerT, model: str) -> Answered[AnswerT]:
-        return Answered(answer=answer, model=model, input_tokens=self.input, output_tokens=self.output)
+        return Answered(
+            answer=answer,
+            model=model,
+            input_tokens=self.input,
+            output_tokens=self.output,
+            cache_read_tokens=self.cached,
+        )
 
 
 # -- the client ---------------------------------------------------------------------------------------------

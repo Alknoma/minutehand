@@ -26,8 +26,10 @@ class Answered[T: BaseModel](BaseModel):
 
     answer: T
     model: str = Field(description="The model the request named")
-    input_tokens: int | None = None
+    input_tokens: int | None = Field(default=None, description="Every input token, cached ones included")
     output_tokens: int | None = None
+    cache_read_tokens: int | None = Field(default=None, description="Of the input, read from the prompt cache")
+    cache_creation_tokens: int | None = Field(default=None, description="Of the input, written to the prompt cache")
 
 
 class ModelFailed(Exception):

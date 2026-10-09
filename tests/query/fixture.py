@@ -408,6 +408,7 @@ def build_fixture(state: Path) -> Fixture:
             prompt_version="person-step/1",
             input_tokens=300,
             output_tokens=12,
+            cache_read_tokens=100,
             answer=json.dumps({"text": ANSWER}),
             sim_time=T0,
             wake=1,

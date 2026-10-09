@@ -69,9 +69,20 @@ the built read model as a plain SQLite file, which any client reads with no Minu
   ```yaml
   prices:
     - {model: gpt-4o-mini, input_per_million: 0.15, output_per_million: 0.6, currency: USD}
+    - {model: claude-haiku-4-5, input_per_million: 1.0, output_per_million: 5.0,
+       cache_read_per_million: 0.1, cache_creation_per_million: 1.25}
   ```
 
-  A call to a model it does not name, or with a token count unknown, has no cost.
+  A call to a model it does not name, or with a token count unknown, has no cost. Input tokens are priced by kind:
+  `uncached_input_tokens` at `input_per_million`, `cache_read_tokens` at `cache_read_per_million` and
+  `cache_creation_tokens` at `cache_creation_per_million`; a call with cached tokens of a kind the file prices not
+  has no cost, rather than one at a guessed rate.
+- **Tokens.** `model_calls.input_tokens` is every input token, cached ones included, as OpenTelemetry's GenAI
+  conventions count `gen_ai.usage.input_tokens`. Vendors count differently: Anthropic's `usage.input_tokens` leaves
+  out `cache_read_input_tokens` and `cache_creation_input_tokens`, so a call recorded on the wire sums the three;
+  OpenAI's `prompt_tokens` already holds the `cached_tokens` it details. A span the agent exported is read as the
+  conventions say (`gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` beside an
+  `input_tokens` that includes them): an exporter that counts input without its cached tokens shows too few.
 
 ## The contract
 
@@ -409,7 +420,7 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `duration_ms` | REAL | In milliseconds (agent) |
 | `model` | TEXT | The model |
 | `prompt_version` | TEXT | The prompt's version (person) |
-| `input_tokens` | INTEGER | Tokens in, as reported |
+| `input_tokens` | INTEGER | Every input token, as reported, cached ones included (an Anthropic call's input_tokens, cache_read_input_tokens and cache_creation_input_tokens summed) |
 | `output_tokens` | INTEGER | Tokens out, as reported |
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
@@ -418,6 +429,9 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why a person's call failed |
+| `cache_read_tokens` | INTEGER | Of input_tokens, those read from the prompt cache; NULL when not reported |
+| `cache_creation_tokens` | INTEGER | Of input_tokens, those written to the prompt cache (Anthropic); NULL when not reported |
+| `uncached_input_tokens` | INTEGER | Of input_tokens, those billed at the base input rate: input_tokens less both cached counts |
 
 ### `findings`
 

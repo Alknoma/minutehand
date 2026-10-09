@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from minutehand.adapters.model.openai_compatible import (
@@ -16,7 +18,7 @@ from minutehand.application.refusals import RunRefused
 from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import ModelFailed
-from tests.model.fake_completions import Answer, Received, fake_completions
+from tests.model.fake_completions import Answer, Received, completion, fake_completions
 
 KEY = "sk-test-0123456789abcdef-never-shown"
 
@@ -65,6 +67,20 @@ async def test_a_request_may_name_another_model_and_leave_the_temperature_to_the
 
     [received] = fake.received
     assert received.model == "person-2" and "temperature" not in received.body
+
+
+async def test_the_cached_prompt_tokens_the_service_details_are_counted_apart() -> None:
+    # https://platform.openai.com/docs/guides/prompt-caching: prompt_tokens includes the cached tokens it details
+    body = completion(Forecast(sunny=True, note=None).model_dump_json(), "judge-1")
+    body["usage"] = {
+        "prompt_tokens": 2006,
+        "completion_tokens": 300,
+        "total_tokens": 2306,
+        "prompt_tokens_details": {"cached_tokens": 1920},
+    }
+    async with fake_completions(lambda _: Answer(status=200, body=json.dumps(body))) as fake:
+        answered = await client(fake.base_url).answer("s", ASKED, Forecast)
+    assert (answered.input_tokens, answered.cache_read_tokens, answered.output_tokens) == (2006, 1920, 300)
 
 
 async def test_an_answer_that_does_not_validate_is_sent_back_once_with_the_error() -> None:
