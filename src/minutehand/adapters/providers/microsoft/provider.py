@@ -133,6 +133,8 @@ class MicrosoftProvider:
         if found is None:
             return False
         _, asked = found
+        if asked.message.from_ is None:
+            return False
         asker, person = mw.user_by(asked.message.from_.emailAddress.address), mw.person(reply.person)
         watches: set[str] = set()
         for user, folder in ((asker, wire.MailFolderName.INBOX), (person, wire.MailFolderName.SENT)):

@@ -24,6 +24,7 @@ from pydantic import JsonValue, ValidationError
 
 from minutehand.adapters.providers.microsoft import cards, tokens, wire
 from minutehand.adapters.providers.microsoft.connector import snapshot
+from minutehand.adapters.providers.microsoft.graph_teams import message_resource
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
     POSTS,
@@ -273,7 +274,7 @@ class People:
             conversation_watch(conversation.id),
             change="created",
             odata_type="#Microsoft.Graph.chatMessage",
-            resource=f"chats('{conversation.graph_id}')/messages('{activity.id}')",
+            resource=message_resource(self.world, conversation, activity.id),
             item=activity.id,
         )
         reaches = conversation.type is wire.ConversationType.PERSONAL or mention

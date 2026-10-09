@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana import state, webhooks, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, seeded_gid
@@ -108,12 +108,24 @@ class AsanaProvider:
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """What a person can make the task say as its status source reads it: each place (the completed box, a
         section, the status field's option) that means another of open, done or cancelled, as a person leaves it
-        when they move it there, each with a comment and what it means. Then, only for what the scenario has someone
-        do: a comment, a reassignment, the task's deletion."""
+        when they move it there, each with a comment and what it means. An approval task is decided instead:
+        `approved`, `rejected` or `changes_requested`, whichever it is not now, each with a comment. Then, only for what
+        the scenario has someone do: a comment, a reassignment, the task's deletion."""
         del by, who
         asana = AsanaWorld(world)
         task = _task(asana, item)
         moves: list[Offer] = []
+        if task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            moves = [
+                Offer(
+                    name=d.value,
+                    to_state=d.value,
+                    fields=[OfferField(name=COMMENT, description="A comment added to the task as it is decided")],
+                )
+                for d in DECISIONS
+                if d is not task.approval_status
+            ]
+            return [*moves, *ticket_acts(asana.words(task))]
         for to in TicketState:
             words = _words_if_moved(asana, task, to) if to is not asana.state_of(task) else None
             if words is None or words == asana.words(task) or any(o.name == words for o in moves):
@@ -131,16 +143,29 @@ class AsanaProvider:
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
-        """The person moves the task as Asana's own status source reads it (`AsanaWorld.moved`), with their comment as
-        a story; or comments, reassigns or deletes it as the API does; as themselves. The scenario moves it as no one."""
+        """The person moves the task as Asana's own status source reads it (`AsanaWorld.moved`), or decides an
+        approval task (`approved`, `rejected`, `changes_requested`: `completed` and `approval_status` set together, as
+        the reference says they are kept in step), with their comment as a story; or comments, reassigns or deletes it
+        as the API does; as themselves. The scenario moves it as no one. The webhooks that hear of it are sent what
+        they are owed."""
+        moved = self._apply(item, offer, by, who, content, world, clock)
+        await webhooks.deliver(AsanaWorld(world), clock)
+        return moved
+
+    def _apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
         asana = AsanaWorld(world)
         task = _task(asana, item)
         found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
+        if found is None and task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            raise ValueError(f"asana approval {task.gid} offers no decision {offer!r}")
         if found is None:
             raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
         given = content_of(content, found, who.key if who is not None else by.value)
         if who is None and by is not Actor.SCENARIO:
             raise ValueError("an asana task is changed by a person: name them")
+        person = state.user_gid(who.key) if who is not None else None
         before = asana.words(task)
         now = wire.stamp(clock.now())
         if offer == COMMENT:
@@ -154,15 +179,31 @@ class AsanaProvider:
             if address and user is None:
                 raise ValueError(f"no asana user has the email {address}")
             changed = task.model_copy(update={"assignee": user.gid if user is not None else None, "modified_at": now})
-            asana.put_task(changed, operation=Operation.UPDATE, actor=by)
+            asana.put_task(changed, operation=Operation.UPDATE, actor=by, by=person)
             return _recorded(world, item, offer, before, before, by, who, content, clock)
         if offer == DELETE:
-            asana.delete_task(task, actor=by)
+            asana.delete_task(task, actor=by, by=person)
             return _recorded(world, item, offer, before, DELETED, by, who, content, clock)
-        assert found.means is not None
-        moved = asana.moved(task, found.means, now=clock.now())
+        if task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            decision = next(d for d in DECISIONS if d.value == offer)
+            moved = task.model_copy(
+                update={
+                    "completed": True,
+                    "approval_status": decision,
+                    "completed_at": task.completed_at if task.completed else now,
+                    "modified_at": now,
+                }
+            )
+        else:
+            assert found.means is not None
+            moved = asana.moved(task, found.means, now=clock.now())
         asana.put_task(
-            moved, operation=Operation.UPDATE, actor=by, who=who.key if who is not None else None, content=content
+            moved,
+            operation=Operation.UPDATE,
+            actor=by,
+            who=who.key if who is not None else None,
+            content=content,
+            by=person,
         )
         if COMMENT in given and given[COMMENT].strip() and who is not None:
             self._story(asana, task, given[COMMENT], who, by, clock)
@@ -182,6 +223,7 @@ class AsanaProvider:
                 created_at=wire.stamp(clock.now()),
             ),
             actor=by,
+            by=state.user_gid(who.key),
         )
 
     def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None:
@@ -190,9 +232,11 @@ class AsanaProvider:
         return state.task_ref(task.gid) if task is not None else None
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
-        """Never: Asana pushes nothing to the agent here; it finds a person's move on its next read."""
-        del item, who, world, clock
-        return False
+        """Whether a webhook on the task, or on a project or task above it, hears of the move: that push is a wake.
+        Otherwise the agent finds a person's move on its next read."""
+        del who, clock
+        asana = AsanaWorld(world)
+        return webhooks.watching(asana, asana.scope(_task(asana, item)))
 
 
 def _recorded(
@@ -221,6 +265,10 @@ def _recorded(
             at=clock.now(),
         ),
     )
+
+
+DECISIONS = (wire.ApprovalStatus.APPROVED, wire.ApprovalStatus.REJECTED, wire.ApprovalStatus.CHANGES_REQUESTED)
+"""What an approver decides: the `approval_status` values that translate to `completed` true."""
 
 
 def _words_if_moved(asana: AsanaWorld, task: wire.AsanaTask, to: TicketState) -> str | None:

@@ -62,12 +62,12 @@ def test_every_operation_of_the_vendors_document_is_served_or_refused_by_name(wo
     neither = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) not in routes]
     assert not neither, f"answered 404 as if Asana had no such route: {neither}"
     assert len(served) + len(refused) == len(OPERATIONS) == 251
-    assert (len(served), len(refused)) == (51, 200)
+    assert (len(served), len(refused)) == (79, 172)
     claimed = {(m, _shape(p)) for m, p, _ in DOCUMENTED}
     assert (
         sum((m, _shape(p)) in claimed for m, p, _ in served),
         sum((m, _shape(p)) in claimed for m, p, _ in refused),
-    ) == (51, 71)
+    ) == (79, 43)
 
 
 def test_the_committed_subset_is_part_of_the_surface_the_provider_holds() -> None:

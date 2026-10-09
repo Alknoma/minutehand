@@ -14,19 +14,25 @@ and what they create is theirs.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import itertools
+import json
 import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from pydantic import JsonValue
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.asana import state, surface, wire
+from minutehand.adapters.providers.asana import state, surface, webhooks, wire
 from minutehand.adapters.providers.asana.state import AGENT_GID, AsanaWorld
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
@@ -82,6 +88,18 @@ _CUSTOM_FIELD_SEARCH = "custom_fields."
 _SORTS = ("modified_at", "created_at")
 _TYPEAHEAD = ("task", "user", "project", "tag")
 _NEEDS_FILTER = "Must specify exactly one of project, tag, section, user task list, or assignee + workspace"
+MOST_PROJECTS = 20
+"""https://developers.asana.com/reference/addprojectfortask: "A task can have at most 20 projects multi-homed to it"."""
+MOST_DEPENDENCIES = 30
+"""https://developers.asana.com/reference/adddependenciesfortask: "A task can have at most 30 dependents and
+dependencies combined"."""
+EVENTS_AT_MOST = 100
+"""https://developers.asana.com/reference/getevents: "Asana limits a single sync token to 100 events"."""
+ASSET_PATH = "/app/asana/-/get_asset"
+"""Where an attachment's bytes are read, on a host this fake answers. Asana documents only that `download_url` is the
+URL of the content (its example is on an S3 host); the host and path here are this fake's, not Asana's."""
+DOWNLOAD_SECONDS = 120
+"""`AttachmentResponse.download_url`: "this URL may only be valid for two minutes from the time of retrieval"."""
 _NEEDS_TEAM = "Missing required team field"
 """Reported of the real service: https://forum.asana.com/t/31198."""
 
@@ -139,6 +157,34 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("POST", "/tasks/{gid}/removeTag", "remove_tag"),
     ("GET", "/tasks/{gid}/stories", "stories"),
     ("POST", "/tasks/{gid}/stories", "create_story"),
+    ("POST", "/tasks/{gid}/addFollowers", "add_followers"),
+    ("POST", "/tasks/{gid}/removeFollowers", "remove_followers"),
+    ("POST", "/tasks/{gid}/addProject", "add_project"),
+    ("POST", "/tasks/{gid}/removeProject", "remove_project"),
+    ("GET", "/tasks/{gid}/dependencies", "dependencies"),
+    ("POST", "/tasks/{gid}/addDependencies", "add_dependencies"),
+    ("POST", "/tasks/{gid}/removeDependencies", "remove_dependencies"),
+    ("GET", "/tasks/{gid}/dependents", "dependents"),
+    ("POST", "/tasks/{gid}/addDependents", "add_dependents"),
+    ("POST", "/tasks/{gid}/removeDependents", "remove_dependents"),
+    ("PUT", "/projects/{gid}", "update_project"),
+    ("PUT", "/sections/{gid}", "update_section"),
+    ("DELETE", "/sections/{gid}", "delete_section"),
+    ("PUT", "/tags/{gid}", "update_tag"),
+    ("DELETE", "/tags/{gid}", "delete_tag"),
+    ("GET", "/stories/{gid}", "story"),
+    ("PUT", "/stories/{gid}", "update_story"),
+    ("DELETE", "/stories/{gid}", "delete_story"),
+    ("GET", "/attachments", "attachments"),
+    ("POST", "/attachments", "create_attachment"),
+    ("GET", "/attachments/{gid}", "attachment"),
+    ("DELETE", "/attachments/{gid}", "delete_attachment"),
+    ("GET", "/events", "events"),
+    ("GET", "/webhooks", "list_webhooks"),
+    ("POST", "/webhooks", "create_webhook"),
+    ("GET", "/webhooks/{gid}", "webhook"),
+    ("PUT", "/webhooks/{gid}", "update_webhook"),
+    ("DELETE", "/webhooks/{gid}", "delete_webhook"),
 )
 """Method, path and `AsanaApi` handler of every operation this provider serves (`/-/oauth_token` aside, which is outside
 the API's prefix)."""
@@ -171,12 +217,14 @@ def _at(value: str) -> datetime:
 class View:
     """The world as one caller sees it during one request: lookups, refusals, and representations."""
 
-    def __init__(self, world: AsanaWorld, caller: wire.AsanaUser) -> None:
+    def __init__(self, world: AsanaWorld, caller: wire.AsanaUser, now: datetime) -> None:
         self.world = world
         self.caller = caller
+        self.now = now
         self._users: dict[str, wire.UserOut] = {}
         self._projects: dict[str, wire.ProjectOut] = {}
         self._children: dict[str, list[wire.AsanaTask]] | None = None
+        self._dependents: dict[str, list[wire.AsanaTask]] | None = None
 
     # ------------------------------------------------------------------ lookups
 
@@ -257,6 +305,19 @@ class View:
         found = self.world.tag(wire.gid_in_path(field, gid))
         if found is None:
             raise wire.unknown(field, gid, status=status)
+        return found
+
+    def attachment(self, gid: str, *, field: str = "attachment", status: int = 404) -> wire.AsanaAttachment:
+        found = self.world.attachment(wire.gid_in_path(field, gid))
+        if found is None:
+            raise wire.unknown(field, gid, status=status)
+        self.task(found.task)
+        return found
+
+    def webhook(self, gid: str, *, status: int = 404) -> wire.AsanaWebhook:
+        found = self.world.webhook(wire.gid_in_path("webhook", gid))
+        if found is None:
+            raise wire.unknown("webhook", gid, status=status)
         return found
 
     def custom_field(self, gid: str, *, field: str = "custom_field", status: int = 404) -> wire.AsanaCustomField:
@@ -367,6 +428,7 @@ class View:
         return wire.TagOut(
             gid=tag.gid,
             name=tag.name,
+            notes=tag.notes,
             color=tag.color,
             created_at=tag.created_at,
             workspace=self.workspace_of(tag.workspace),
@@ -430,7 +492,13 @@ class View:
                 )
 
     def _ref_out(self, task: wire.AsanaTask) -> wire.TaskRefOut:
-        return wire.TaskRefOut(gid=task.gid, name=task.name, completed=task.completed, permalink_url=_permalink(task))
+        return wire.TaskRefOut(
+            gid=task.gid,
+            resource_subtype=task.resource_subtype,
+            name=task.name,
+            completed=task.completed,
+            permalink_url=_permalink(task),
+        )
 
     def children(self, parent: str) -> list[wire.AsanaTask]:
         if self._children is None:
@@ -440,6 +508,15 @@ class View:
                     self._children.setdefault(task.parent, []).append(task)
         return self._children[parent] if parent in self._children else []
 
+    def dependents_of(self, gid: str) -> list[wire.AsanaTask]:
+        """The tasks that depend on the task: those whose `dependencies` name it."""
+        if self._dependents is None:
+            self._dependents = {}
+            for task in self.world.tasks():
+                for dependency in task.dependencies:
+                    self._dependents.setdefault(dependency, []).append(task)
+        return self._dependents[gid] if gid in self._dependents else []
+
     def task_out(self, task: wire.AsanaTask) -> wire.TaskOut:
         parent = self.world.task(task.parent) if task.parent is not None else None
         subtasks = self.children(task.gid)
@@ -447,10 +524,15 @@ class View:
         fields = [_held(self.world.custom_field(f), f) for f in self.world.fields_of(task)]
         return wire.TaskOut(
             gid=task.gid,
+            resource_subtype=task.resource_subtype,
             name=task.name,
             notes=task.notes,
             completed=task.completed,
             completed_at=task.completed_at,
+            approval_status=task.approval_status,
+            followers=[self.user_of(f) for f in task.followers],
+            dependencies=[wire.ResourceRefOut(gid=g) for g in task.dependencies],
+            dependents=[wire.ResourceRefOut(gid=t.gid) for t in self.dependents_of(task.gid)],
             due_on=task.due_on,
             due_at=task.due_at,
             created_at=task.created_at,
@@ -478,9 +560,56 @@ class View:
         return wire.StoryOut(
             gid=story.gid,
             text=story.text,
+            is_edited=story.edited,
             created_at=story.created_at,
             created_by=self.user_of(story.created_by),
             target=wire.Compact(gid=story.task, resource_type="task", name=task.name if task is not None else ""),
+        )
+
+    def attachment_out(self, attachment: wire.AsanaAttachment) -> wire.AttachmentOut:
+        task = _held(self.world.task(attachment.task), attachment.task)
+        return wire.AttachmentOut(
+            gid=attachment.gid,
+            name=attachment.name,
+            created_at=attachment.created_at,
+            size=attachment.size,
+            download_url=(
+                f"https://app.asana.com{ASSET_PATH}?asset_id={attachment.gid}"
+                f"&expires={int(self.now.timestamp()) + DOWNLOAD_SECONDS}"
+            ),
+            parent=wire.AttachmentParentOut(
+                gid=task.gid,
+                resource_subtype=task.resource_subtype,
+                name=task.name,
+                created_by=self.user_of(task.created_by),
+            ),
+        )
+
+    def webhook_out(self, hook: wire.AsanaWebhook) -> wire.WebhookOut:
+        subscribed = self.world.task(hook.resource)
+        project = self.world.project(hook.resource) if subscribed is None else None
+        named = subscribed if subscribed is not None else _held(project, hook.resource)
+        return wire.WebhookOut(
+            gid=hook.gid,
+            active=hook.active,
+            resource=wire.Compact(
+                gid=hook.resource, resource_type="task" if subscribed is not None else "project", name=named.name
+            ),
+            target=hook.target,
+            created_at=hook.created_at,
+            last_success_at=hook.last_success_at,
+            last_failure_at=hook.last_failure_at,
+            last_failure_content=hook.last_failure_content,
+            delivery_retry_count=hook.delivery_retry_count,
+            filters=[
+                wire.FilterOut(
+                    resource_type=f.resource_type,
+                    resource_subtype=f.resource_subtype,
+                    action=f.action,
+                    fields=f.fields or None,
+                )
+                for f in hook.filters
+            ],
         )
 
 
@@ -582,7 +711,7 @@ class AsanaApi:
         return endpoint
 
     def _view(self, caller: wire.AsanaUser) -> View:
-        return View(self._world, caller)
+        return View(self._world, caller, self._clock.now())
 
     # ------------------------------------------------------------------ sign-in
 
@@ -740,7 +869,7 @@ class AsanaApi:
             members=[caller.gid],
             created_at=now,
         )
-        self._world.put_record(project, parent=state.PROJECTS, actor=Actor.AGENT)
+        self._world.put_record(project, parent=state.PROJECTS, actor=Actor.AGENT, by=caller.gid)
         self._world.put_record(
             wire.AsanaSection(gid=self._world.next_gid(), name=state.NEW_SECTION, project=project.gid, created_at=now),
             parent=project.gid,
@@ -778,7 +907,7 @@ class AsanaApi:
         section = wire.AsanaSection(
             gid=self._world.next_gid(), name=sent.name, project=project.gid, created_at=self._now()
         )
-        self._world.put_record(section, parent=project.gid, actor=Actor.AGENT)
+        self._world.put_record(section, parent=project.gid, actor=Actor.AGENT, by=caller.gid)
         return _created(request, view.section_out(section), "sections")
 
     async def project_tasks(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -809,7 +938,9 @@ class AsanaApi:
         else:
             members = [m for m in project.members if m not in users]
         changed = project.model_copy(update={"members": members})
-        self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
+        self._world.put_record(
+            changed, parent=state.PROJECTS, actor=Actor.AGENT, by=caller.gid, operation=Operation.UPDATE
+        )
         return _one(request, self._view(caller).project_out(changed))
 
     async def add_members(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -835,7 +966,9 @@ class AsanaApi:
         if field.gid in project.custom_fields:
             raise wire.undocumented("a custom field setting for a field already on the project")
         changed = project.model_copy(update={"custom_fields": [*project.custom_fields, field.gid]})
-        self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
+        self._world.put_record(
+            changed, parent=state.PROJECTS, actor=Actor.AGENT, by=caller.gid, operation=Operation.UPDATE
+        )
         return _one(request, view.setting_out(changed, field))
 
     async def remove_custom_field_setting(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -845,7 +978,9 @@ class AsanaApi:
         if field.gid not in project.custom_fields:
             raise wire.undocumented("removing a custom field setting the project does not have")
         changed = project.model_copy(update={"custom_fields": [f for f in project.custom_fields if f != field.gid]})
-        self._world.put_record(changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE)
+        self._world.put_record(
+            changed, parent=state.PROJECTS, actor=Actor.AGENT, by=caller.gid, operation=Operation.UPDATE
+        )
         return _answer(wire.empty())
 
     # ------------------------------------------------------------------ sections
@@ -875,7 +1010,7 @@ class AsanaApi:
             raise wire.undocumented("adding a task to a section of a project it is not in")
         memberships = [placed if m.project == section.project else m for m in task.memberships]
         moved = task.model_copy(update={"memberships": memberships, "modified_at": self._now()})
-        self._world.put_task(moved, operation=Operation.UPDATE, actor=Actor.AGENT)
+        self._world.put_task(moved, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
         return _answer(wire.empty())
 
     # ------------------------------------------------------------------ custom fields, tags
@@ -920,7 +1055,7 @@ class AsanaApi:
             workspace=view.workspace(named, status=400).gid,
             created_at=self._now(),
         )
-        self._world.put_record(tag, parent=state.TAGS, actor=Actor.AGENT)
+        self._world.put_record(tag, parent=state.TAGS, actor=Actor.AGENT, by=caller.gid)
         return _created(request, view.tag_out(tag), "tags")
 
     async def create_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -957,7 +1092,7 @@ class AsanaApi:
         if not adding:
             tags = [t for t in task.tags if t != tag.gid]
         changed = task.model_copy(update={"tags": tags, "modified_at": self._now()})
-        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT)
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
         return _answer(wire.empty())
 
     async def add_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -1063,10 +1198,12 @@ class AsanaApi:
         now = self._now()
         task = wire.AsanaTask(
             gid=self._world.next_gid(),
+            resource_subtype=sent.resource_subtype,
             name=sent.name,
             notes=sent.notes,
             completed=sent.completed,
             completed_at=now if sent.completed else None,
+            approval_status=sent.approval_status,
             due_on=_due_on(sent.due_on, sent.due_at),
             due_at=sent.due_at,
             assignee=assignee.gid if assignee is not None else None,
@@ -1079,7 +1216,7 @@ class AsanaApi:
             modified_at=now,
         )
         task = task.model_copy(update={"custom_fields": self._values(view, task, sent.custom_fields)})
-        self._world.put_task(task, operation=Operation.CREATE, actor=Actor.AGENT)
+        self._world.put_task(task, operation=Operation.CREATE, actor=Actor.AGENT, by=caller.gid)
         return _created(request, self._view(caller).task_out(task), "tasks")
 
     async def create_task(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -1112,9 +1249,18 @@ class AsanaApi:
             update["name"] = sent.name
         if "notes" in given:
             update["notes"] = sent.notes
-        if "completed" in given:
-            update["completed"] = sent.completed
-            update["completed_at"] = (task.completed_at if task.completed else now) if sent.completed else None
+        status = sent.approval_status if "approval_status" in given else None
+        if "completed" in given or status is not None:
+            completed, approval = wire.approval_state(
+                task.resource_subtype,
+                status,
+                sent.completed if "completed" in given else None,
+                was=task.approval_status,
+            )
+            assert completed is not None
+            update["completed"] = completed
+            update["approval_status"] = approval
+            update["completed_at"] = (task.completed_at if task.completed else now) if completed else None
         if "due_on" in given:
             update["due_on"] = sent.due_on
             update["due_at"] = None
@@ -1127,7 +1273,7 @@ class AsanaApi:
         if "custom_fields" in given:
             update["custom_fields"] = self._values(view, task, sent.custom_fields)
         changed = task.model_copy(update=update)
-        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT)
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
         return _one(request, self._view(caller).task_out(changed))
 
     async def set_parent(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -1142,12 +1288,12 @@ class AsanaApi:
                     raise wire.undocumented("a parent that is the task itself or one of its subtasks")
                 ancestor = self._world.task(ancestor.parent) if ancestor.parent is not None else None
         changed = task.model_copy(update={"parent": sent.parent, "modified_at": self._now()})
-        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT)
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
         return _one(request, self._view(caller).task_out(changed))
 
     async def delete_task(self, request: Request, caller: wire.AsanaUser) -> Response:
         task = self._view(caller).task(request.path_params["gid"])
-        self._world.delete_task(task, actor=Actor.AGENT)
+        self._world.delete_task(task, actor=Actor.AGENT, by=caller.gid)
         return _answer(wire.empty())
 
     # ------------------------------------------------------------------ stories
@@ -1159,7 +1305,7 @@ class AsanaApi:
         story = wire.AsanaStory(
             gid=self._world.next_gid(), text=sent.text, task=task.gid, created_by=caller.gid, created_at=self._now()
         )
-        self._world.put_story(story, actor=Actor.AGENT)
+        self._world.put_story(story, actor=Actor.AGENT, by=caller.gid)
         return _created(request, view.story_out(story), "stories")
 
     async def stories(self, request: Request, caller: wire.AsanaUser) -> Response:
@@ -1167,6 +1313,392 @@ class AsanaApi:
         task = view.task(request.path_params["gid"])
         self._world.saw(state.task_ref(task.gid), Operation.READ)
         return self._listed(request, [view.story_out(s) for s in self._world.stories(task.gid)])
+
+    # ------------------------------------------------------------------ followers, projects, dependencies
+
+    async def _followers(self, request: Request, caller: wire.AsanaUser, *, adding: bool) -> Response:
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        named = wire.followers_in(wire.envelope(await request.body()))
+        users = [view.user(n, field="followers", status=400).gid for n in named]
+        if adding:
+            followers = [*task.followers, *(u for u in dict.fromkeys(users) if u not in task.followers)]
+        else:
+            followers = [f for f in task.followers if f not in users]
+        changed = task.model_copy(update={"followers": followers, "modified_at": self._now()})
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
+        return _one(request, self._view(caller).task_out(changed))
+
+    async def add_followers(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._followers(request, caller, adding=True)
+
+    async def remove_followers(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._followers(request, caller, adding=False)
+
+    async def add_project(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """Put the task in the project, in the section named, else "at the end of the project": the bottom of its last
+        section. A task already in the project is only moved, to the section named; a position, the task being
+        in another workspace, and a twenty-first project are refused by name."""
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        sent = wire.project_op(wire.envelope(await request.body()), adding=True)
+        project = view.project(sent.project, field="project", status=400)
+        if project.workspace != task.workspace:
+            raise wire.undocumented("adding a task to a project of another workspace")
+        sections = self._world.sections(project.gid)
+        if sent.section is not None:
+            chosen = view.section(sent.section, field="section", status=400)
+            if chosen.project != project.gid:
+                raise wire.undocumented("a section that is not of the project a task is added to")
+        elif any(m.project == project.gid for m in task.memberships):
+            raise wire.undocumented("addProject for a task already in the project, naming no section")
+        else:
+            chosen = sections[-1]
+        placed = wire.AsanaMembership(project=project.gid, section=chosen.gid)
+        if any(m.project == project.gid for m in task.memberships):
+            memberships = [placed if m.project == project.gid else m for m in task.memberships]
+        elif len(task.memberships) >= MOST_PROJECTS:
+            raise wire.undocumented(f"a task in more than {MOST_PROJECTS} projects")
+        else:
+            memberships = [*task.memberships, placed]
+        changed = task.model_copy(update={"memberships": memberships, "modified_at": self._now()})
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    async def remove_project(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        sent = wire.project_op(wire.envelope(await request.body()), adding=False)
+        project = view.project(sent.project, field="project", status=400)
+        if not any(m.project == project.gid for m in task.memberships):
+            raise wire.undocumented("removing a task from a project it is not in")
+        memberships = [m for m in task.memberships if m.project != project.gid]
+        changed = task.model_copy(update={"memberships": memberships, "modified_at": self._now()})
+        self._world.put_task(changed, operation=Operation.UPDATE, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    async def _linked(self, request: Request, caller: wire.AsanaUser, *, adding: bool, dependents: bool) -> Response:
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        name = "dependents" if dependents else "dependencies"
+        named = wire.dependency_gids(wire.envelope(await request.body()), name)
+        others = [view.task(g, field=name, status=400) for g in dict.fromkeys(named)]
+        if any(o.gid == task.gid for o in others):
+            raise wire.undocumented("a task that depends on itself")
+        now = self._now()
+        for dependent, dependency in ((o, task) if dependents else (task, o) for o in others):
+            held = self._world.task(dependent.gid)
+            assert held is not None
+            if adding:
+                kept = [*held.dependencies, *([dependency.gid] if dependency.gid not in held.dependencies else [])]
+            else:
+                kept = [g for g in held.dependencies if g != dependency.gid]
+            tied = len(kept) + len(self._view(caller).dependents_of(held.gid))
+            if adding and tied > MOST_DEPENDENCIES:
+                raise wire.undocumented(f"a task with more than {MOST_DEPENDENCIES} dependents and dependencies")
+            self._world.put_task(
+                held.model_copy(update={"dependencies": kept, "modified_at": now}),
+                operation=Operation.UPDATE,
+                actor=Actor.AGENT,
+                by=caller.gid,
+            )
+        return _answer(wire.empty())
+
+    async def add_dependencies(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._linked(request, caller, adding=True, dependents=False)
+
+    async def remove_dependencies(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._linked(request, caller, adding=False, dependents=False)
+
+    async def add_dependents(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._linked(request, caller, adding=True, dependents=True)
+
+    async def remove_dependents(self, request: Request, caller: wire.AsanaUser) -> Response:
+        return await self._linked(request, caller, adding=False, dependents=True)
+
+    async def dependencies(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        self._world.saw(state.task_ref(task.gid), Operation.READ)
+        found = [_held(self._world.task(g), g) for g in task.dependencies]
+        return self._listed(request, [view.task_out(t) for t in found])
+
+    async def dependents(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        task = view.task(request.path_params["gid"])
+        self._world.saw(state.task_ref(task.gid), Operation.READ)
+        return self._listed(request, [view.task_out(t) for t in view.dependents_of(task.gid)])
+
+    # ------------------------------------------------------------------ project, section, tag, story updates
+
+    async def update_project(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        project = view.project(request.path_params["gid"])
+        sent = wire.project_update(wire.envelope(await request.body()))
+        changed = project.model_copy(update={f: getattr(sent, f) for f in sent.model_fields_set})
+        self._world.put_record(
+            changed, parent=state.PROJECTS, actor=Actor.AGENT, operation=Operation.UPDATE, by=caller.gid
+        )
+        return _one(request, self._view(caller).project_out(changed))
+
+    async def update_section(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        section = view.section(request.path_params["gid"])
+        sent = wire.section_update(wire.envelope(await request.body()))
+        changed = section.model_copy(update={"name": sent.name})
+        self._world.put_record(
+            changed, parent=section.project, actor=Actor.AGENT, operation=Operation.UPDATE, by=caller.gid
+        )
+        return _one(request, self._view(caller).section_out(changed))
+
+    async def delete_section(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """ "sections must be empty to be deleted. The last remaining section cannot be deleted." Asana's words for
+        either refusal are not documented, so each is refused by name."""
+        view = self._view(caller)
+        section = view.section(request.path_params["gid"])
+        if any(m.section == section.gid for t in self._world.tasks() for m in t.memberships):
+            raise wire.undocumented("deleting a section that holds tasks")
+        if len(self._world.sections(section.project)) == 1:
+            raise wire.undocumented("deleting the last section of a project")
+        self._world.delete_record(section, parent=section.project, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    async def update_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        tag = view.tag(request.path_params["gid"])
+        sent = wire.tag_update(wire.envelope(await request.body()))
+        changed = tag.model_copy(update={f: getattr(sent, f) for f in sent.model_fields_set})
+        self._world.put_record(changed, parent=state.TAGS, actor=Actor.AGENT, operation=Operation.UPDATE, by=caller.gid)
+        return _one(request, self._view(caller).tag_out(changed))
+
+    async def delete_tag(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """Asana does not document what becomes of a task that carries the tag, so a tag in use is refused by name."""
+        view = self._view(caller)
+        tag = view.tag(request.path_params["gid"])
+        if any(tag.gid in t.tags for t in self._world.tasks()):
+            raise wire.undocumented("deleting a tag that tasks carry")
+        self._world.delete_record(tag, parent=state.TAGS, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    def _story(self, view: View, gid: str) -> wire.AsanaStory:
+        found = self._world.story(wire.gid_in_path("story", gid))
+        if found is None:
+            raise wire.unknown("story", gid, status=404)
+        view.task(found.task)
+        return found
+
+    async def story(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        story = self._story(view, request.path_params["gid"])
+        self._world.saw(state.story_ref(story.gid), Operation.READ)
+        return _one(request, view.story_out(story))
+
+    async def update_story(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        story = self._story(view, request.path_params["gid"])
+        sent = wire.story_update(wire.envelope(await request.body()))
+        changed = story.model_copy(update={"text": sent.text, "edited": True})
+        self._world.put_story(changed, actor=Actor.AGENT, operation=Operation.UPDATE, by=caller.gid)
+        return _one(request, self._view(caller).story_out(changed))
+
+    async def delete_story(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """ "A user can only delete stories they have created"; Asana's refusal of another's is not documented."""
+        view = self._view(caller)
+        story = self._story(view, request.path_params["gid"])
+        if story.created_by != caller.gid:
+            raise wire.undocumented("deleting a story another user wrote")
+        self._world.delete_story(story, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    # ------------------------------------------------------------------ attachments
+
+    def _parent_task(self, view: View, gid: str) -> wire.AsanaTask:
+        """The task an attachment hangs from. Asana also takes a project or a project brief; those are refused by
+        name."""
+        if not wire.is_gid(gid):
+            raise wire.not_an_id("parent", gid)
+        if self._world.task(gid) is None and self._world.project(gid) is not None:
+            raise wire.unsupported("an attachment whose parent is a project")
+        return view.task(gid, field="parent", status=400)
+
+    async def create_attachment(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        content_type = request.headers["content-type"] if "content-type" in request.headers else ""
+        sent = wire.attachment_upload(content_type, await request.body())
+        task = self._parent_task(view, sent.parent)
+        attachment = wire.AsanaAttachment(
+            gid=self._world.next_gid(),
+            name=sent.name,
+            task=task.gid,
+            created_at=self._now(),
+            content_type=sent.content_type,
+            content=base64.b64encode(sent.content).decode("ascii"),
+            size=len(sent.content),
+        )
+        self._world.put_record(attachment, parent=task.gid, actor=Actor.AGENT, by=caller.gid)
+        return _one(request, view.attachment_out(attachment))
+
+    async def attachments(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        parent = _query(request).text("parent")
+        if parent is None:
+            raise wire.bad("parent: Missing input")
+        task = self._parent_task(view, parent)
+        self._world.saw(state.task_ref(task.gid), Operation.READ)
+        return self._listed(request, [view.attachment_out(a) for a in self._world.attachments(task.gid)])
+
+    async def attachment(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        attachment = view.attachment(request.path_params["gid"])
+        self._world.saw(state.record_ref(attachment.gid), Operation.READ)
+        return _one(request, view.attachment_out(attachment))
+
+    async def delete_attachment(self, request: Request, caller: wire.AsanaUser) -> Response:
+        attachment = self._view(caller).attachment(request.path_params["gid"])
+        self._world.delete_record(attachment, parent=attachment.task, actor=Actor.AGENT, by=caller.gid)
+        return _answer(wire.empty())
+
+    async def asset(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """An attachment's bytes, exactly as uploaded: where `download_url` points."""
+        view = self._view(caller)
+        asset = _query(request).text("asset_id")
+        if asset is None:
+            raise wire.undocumented("get_asset without an asset_id")
+        found = view.attachment(asset, field="asset_id")
+        expires = _query(request).text("expires")
+        if expires is None or not expires.isdigit():
+            raise wire.undocumented("get_asset without the expiry its download_url carries")
+        if int(expires) < int(view.now.timestamp()):
+            raise wire.undocumented("a download_url used after the two minutes it may be valid for")
+        self._world.saw(state.record_ref(found.gid), Operation.READ)
+        return Response(base64.b64decode(found.content), media_type=found.content_type)
+
+    # ------------------------------------------------------------------ events, webhooks
+
+    def _subscribed(self, view: View, gid: str, *, field: str) -> wire.EventRef:
+        """What a subscription may be to here: a task or a project. A goal, portfolio, team or workspace is refused by
+        name."""
+        if not wire.is_gid(gid):
+            raise wire.not_an_id(field, gid)
+        task = self._world.task(gid)
+        if task is not None:
+            view.task(gid, field=field, status=400)
+            return wire.EventRef(gid=gid, resource_type="task", name=task.name)
+        project = self._world.project(gid)
+        if project is not None:
+            view.project(gid, field=field, status=400)
+            return wire.EventRef(gid=gid, resource_type="project", name=project.name)
+        if self._world.workspace(gid) is not None or self._world.team(gid) is not None:
+            raise wire.unsupported(f"a {field} that is a workspace or a team")
+        raise wire.unknown(field, gid, status=400)
+
+    async def events(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """The events on a task or project since a sync token: with none, or one that expired, the 412 that carries a
+        token to start from; at most 100 a call, `has_more` when there are more; each call answers the token for the
+        next."""
+        view = self._view(caller)
+        query = _query(request)
+        resource = query.text("resource")
+        if resource is None:
+            raise wire.bad("resource: Missing input")
+        subscribed = self._subscribed(view, resource, field="resource")
+        now = self._clock.now()
+        given = query.text("sync")
+        position = self._world.read_sync(given, now) if given is not None else None
+        if position is None:
+            fresh = self._world.sync_token(self._world.position(), now)
+            return _answer(wire.sync_failed(wire.SYNC_REQUIRED, fresh), 412)
+        found = list(itertools.islice(self._world.events_after(position, resource), EVENTS_AT_MOST + 1))
+        more = len(found) > EVENTS_AT_MOST
+        page = found[:EVENTS_AT_MOST]
+        self._world.saw(state.record_ref(subscribed.gid), Operation.READ)
+        resume = page[-1].gid if more else self._world.position()
+        names = {u.gid: u.name for u in self._world.users()}
+        return _answer(
+            wire.events_page(
+                [wire.event_json(e, names, named=True) for e in page],
+                wire.field_tree(query),
+                sync=self._world.sync_token(resume, now),
+                more=more,
+            )
+        )
+
+    async def list_webhooks(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        query = _query(request)
+        workspace = query.text("workspace")
+        if workspace is None:
+            raise wire.bad("workspace: Missing input")
+        ws = view.workspace(workspace, status=400)
+        resource = query.text("resource")
+        found = [
+            h
+            for h in self._world.webhooks()
+            if h.created_by == caller.gid and h.workspace == ws.gid and (resource is None or h.resource == resource)
+        ]
+        self._world.saw(state.record_ref(ws.gid), Operation.SEARCH)
+        return self._listed(request, [view.webhook_out(h) for h in found])
+
+    async def create_webhook(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """Make a webhook, as Asana's two-part process does: the target is sent the handshake while this request is in
+        flight, and the webhook exists only if it answers it. The 201 carries the secret."""
+        view = self._view(caller)
+        sent = wire.webhook_create(wire.envelope(await request.body()))
+        subscribed = self._subscribed(view, sent.resource, field="resource")
+        host = (urlsplit(sent.target).hostname or "").lower()
+        if urlsplit(sent.target).scheme not in ("http", "https") or not host:
+            raise wire.undocumented(f"a webhook target `{sent.target}` that is not an http(s) URL")
+        if host == "localhost":
+            raise wire.undocumented("a webhook target whose host is `localhost` (Asana answers 403 Forbidden)")
+        if any(
+            h.resource == sent.resource and h.target == sent.target and h.created_by == caller.gid
+            for h in self._world.webhooks()
+        ):
+            raise wire.undocumented("a second webhook on the same resource and target")
+        secret = webhooks.secret_for(f"{sent.resource}/{sent.target}", self._world.head())
+        if not await webhooks.handshake(sent.target, secret):
+            raise wire.undocumented("a webhook whose target does not answer the X-Hook-Secret handshake")
+        task = self._world.task(sent.resource)
+        project = self._world.project(sent.resource)
+        workspace = task.workspace if task is not None else _held(project, sent.resource).workspace
+        hook = wire.AsanaWebhook(
+            gid=self._world.next_gid(),
+            resource=subscribed.gid,
+            target=sent.target,
+            secret=secret,
+            active=True,
+            filters=sent.filters,
+            workspace=workspace,
+            created_by=caller.gid,
+            created_at=self._now(),
+            cursor=self._world.position(),
+        )
+        self._world.put_record(hook, parent=state.WEBHOOKS, actor=Actor.AGENT, by=caller.gid)
+        shown = wire.one(view.webhook_out(hook), wire.field_tree(_query(request)))
+        body = json.loads(shown)
+        body["X-Hook-Secret"] = secret
+        return _answer(json.dumps(body).encode(), 201, {"Location": f"{wire.API_BASE}/webhooks/{hook.gid}"})
+
+    async def webhook(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        hook = view.webhook(request.path_params["gid"])
+        self._world.saw(state.record_ref(hook.gid), Operation.READ)
+        return _one(request, view.webhook_out(hook))
+
+    async def update_webhook(self, request: Request, caller: wire.AsanaUser) -> Response:
+        view = self._view(caller)
+        hook = view.webhook(request.path_params["gid"])
+        filters = wire.webhook_update(wire.envelope(await request.body()))
+        changed = hook.model_copy(update={"filters": filters})
+        self._world.put_record(
+            changed, parent=state.WEBHOOKS, actor=Actor.AGENT, operation=Operation.UPDATE, by=caller.gid
+        )
+        return _one(request, self._view(caller).webhook_out(changed))
+
+    async def delete_webhook(self, request: Request, caller: wire.AsanaUser) -> Response:
+        hook = self._view(caller).webhook(request.path_params["gid"])
+        self._world.delete_webhook(hook, actor=Actor.AGENT)
+        return _answer(wire.empty())
 
     # ------------------------------------------------------------------ search, typeahead
 
@@ -1265,24 +1797,58 @@ class AsanaApi:
         return refuse
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
-    api = AsanaApi(store, clock)
-    g = api.guarded
+class AsanaApp(Starlette):
+    """The routes, and the deliveries owed the webhooks. Once a call that may have changed something is answered, what
+    each webhook is owed is sent (`webhooks.deliver`) in a task of its own, so the caller's answer never waits on its
+    own webhook endpoint."""
 
-    async def no_route(request: Request, exc: Exception) -> Response:
-        """Asana answers a path it has no route for, and a method a path does not take, 404 "No matching route for
-        request" (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
-        del request, exc
-        return _answer(wire.failed("No matching route for request"), 404)
+    def __init__(self, store: Store, clock: Clock) -> None:
+        api = AsanaApi(store, clock)
+        g = api.guarded
 
-    return Starlette(
-        routes=[
-            Route("/-/oauth_token", api.oauth_token, methods=["POST"]),
-            *(Route(path, g(getattr(api, handler)), methods=[method]) for method, path, handler in SERVED),
-            *(
-                Route(path, g(api.unserved(method, path, operation)), methods=[method])
-                for method, path, operation in UNSERVED
-            ),
-        ],
-        exception_handlers={404: no_route, 405: no_route},
-    )
+        async def no_route(request: Request, exc: Exception) -> Response:
+            """Asana answers a path it has no route for, and a method a path does not take, 404 "No matching route
+            for request" (`tests/data/asana_rest_1_0/real-service-without-a-token-2026-10-08.txt`)."""
+            del request, exc
+            return _answer(wire.failed("No matching route for request"), 404)
+
+        super().__init__(
+            routes=[
+                Route("/-/oauth_token", api.oauth_token, methods=["POST"]),
+                Route(ASSET_PATH, g(api.asset), methods=["GET"]),
+                *(Route(path, g(getattr(api, handler)), methods=[method]) for method, path, handler in SERVED),
+                *(
+                    Route(path, g(api.unserved(method, path, operation)), methods=[method])
+                    for method, path, operation in UNSERVED
+                ),
+            ],
+            exception_handlers={404: no_route, 405: no_route},
+        )
+        self._world = AsanaWorld(store)
+        self._clock = clock
+        self._sending: set[asyncio.Task[None]] = set()
+        self._one_at_a_time = asyncio.Lock()
+
+    async def _deliver(self) -> None:
+        async with self._one_at_a_time:
+            await webhooks.deliver(self._world, self._clock)
+
+    def delivering(self) -> int:
+        """`DeliversInBackground`: webhook deliveries started and not yet answered."""
+        return len(self._sending)
+
+    async def settled(self) -> None:
+        """Wait for every delivery already started."""
+        while self._sending:
+            await asyncio.gather(*list(self._sending))
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await super().__call__(scope, receive, send)
+        if scope["type"] == "http" and scope["method"] != "GET" and webhooks.watching(self._world):
+            task = asyncio.create_task(self._deliver())
+            self._sending.add(task)
+            task.add_done_callback(self._sending.discard)
+
+
+def build_app(store: Store, clock: Clock) -> AsanaApp:
+    return AsanaApp(store, clock)
