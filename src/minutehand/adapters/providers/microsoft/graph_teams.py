@@ -4,6 +4,10 @@ Messages are the connector's activities, read in Graph's `chatMessage` shape: th
 a person's from a user; an Adaptive Card is an attachment whose `content` is the card's JSON as a string. A
 channel's id is the same in both; a 1:1 chat has a connector id (`a:…`) and a Graph id (`19:…@unq.gbl.spaces`).
 
+Posting: a signed-in user posts a message to a chat or a channel and replies to a channel message
+(`chatmessage-post`, `chatmessage-post-replies`), keeping what they send as sent; `POST /chats` makes a one-on-one
+or group chat (`chat-post`); `joinedTeams` lists a user's teams and `primaryChannel` is the team's General channel.
+
 Query options: `$select` everywhere; `$top` and `@odata.nextLink` on every list; `$expand=replies` on a channel's
 messages; `$filter` on users (`mail`, `userPrincipalName`, `displayName`, `id` with `eq`, `startswith` on
 `displayName`) and on channels (`displayName eq`). Any other `$filter`, `$orderby` or `$search` is refused 400, as
@@ -30,19 +34,25 @@ from minutehand.adapters.providers.microsoft.common import (
     not_found,
     query,
 )
+from minutehand.adapters.providers.microsoft.connector import snapshot
 from minutehand.adapters.providers.microsoft.state import (
     GRAPH,
+    SERVICE_URL,
     AwayRecord,
     ConversationRecord,
     MicrosoftWorld,
     TeamRecord,
     UserRecord,
     conversation_ref,
+    derived_uuid,
+    graph_time,
+    message_ref,
     team_ref,
     user_ref,
 )
+from minutehand.adapters.providers.microsoft.subscriptions import conversation_watch, notify
 from minutehand.domain.errors import NotServed
-from minutehand.domain.world import Operation
+from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 20
@@ -95,6 +105,28 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
         text = text.replace(
             mention.text, f'<at id="{n}">{mention.text.removeprefix("<at>").removesuffix("</at>")}</at>'
         )
+    posted = activity.graph
+    if posted is not None:
+        return wire.ChatMessage(
+            id=activity.id,
+            replyToId=activity.replyToId if channel else None,
+            etag=activity.id,
+            createdDateTime=activity.timestamp,
+            lastModifiedDateTime=activity.localTimestamp or activity.timestamp,
+            lastEditedDateTime=activity.localTimestamp,
+            subject=posted.subject,
+            importance=posted.importance,
+            chatId=None if channel else conversation.graph_id,
+            channelIdentity=wire.ChannelIdentity(teamId=team.id, channelId=conversation.graph_id)
+            if channel and team
+            else None,
+            sender=sender,
+            body=posted.body,
+            attachments=posted.attachments,
+            mentions=posted.mentions,
+            reactions=[],
+            webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
+        )
     return wire.ChatMessage(
         id=activity.id,
         replyToId=activity.replyToId if channel else None,
@@ -113,6 +145,16 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
         reactions=[],
         webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
     )
+
+
+def message_resource(world: MicrosoftWorld, conversation: ConversationRecord, message: str) -> str:
+    """The `resource` of a message's change notification, as the page shows it: `chats('{id}')/messages('{id}')`, and
+    in a channel `teams('{id}')/channels('{id}')/messages('{id}')`
+    (https://learn.microsoft.com/en-us/graph/teams-changenotifications-chatmessage)."""
+    team = world.team(conversation.team_id) if conversation.team_id is not None else None
+    if team is not None and conversation.type is wire.ConversationType.CHANNEL:
+        return f"teams('{team.id}')/channels('{conversation.graph_id}')/messages('{message}')"
+    return f"chats('{conversation.graph_id}')/messages('{message}')"
 
 
 def _quoted(text: str) -> str:
@@ -215,6 +257,8 @@ class TeamsGraph:
             parts = ["users", claims.oid, *parts[1:]]
         if request.method != "GET":
             raise NotServed(f"{request.method} on a user")
+        if parts[2:] == ["joinedTeams"]:
+            return self._joined_teams(request, self._user(parts[1]))
         if len(parts) == 1:
             self._refuse_options(request, {"$filter", "$count"})
             clause = query(request, "$filter")
@@ -340,6 +384,15 @@ class TeamsGraph:
             return self._one(request, answer, f"{GRAPH}/$metadata#teams/$entity")
         if rest == ["members"]:
             return self._members(request, team.members, team.tenant_id, f"teams('{team.id}')/members")
+        if rest == ["primaryChannel"]:
+            self._refuse_options(request, set())
+            general = self._world.conversation(team.general_channel_id)
+            if general is None:
+                raise NotServed("the primary channel of a team whose General channel the world does not hold")
+            self._world.saw(conversation_ref(general.id), Operation.READ)
+            return self._one(
+                request, self._graph_channel(general), f"{GRAPH}/$metadata#teams('{team.id}')/primaryChannel/$entity"
+            )
         if rest[:1] != ["channels"]:
             raise NotServed(f"the segment '{'/'.join(rest)}'")
         if len(rest) == 1:
@@ -411,6 +464,8 @@ class TeamsGraph:
 
     async def chats(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
+        if len(parts) == 1 and request.method == "POST":
+            return await self._create_chat(request, claims)
         if len(parts) == 1:
             if claims.oid is None:
                 raise NotServed(
@@ -444,6 +499,10 @@ class TeamsGraph:
         channel = conversation.type is wire.ConversationType.CHANNEL
         every = self._world.messages(conversation.id)
         roots = [m for m in every if not channel or m.replyToId is None]
+        if request.method == "POST":
+            return await self._post(request, conversation, rest, every, context)
+        if rest in (["delta"], ["delta()"]):
+            return self._delta(request, conversation, context)
 
         def modified(m: wire.Activity) -> str:
             return m.localTimestamp or m.timestamp
@@ -493,6 +552,311 @@ class TeamsGraph:
             self._world.saw(conversation_ref(conversation.id), Operation.READ)
             return self._page(request, replies_of(root.id), f"{GRAPH}/$metadata#{context}('{root.id}')/replies")
         raise NotServed(f"the segment '{'/'.join(rest[1:])}'")
+
+    # ------------------------------------------------------------------ joined teams
+
+    def _joined_teams(self, request: Request, user: UserRecord) -> Response:
+        """`joinedTeams`: the teams the user is a direct member of, with what the page says is populated
+        (user-list-joinedteams); it takes no OData query parameter."""
+        for option in request.query_params:
+            raise NotServed(f"the query option {option} on joinedTeams: the page says it supports none")
+        teams = [
+            wire.JoinedTeam(id=t.id, displayName=t.display_name, tenantId=t.tenant_id)
+            for t in self._world.teams()
+            if user.user.id in t.members
+        ]
+        self._world.saw(user_ref(user.user.id), Operation.READ)
+        return self._page(request, teams, f"{GRAPH}/$metadata#teams")
+
+    # ------------------------------------------------------------------ chats, created
+
+    def _member_user(self, member: wire.PostedMember) -> UserRecord:
+        bound = re.fullmatch(r".*/users(?:\('([^']+)'\)|/([^/]+))", member.user_bind)
+        if bound is None:
+            raise NotServed(f"a member bound as {member.user_bind!r}: only a user of the tenant by id is held")
+        found = self._world.user_by(bound.group(1) or bound.group(2))
+        if found is None:
+            raise NotServed(f"a chat member {bound.group(1) or bound.group(2)!r}, who is no user of the tenant")
+        return found
+
+    async def _create_chat(self, request: Request, claims: wire.Claims) -> Response:
+        """`POST /chats`: every participant, the caller included, is listed with the role `owner`; a one-on-one chat
+        between two people that exists is returned, not made again (chat-post)."""
+        if claims.oid is None:
+            raise NotServed("POST /chats with no signed-in user: chat-post documents delegated permissions only")
+        try:
+            asked = wire.read(wire.PostedChat, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
+        if asked.model_extra:
+            raise NotServed(
+                f"the chat properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent"
+            )
+        for member in asked.members:
+            if member.model_extra:
+                raise NotServed(f"the member properties {', '.join(sorted(member.model_extra))}")
+            if member.odata_type.lower() != "#microsoft.graph.aadUserConversationMember".lower():
+                raise NotServed(f"a member of the type {member.odata_type!r}: only aadUserConversationMember is held")
+            if member.roles != ["owner"]:
+                raise NotServed(
+                    f"the member roles {member.roles}: only owner is held, as no guest user is in the tenant"
+                )
+        people = list(dict.fromkeys(self._member_user(m).user.id for m in asked.members))
+        if len(people) != len(asked.members):
+            raise NotServed("a chat naming one user twice: Graph's answer is not documented")
+        if claims.oid not in people:
+            raise NotServed(
+                "a chat that leaves out the user making it: the page requires them in members, and no answer"
+            )
+        tenant = self._user(claims.oid).tenant_id
+        if asked.chatType == "oneOnOne":
+            if len(people) != 2 or asked.topic is not None:
+                raise NotServed(
+                    "a oneOnOne chat of other than two members, or with a topic: Graph's answer is not documented"
+                )
+            existing = next(
+                (
+                    c
+                    for c in self._world.conversations()
+                    if c.type is wire.ConversationType.PERSONAL and sorted(c.members) == sorted(people)
+                ),
+                None,
+            )
+            if existing is None:
+                chat_id = "19:" + "_".join(sorted(people)) + "@unq.gbl.spaces"
+                existing = self._new_chat(chat_id, wire.ConversationType.PERSONAL, None, people, tenant)
+        elif asked.chatType == "group":
+            if len(people) < 3:
+                raise NotServed("a group chat of fewer than three people: Graph's answer is not documented")
+            chat_id = f"19:{derived_uuid('chat', str(self._world.next_seq())).replace('-', '')}@thread.v2"
+            existing = self._new_chat(chat_id, wire.ConversationType.GROUP_CHAT, asked.topic, people, tenant)
+        else:
+            raise NotServed(f"the chatType {asked.chatType!r}: chat-post names group and oneOnOne")
+        return Response(
+            wire.with_context(wire.dump(self._chat(existing)), f"{GRAPH}/$metadata#chats/$entity"),
+            status_code=201,
+            media_type=GRAPH_JSON,
+        )
+
+    def _new_chat(
+        self, chat_id: str, kind: wire.ConversationType, topic: str | None, people: list[str], tenant: str
+    ) -> ConversationRecord:
+        made = ConversationRecord(
+            id=chat_id,
+            graph_id=chat_id,
+            type=kind,
+            tenant_id=tenant,
+            display_name=topic,
+            members=people,
+            bot_installed=False,
+            created=graph_time(self._clock.now()),
+        )
+        self._world.write_conversation(made, operation=Operation.CREATE, actor=Actor.AGENT)
+        return made
+
+    # ------------------------------------------------------------------ messages, posted
+
+    async def _post(
+        self,
+        request: Request,
+        conversation: ConversationRecord,
+        rest: list[str],
+        every: list[wire.Activity],
+        context: str,
+    ) -> Response:
+        """A message to a chat or a channel, or a reply to a channel message, from the signed-in user, kept as sent
+        (chatmessage-post, chatmessage-post-replies)."""
+        channel = conversation.type is wire.ConversationType.CHANNEL
+        claims = graph_caller(request, self._world)
+        root: str | None = None
+        if rest:
+            found = next((m for m in every if m.id == rest[0]), None)
+            if found is None:
+                raise not_found(rest[0])
+            if rest[1:] != ["replies"] or not channel:
+                raise NotServed(f"POST on '{'/'.join(rest)}'")
+            if found.replyToId is not None:
+                raise NotServed("a reply to a reply: Graph's answer is not documented")
+            root = found.id
+        if claims.oid is None:
+            raise NotServed(
+                "a message posted with no signed-in user: chatmessage-post documents application permissions "
+                "for migration only"
+            )
+        user = self._user(claims.oid)
+        if user.user.id not in conversation.members:
+            raise NotServed("a message posted where the user is no member: Graph's answer is not documented")
+        try:
+            asked = wire.read(wire.PostedChatMessage, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
+        posted = self._kept(asked)
+        activity = wire.Activity(
+            type=wire.ActivityType.MESSAGE,
+            id=self._world.next_activity_id(self._clock),
+            timestamp=graph_time(self._clock.now()),
+            serviceUrl=SERVICE_URL,
+            sender=wire.ChannelAccount(id=user.mri, name=user.user.displayName, aadObjectId=user.user.id),
+            conversation=wire.ConversationAccount(
+                id=conversation.id,
+                conversationType=conversation.type,
+                tenantId=conversation.tenant_id,
+                isGroup=conversation.type is not wire.ConversationType.PERSONAL,
+            ),
+            recipient=wire.ChannelAccount(id=conversation.id),
+            text=posted.body.content,
+            attachments=[
+                wire.Attachment(
+                    contentType=a.contentType,
+                    content=json.loads(a.content),
+                    id=a.id,
+                    name=a.name,
+                    contentUrl=a.contentUrl,
+                )
+                for a in posted.attachments
+                if a.contentType == wire.ADAPTIVE_CARD and a.content is not None
+            ]
+            or None,
+            replyToId=root,
+            graph=posted,
+        )
+        self._world.write(
+            message_ref(activity.id),
+            activity,
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            parent=conversation.id,
+            after=snapshot(self._world, conversation, activity, user.user.id),
+        )
+        await notify(
+            self._world,
+            self._clock,
+            conversation_watch(conversation.id),
+            change="created",
+            odata_type="#Microsoft.Graph.chatMessage",
+            resource=message_resource(self._world, conversation, activity.id),
+            item=activity.id,
+        )
+        where = f"{context}('{root}')/replies" if root is not None else context
+        return Response(
+            wire.with_context(
+                wire.dump(chat_message(self._world, conversation, activity)), f"{GRAPH}/$metadata#{where}/$entity"
+            ),
+            status_code=201,
+            media_type=GRAPH_JSON,
+        )
+
+    # ------------------------------------------------------------------ messages, delta
+
+    @staticmethod
+    def _delta_token(*numbers: int) -> str:
+        return base64.urlsafe_b64encode("|".join(str(n) for n in numbers).encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _delta_numbers(token: str) -> tuple[int, int, int]:
+        try:
+            since, offset, size = (
+                int(n) for n in base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().split("|")
+            )
+        except (binascii.Error, ValueError, UnicodeDecodeError) as e:
+            raise bad_request("The delta or skip token is not valid.") from e
+        return since, offset, size
+
+    def _delta(self, request: Request, conversation: ConversationRecord, context: str) -> Response:
+        """`messages/delta`: every message, paged by `$skiptoken` to a `@odata.deltaLink`, then the messages posted
+        or changed since; a channel's replies are left to the replies operations (chatmessage-delta)."""
+        for option in request.query_params:
+            if option not in ("$top", "$skiptoken", "$deltatoken"):
+                raise NotServed(f"{option} on a message delta: only $top and the state tokens are served")
+        channel = conversation.type is wire.ConversationType.CHANNEL
+        token = query(request, "$skiptoken") or query(request, "$deltatoken")
+        top = query(request, "$top")
+        if token:
+            since, offset, size = self._delta_numbers(token)
+        else:
+            if top is not None and (not top.isdigit() or not 1 <= int(top) <= PAGE_MAX):
+                raise NotServed(f"$top={top}: the page names an upper limit of {PAGE_MAX}, and no answer to more")
+            since, offset, size = 0, 0, int(top) if top else PAGE_DEFAULT
+        changed = sorted(
+            (seq, m)
+            for seq, m in self._world.message_versions(conversation.id)
+            if seq > since and (not channel or m.replyToId is None)
+        )
+        page = changed[offset : offset + size]
+        link = f"{GRAPH}{re.sub(r'/delta(\(\))?$', '/delta', request.url.path.removeprefix('/v1.0'))}"
+        if offset + size < len(changed):
+            closing = (
+                f'"@odata.nextLink":{json.dumps(f"{link}?$skiptoken={self._delta_token(since, offset + size, size)}")}'
+            )
+        else:
+            closing = f'"@odata.deltaLink":{json.dumps(f"{link}?$deltatoken={self._delta_token(self._world.store.head(), 0, size)}")}'
+        body = (
+            "{"
+            + f'"@odata.context":{json.dumps(f"{GRAPH}/$metadata#Collection(microsoft.graph.chatMessage)")},'
+            + closing
+            + ',"value":['
+            + ",".join(wire.dump(chat_message(self._world, conversation, m)) for _, m in page)
+            + "]}"
+        )
+        del context
+        self._world.saw(conversation_ref(conversation.id), Operation.READ)
+        return Response(body, media_type=GRAPH_JSON)
+
+    @staticmethod
+    def _kept(asked: wire.PostedChatMessage) -> wire.GraphPosted:
+        """What a posted message carries, as sent; a property this provider would not keep is refused by name."""
+        if asked.model_extra:
+            raise NotServed(
+                f"the message properties {', '.join(sorted(asked.model_extra))}: they would not be kept as sent"
+            )
+        if asked.body.contentType not in ("text", "html"):
+            raise NotServed(f"the body content type {asked.body.contentType!r}: chatMessage names text and html")
+        if asked.importance not in ("normal", "high", "urgent"):
+            raise NotServed(f"the importance {asked.importance!r}: chatMessage names normal, high and urgent")
+        for item in asked.attachments:
+            if item.model_extra:
+                raise NotServed(f"the attachment properties {', '.join(sorted(item.model_extra))}")
+            if item.contentType == wire.ADAPTIVE_CARD and item.content is not None:
+                try:
+                    json.loads(item.content)
+                except ValueError as e:
+                    raise NotServed(
+                        "an Adaptive Card attachment whose content is not JSON: Graph's answer is not documented"
+                    ) from e
+        mentions: list[wire.ChatMessageMention] = []
+        for mention in asked.mentions:
+            if mention.model_extra or mention.mentioned.model_extra:
+                raise NotServed("a mention of other than a user or an application")
+            who = mention.mentioned.user or mention.mentioned.application
+            if who is None or who.model_extra:
+                raise NotServed("a mention naming neither a user nor an application")
+            identity = wire.Identity(id=who.id, displayName=who.displayName, userIdentityType=who.userIdentityType)
+            mentions.append(
+                wire.ChatMessageMention(
+                    id=mention.id,
+                    mentionText=mention.mentionText,
+                    mentioned=wire.MentionedIdentity(
+                        user=identity if mention.mentioned.user is not None else None,
+                        application=identity if mention.mentioned.user is None else None,
+                    ),
+                )
+            )
+        return wire.GraphPosted(
+            body=wire.ItemBody(contentType=asked.body.contentType, content=asked.body.content),  # type: ignore[arg-type]
+            subject=asked.subject,
+            importance=asked.importance,  # type: ignore[arg-type]
+            attachments=[
+                wire.ChatMessageAttachment(
+                    id=a.id, contentType=a.contentType, content=a.content, contentUrl=a.contentUrl, name=a.name
+                )
+                for a in asked.attachments
+            ],
+            mentions=mentions,
+        )
 
 
 def _mailbox_time(at: datetime) -> str:

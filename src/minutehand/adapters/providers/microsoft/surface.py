@@ -29,6 +29,7 @@ _USER = [
     ("GET", "/presence"),
     ("GET", "/mailboxSettings"),
     ("GET", "/chats"),
+    ("GET", "/joinedTeams"),
     ("GET", "/drive"),
     ("POST", "/sendMail"),
     ("GET", "/mailFolders"),
@@ -44,12 +45,33 @@ _USER = [
     *(
         ("POST", f"{folder}/messages/{{message-id}}/{action}")
         for folder in ("", "/mailFolders/{mailFolder-id}")
-        for action in ("reply", "replyAll")
+        for action in (
+            "reply",
+            "replyAll",
+            "send",
+            "createReply",
+            "createReplyAll",
+            "createForward",
+            "forward",
+            "move",
+            "copy",
+        )
+    ),
+    ("POST", "/messages"),
+    *(
+        (method, f"{folder}/messages/{{message-id}}/attachments")
+        for folder in ("", "/mailFolders/{mailFolder-id}")
+        for method in ("GET", "POST")
+    ),
+    *(
+        ("GET", f"{folder}/messages/{{message-id}}/attachments/{{attachment-id}}")
+        for folder in ("", "/mailFolders/{mailFolder-id}")
     ),
     ("GET", "/calendar"),
     ("GET", "/calendars"),
     ("POST", "/calendar/getSchedule"),
     ("GET", "/calendarView"),
+    ("GET", "/calendarView/delta()"),
     ("GET", "/calendar/calendarView"),
     *(
         operation
@@ -58,11 +80,16 @@ _USER = [
             ("GET", f"{where}/events"),
             ("POST", f"{where}/events"),
             ("GET", f"{where}/events/{{event-id}}"),
+            ("GET", f"{where}/events/{{event-id}}/attachments"),
+            ("POST", f"{where}/events/{{event-id}}/attachments"),
+            ("GET", f"{where}/events/{{event-id}}/attachments/{{attachment-id}}"),
             ("PATCH", f"{where}/events/{{event-id}}"),
             ("DELETE", f"{where}/events/{{event-id}}"),
             ("POST", f"{where}/events/{{event-id}}/accept"),
             ("POST", f"{where}/events/{{event-id}}/tentativelyAccept"),
             ("POST", f"{where}/events/{{event-id}}/decline"),
+            ("POST", f"{where}/events/{{event-id}}/cancel"),
+            ("GET", f"{where}/events/{{event-id}}/instances"),
         )
     ),
 ]
@@ -80,16 +107,23 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/communications/getPresencesByUserId"),
         ("GET", "/teams/{team-id}"),
         ("GET", "/teams/{team-id}/members"),
+        ("GET", "/teams/{team-id}/primaryChannel"),
         ("GET", "/teams/{team-id}/channels"),
         ("GET", _CHANNEL),
         ("GET", f"{_CHANNEL}/members"),
         ("GET", f"{_CHANNEL}/messages"),
+        ("GET", f"{_CHANNEL}/messages/delta()"),
+        ("POST", f"{_CHANNEL}/messages"),
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}"),
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies"),
+        ("POST", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies"),
         ("GET", "/chats"),
+        ("POST", "/chats"),
         ("GET", "/chats/{chat-id}"),
         ("GET", "/chats/{chat-id}/members"),
         ("GET", "/chats/{chat-id}/messages"),
+        ("GET", "/chats/{chat-id}/messages/delta()"),
+        ("POST", "/chats/{chat-id}/messages"),
         ("GET", "/chats/{chat-id}/messages/{chatMessage-id}"),
         ("GET", "/sites"),
         ("GET", "/sites/{site-id}"),
