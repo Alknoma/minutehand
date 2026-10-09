@@ -54,12 +54,13 @@ class Workspace:
     def dm(self, person: str) -> str:
         return state.conversation_id([BOT_USER_ID, state.user_id(person)])
 
-    def channel_without_the_app(self, name: str, *, members: list[str]) -> str:
+    def channel_without_the_app(self, name: str, *, members: list[str], archived: bool = False) -> str:
         """A public channel the scenario made and never invited the app to."""
         channel = wire.SlackChannel(
             id=state.named_channel_id(name),
             name=name,
             is_channel=True,
+            is_archived=archived,
             created=int(START.timestamp()),
             creator=state.user_id(members[0]),
         )

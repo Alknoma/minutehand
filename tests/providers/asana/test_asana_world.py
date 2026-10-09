@@ -23,7 +23,8 @@ from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
 from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import SeededComment, SeededTicket, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import Provider
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
 from minutehand.session import _services  # pyright: ignore[reportPrivateUsage]
 from tests.providers.asana.asana_workspace import (
     CATERING,
@@ -37,6 +38,7 @@ from tests.providers.asana.asana_workspace import (
     data,
     items,
 )
+from tests.support.tickets import assignee_moves, edited
 
 
 def _names(listed: list[dict[str, object]]) -> list[object]:
@@ -150,9 +152,9 @@ async def test_a_person_completes_a_task_the_agent_handed_them(workspace: Worksp
     made = await create(client, name="Measure the hall", projects=[VENUE], assignee="tomas@example.com")
     ticket = state.task_ref(str(made["gid"]))
     workspace.clock.jump(START + timedelta(hours=5))
-    workspace.provider.transition(ticket, TicketState.DONE, workspace.store, workspace.clock)
+    await assignee_moves(workspace.provider, ticket, TicketState.DONE, SCENARIO, workspace.store, workspace.clock)
 
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, ticket)
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.DONE
     read = data(await client.get(f"/tasks/{made['gid']}"))
@@ -163,10 +165,15 @@ async def test_a_person_completes_a_task_the_agent_handed_them(workspace: Worksp
 
 async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.AsyncClient) -> None:
     made = await create(client, name="Hire a piano", projects=[VENUE], assignee="noor@example.com")
-    workspace.provider.transition(
-        state.task_ref(str(made["gid"])), TicketState.CANCELLED, workspace.store, workspace.clock
+    await assignee_moves(
+        workspace.provider,
+        state.task_ref(str(made["gid"])),
+        TicketState.CANCELLED,
+        SCENARIO,
+        workspace.store,
+        workspace.clock,
     )
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.CANCELLED
     read = data(await client.get(f"/tasks/{made['gid']}", params={"opt_fields": "completed,memberships.section.name"}))
     assert read["completed"] is True
@@ -176,11 +183,16 @@ async def test_a_person_cancels_a_task(workspace: Workspace, client: httpx.Async
 async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, client: httpx.AsyncClient) -> None:
     seeded = items(await client.get(f"/projects/{VENUE}/tasks"))[1]  # Return the old keys, done, with noor
     ticket = state.task_ref(str(seeded["gid"]))
-    workspace.provider.edit(
-        ticket, state=TicketState.OPEN, assignee_email="iris@example.com", world=workspace.store, clock=workspace.clock
+    await edited(
+        workspace.provider,
+        ticket,
+        state=TicketState.OPEN,
+        assignee_email="iris@example.com",
+        world=workspace.store,
+        clock=workspace.clock,
     )
 
-    last = workspace.store.events()[-1]
+    last = [e for e in workspace.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
         title="Return the old keys", project="Venue Move", assignee_email="iris@example.com", state=TicketState.OPEN
@@ -194,26 +206,36 @@ async def test_the_scenario_edits_state_and_assignee(workspace: Workspace, clien
     }
 
 
-def test_editing_to_an_email_nobody_has_is_refused(workspace: Workspace) -> None:
+async def test_editing_to_an_email_nobody_has_is_refused(workspace: Workspace) -> None:
     ticket = state.task_ref(workspace.asana.tasks()[0].gid)
-    with pytest.raises(LookupError):
-        workspace.provider.edit(
-            ticket, state=None, assignee_email="stranger@example.com", world=workspace.store, clock=workspace.clock
+    with pytest.raises(ValueError, match=r"no asana user has the email stranger@example\.com"):
+        await edited(
+            workspace.provider,
+            ticket,
+            state=None,
+            assignee_email="stranger@example.com",
+            world=workspace.store,
+            clock=workspace.clock,
         )
 
 
-def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) -> None:
-    with pytest.raises(LookupError):
-        workspace.provider.transition(
-            state.task_ref("1999999999999999"), TicketState.DONE, workspace.store, workspace.clock
+async def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) -> None:
+    with pytest.raises(ValueError, match="has no assignee to move it"):
+        await assignee_moves(
+            workspace.provider,
+            state.task_ref("1999999999999999"),
+            TicketState.DONE,
+            SCENARIO,
+            workspace.store,
+            workspace.clock,
         )
 
 
 def test_the_provider_holds_every_port_it_claims() -> None:
     provider = build()
-    held: tuple[Provider, HoldsTickets, EditsTickets, ActsOnTickets] = (provider, provider, provider, provider)
+    held: tuple[Provider, ProvidesTransitions, HoldsSeeded] = (provider, provider, provider)
     assert all(p is provider for p in held)
-    assert isinstance(provider, ActsOnTickets), "the run finds the port by isinstance, so it must be checkable"
+    assert isinstance(provider, HoldsSeeded), "the run finds the port by isinstance, so it must be checkable"
 
 
 def test_the_manifest_claims_asana_and_imports_nothing_else_of_the_provider() -> None:

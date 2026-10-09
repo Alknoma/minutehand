@@ -12,7 +12,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
-from minutehand.domain.assessments import Rule, refuse_repeated_rules
+from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -79,6 +79,11 @@ class AgentReport(Model):
     commitments: list[Commitment] | None = None
 
 
+WAKE_TIMEOUT = timedelta(minutes=10)
+"""How long one call to the agent's wake or report URL may take by default: room for an LLM agent that takes a model's
+turn, or several, before it answers. A scripted agent answers in milliseconds and never comes near it."""
+
+
 class Reported(Model):
     """The agent says when it next needs to wake. Exact, and needs an endpoint or adapter.
 
@@ -92,9 +97,10 @@ class Reported(Model):
     wake_url: str
     report_url: str
     wake_timeout: timedelta = Field(
-        default=timedelta(minutes=2),
+        default=WAKE_TIMEOUT,
         gt=timedelta(0),
-        description="How long one call to wake_url or report_url may take",
+        description="How long one call to wake_url or report_url may take; the default leaves room for a model's turn "
+        "taken inside the call",
     )
     report_first_after: timedelta = Field(
         default=timedelta(milliseconds=100), gt=timedelta(0), description="The wait before the first ask for the report"
@@ -120,7 +126,9 @@ class Marked(Model):
     kind: Literal["marked"] = "marked"
     wake_url: str
     wake_timeout: timedelta = Field(
-        default=timedelta(minutes=5), gt=timedelta(0), description="How long one call to wake_url may take"
+        default=WAKE_TIMEOUT,
+        gt=timedelta(0),
+        description="How long one call to wake_url may take: the whole wake, a model's turns and all",
     )
 
 
@@ -280,6 +288,11 @@ class AgentUnderTest(Model):
         description="The team's own rules for judging the agent, over the facts of each run (`docs/assessments.md`). "
         "A scenario may replace one by its id, add its own, or switch one off (`Scenario.assess_off`). Nothing else "
         "judges how the agent behaves",
+    )
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="Integrity facts that fail the run when they are found (`around_proxy`, "
+        "`agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
     )
     outbound: list[OutboundHost] = Field(
         default=[], description="Hosts that are not places the agent keeps state, captured rather than faked"

@@ -36,7 +36,8 @@ from minutehand.domain.scenario import (
     TicketState,
 )
 from minutehand.domain.telemetry import StoredSpan
-from minutehand.domain.world import EntityRef, RecordedCall, Stored, WorldEvent
+from minutehand.domain.transitions import Transition
+from minutehand.domain.world import EntityRef, PendingStatus, RecordedCall, Stored, WorldEvent
 
 API = "/v1"
 
@@ -575,7 +576,6 @@ class PendingItemView(Model):
     person: str | None = Field(description="Person.key it waits on")
     summary: str
     decisions: list[str]
-    gates: str | None = None
     seen_at: AwareDatetime = Field(description="When it was first seen, simulated")
 
 
@@ -616,3 +616,27 @@ class DecisionView(Model):
 
 class DecisionsDone(Model):
     decisions: list[DecisionView]
+
+
+class HeldItemView(Model):
+    """One item the people engine held pending on a person (docs/design-transitions.md), as its record stands."""
+
+    pending: EntityRef = Field(description="The engine's record of it")
+    person: str = Field(description="Person.key it waits on")
+    item: EntityRef
+    nth: int = Field(description="Which item pending on them in its provider it is, from 1")
+    state: str = Field(description="Its state when it began to wait on them")
+    status: PendingStatus
+    since: AwareDatetime = Field(description="When it began to wait on them, simulated")
+    due_at: AwareDatetime | None = Field(description="When they act, simulated; None: never")
+    take: str | None = Field(description="The transition the scenario pinned; None: a model picks")
+    transition: int | None = Field(description="The seq of the transition they took")
+    failure: str | None = Field(description="Why their last try did not land")
+
+
+class TransitionsView(Model):
+    """What waits on the world's people and every move of any item's state, by anyone, in order: a harness that
+    keeps its own clock jumps to the earliest `due_at` of an item still pending."""
+
+    items: list[HeldItemView]
+    transitions: list[Transition]

@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Nadia is on leave from the first request: her automatic reply, sent at once, names Marta, who covers and approves.
+name: email_approver_away
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    absences: [{trigger: on_first_ask, lasts: P7D, delegate: marta, reason: on leave}]
+    reply: {kind: scripted, then: silent}
+  - key: marta
+    name: Marta Holm
+    email: marta@example.com
+    reply_within: {min: PT1H, max: PT3H}
+    reply:
+      kind: scripted
+      replies: [{to_ask: 1, facts: ["I approve PO-7731 while Nadia is away"]}]
+      then: silent
+assess:
+  - id: no_chasing_someone_away       # nothing more to Nadia while she is away and Marta covers
+    count: {messages: {to_away: true}}
+    at_most: 0
+    message: "the agent wrote to Nadia while she was away"
+    pattern: absence_aware
+  - id: orders_only_once_answered
+    each: ask
+    where: {person: [marta]}
+    count: {stored: {host: api.orders.example, collection: orders}, until: closed-PT1S}
+    at_most: 0
+    message: "an order was placed before {person.name} answered"
+    pattern: act_on_the_decision

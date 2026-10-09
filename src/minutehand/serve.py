@@ -29,7 +29,9 @@ Each world is a run in the state directory, so `minutehand findings`, `view` and
     <state>/runs/<lobby_id>/world.db       the calls no world claimed, and spans of traces none carried
 
 Closing a world keeps the last `keep` closed worlds and removes the directories of older ones, then sweeps every
-world file left of bodies and snapshot files nothing refers to (`session.collect`, which `minutehand gc` runs too).
+world file left of bodies and snapshot files nothing refers to (`session.collect`, which `minutehand gc` runs too),
+but a closed world's file this server has swept since it closed: nothing writes it again, and sweeping each of the
+`keep` again at every close made a close cost as many store opens as worlds were kept.
 A world still open when the server stops is closed then.
 """
 
@@ -57,8 +59,8 @@ from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import EmulatorRefused
-from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.environment import from_environment as model_from_environment
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -88,20 +90,20 @@ from minutehand.application.standing import (
 from minutehand.application.steps import Stepping, steps
 from minutehand.checks.runner import RunResult
 from minutehand.domain.agent import AgentReport, AgentStatus
+from minutehand.domain.common import GeneratedSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import GeneratedSecret, Model, ProviderKey, Scenario
+from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.telemetry import ReceivedSpan
-from minutehand.domain.world import CallOutcome, Exchange, WorldEvent
+from minutehand.domain.world import CallOutcome, EntityKind, Exchange, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
     ChangesPeople,
     DeclaresFaults,
-    DeletesTickets,
     GrantsPermissions,
     Message,
     MintsInboundCredentials,
@@ -110,6 +112,7 @@ from minutehand.ports.provider import (
     Scope,
 )
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import ProvidesTransitions
 from minutehand.session import (
     KEPT,
     RECORD,
@@ -121,6 +124,7 @@ from minutehand.session import (
     Listen,
     agent_environment,
     collect,
+    desk_for,
     reading_file,
     run_dir,
     scenario_of,
@@ -295,6 +299,9 @@ class Standing:
         self._registry = registry
         self.routing = routing or Routing(registry)
         self._keep = keep
+        self._swept: frozenset[str] = frozenset()
+        """The directories of closed worlds the last retention swept, which nothing has written since (a closed
+        case still taking its services' spans is not one)."""
         self._manifests = {m.key: m for m in registry.manifests}
         self.worlds: dict[str, World] = {}
         self._tokens: dict[str, str] = {}
@@ -550,13 +557,17 @@ class Standing:
         the step its case is in, or, under no case label, stepped on its own."""
         scenario = spec.seed.starting(now)
         inboxes = _inboxes(spec, scenario)
+        try:
+            desk = desk_for(scenario, None, self.model)
+        except RunRefused as e:
+            raise WorldRefused(str(e)) from e
         if spec.scripted_people and self.model is None:
             needing = unspoken(scenario, spec.inboxes)
             if needing:
                 raise WorldRefused(
                     f"a model writes what {'; '.join(needing)} say, and this server has no model configured: start "
-                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set (and {BASE_URL_VARIABLE} for a service "
-                    "other than OpenAI's)"
+                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set ({API_VARIABLE}=anthropic for Anthropic's "
+                    f"Messages API, and {BASE_URL_VARIABLE} for a service other than OpenAI's or Anthropic's)"
                 )
         directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
@@ -572,6 +583,7 @@ class Standing:
                 scripted=spec.scripted_people,
                 inboxes=inboxes,
                 model=self.model,
+                desk=desk,
             )
             named = sorted(
                 {t.provider for t in scenario.tickets}
@@ -597,7 +609,7 @@ class Standing:
                 clock=clock,
                 app_for=lambda m: self._faulted(world_id, standing.app_for(m), m),
                 provider_for=lambda m: standing.provider(m.key),
-                capturing=capturing.for_people(scenario.people),
+                capturing=capturing.for_people(scenario.people).with_services(desk),
             ),
             opened=time.monotonic(),
             faults=[_Armed(f, f.times) for f in spec.faults],
@@ -830,7 +842,8 @@ class Standing:
                     permissions=isinstance(provider, GrantsPermissions),
                     inbound_credentials=isinstance(provider, MintsInboundCredentials),
                     faults=isinstance(provider, DeclaresFaults),
-                    deletes_tickets=isinstance(provider, DeletesTickets),
+                    deletes_tickets=isinstance(provider, ProvidesTransitions)
+                    and EntityKind.TICKET in provider.manifest.kinds,
                     seed_model=isinstance(provider, OwnsSeed),
                 )
             )
@@ -981,7 +994,10 @@ class Standing:
         closed.sort(key=lambda found: (found[0] / RECORD).stat().st_mtime_ns)
         old = closed[: max(0, len(closed) - self._keep)]
         still = {c.case_id for c in self._ended}
-        return collect(self._state, remove=[n for d, names in old if d.name not in still for n in names])
+        removed = [n for d, names in old if d.name not in still for n in names]
+        collected = collect(self._state, remove=removed, settled=self._swept)
+        self._swept = frozenset(n for d, names in closed if d.name not in still for n in names if n not in removed)
+        return collected
 
     # -- faults -------------------------------------------------------------------------------------------------
 

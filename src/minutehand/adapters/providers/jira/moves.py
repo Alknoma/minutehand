@@ -7,20 +7,80 @@ an issue a person moved and one the agent moved read back the same way, with the
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import date, datetime
+from enum import StrEnum
 
 from pydantic import JsonValue
 
 from minutehand.adapters.providers.jira import wire
-from minutehand.adapters.providers.jira.state import JiraWorld, seeded_comment_id
+from minutehand.adapters.providers.jira.manifest import MANIFEST
+from minutehand.adapters.providers.jira.state import JiraWorld, issue_ref, seeded_comment_id
+from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import TicketState
+from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
+
+CREATE = "Create"
+"""The name of a workflow's initial transition, the one that creates an issue in its first status."""
+
+
+class Event(StrEnum):
+    """The webhook events this fake sends, by the names Jira gives them
+    (https://developer.atlassian.com/cloud/jira/platform/webhooks/)."""
+
+    ISSUE_CREATED = "jira:issue_created"
+    ISSUE_UPDATED = "jira:issue_updated"
+    COMMENT_CREATED = "comment_created"
+
+
+@dataclass(frozen=True)
+class Happened:
+    """Something that happened to an issue and that Jira's webhooks tell of: who did it, when, and the comment or
+    changelog entry it wrote."""
+
+    event: Event
+    issue: str
+    by: str
+    at: datetime
+    comment: str | None = None
+    history: str | None = None
+
+
+class Estimate(StrEnum):
+    """`adjustEstimate`, as the worklog operations name its options."""
+
+    NEW = "new"
+    LEAVE = "leave"
+    MANUAL = "manual"
+    AUTO = "auto"
+
+
+@dataclass(frozen=True)
+class Adjust:
+    """How a worklog change moves the issue's remaining estimate: the option and, for `new`, the estimate and, for
+    `manual`, the amount to reduce or increase by."""
+
+    mode: Estimate
+    seconds: int | None = None
+
+
+def remaining(issue: wire.StoredIssue) -> int | None:
+    """The issue's remaining estimate: what a worklog last set, else the original less the time spent, else none."""
+    if issue.remainingEstimateSeconds is not None:
+        return issue.remainingEstimateSeconds
+    if issue.originalEstimateSeconds is not None:
+        return max(0, issue.originalEstimateSeconds - (issue.timeSpentSeconds or 0))
+    return None
 
 
 class Desk:
     def __init__(self, store: Store) -> None:
         self.world = JiraWorld(store)
+        self.outbox: list[Happened] = []
+        """What has happened since the webhooks were last told (`JiraApi.dispatch` empties it)."""
 
     def site(self) -> wire.StoredSite:
         return self.world.site()
@@ -370,6 +430,113 @@ class Desk:
             if (not t.sources or issue.status in t.sources) and not (not t.sources and t.to == issue.status)
         ]
 
+    def transition(
+        self,
+        issue: wire.StoredIssue,
+        project: wire.StoredProject,
+        transition: wire.StoredTransition,
+        *,
+        fields: wire.Json,
+        update: wire.Json,
+        by: str,
+        at: datetime,
+        actor: Actor,
+        who: str | None,
+    ) -> Transition:
+        """Take `transition` on the issue as Jira's transition API does: every field checked against its screen
+        (every bad one named in one 400), `update.comment` added as a comment, the status moved with its
+        changelog entry, and the move recorded once as a transition of the issue. `who` is the person's key when a
+        person takes it."""
+        site = self.site()
+        errors: dict[str, str] = {}
+        resolution: str | None = None
+        changed = issue
+        for name, raw in fields.items():
+            if name not in transition.screen:
+                errors[name] = wire.not_on_screen(name)
+            elif name == "resolution":
+                ref = wire.read_ref(raw)
+                found = None
+                if ref is not None:
+                    found = next(
+                        (r for r in site.resolutions if str(ref.id) == r.id or (ref.name or "") == r.name), None
+                    )
+                if found is None:
+                    errors[name] = wire.INVALID_VALUE
+                else:
+                    resolution = found.id
+            else:
+                try:
+                    changed = self.apply_fields(
+                        changed, project.model_copy(update={"screens": _with(project, issue, name)}), {name: raw},
+                        creating=False,
+                    )  # fmt: skip
+                except wire.Refusal as refusal:
+                    errors |= refusal.fields
+        for name in transition.required:
+            if name not in fields and name not in errors:
+                errors[name] = wire.REQUIRED
+        comment_body: JsonValue = None
+        for name, operations in update.items():
+            commenting = name == "comment"  # enum-lint: exempt Jira's own field id in a transition body
+            if not commenting or not isinstance(operations, list):
+                errors[name] = wire.not_on_screen(name)
+                continue
+            for operation in operations:
+                add = operation["add"] if isinstance(operation, dict) and "add" in operation else None
+                text = add["body"] if isinstance(add, dict) and "body" in add else None
+                if not wire.is_document(text):
+                    errors["comment"] = wire.COMMENT_NOT_VALID
+                else:
+                    comment_body = text
+        if errors:
+            raise wire.Refusal(400, [], errors)
+        was = site.status(issue.status).name
+        moved = self.moved(changed, site.status(transition.to), resolution=resolution)
+        self.write(issue, moved, by=by, at=at, actor=actor)
+        if comment_body is not None:
+            self.comment(moved, comment_body, by=by, at=at, actor=actor)
+        content: dict[str, JsonValue] = {}
+        if comment_body is not None:
+            content["comment"] = wire.adf_text(comment_body)
+        for name, raw in fields.items():
+            content[name] = raw
+        return self.record(
+            Transition(
+                provider=MANIFEST.key,
+                item=issue_ref(issue.id),
+                name=transition.name,
+                from_state=was,
+                to_state=site.status(transition.to).name,
+                by=actor,
+                who=who,
+                content=json.dumps(content),
+                at=at,
+            )
+        )
+
+    def created(self, issue: wire.StoredIssue, *, at: datetime, actor: Actor, who: str | None) -> Transition:
+        """An issue just created: its workflow's initial transition into its first status."""
+        self.outbox.append(Happened(Event.ISSUE_CREATED, issue.id, issue.creator, at))
+        return self.record(
+            Transition(
+                provider=MANIFEST.key,
+                item=issue_ref(issue.id),
+                name=CREATE,
+                from_state=None,
+                to_state=self.site().status(issue.status).name,
+                by=actor,
+                who=who,
+                at=at,
+            )
+        )
+
+    def record(self, transition: Transition) -> Transition:
+        """Keep `transition` in the log, once, as the event it becomes."""
+        store = self.world.store
+        event = store.apply(transition_change(transition, at_seq=store.head() + 1))
+        return transition.model_copy(update={"seq": event.seq})
+
     def write(
         self, before: wire.StoredIssue, after: wire.StoredIssue, *, by: str | None, at: datetime, actor: Actor
     ) -> wire.StoredIssue:
@@ -380,6 +547,8 @@ class Desk:
         stamped = self.changed(before, after, by=by, at=at)
         if stamped is not before:
             self.world.update_issue(stamped, actor=actor)
+            if by is not None:
+                self.outbox.append(Happened(Event.ISSUE_UPDATED, stamped.id, by, at, history=stamped.history[-1].id))
         del site
         return stamped
 
@@ -405,10 +574,123 @@ class Desk:
             updateAuthor=by,
         )
         self.world.write_comment(comment, actor=actor)
+        if seeded is None:
+            self.outbox.append(Happened(Event.COMMENT_CREATED, issue.id, by, at, comment=comment.id))
         current = self.world.issue(issue.id)
         if current is not None and current.updated < at:
             self.world.update_issue(current.model_copy(update={"updated": at}), actor=actor)
         return comment
+
+    def edit_comment(self, issue: wire.StoredIssue, comment: wire.StoredComment, body: JsonValue, *, by: str,
+                     at: datetime, actor: Actor) -> wire.StoredComment:  # fmt: skip
+        """The comment with a new body, updated now by `by`."""
+        changed = comment.model_copy(update={"body": body, "updated": at, "updateAuthor": by})
+        self.world.update_comment(changed, actor=actor)
+        current = self.world.issue(issue.id)
+        if current is not None and current.updated < at:
+            self.world.update_issue(current.model_copy(update={"updated": at}), actor=actor)
+        return changed
+
+    # ------------------------------------------------------------------ worklogs
+
+    def _estimate(self, issue: wire.StoredIssue, adjust: Adjust, *, change: int) -> int | None:
+        """The remaining estimate once `adjust` is applied to a change of `change` seconds of work (negative when
+        work is taken out). `manual` takes the amount `adjust` carries, reducing the estimate by it."""
+        before = remaining(issue)
+        match adjust.mode:
+            case Estimate.NEW:
+                return adjust.seconds
+            case Estimate.LEAVE:
+                return before
+            case Estimate.MANUAL:
+                if before is None:
+                    raise NotServed("a manual estimate adjustment of an issue that has no estimate")
+                return max(0, before - (adjust.seconds or 0))
+            case Estimate.AUTO:
+                return None if before is None else max(0, before - change)
+
+    def _timed(self, issue: wire.StoredIssue, spent: int, left: int | None, actor: Actor) -> wire.StoredIssue:
+        """The issue with its aggregate time spent and remaining estimate, kept without a changelog entry."""
+        changed = issue.model_copy(update={"timeSpentSeconds": spent or None, "remainingEstimateSeconds": left})
+        self.world.update_issue(changed, actor=actor)
+        return changed
+
+    def log_work(
+        self,
+        issue: wire.StoredIssue,
+        *,
+        started: datetime,
+        seconds: int,
+        comment: JsonValue,
+        adjust: Adjust,
+        by: str,
+        at: datetime,
+        actor: Actor,
+    ) -> wire.StoredWorklog:
+        """A worklog on the issue: the time spent adds up on the issue and its remaining estimate moves as `adjust`
+        says."""
+        left = self._estimate(issue, adjust, change=seconds)
+        worklog = wire.StoredWorklog(
+            id=self.world.next_id(), issue=issue.id, author=by, updateAuthor=by, created=at, updated=at,
+            started=started, timeSpentSeconds=seconds, comment=comment,
+        )  # fmt: skip
+        self.world.write_worklog(worklog, actor=actor, create=True)
+        self._timed(issue, (issue.timeSpentSeconds or 0) + seconds, left, actor)
+        return worklog
+
+    def change_work(
+        self,
+        issue: wire.StoredIssue,
+        worklog: wire.StoredWorklog,
+        *,
+        started: datetime | None,
+        seconds: int | None,
+        comment: JsonValue,
+        set_comment: bool,
+        adjust: Adjust,
+        by: str,
+        at: datetime,
+        actor: Actor,
+    ) -> wire.StoredWorklog:
+        """The worklog with what was sent changed; the issue's time spent moves by the difference."""
+        now = worklog.timeSpentSeconds if seconds is None else seconds
+        left = self._estimate(issue, adjust, change=now - worklog.timeSpentSeconds)
+        changed = worklog.model_copy(
+            update={
+                "started": worklog.started if started is None else started,
+                "timeSpentSeconds": now,
+                "comment": comment if set_comment else worklog.comment,
+                "updated": at,
+                "updateAuthor": by,
+            }
+        )
+        self.world.write_worklog(changed, actor=actor, create=False)
+        self._timed(issue, (issue.timeSpentSeconds or 0) - worklog.timeSpentSeconds + now, left, actor)
+        return changed
+
+    def remove_work(
+        self, issue: wire.StoredIssue, worklogs: list[wire.StoredWorklog], *, adjust: Adjust, actor: Actor
+    ) -> None:
+        """The worklogs deleted; the issue's time spent drops by their sum, and its remaining estimate moves as
+        `adjust` says: `manual` adds the amount back."""
+        gone = sum(w.timeSpentSeconds for w in worklogs)
+        before = remaining(issue)
+        match adjust.mode:
+            case Estimate.NEW:
+                left = adjust.seconds
+            case Estimate.LEAVE:
+                left = before
+            case Estimate.MANUAL:
+                if before is None:
+                    raise NotServed("a manual estimate adjustment of an issue that has no estimate")
+                left = before + (adjust.seconds or 0)
+            case Estimate.AUTO:
+                if before is not None:
+                    raise NotServed("adjustEstimate=auto when deleting a worklog from an issue that has an estimate")
+                left = None
+        for worklog in worklogs:
+            self.world.delete_worklog(worklog, actor=actor)
+        self._timed(issue, max(0, (issue.timeSpentSeconds or 0) - gone), left, actor)
 
     def delete(self, issue: wire.StoredIssue, *, actor: Actor) -> None:
         """The issue and its subtasks; the links that named any of them go with them."""
@@ -418,7 +700,23 @@ class Desk:
             if link.source in ids or link.destination in ids:
                 self.world.delete_link(link, actor=actor)
         for gone in doomed:
+            for worklog in self.world.worklogs(gone.id):
+                self.world.delete_worklog(worklog, actor=actor)
+            for attachment in self.world.attachments(gone.id):
+                self.world.delete_attachment(attachment, actor=actor)
+            for remote in self.world.remote_links(gone.id):
+                self.world.delete_remote_link(remote, actor=actor)
+            if self.world.watchers(gone.id):
+                self.world.write_watchers(gone.id, [], actor=actor)
             self.world.delete_issue(gone, actor=actor)
+
+
+def _with(project: wire.StoredProject, issue: wire.StoredIssue, field: str) -> list[wire.StoredScreen]:
+    """The project's screens with `field` on the issue's type: a transition screen holds what it holds."""
+    return [
+        s.model_copy(update={"fields": [*s.fields, field]}) if s.issueType == issue.issuetype else s
+        for s in project.screens
+    ]
 
 
 def _is_date(text: str) -> bool:

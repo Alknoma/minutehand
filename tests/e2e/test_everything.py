@@ -14,12 +14,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from minutehand import session
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.providers.google_cloud_tasks.provider import CloudTasksSeed, SeededQueue
-from minutehand.adapters.proxy.modeled import ModeledAnswer
 from minutehand.application.dues import due_entries
+from minutehand.application.services import WrittenAnswer, WrittenMachine, WrittenRoute
 from minutehand.domain.agent import AgentUnderTest, Booked, Contained, Reported
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.clock import DueClosed, DueSource
@@ -61,15 +62,21 @@ class NoPasswordsInMessages:
 """
 
 
-def model_rule(received: Received) -> ModeledAnswer:
-    """What the model standing in for each undeclared host answers."""
-    asked = received.last.split("The request to answer now:\n", 1)[1]
-    if asked.startswith("POST /api/contacts"):
-        return ModeledAnswer(status=201, body=json.dumps({"id": "c_1", "name": "Rosa Lind"}))
-    if asked.startswith("POST /mcp"):
+def model_rule(received: Received) -> BaseModel:
+    """What the model answers for each undeclared host, answered as a service with no description: a machine of one
+    state, what each route means, and each answer."""
+    if received.schema_name == "WrittenMachine":
+        return WrittenMachine(machine=json.dumps({"initial": "open", "states": ["open"], "transitions": []}))
+    if received.schema_name == "WrittenRoute":
+        means = "create" if "/api/contacts" in received.last else "other"
+        return WrittenRoute(means=means, transition=None, item_at=None, state_at=None, url_at=None)
+    asked = received.last.split("The call to answer now", 1)[1]
+    if "POST /api/contacts" in asked:
+        return WrittenAnswer(status=201, body=json.dumps({"id": "c_1", "name": "Rosa Lind"}))
+    if "POST /mcp" in asked:
         result = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "created ISSUE-7"}]}}
-        return ModeledAnswer(status=200, body=json.dumps(result))
-    return ModeledAnswer(status=404, body="{}")
+        return WrittenAnswer(status=200, body=json.dumps(result))
+    return WrittenAnswer(status=404, body="{}")
 
 
 async def test_one_run_through_every_part(tmp_path: Path) -> None:
@@ -196,5 +203,5 @@ async def test_one_run_through_every_part(tmp_path: Path) -> None:
         if c.exchange.captured and c.exchange.captured.answered_by is AnsweredBy.MODEL
     }
     assert modeled == {"crm.example", "mcp.example"}
-    standing_in = [r for r in fake.received if r.schema_name == "ModeledAnswer"]
-    assert len(standing_in) == 2, "the model was asked once for each undeclared write, and nothing else"
+    answered = [r for r in fake.received if r.schema_name == "WrittenAnswer"]
+    assert len(answered) == 2, "the model rendered one answer for each undeclared write, and nothing else"

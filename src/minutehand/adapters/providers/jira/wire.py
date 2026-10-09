@@ -362,6 +362,17 @@ class StoredRateLimit(Wire):
     retry_after: int = Field(ge=0, description="Seconds, as the Retry-After header says them")
 
 
+class StoredHook(Wire):
+    """A webhook set up in Jira's administration: where Jira sends the events it names, signed with `secret` when
+    one is given."""
+
+    id: str
+    url: str
+    events: list[str]
+    jql: str | None = None
+    secret: str | None = None
+
+
 class StoredSite(Wire):
     name: str = Field(description="The site's name: <name>.atlassian.net")
     cloudId: str
@@ -376,6 +387,7 @@ class StoredSite(Wire):
     roles: list[StoredRole]
     sprintField: str
     rateLimits: list[StoredRateLimit] = []
+    hooks: list[StoredHook] = []
 
     @property
     def host(self) -> str:
@@ -552,6 +564,10 @@ class StoredIssue(Wire):
     parent: str | None = Field(default=None, description="The parent issue's id")
     custom: list[StoredValue] = []
     originalEstimateSeconds: int | None = None
+    remainingEstimateSeconds: int | None = Field(
+        default=None,
+        description="Set once a worklog adjusts the estimate; until then it is the original less the time spent",
+    )
     timeSpentSeconds: int | None = None
     history: list[StoredHistory] = []
     seededFrom: int | None = Field(
@@ -591,6 +607,73 @@ class StoredLink(Wire):
     destination: str = Field(description="Issue id")
 
 
+class StoredWorklog(Wire):
+    id: str
+    issue: str
+    author: str
+    updateAuthor: str
+    created: datetime
+    updated: datetime
+    started: datetime
+    timeSpentSeconds: int
+    comment: JsonValue = None
+
+
+class StoredAttachment(Wire):
+    """An attachment's metadata; its bytes are the `StoredBlob` of the same id."""
+
+    id: str
+    issue: str
+    filename: str
+    author: str
+    created: datetime
+    mimeType: str
+    size: int
+
+
+class StoredBlob(Wire):
+    """An attachment's bytes, base64-encoded so they survive as the JSON text a body is."""
+
+    base64: str
+
+
+class StoredRemoteLink(Wire):
+    """A remote issue link as sent: `application` and `object` are kept verbatim."""
+
+    id: str
+    issue: str
+    globalId: str | None = None
+    application: JsonValue = None
+    object: JsonValue = None
+    relationship: str | None = None
+
+
+class StoredWatchers(Wire):
+    """The accounts watching one issue, in the order they began."""
+
+    accounts: list[str] = []
+
+
+class StoredComponent(Wire):
+    id: str
+    project: str
+    name: str
+    description: str | None = None
+    leadAccountId: str | None = None
+    assigneeType: Literal["PROJECT_DEFAULT", "COMPONENT_LEAD", "PROJECT_LEAD", "UNASSIGNED"] = "PROJECT_DEFAULT"
+
+
+class StoredVersion(Wire):
+    id: str
+    project: str
+    name: str
+    description: str | None = None
+    archived: bool = False
+    released: bool = False
+    startDate: date | None = None
+    releaseDate: date | None = None
+
+
 class StoredAlias(Wire):
     """What an issue key names. Never deleted, so a project never hands a number out twice."""
 
@@ -619,6 +702,13 @@ StoredModel = TypeVar(
     StoredIssue,
     StoredComment,
     StoredLink,
+    StoredWorklog,
+    StoredAttachment,
+    StoredBlob,
+    StoredRemoteLink,
+    StoredWatchers,
+    StoredComponent,
+    StoredVersion,
     StoredAlias,
     StoredFaultUse,
     StoredDeclaredLimits,
@@ -657,6 +747,8 @@ class Request(Wire):
     model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
 
     UNSERVED: ClassVar[frozenset[str]] = frozenset()
+    READ_ONLY: ClassVar[frozenset[str]] = frozenset()
+    """Properties the reference marks read-only: a closed body takes them and ignores them."""
     CLOSED: ClassVar[bool] = False
     NESTED: ClassVar[dict[str, type[Request]]] = {}
 
@@ -838,6 +930,67 @@ class SprintIssuesIn(Request):
     issues: list[str] = []
 
 
+class WorklogIn(Request):
+    """`POST /issue/{key}/worklog` and `PUT /issue/{key}/worklog/{id}` (`Worklog`, which allows other properties)."""
+
+    UNSERVED = frozenset({"properties", "visibility"})
+    READ_ONLY = frozenset({"author", "created", "id", "issueId", "self", "updateAuthor", "updated"})
+
+    comment: JsonValue = None
+    started: str | None = None
+    timeSpent: str | None = None
+    timeSpentSeconds: int | None = None
+
+
+class WorklogIdsIn(Request):
+    """`DELETE /issue/{key}/worklog` (`WorklogIdsRequestBean`)."""
+
+    CLOSED = True
+
+    ids: list[int] = []
+
+
+class RemoteLinkIn(Request):
+    """`POST /issue/{key}/remotelink` and `PUT .../remotelink/{id}` (`RemoteIssueLinkRequest`)."""
+
+    application: JsonValue = None
+    globalId: str | None = None
+    object: JsonValue = None
+    relationship: str | None = None
+
+
+class ComponentIn(Request):
+    """`POST /component` (`ProjectComponent`, a closed schema)."""
+
+    UNSERVED = frozenset({"leadUserName"})
+    READ_ONLY = frozenset({"ari", "assignee", "id", "isAssigneeTypeValid", "lead", "metadata", "projectId",
+                           "realAssignee", "realAssigneeType", "self"})  # fmt: skip
+    CLOSED = True
+
+    assigneeType: str | None = None
+    description: str | None = None
+    leadAccountId: str | None = None
+    name: str | None = None
+    project: str | None = None
+
+
+class VersionIn(Request):
+    """`POST /version` (`Version`, a closed schema)."""
+
+    UNSERVED = frozenset({"driver", "expand", "moveUnfixedIssuesTo", "project"})
+    READ_ONLY = frozenset({"approvers", "id", "issuesStatusForFixVersion", "operations", "overdue", "self",
+                           "userReleaseDate", "userStartDate"})  # fmt: skip
+    CLOSED = True
+
+    archived: bool | None = None
+    description: str | None = None
+    name: str | None = None
+    projectId: int | None = None
+    releaseDate: str | None = None
+    released: bool | None = None
+    startDate: str | None = None
+
+
 class TokenIn(Request):
     """Atlassian's token endpoint, read from a JSON body or a form."""
 
@@ -862,6 +1015,11 @@ Body = TypeVar(
     ProjectIn,
     RoleActorsIn,
     SprintIssuesIn,
+    WorklogIn,
+    WorklogIdsIn,
+    RemoteLinkIn,
+    ComponentIn,
+    VersionIn,
     TokenIn,
 )
 
@@ -894,7 +1052,7 @@ def _refuse_unserved(model: type[Request], decoded: dict[str, JsonValue]) -> Non
         if name in model.UNSERVED and value not in (None, False, "", [], {}):
             raise NotServed(f"the '{name}' property of a {model.__name__} body")
     if model.CLOSED:
-        known = {f.alias or n for n, f in model.model_fields.items()} | set(model.UNSERVED)
+        known = {f.alias or n for n, f in model.model_fields.items()} | set(model.UNSERVED) | set(model.READ_ONLY)
         for name in decoded:
             if name not in known:
                 raise Refusal(400, [INVALID_PAYLOAD], bare=True)
@@ -1137,6 +1295,32 @@ def duration(seconds: int) -> str:
     """Seconds as Jira writes a duration in a working week: `1w 2d 3h 4m`."""
     parts: list[str] = []
     for unit, size in (("w", 5 * 8 * 3600), ("d", 8 * 3600), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            parts.append(f"{seconds // size}{unit}")
+            seconds %= size
+    return " ".join(parts) or "0m"
+
+
+HOURS_A_DAY = 8
+"""A day of work is eight hours and a week five days. Atlassian documents no default (hours per day and days per
+week are site settings), so this is unsourced: `CLAIMS.md` lists it and `test_claims_are_sourced.OPEN` ratchets it."""
+_UNIT_SECONDS = {"d": HOURS_A_DAY * 3600, "h": 3600, "m": 60}
+_DURATION = re.compile(r"^\s*(?:(\d+)\s*([dhm]?)\s*)+$")
+_PART = re.compile(r"(\d+)\s*([dhm]?)")
+
+
+def parse_duration(text: str) -> int | None:
+    """Seconds in `2d 3h 30m`: days (#d), hours (#h) or minutes (#m or #), as the worklog reference gives them;
+    None for anything else, weeks included."""
+    if not _DURATION.match(text):
+        return None
+    return sum(int(n) * _UNIT_SECONDS[unit or "m"] for n, unit in _PART.findall(text))
+
+
+def worked(seconds: int) -> str:
+    """Seconds as the worklog reference writes them: days, hours and minutes."""
+    parts: list[str] = []
+    for unit, size in (("d", _UNIT_SECONDS["d"]), ("h", 3600), ("m", 60)):
         if seconds >= size:
             parts.append(f"{seconds // size}{unit}")
             seconds %= size

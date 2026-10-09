@@ -142,6 +142,28 @@ jobs:
         env:
           RECIPES_NODE_REQUIRED: "1"
 
+  # The viewer's page in headless Chromium (tests/web/test_viewer_page.py): it draws a run, every view opens with no
+  # script error, redrawing binds no listener twice (the cause of the old page's hang), and a year-long run of ~34,000
+  # marks loads and zooms at interactive speed. Playwright is in the dev group; its Chromium is fetched here only.
+  # VIEWER_BROWSER_REQUIRED turns a missing browser from a skip into a failure.
+  browser:
+    name: Viewer in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run pytest -q -rs -s -m browser tests/web
+        env:
+          VIEWER_BROWSER_REQUIRED: "1"
+
   # Transparent capture (docs/containers.md): a client that ignores every proxy variable, in a Linux container whose
   # connections to ports 80 and 443 are sent to the proxy's redirected listener by `minutehand env --format redirect`'s
   # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
@@ -153,6 +175,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Pull Docker Hub images through a mirror (the runners' shared addresses hit Docker Hub's anonymous pull limit)
+        run: |
+          echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
@@ -170,6 +196,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Pull Docker Hub images through a mirror (the runners' shared addresses hit Docker Hub's anonymous pull limit)
+        run: |
+          echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.12"
@@ -193,6 +223,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Pull Docker Hub images through a mirror (the runners' shared addresses hit Docker Hub's anonymous pull limit)
+        run: |
+          echo '{"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
       - name: A plain environment of the runner's own Python
         run: python3 -m venv "$RUNNER_TEMP/venv"
       - id: minutehand
@@ -274,7 +308,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, transparent, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

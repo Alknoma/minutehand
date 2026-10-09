@@ -40,6 +40,7 @@ from datetime import datetime
 from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.domain.scenario import TicketState
+from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, Stored, TicketSnapshot, WorldEvent
 from minutehand.ports.store import Store
 
@@ -533,8 +534,11 @@ class YouTrackWorld:
             )
         )
 
-    def update_issue(self, issue: wire.StoredIssue, *, actor: Actor) -> WorldEvent:
-        return self._store.apply(
+    def update_issue(self, issue: wire.StoredIssue, *, actor: Actor, content: str = "{}") -> WorldEvent:
+        """The issue's new version; when its State changed, the move recorded once as a transition, by whoever
+        made it (a person's login as `who`), carrying `content`."""
+        was = self.issue(issue.id)
+        written = self._store.apply(
             Change(
                 entity=issue_ref(issue.id),
                 operation=Operation.UPDATE,
@@ -544,6 +548,24 @@ class YouTrackWorld:
                 after=self.snapshot(issue),
             )
         )
+        project = self.project(issue.project)
+        before = self.state_of(project, was) if project is not None and was is not None else None
+        after = self.state_of(project, issue) if project is not None else None
+        if after is not None and (before is None or before.id != after.id):
+            updater = self.user(issue.updater)
+            moved = Transition(
+                provider=MANIFEST.key,
+                item=issue_ref(issue.id),
+                name=after.name,
+                from_state=before.name if before is not None else None,
+                to_state=after.name,
+                by=actor,
+                who=updater.login if actor is Actor.PERSON and updater is not None else None,
+                content=content,
+                at=written.sim_time,
+            )
+            self._store.apply(transition_change(moved, at_seq=self._store.head() + 1))
+        return written
 
     def delete_issue(self, issue: wire.StoredIssue, *, by: str, at: int, actor: Actor) -> WorldEvent:
         """The issue and every link it is an end of: YouTrack keeps no link to an issue that is gone."""

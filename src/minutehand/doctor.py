@@ -33,13 +33,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from minutehand.adapters.model.openai_compatible import (
+from minutehand.adapters.model.environment import (
     API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    DEFAULT_BASE_URL,
     MODEL_VARIABLE,
+    api_of,
+    base_url_of,
 )
-from minutehand.adapters.model.openai_compatible import from_environment as model_from_environment
+from minutehand.adapters.model.environment import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -291,9 +291,9 @@ def people_model(environ: Mapping[str, str]) -> PeopleModel:
             said=f"no model is configured ({MODEL_VARIABLE}, {API_KEY_VARIABLE}): a run or standing world in which a "
             "person speaks in a model's words is refused",
         )
-    base = environ[BASE_URL_VARIABLE] if BASE_URL_VARIABLE in environ else ""
-    base = base or DEFAULT_BASE_URL
-    return PeopleModel(configured=True, said=f"{found.model_id} at {base}")
+    return PeopleModel(
+        configured=True, said=f"{found.model_id} at {base_url_of(environ)} ({api_of(environ).value} API)"
+    )
 
 
 class Diagnosis(Model):

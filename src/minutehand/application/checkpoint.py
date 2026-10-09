@@ -13,27 +13,12 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
-from minutehand.domain.scenario import Model, ProviderKey, TicketState
+from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
 
 CHECKPOINT = EntityRef(provider="minutehand", kind=EntityKind.RECORD, external_id="checkpoint")
 """The one entity the run loop writes. Actor SCENARIO, so no check counts it as the agent's work."""
-
-
-class PendingReply(Model):
-    """A person's reply, decided and remembered, that has not landed yet."""
-
-    kind: Literal["reply"] = "reply"
-    due: Due
-    reply: int = Field(ge=0, description="Position in the run's `Store.replies()`")
-
-
-class PendingFate(Model):
-    kind: Literal["fate"] = "fate"
-    due: Due
-    ticket: EntityRef
-    becomes: TicketState | None = Field(description="None: its assignee deletes it")
 
 
 class PendingHappening(Model):
@@ -42,6 +27,14 @@ class PendingHappening(Model):
     kind: Literal["happening"] = "happening"
     due: Due
     happening: int = Field(ge=0, description="Position in the scenario's `happenings`")
+
+
+class PendingTransition(Model):
+    """A person's move on an item pending on them, at the moment it was booked (`application.people`)."""
+
+    kind: Literal["transition"] = "transition"
+    due: Due
+    pending: EntityRef = Field(description="The people engine's record of the item (`EntityKind.PENDING`)")
 
 
 class PendingWake(Model):
@@ -78,6 +71,18 @@ class PendingDirection(Model):
     text: str
 
 
+class PendingService(Model):
+    """A declared service's own move on one of its items (`application.services`): a timer's, or a system actor's,
+    at its moment. It fires only if the item is still in the state it was booked from."""
+
+    kind: Literal["service"] = "service"
+    due: Due
+    service: ProviderKey
+    item: str
+    entered: int = Field(description="The WorldEvent.seq of the item's version that entered the state")
+    transition: str = Field(description="The machine's timer or system transition, by name")
+
+
 class PendingBooking(Model):
     """A wake the agent booked with a scheduler provider."""
 
@@ -92,15 +97,27 @@ class PendingBooking(Model):
     )
 
 
+class PendingCall(Model):
+    """A call of the agent's held until the world can answer it (a long poll that found nothing yet), looked at again
+    at its moment: the end of its wait (`ends`), or the next moment the world may answer it by itself. It lives with
+    the connection it holds, in the process that played the run: a fork drops it, and the fork's agent makes its own
+    calls."""
+
+    kind: Literal["call"] = "call"
+    due: Due
+    ends: bool = Field(description="Its moment is the end of the call's wait, when it is answered as the world stands")
+
+
 Pending = Annotated[
-    PendingReply
-    | PendingFate
-    | PendingHappening
+    PendingHappening
     | PendingWake
     | PendingDirection
     | PendingBooking
     | PendingMachine
-    | PendingTimer,
+    | PendingTimer
+    | PendingTransition
+    | PendingService
+    | PendingCall,
     Field(discriminator="kind"),
 ]
 
@@ -133,25 +150,15 @@ class NotRestorable(Model):
 AgentState = Annotated[Remembered | NotRestorable, Field(discriminator="kind")]
 
 
-class Unwritten(Model):
-    """An answer a person owes whose words a model could not write yet: tried again on the run's next turn."""
-
-    person: str = Field(description="Person.key")
-    asked: int = Field(ge=1, description="WorldEvent.seq of the ask it answers")
-
-
 class Checkpoint(Model):
     wake: int = Field(ge=0, description="The wake that had just ended; 0 is setup")
     now: AwareDatetime
-    replies: int = Field(ge=0, description="How many replies had been decided: the length of `Store.replies()`")
-    withdrawn: list[int] = Field(
-        default=[],
-        description="Positions in `Store.replies()` of replies withdrawn before they landed, because the agent "
-        "edited the message they answered: they never reached anyone and settle nothing",
-    )
+    replies: int = Field(ge=0, description="How many replies had landed: the length of `Store.replies()`")
     fated: list[EntityRef] = Field(default=[], description="Tickets whose fate is already scheduled or landed")
-    unwritten: list[Unwritten] = Field(
-        default=[], description="Answers owed whose words the model failed to write, tried again on the next turn"
+    untaken: list[EntityRef] = Field(
+        default=[],
+        description="Items pending on people whose move or answer did not land (a model failed), tried again on the "
+        "next turn",
     )
     commitments: list[Commitment] | None = None
     pending: list[Pending]

@@ -27,10 +27,11 @@ from minutehand.domain.scenario import (
     Scripted,
     ScriptedReply,
     Silent,
+    Take,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, HeldCalls
 from minutehand.ports.store import Store
 from tests.orchestrator.world import CHAT, SECRET, Chat, RecordingClock, Scheduler, Switchboard, serving
 from tests.support.people import people_model
@@ -52,7 +53,12 @@ def scripted(*texts: str, hours: float) -> Scripted:
     )
 
 
-def scenario(**overrides: object) -> Scenario:
+def scenario(*, tom_finishes: bool = True, **overrides: object) -> Scenario:
+    """The pricing scenario: sofia answers in 36 hours, and (`tom_finishes`) tom finishes every ticket handed to him
+    three days after it is."""
+    tom = person("tom", Silent())
+    if tom_finishes:
+        tom = tom.model_copy(update={"takes": [Take(take="done", after=timedelta(days=3))]})
     fields: dict[str, object] = {
         "name": "pricing",
         "goal": "Pricing is confirmed and the legal review is done.",
@@ -62,10 +68,9 @@ def scenario(**overrides: object) -> Scenario:
         "people": [
             person("owner", Silent()),
             person("sofia", scripted("Yes, 40k.", hours=36)),
-            person("tom", Silent()),
+            tom,
             person("dania", Silent()),
         ],
-        "ticket_fates": [{"assignee": "tom", "becomes": "done", "after": timedelta(days=3)}],
     }
     fields.update(overrides)
     return Scenario.model_validate(fields)
@@ -78,9 +83,20 @@ class Mounted:
     board: Switchboard
     receiver: Receiver
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
-        self.board.mount(world, clock, apps, scenario=scenario)
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        self.board.mount(world, clock, apps, scenario=scenario, holds=holds)
         self.receiver.mount(world, clock)
+
+    def memory_reads(self, wake: int) -> int:
+        return self.receiver.memory_reads(wake)
 
     def flush(self) -> None:
         self.board.flush()
@@ -121,8 +137,6 @@ class Rig:
         return Services(
             providers=[self.chat, self.sched],
             pushes={CHAT: self.chat},
-            tickets={CHAT: self.chat},
-            editors={CHAT: self.chat},
             schedulers={self.sched.manifest.key: self.sched},
         )
 

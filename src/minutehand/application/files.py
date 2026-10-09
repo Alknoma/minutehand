@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import TypeVar
 
 import yaml
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.experiment import Fork
+from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
+from minutehand.domain.templates import RUN_DIR, RUN_FILLED, RUN_PORT
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -56,13 +58,26 @@ class FileRefused(ValueError):
 
 def load_scenario(path: Path) -> WrittenScenario:
     """A scenario file; one without `starts_at` starts when the run does."""
-    return _load(path, WrittenScenario, called="Scenario")
+    return with_documents_from(path, _load(path, WrittenScenario, called="Scenario"))
 
 
-def load_agent(path: Path) -> AgentUnderTest:
+def load_agent(path: Path, *, text: str | None = None) -> AgentUnderTest:
     """An agent file, its `checks` made absolute from the file's own folder, so a fork that reads the agent back
-    from its run's folder finds them."""
-    return _with_checks_from(path, _load(path, AgentUnderTest))
+    from its run's folder finds them. `text`, when given, is read in place of the file's own (the file as `run-all`
+    fills it), and the file still names it and places its relative paths."""
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+    unfilled = [p for p in RUN_FILLED if p in text]
+    if unfilled:
+        raise FileRefused(
+            f"{path}: holds {' and '.join(unfilled)}, which only `minutehand run` and `run-all` fill, when they start "
+            "the agent's command: give the command after --, or write the port and folder out"
+        )
+    raw = _parsed(path, text, AgentUnderTest)
+    return _with_checks_from(path, _validate(path, raw, AgentUnderTest))
 
 
 def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
@@ -73,6 +88,35 @@ def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
             "watches": [str((base / w).resolve()) for w in agent.watches],
         }
     )
+
+
+_S = TypeVar("_S", WrittenScenario, Seed)
+
+
+def with_documents_from(path: Path, scenario: _S) -> _S:
+    """A scenario whose services' OpenAPI documents are named by file, each made absolute from the scenario's own
+    folder, so a fork that reads the scenario back from its run's folder finds them. A URL is left as written."""
+    base = path.resolve().parent
+    services = [
+        s.model_copy(update={"openapi": str((base / s.openapi).resolve())})
+        if s.openapi is not None and not s.openapi.startswith(("http://", "https://"))
+        else s
+        for s in scenario.services
+    ]
+    return scenario.model_copy(update={"services": services})
+
+
+def load_document(where: str) -> JsonValue:
+    """An OpenAPI document from a file, JSON or YAML."""
+    path = Path(where)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{where}: the service's OpenAPI document could not be read: {e}") from e
+    found = read_yaml(text, where)
+    if not isinstance(found, dict):
+        raise FileRefused(f"{where}: an OpenAPI document is a mapping at its top")
+    return json.loads(json.dumps(found, default=str))
 
 
 def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:
@@ -97,6 +141,10 @@ def _read(path: Path, model: type[BaseModel], *, called: str | None = None) -> o
         text = path.read_text(encoding="utf-8")
     except OSError as e:
         raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+    return _parsed(path, text, model, called=called)
+
+
+def _parsed(path: Path, text: str, model: type[BaseModel], *, called: str | None = None) -> object:
     suffix = path.suffix.lower()
     try:
         if suffix in (".yaml", ".yml"):
@@ -128,9 +176,14 @@ def _validate(path: Path, raw: object, model: type[_M], *, called: str | None = 
         raise FileRefused(f"{path}: not a valid {called or model.__name__}:\n{e}") from e
 
 
+def load_prices(path: Path) -> Prices:
+    """A prices file: what each named model costs per million tokens, for `model_calls.cost`."""
+    return _load(path, Prices, called="prices")
+
+
 def load_seed(path: Path) -> Seed:
     """A standing world's seed: a scenario file with nothing to achieve."""
-    return _load(path, Seed)
+    return with_documents_from(path, _load(path, Seed))
 
 
 class FileKind(StrEnum):
@@ -178,11 +231,23 @@ def where(location: tuple[int | str, ...]) -> str:
     return out or "(the whole file)"
 
 
+def filled_as_run(text: str, path: Path) -> str:
+    """An agent file's text with `{run.port}` and `{run.dir}` filled with stand-ins of their kind: the lowest port
+    `run-all` hands out and the file's own folder."""
+    return text.replace(RUN_PORT, "20000").replace(RUN_DIR, str(path.resolve().parent))
+
+
 def problems(path: Path, kind: FileKind | None = None) -> tuple[FileKind | None, BaseModel | None, list[str]]:
     """Every load-time problem of one file, each naming its place in the file; the model read when there is none."""
     try:
         model = MODELS[kind] if kind is not None else AgentUnderTest
-        raw = _read(path, model)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise FileRefused(f"{path}: cannot be read: {e.strerror}") from e
+        # read as `run` and `run-all` read it, each placeholder they fill filled, so a field that checks what it
+        # holds (a URL's port) is checked as the run will see it
+        raw = _parsed(path, filled_as_run(text, path), model)
     except FileRefused as e:
         return kind, None, [str(e)]
     kind = kind or kind_of(raw)

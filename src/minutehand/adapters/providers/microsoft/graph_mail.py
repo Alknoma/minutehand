@@ -34,6 +34,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Literal
 from urllib.parse import quote, urlencode
 
@@ -41,7 +42,7 @@ from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import Response
 
-from minutehand.adapters.providers.microsoft import wire
+from minutehand.adapters.providers.microsoft import attachments, wire
 from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, bad_request, graph_caller, query
 from minutehand.adapters.providers.microsoft.state import (
     GRAPH,
@@ -65,6 +66,7 @@ PAGE_MAX = 1000
 MESSAGE_TYPE = "#Microsoft.Graph.Message"
 REQUEST_TYPE = "#microsoft.graph.eventMessageRequest"
 RESPONSE_TYPE = "#microsoft.graph.eventMessageResponse"
+CANCELLATION_TYPE = "#microsoft.graph.eventMessage"
 FOLDER_NAMES = {
     wire.MailFolderName.INBOX: "Inbox",
     wire.MailFolderName.SENT: "Sent Items",
@@ -272,6 +274,8 @@ class Composed(Model):
     importance: Literal["low", "normal", "high"] = "normal"
     meeting: wire.MeetingMessageType | None = None
     event: str | None = None
+    attachments: list[wire.StoredAttachment] = []
+    draft: bool = False
 
 
 class _Clause(Model):
@@ -305,7 +309,13 @@ class Mail:
         return wire.MailMessage(
             odata_etag=weak_etag(change_key),
             changeKey=change_key,
-            odata_type=(REQUEST_TYPE if composed.meeting is wire.MeetingMessageType.REQUEST else RESPONSE_TYPE)
+            odata_type=(
+                REQUEST_TYPE
+                if composed.meeting is wire.MeetingMessageType.REQUEST
+                else CANCELLATION_TYPE
+                if composed.meeting is wire.MeetingMessageType.CANCELLED
+                else RESPONSE_TYPE
+            )
             if composed.meeting is not None
             else None,
             id=message_id,
@@ -313,22 +323,37 @@ class Mail:
             lastModifiedDateTime=now,
             receivedDateTime=now,
             sentDateTime=now,
+            hasAttachments=any(not a.isInline for a in composed.attachments),
             subject=composed.subject,
             bodyPreview=text[:255] if text is not None else None,
             importance=composed.importance,
             parentFolderId=folder_id(owner, folder),
             conversationId=composed.conversation,
             isRead=read,
+            isDraft=composed.draft,
             webLink=f"https://outlook.office365.com/owa/?ItemID={quote(message_id)}&exvsurl=1&viewmodel=ReadMessageItem",
             body=composed.body,
-            sender=recipient_of(composed.sender),
-            from_=recipient_of(composed.sender),
+            sender=None if composed.draft else recipient_of(composed.sender),
+            from_=None if composed.draft else recipient_of(composed.sender),
             toRecipients=composed.to,
             ccRecipients=composed.cc,
             bccRecipients=composed.bcc if owner == composed.sender.user.id else [],
             replyTo=composed.reply_to,
             meetingMessageType=composed.meeting,
         )
+
+    @staticmethod
+    def _attached(message: wire.MailMessage, kept: list[wire.StoredAttachment]) -> list[wire.StoredAttachment]:
+        """The attachments as this message holds them: each its own id, made when the message was."""
+        return [
+            a.model_copy(
+                update={
+                    "id": outlook_id(message.id, "attachment", str(n)),
+                    "lastModifiedDateTime": message.lastModifiedDateTime,
+                }
+            )
+            for n, a in enumerate(kept)
+        ]
 
     def put(
         self,
@@ -346,12 +371,14 @@ class Mail:
         sender's first. `answerable` False: it tells and asks nothing (a meeting response), so it opens no wait."""
         recipients = [*composed.to, *composed.cc, *composed.bcc]
         emails = list(dict.fromkeys(self.canonical(r.emailAddress.address) for r in recipients))
+        sent_message = self._message(
+            composed, composed.sender.user.id, wire.MailFolderName.SENT, read=True, seeded=seeded
+        )
         sent = wire.StoredMail(
-            message=self._message(
-                composed, composed.sender.user.id, wire.MailFolderName.SENT, read=True, seeded=seeded
-            ),
+            message=sent_message,
             folder=wire.MailFolderName.SENT,
             event=composed.event,
+            attachments=self._attached(sent_message, composed.attachments),
         )
         text = plain(composed.body) if composed.body is not None else (composed.said or "")
         snapshot = MessageSnapshot(
@@ -365,10 +392,12 @@ class Mail:
         written = [(composed.sender.user.id, sent)]
         reached = dict.fromkeys(u.user.id for r in recipients if (u := self._world.user_by(r.emailAddress.address)))
         for owner in reached:
+            copied = self._message(composed, owner, wire.MailFolderName.INBOX, read=read, seeded=seeded)
             copy = wire.StoredMail(
-                message=self._message(composed, owner, wire.MailFolderName.INBOX, read=read, seeded=seeded),
+                message=copied,
                 folder=wire.MailFolderName.INBOX,
                 event=composed.event,
+                attachments=self._attached(copied, composed.attachments),
             )
             self._world.write_mail(owner, copy, operation=Operation.CREATE, actor=actor, after=None)
             written.append((owner, copy))
@@ -422,6 +451,8 @@ class Mail:
         user = self._world.person(reply.person)
         if user is None:
             raise LookupError(f"{reply.person} is not a user of the tenant")
+        if asked.message.from_ is None:
+            raise LookupError("a draft has no sender to answer")
         await self.send(
             Composed(
                 sender=user,
@@ -456,6 +487,10 @@ class Mail:
             rest = rest[2:]
         if rest == ["messages"] and method == "GET":  # enum-lint: exempt Graph's path segment
             return self._list(request, owner, folder)
+        if rest == ["messages"] and method == "POST":  # enum-lint: exempt HTTP's method name
+            if folder is not None:
+                raise NotServed("POST of a message to a folder: only POST /messages, a draft in Drafts, is served")
+            return await self._create_draft(request, owner)
         if (
             rest in (["messages", "delta"], ["messages", "delta()"]) and method == "GET"
         ):  # enum-lint: exempt Graph's path segment
@@ -477,13 +512,31 @@ class Mail:
                 return self._delete(owner, stored)
             if len(rest) == 3 and rest[2] in ("reply", "replyAll") and method == "POST":
                 return await self._reply(request, owner, stored, everyone=rest[2] == "replyAll")
+            if len(rest) == 3 and method == "POST":  # enum-lint: exempt HTTP's method name
+                action = {
+                    "send": self._send_draft,
+                    "createReply": partial(self._create_reply, everyone=False),
+                    "createReplyAll": partial(self._create_reply, everyone=True),
+                    "createForward": self._create_forward,
+                    "forward": self._forward,
+                    "move": self._move,
+                    "copy": self._copy,
+                    "attachments": self._attach,
+                }
+                if rest[2] in action:
+                    return await action[rest[2]](request, owner, stored)
+            if rest[2:3] == ["attachments"] and method == "GET":
+                return self._attachments(request, owner, stored, rest[3:])
         raise NotServed(f"{method} /{'/'.join(parts)}")
 
-    def _one(self, request: Request, entity: wire.Aliased, context: str) -> Response:
+    def _one(self, request: Request, entity: wire.Aliased, context: str, status: int = 200) -> Response:
         fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
         body = wire.dump(self._shown(request, entity) if isinstance(entity, wire.MailMessage) else entity)
         return Response(
-            wire.select(wire.with_context(body, context), fields), media_type=GRAPH_JSON, headers=self._applied(request)
+            wire.select(wire.with_context(body, context), fields),
+            status_code=status,
+            media_type=GRAPH_JSON,
+            headers=self._applied(request),
         )
 
     def _applied(self, request: Request) -> dict[str, str] | None:
@@ -553,7 +606,7 @@ class Mail:
             return compare(stamp(getattr(message, clause.prop)), instant(clause.value))
         if clause.prop.endswith("/emailAddress/address"):
             who = message.from_ if clause.prop.startswith("from") else message.sender
-            return compare(who.emailAddress.address.lower(), clause.value.lower())
+            return compare(who.emailAddress.address.lower() if who is not None else None, clause.value.lower())
         return compare(str(getattr(message, clause.prop)), clause.value)
 
     @staticmethod
@@ -583,9 +636,7 @@ class Mail:
             for m in self._world.mails(owner.user.id)
             if (folder is None or m.folder is folder) and all(self._holds(c, m.message) for c in clauses)
         ]
-        if not order and len(messages) > 1:
-            raise NotServed("listing messages without $orderby: Graph documents no order for them (user-list-messages)")
-        for prop, descending in reversed(order):
+        for prop, descending in reversed(order or [("receivedDateTime", True)]):
             messages.sort(key=lambda m, prop=prop: getattr(m, prop) or "", reverse=descending)
         top = query(request, "$top")
         skip = query(request, "$skip")
@@ -643,6 +694,11 @@ class Mail:
                 changed.append((stored.seq, wire.dump(self._shown(request, mail.message))))
             elif since and self._was_in(stored.entity.external_id, folder, since):
                 changed.append((stored.seq, json.dumps({"id": mail.message.id, "@removed": {"reason": "deleted"}})))
+        if since:
+            for seq, gone, history in self._world.removed_mail(owner.user.id, since):
+                before = [v for v in history if v.seq <= since]
+                if before and wire.parse(wire.StoredMail, before[-1].body).folder is folder:
+                    changed.append((seq, json.dumps({"id": gone, "@removed": {"reason": "deleted"}})))
         changed.sort(key=lambda pair: pair[0])
         prefer = request.headers["prefer"] if "prefer" in request.headers else ""
         wanted = re.search(r"odata\.maxpagesize\s*=\s*(\d+)", prefer)
@@ -677,15 +733,44 @@ class Mail:
     # ------------------------------------------------------------------ changing
 
     async def _patch(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        """Whether a message is read; of a draft also its subject, body, recipients and importance, which the page
+        says are "updatable only if isDraft = true" (message-update)."""
         try:
             asked = wire.read(wire.MessagePatch, await request.body())
         except wire.Unreadable as e:
             raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         if asked.model_extra:
             raise NotServed(f"PATCH of {', '.join(sorted(asked.model_extra))} on a message")
-        changed = stored
+        given = asked.model_fields_set - {"isRead"}
+        if given and not stored.message.isDraft:
+            raise NotServed(
+                f"PATCH of {', '.join(sorted(given))} on a message that is no draft: updatable only if isDraft = true, "
+                "and Graph's answer to it is not documented"
+            )
+        changes: dict[str, object] = {}
         if asked.isRead is not None and asked.isRead != stored.message.isRead:
-            message = versioned(stored.message, graph_time(self._clock.now()), isRead=asked.isRead)
+            changes["isRead"] = asked.isRead
+        if "subject" in given:
+            changes["subject"] = asked.subject
+        if asked.body is not None:
+            body = self._body(asked.body)
+            changes["body"] = body
+            changes["bodyPreview"] = plain(body)[:255]
+        for name, sent in (
+            ("toRecipients", asked.toRecipients),
+            ("ccRecipients", asked.ccRecipients),
+            ("bccRecipients", asked.bccRecipients),
+            ("replyTo", asked.replyTo),
+        ):
+            if sent is not None:
+                changes[name] = self._recipients(sent, name)
+        if asked.importance is not None:
+            if asked.importance.lower() not in ("low", "normal", "high"):
+                raise NotServed(f"the importance {asked.importance!r}: message names low, normal and high")
+            changes["importance"] = asked.importance.lower()
+        changed = stored
+        if changes:
+            message = versioned(stored.message, graph_time(self._clock.now()), **changes)
             changed = stored.model_copy(update={"message": message})
             self._rewrite(owner.user.id, changed, actor=Actor.AGENT)
             await self.notify(owner.user.id, changed, "updated")
@@ -727,10 +812,13 @@ class Mail:
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
 
     @staticmethod
-    def _unread(sent: wire.SentMessage | None, asked: wire.SendMailRequest | wire.ReplyRequest) -> None:
+    def _unread(
+        sent: wire.SentMessage | None, asked: wire.SendMailRequest | wire.ReplyRequest | wire.ForwardRequest | None
+    ) -> None:
         """Refuse by name every property of the request or its message this provider would otherwise drop."""
         names: list[str] = sorted(
-            {str(n) for n in (asked.model_extra or {})} | {str(n) for n in ((sent.model_extra or {}) if sent else {})}
+            {str(n) for n in ((asked.model_extra or {}) if asked else {})}
+            | {str(n) for n in ((sent.model_extra or {}) if sent else {})}
         )
         if names:
             raise NotServed(f"the message properties {', '.join(names)}: they would not be kept as sent")
@@ -764,24 +852,24 @@ class Mail:
                 reply_to=self._recipients(sent.replyTo, "replyTo"),
                 conversation=outlook_id(owner.user.id, "conversation", str(self._world.next_seq())),
                 importance=sent.importance,
+                attachments=self._stored_attachments(sent.attachments),
             ),
             actor=Actor.AGENT,
         )
         return Response(status_code=202)
 
-    async def _reply(self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, everyone: bool) -> Response:
+    def _reply_composed(
+        self, owner: UserRecord, original: wire.MailMessage, asked: wire.ReplyRequest, *, everyone: bool, draft: bool
+    ) -> Composed:
         """A reply goes to the message's `replyTo` when it names any, else to its sender; a reply to all also to
         every recipient of the message (message-reply, message-replyall). `message` properties replace the reply's
         own; specifying both a comment and the message's body is 400."""
-        try:
-            asked = wire.read(wire.ReplyRequest, await request.body())
-        except wire.Unreadable as e:
-            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
         written = asked.message
         self._unread(written, asked)
         if asked.comment is not None and written is not None and written.body is not None:
             raise GraphRefusal(400, None, "Specify either a comment or the body of the message, not both.")
-        original = stored.message
+        if original.from_ is None:
+            raise NotServed("a reply to a draft, which has no sender: Graph's answer is not documented")
         to = list(original.replyTo) or [original.from_]
         cc: list[wire.Recipient] = []
         if everyone:
@@ -792,19 +880,244 @@ class Mail:
         if written is not None and written.ccRecipients:
             cc = self._recipients(written.ccRecipients, "ccRecipients")
         said = plain(self._body(written.body)) if written is not None and written.body is not None else asked.comment
+        return Composed(
+            sender=owner,
+            subject=written.subject if written is not None and written.subject else re_subject(original.subject),
+            body=None,
+            said=said or "",
+            to=to,
+            cc=cc,
+            bcc=self._recipients(written.bccRecipients, "bccRecipients") if written is not None else [],
+            reply_to=self._recipients(written.replyTo, "replyTo") if written is not None else [],
+            conversation=original.conversationId,
+            importance=written.importance if written is not None else "normal",
+            draft=draft,
+        )
+
+    async def _reply(self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, everyone: bool) -> Response:
+        try:
+            asked = wire.read(wire.ReplyRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        await self.send(
+            self._reply_composed(owner, stored.message, asked, everyone=everyone, draft=False), actor=Actor.AGENT
+        )
+        return Response(status_code=202)
+
+    # ------------------------------------------------------------------ drafts
+
+    def put_draft(self, composed: Composed) -> wire.StoredMail:
+        """A draft in the owner's Drafts folder: told to nobody, so it opens no wait for anyone."""
+        owner = composed.sender.user.id
+        message = self._message(composed, owner, wire.MailFolderName.DRAFTS, read=True, seeded=None)
+        stored = wire.StoredMail(
+            message=message,
+            folder=wire.MailFolderName.DRAFTS,
+            said=composed.said,
+            attachments=self._attached(message, composed.attachments),
+        )
+        self._world.write_mail(owner, stored, operation=Operation.CREATE, actor=Actor.AGENT, after=None)
+        return stored
+
+    async def _made_draft(self, request: Request, owner: UserRecord, composed: Composed) -> Response:
+        stored = self.put_draft(composed)
+        await self.notify(owner.user.id, stored, "created")
+        return self._one(
+            request, stored.message, f"{GRAPH}/$metadata#users('{owner.user.id}')/messages/$entity", status=201
+        )
+
+    async def _create_draft(self, request: Request, owner: UserRecord) -> Response:
+        """`POST /messages`: a draft in Drafts, 201 with the message, `isDraft` true (user-post-messages)."""
+        if (
+            request.headers["content-type"].split(";")[0].strip().lower() != "application/json"
+            if "content-type" in request.headers
+            else False
+        ):
+            raise NotServed("a draft in MIME format (Content-Type: text/plain): only JSON is served")
+        try:
+            sent = wire.read(wire.SentMessage, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        self._unread(sent, None)
+        return await self._made_draft(
+            request,
+            owner,
+            Composed(
+                sender=owner,
+                subject=sent.subject,
+                body=self._body(sent.body),
+                to=self._recipients(sent.toRecipients, "toRecipients"),
+                cc=self._recipients(sent.ccRecipients, "ccRecipients"),
+                bcc=self._recipients(sent.bccRecipients, "bccRecipients"),
+                reply_to=self._recipients(sent.replyTo, "replyTo"),
+                conversation=outlook_id(owner.user.id, "conversation", str(self._world.next_seq())),
+                importance=sent.importance,
+                attachments=self._stored_attachments(sent.attachments),
+                draft=True,
+            ),
+        )
+
+    async def _create_reply(
+        self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, everyone: bool
+    ) -> Response:
+        """`createReply`, `createReplyAll`: a draft that answers as `reply` and `replyAll` send (message-createreply,
+        message-createreplyall)."""
+        try:
+            asked = wire.read(wire.ReplyRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        return await self._made_draft(
+            request, owner, self._reply_composed(owner, stored.message, asked, everyone=everyone, draft=True)
+        )
+
+    def _forward_composed(
+        self, owner: UserRecord, stored: wire.StoredMail, asked: wire.ForwardRequest, *, draft: bool
+    ) -> Composed:
+        """A forward names its recipients once, as the parameter or as the message's `toRecipients`, and holds a
+        comment or the message's body, not both (message-forward, message-createforward: 400 otherwise)."""
+        written = asked.message
+        self._unread(written, asked)
+        if asked.comment is not None and written is not None and written.body is not None:
+            raise GraphRefusal(400, None, "Specify either a comment or the body of the message, not both.")
+        named = (asked.toRecipients or []) if asked.toRecipients else []
+        inside = written.toRecipients if written is not None else []
+        if bool(named) == bool(inside):
+            raise GraphRefusal(
+                400,
+                None,
+                "Specify either the toRecipients parameter or the toRecipients property of the message parameter.",
+            )
+        if stored.attachments:
+            raise NotServed("forwarding a message that has attachments: the pages do not say whether they travel")
+        said = plain(self._body(written.body)) if written is not None and written.body is not None else asked.comment
+        return Composed(
+            sender=owner,
+            subject=written.subject if written is not None and written.subject else None,
+            body=None,
+            said=said or "",
+            to=self._recipients(named or inside, "toRecipients"),
+            cc=self._recipients(written.ccRecipients, "ccRecipients") if written is not None else [],
+            bcc=self._recipients(written.bccRecipients, "bccRecipients") if written is not None else [],
+            reply_to=self._recipients(written.replyTo, "replyTo") if written is not None else [],
+            conversation=outlook_id(owner.user.id, "conversation", str(self._world.next_seq())),
+            importance=written.importance if written is not None else "normal",
+            draft=draft,
+        )
+
+    async def _create_forward(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        try:
+            asked = wire.read(wire.ForwardRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        return await self._made_draft(request, owner, self._forward_composed(owner, stored, asked, draft=True))
+
+    async def _forward(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        try:
+            asked = wire.read(wire.ForwardRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        await self.send(self._forward_composed(owner, stored, asked, draft=False), actor=Actor.AGENT)
+        return Response(status_code=202)
+
+    async def _send_draft(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        """`send`: the draft goes to its recipients and is kept in Sent Items; 202, no body (message-send). It leaves
+        Drafts, and, as an item moved from one folder to another, takes a new id (resources/message: `id` changes
+        when the item is moved)."""
+        del request
+        message = stored.message
+        if not message.isDraft:
+            raise NotServed("send of a message that is no draft: Graph's answer is not documented")
+        if not (message.toRecipients or message.ccRecipients or message.bccRecipients):
+            raise GraphRefusal(400, "ErrorInvalidRecipients", RECIPIENTS_INVALID)
+        self._world.remove(message_ref(message.id), actor=Actor.AGENT, parent=MAILBOX.format(user=owner.user.id))
         await self.send(
             Composed(
                 sender=owner,
-                subject=written.subject if written is not None and written.subject else re_subject(original.subject),
-                body=None,
-                said=said or "",
-                to=to,
-                cc=cc,
-                bcc=self._recipients(written.bccRecipients, "bccRecipients") if written is not None else [],
-                reply_to=self._recipients(written.replyTo, "replyTo") if written is not None else [],
-                conversation=original.conversationId,
-                importance=written.importance if written is not None else "normal",
+                subject=message.subject,
+                body=message.body,
+                said=stored.said,
+                to=message.toRecipients,
+                cc=message.ccRecipients,
+                bcc=message.bccRecipients,
+                reply_to=message.replyTo,
+                conversation=message.conversationId,
+                importance=message.importance,
+                attachments=stored.attachments,
             ),
             actor=Actor.AGENT,
         )
         return Response(status_code=202)
+
+    # ------------------------------------------------------------------ move, copy
+
+    async def _relocate(self, request: Request, owner: UserRecord, stored: wire.StoredMail, *, keep: bool) -> Response:
+        try:
+            asked = wire.read(wire.DestinationRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        if asked.model_extra:
+            raise NotServed(f"the properties {', '.join(sorted(asked.model_extra))} of a move or copy")
+        destination = self.folder(owner, asked.destinationId)
+        now = graph_time(self._clock.now())
+        new_id = outlook_id(owner.user.id, "relocated", stored.message.id, str(self._world.next_seq()))
+        message = versioned(
+            stored.message,
+            now,
+            id=new_id,
+            parentFolderId=folder_id(owner.user.id, destination),
+            webLink=f"https://outlook.office365.com/owa/?ItemID={quote(new_id)}&exvsurl=1&viewmodel=ReadMessageItem",
+        )
+        made = stored.model_copy(
+            update={
+                "message": message,
+                "folder": destination,
+                "attachments": self._attached(message, stored.attachments),
+            }
+        )
+        if not keep:
+            self._world.remove(
+                message_ref(stored.message.id), actor=Actor.AGENT, parent=MAILBOX.format(user=owner.user.id)
+            )
+        self._world.write_mail(owner.user.id, made, operation=Operation.CREATE, actor=Actor.AGENT, after=None)
+        await self.notify(owner.user.id, made, "created")
+        return self._one(
+            request, made.message, f"{GRAPH}/$metadata#users('{owner.user.id}')/messages/$entity", status=201
+        )
+
+    async def _move(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        """`move`: a new copy in the destination folder and the original gone, 201 with the copy (message-move)."""
+        return await self._relocate(request, owner, stored, keep=False)
+
+    async def _copy(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        """`copy`: a copy in the destination folder, the original kept, 201 with the copy (message-copy)."""
+        return await self._relocate(request, owner, stored, keep=True)
+
+    # ------------------------------------------------------------------ attachments
+
+    def _stored_attachments(self, sent: list[wire.SentAttachment]) -> list[wire.StoredAttachment]:
+        now = graph_time(self._clock.now())
+        return [attachments.kept(a, "", now) for a in sent]
+
+    async def _attach(self, request: Request, owner: UserRecord, stored: wire.StoredMail) -> Response:
+        """`POST …/attachments`: a file attached to a draft, 201 with the attachment."""
+        sent = await attachments.sent(request)
+        if not stored.message.isDraft:
+            raise NotServed("an attachment added to a message that is no draft: Graph's answer is not documented")
+        now = graph_time(self._clock.now())
+        made = attachments.kept(
+            sent, outlook_id(stored.message.id, "attachment", str(len(stored.attachments)), now), now
+        )
+        message = versioned(
+            stored.message, now, hasAttachments=any(not a.isInline for a in [*stored.attachments, made])
+        )
+        changed = stored.model_copy(update={"message": message, "attachments": [*stored.attachments, made]})
+        self._rewrite(owner.user.id, changed, actor=Actor.AGENT)
+        await self.notify(owner.user.id, changed, "updated")
+        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments"
+        return Response(wire.with_context(wire.dump(made), f"{where}/$entity"), status_code=201, media_type=GRAPH_JSON)
+
+    def _attachments(self, request: Request, owner: UserRecord, stored: wire.StoredMail, rest: list[str]) -> Response:
+        """`GET …/attachments` and `GET …/attachments/{id}`."""
+        self._world.saw(message_ref(stored.message.id), Operation.READ)
+        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/messages('{stored.message.id}')/attachments"
+        return attachments.read(request, stored.attachments, rest, where)

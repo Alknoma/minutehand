@@ -69,7 +69,7 @@ def _system() -> str:
 
 
 def _scn(*people: Person) -> Scenario:
-    return scenario(ticket_fates=[], people=[person("owner", Silent()), *people])
+    return scenario(tom_finishes=False, people=[person("owner", Silent()), *people])
 
 
 async def _answer(replier: PeopleReplier, who: Person, asked: WorldEvent, store: SqliteStore, clock: RunClock) -> str:
@@ -126,14 +126,14 @@ async def test_beyond_the_budget_the_oldest_turns_are_one_summary_written_once(t
         _say(store, clock, Actor.AGENT, f"Note {n}.", [ana.email], f"n{n}", ANA_DM, T0 + timedelta(minutes=n))
     asked = _say(store, clock, Actor.AGENT, "What is the budget?", [ana.email], "q", ANA_DM, T0 + timedelta(hours=1))
     await _answer(replier, ana, asked, store, clock)
-    summary, written = store.person_calls()
-    assert summary.wrote is Wrote.SUMMARY and written.wrote is Wrote.REPLY
+    summary, written, checked = store.person_calls()
+    assert summary.wrote is Wrote.SUMMARY and written.wrote is Wrote.REPLY and checked.wrote is Wrote.FACT_CHECK
     shown = _shown()
     assert "Earlier, in short, as you remember it:\n2 earlier messages." in shown
     assert "Note 0." not in shown and "Note 1." not in shown and "They: Note 2." in shown
     asked_before = len(people_requests())
     await replier.decide(ana, asked, store.events(), clock, store)
-    assert len(people_requests()) == asked_before and all(c.replayed for c in store.person_calls()[2:])
+    assert len(people_requests()) == asked_before and all(c.replayed for c in store.person_calls()[3:])
 
 
 async def test_a_fork_that_changed_what_was_said_before_gets_a_fresh_answer_and_one_that_did_not_replays(

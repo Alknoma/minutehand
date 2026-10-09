@@ -11,12 +11,13 @@ from typing import Protocol
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.agent import Commitment
-from minutehand.domain.assessments import Rule, StoppedBy
+from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
-from minutehand.domain.conversation import Judgement
+from minutehand.domain.conversation import Judgement, PersonCall
+from minutehand.domain.items import Assessed, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
-from minutehand.domain.world import EntityRef, Exchange, WorldEvent
+from minutehand.domain.world import EntityRef, Exchange, RecordedCall, WorldEvent
 
 
 class Severity(StrEnum):
@@ -49,6 +50,62 @@ class Finding(Model):
     evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
     pattern: str | None = Field(default=None, description="Pattern.key: how a proactive agent avoids this")
     judged: Judgement | None = Field(default=None, description="Set when a model judged this: which, how, and why")
+    calls: list[int] = Field(
+        default=[], description="The agent's calls it cites, by their place among the run's calls (calls.call_id)"
+    )
+    assessed: Assessed | None = Field(
+        default=None,
+        description="Set by the assessment of the agent's effects: a violation, a wrong action or wrong timing, and "
+        "the declaration it was measured against",
+    )
+
+
+class HealthKind(StrEnum):
+    """What kept the simulated world from playing as its files declare it: a fact about the world, never about the
+    agent (`checks.health`)."""
+
+    RESPONDER_NEVER_ACTS = "responder_never_acts"  # a declared service responder whose script ends in silence
+    WAITS_ON_NOBODY = "waits_on_nobody"  # an item only a person can move, held pending on nobody
+    OWED_UNBOOKED = "owed_unbooked"  # a reply or decision someone owes, with no moment booked for it
+    MODEL_FAILED = "model_failed"  # a people model call that failed and was never answered after
+    PUSH_FAILED = "push_failed"  # an event the world pushed that never reached the agent, retries and all
+    BEYOND_FACTS = "beyond_facts"  # a person's model-written reply said what nothing they know supports
+    WAITS_BY_DECLARATION = "waits_by_declaration"  # an item pending on someone the files declare never acts
+    NEVER_EXERCISED = "never_exercised"  # a declared service, collection or person nothing in the run touched
+    STEP_NEVER_FIRED = "step_never_fired"  # a scripted step whose ask never came
+
+
+INCOMPLETE = frozenset(
+    {
+        HealthKind.RESPONDER_NEVER_ACTS,
+        HealthKind.WAITS_ON_NOBODY,
+        HealthKind.OWED_UNBOOKED,
+        HealthKind.MODEL_FAILED,
+        HealthKind.PUSH_FAILED,
+        HealthKind.BEYOND_FACTS,
+    }
+)
+"""The kinds that mean the world did not play what its files declare, so the run is `SIMULATION_INCOMPLETE`. The
+others state how much of what was declared the run reached, which no verdict reads."""
+
+
+class HealthFinding(Model):
+    """One fact about the simulated world's health: what did not play as declared, with its evidence."""
+
+    kind: HealthKind
+    incomplete: bool = Field(description="Whether it makes the run SIMULATION_INCOMPLETE (`INCOMPLETE`)")
+    words: str = Field(description="What happened, in one sentence")
+    person: str | None = Field(default=None, description="Person.key it is about")
+    entity: EntityRef | None = Field(default=None, description="The item, message, service or push it is about")
+    since: AwareDatetime | None = Field(default=None, description="Simulated time it began")
+    evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
+
+
+class DeclaredCollection(Model):
+    """A collection an outbound `store` host keeps (`domain.outbound.DeclaredStore`), as the health check names it."""
+
+    host: str
+    collection: str
 
 
 class Pattern(Model):
@@ -65,10 +122,26 @@ class Pattern(Model):
     reference: str | None = Field(default=None, description="Where a working implementation can be read")
 
 
+class RuleRead(Model):
+    """How often one of the team's rules was read over a run, and how often it could not be (`checks.assessments`):
+    with its findings, whether it held for everything it was read for."""
+
+    rule: str = Field(description="Rule.id")
+    read: int = Field(
+        ge=0,
+        description="Times it applied and was read: once for each thing it is for where its `when` held, at each of "
+        "its moments",
+    )
+    unread: int = Field(
+        ge=0, description="Times it could not be read: a moment the run never reached, or one the thing lacked"
+    )
+
+
 class CheckReport(Model):
     findings: list[Finding] = []
     blocked: list[str] = []
     notes: list[str] = []
+    rules_read: list[RuleRead] = Field(default=[], description="The team's rules, each with how often it was read")
 
 
 class ObligationKind(StrEnum):
@@ -145,7 +218,8 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = Field(
         default=None,
-        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        description="The longest stretch from a wait settling to the agent's next write anywhere a person could see "
+        "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
     messages_to_people: int = Field(default=0, ge=0)
@@ -189,7 +263,11 @@ class WakeRecord(Model):
         default=False,
         description="A standing world's step nobody marked: the stretch between two forward moves of its clock",
     )
-    reason: str | None = Field(default=None, description="Why the step began, as whoever marked it said")
+    reason: str | None = Field(
+        default=None,
+        description="Why it began: in a run, the `WakeReason` the wake carried; in a standing world, as whoever marked "
+        "the step said",
+    )
     memory_reads: int = Field(
         default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand.agent.store`) in the wake"
     )
@@ -211,7 +289,7 @@ class RunView(Model):
     wakes: list[WakeRecord]
     obligations: list[Obligation] = []
     replies: list[PersonReply] = Field(
-        default=[], description="What people said: every reply not withdrawn before it landed, with who and when"
+        default=[], description="What people said: every reply that landed, with who and when"
     )
     commitments: list[Commitment] | None = None
     model_calls: list[WakeModelCalls] | None = Field(
@@ -259,6 +337,40 @@ class RunView(Model):
         "(`domain.assessments.merged`)",
     )
     stopped: StoppedBy | None = Field(default=None, description="How the run stopped; None while it runs, or unknown")
+    calls: list[RecordedCall] | None = Field(
+        default=None,
+        description="Every call the proxy saw, in order, numbered from 1 by their place; None when nobody recorded them",
+    )
+    typed: list[TypedItem] = Field(
+        default=[],
+        description="Each event that changed an item of a kind the providers declare (`domain.items`), read as that item",
+    )
+    item_types: list[ProvidedTypes] = Field(
+        default=[], description="The item types each provider in the run declares, with the built-in ones"
+    )
+    rhythm: timedelta | None = Field(
+        default=None,
+        description="The agent's declared rhythm: the agent file's `tick`, else its shortest polled `every`; None when "
+        "it declares none",
+    )
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="The integrity facts the agent file or the scenario says fail the run; any other is stated as "
+        "`review` and never changes the verdict",
+    )
+    person_calls: list[PersonCall] = Field(
+        default=[], description="Every call Minutehand made to a model for people and services, in order"
+    )
+    collections: list[DeclaredCollection] = Field(
+        default=[], description="Every collection the agent file's `store` hosts declare"
+    )
+
+    def integrity(self, check: IntegrityCheck) -> tuple[FindingKind, Severity]:
+        """How a finding of an integrity fact is stated: a failure when the user's files say it fails the run,
+        else something for someone to look at."""
+        if check in self.fail_on_integrity:
+            return FindingKind.FAIL, Severity.ERROR
+        return FindingKind.REVIEW, Severity.WARNING
 
 
 class AroundProxy(Model):

@@ -11,16 +11,17 @@ whoever it went to. It still counts as a touch on a wait already open with that 
 Whether a message asked anything is the replier's decision, never the ledger's:
 a message opens a wait when the person has a reply decided to it, or when the
 person is `Silent`, whose every message is a question left unanswered. A reply
-withdrawn before it landed (the agent edited the message it answered) still says
-the message asked something, and settles nothing: it never reached anyone. A message
-a person would not answer (a thank-you, a report) asked them nothing, whether or
-not they are away when it arrives.
+planned and not yet landed (the people engine's record of it, `PendingSnapshot.plan`)
+says the message asked something, and settles nothing yet. A message a person would
+not answer (a thank-you, a report), or one that, read when they came to it, needed
+no answer, asked them nothing, whether or not they are away when it arrives.
+
+Where the people engine plays a provider (`Scenario.transitions_on`), an item it held pending on a person (an
+invitation they were sent) asked them, whoever they are, and the person's first transition on it is their answer.
 
 An item waiting on a person in the agent's own product (`InboxItemSnapshot`, seen by reading their inbox) is an
 ask of its own whoever the person is: a pending decision always waits on them. It settles when they decide it and
 the product takes the decision, or when the agent takes it back; a decision the product refused settles nothing.
-When the item says what it holds back (`gates`), the agent's first call carrying that id after it settled is its
-reaction.
 
 A message is the same ask as an earlier one, and so a follow-up on it rather
 than a wait of its own, when it goes to the same person in the same conversation
@@ -32,7 +33,6 @@ and treats a reminder sent in another channel as a new ask.
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime, Field
@@ -49,7 +49,10 @@ from minutehand.domain.world import (
     ItemStatus,
     MessageSnapshot,
     Operation,
+    PendingSnapshot,
+    PendingStatus,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -137,9 +140,6 @@ class _Open(Model):
     settled_at: AwareDatetime | None
     primary: EntityRef
     conversation: tuple[str, str] | None = None
-    gates: str | None = Field(
-        default=None, description="An item's gated operation: a call of the agent's carrying it reacts to the decision"
-    )
 
     def open_at(self, moment: datetime) -> bool:
         return self.settled_at is None or moment < self.settled_at
@@ -149,11 +149,8 @@ def build(
     scenario: Scenario,
     events: list[WorldEvent],
     replies: list[PersonReply],
-    *,
-    withdrawn: Collection[int] = (),
 ) -> list[Obligation]:
-    """Every obligation the run opened, in the order it opened; the scenario deadline last. `withdrawn` are the
-    positions in `replies` of replies withdrawn before they landed."""
+    """Every obligation the run opened, in the order it opened; the scenario deadline last."""
     events = sorted(events, key=lambda e: e.seq)
     head = events[-1].sim_time if events else scenario.starts_at
     by_key = {p.key: p for p in scenario.people}
@@ -161,10 +158,16 @@ def build(
     away = absences(scenario, events)
     answers = [(i, r) for i, r in enumerate(replies) if r.answers]  # an automatic reply says only they are away
     asked = {(_ref(r.in_reply_to), r.person) for _, r in answers}
-    answered = {(_ref(r.in_reply_to), r.person): r for i, r in answers if i not in withdrawn}
-    decided = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
+    answered = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
+    decided = answered
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
+    held: dict[EntityRef, PendingSnapshot] = {e.entity: e.after for e in events if isinstance(e.after, PendingSnapshot)}
+    pending = {(_ref(p.item), p.person) for p in held.values() if _asks(p)}
+    moved: dict[tuple[tuple[str, EntityKind, str], str], list[WorldEvent]] = {}
+    for e in events:
+        if isinstance(e.after, TransitionSnapshot) and e.actor is Actor.PERSON and e.after.who is not None:
+            moved.setdefault((_ref(e.after.item), e.after.who), []).append(e)
 
     for event in events:
         after = event.after
@@ -174,6 +177,10 @@ def build(
             for person in recipients(event, scenario):
                 reply = answered.get((_ref(event.entity), person.key))
                 settled = reply.at if reply is not None and reply.at <= head else None
+                engine = (_ref(event.entity), person.key) in pending
+                if engine and settled is None:
+                    took = [m for m in moved.get((_ref(event.entity), person.key), []) if m.seq > event.seq]
+                    settled = took[0].sim_time if took and took[0].sim_time <= head else None
                 earlier = next(
                     (
                         o
@@ -190,7 +197,11 @@ def build(
                     continue
                 if not after.answerable:
                     continue  # told, not asked: nobody can answer where it went
-                if (_ref(event.entity), person.key) not in asked and not isinstance(person.reply, Silent):
+                if (
+                    (_ref(event.entity), person.key) not in asked
+                    and not engine
+                    and not isinstance(person.reply, Silent)
+                ):
                     continue
                 opened.append(
                     _Open(
@@ -227,7 +238,6 @@ def build(
                     patience=_patience(person, decided_to),
                     settled_at=_item_settled(event.entity, events),
                     primary=event.entity,
-                    gates=after.gates,
                 )
             )
             continue
@@ -244,7 +254,15 @@ def build(
         person = by_email.get(after.assignee_email) if after.assignee_email is not None else None
         if not handed or person is None or after.state in FINISHED:
             continue
-        fate = next((f for f in scenario.ticket_fates if f.assignee == person.key), None)
+        take = next(
+            (
+                t
+                for t in person.takes
+                if t.provider in (None, event.entity.provider) and t.nth is None and t.after is not None
+            ),
+            None,
+        )
+        due = take.after if take is not None else None
         opened.append(
             _Open(
                 key=f"work:{event.entity.provider}:{event.entity.external_id}:{person.key}:{event.seq}",
@@ -253,13 +271,25 @@ def build(
                 entities=[event.entity],
                 opened_at=event.sim_time,
                 opened_by=event.seq,
-                expected_by=event.sim_time + fate.after if fate is not None else None,
+                expected_by=event.sim_time + due if due is not None else None,
                 settled_at=_finished(event.entity, event.seq, events),
                 primary=event.entity,
             )
         )
 
-    ledger = [_finish(o, events, by_key, away) for o in opened]
+    # Only these can touch a wait: a message the agent sent, a call it made, or a change to a waited-on entity.
+    waited = {(e.provider, e.kind, e.external_id) for o in opened for e in o.entities}
+    touching = [
+        e
+        for e in events
+        if e.actor is Actor.AGENT
+        and (
+            (e.operation is Operation.CREATE and isinstance(e.after, MessageSnapshot))
+            or e.exchange is not None
+            or (e.entity.provider, e.entity.kind, e.entity.external_id) in waited
+        )
+    ]
+    ledger = [_finish(o, touching, by_key, away) for o in opened]
     if scenario.deadline is not None:
         ledger.append(
             Obligation(
@@ -272,6 +302,18 @@ def build(
             )
         )
     return ledger
+
+
+def _asks(pending: PendingSnapshot) -> bool:
+    """Whether an item the engine held on a person asked them something: any item but a message; a message whose
+    answer their script planned (`PendingSnapshot.plan`) unless, read when they came to it, it needed none; and a
+    message whose answer is the engine's pick (a take, a provider the scenario plays), which their script never
+    planned (`PendingSnapshot.asked` unset)."""
+    if not pending.conversation:
+        return True
+    if pending.status is PendingStatus.PASSED:
+        return False
+    return pending.plan is not None or pending.asked is None
 
 
 def _patience(person: Person, reply: PersonReply | None) -> timedelta:
@@ -306,13 +348,6 @@ def _item_settled(item: EntityRef, events: list[WorldEvent]) -> datetime | None:
     return None
 
 
-def carries(event: WorldEvent, token: str) -> bool:
-    """Whether the call that wrote `event` names `token` (a gated operation's id) in its path or its request: the
-    agent's own wire format, read for a value its own product declared."""
-    call = event.exchange
-    return call is not None and (token in call.path or token in (call.request_body or ""))
-
-
 def _finished(ticket: EntityRef, since: int, events: list[WorldEvent]) -> datetime | None:
     """When the person holding this ticket first finished or cancelled it after `since`."""
     for event in events:
@@ -332,21 +367,17 @@ def _finish(o: _Open, events: list[WorldEvent], by_key: dict[str, Person], away:
     emails.update(by_key[a.delegate].email for a in away if a.person == o.person.key and a.delegate)
     touches: list[int] = []
     after_settled: int | None = None
+    # By their fields: a set of plain tuples, where comparing models event by event made this quadratic in practice.
+    entities = {(e.provider, e.kind, e.external_id) for e in o.entities}
     for event in events:
         if event.actor is not Actor.AGENT or event.seq <= o.opened_by:
             continue
-        on_entity = event.entity in o.entities
+        on_entity = (event.entity.provider, event.entity.kind, event.entity.external_id) in entities
         on_person = (
             event.operation is Operation.CREATE
             and isinstance(event.after, MessageSnapshot)
             and bool(emails.intersection(event.after.recipient_emails))
         )
-        gated = o.gates is not None and event.operation not in _READS and carries(event, o.gates)
-        if gated and not (on_entity or on_person):
-            # going ahead with what was held back reacts to the decision; it never follows the ask up
-            if o.settled_at is not None and event.sim_time >= o.settled_at and after_settled is None:
-                after_settled = event.seq
-            continue
         if not (on_entity or on_person):
             continue
         if o.settled_at is None or event.sim_time < o.settled_at:

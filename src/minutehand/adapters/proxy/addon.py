@@ -44,9 +44,10 @@ from mitmproxy.proxy.layers import modes
 
 from minutehand.adapters.answering import OUTCOME, PLAIN, Guarded, Outcome, grpc_outcome, kind_of
 from minutehand.adapters.emulator import answers
-from minutehand.adapters.proxy import capture, connect, credentials, mcp, modeled, redact, stored
+from minutehand.adapters.proxy import capture, connect, credentials, mcp, redact, stored
 from minutehand.adapters.proxy.capture import Broke, Capturing, Declaration, EmulatorRoute
 from minutehand.adapters.proxy.edit import apply_edits
+from minutehand.adapters.proxy.held import Held
 from minutehand.adapters.proxy.hosts import loopback_name
 from minutehand.adapters.proxy.local import CALL_HEADER, GRPC_NOT_INSTALLED, LocalServers
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
@@ -56,6 +57,7 @@ from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
 from minutehand.application.traffic import SeenCall
+from minutehand.domain.common import ProviderKey
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
 from minutehand.domain.outbound import (
     BODY_LIMIT,
@@ -69,7 +71,8 @@ from minutehand.domain.outbound import (
     UnknownHosts,
 )
 from minutehand.domain.provider import Manifest, world_keys
-from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.scenario import Scenario
+from minutehand.domain.services import Service
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     GRPC_NUMBERS,
@@ -90,14 +93,23 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     Recipient,
+    RecordedCall,
     SocketFrame,
+    StoredSnapshot,
     Tunnelled,
     TunnelRoute,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.model import ModelFailed
-from minutehand.ports.provider import ASGIApp, Message, RendersErrors, Scope, ServesGrpc, ServesSockets
+from minutehand.ports.provider import (
+    ASGIApp,
+    HeldCalls,
+    Message,
+    RendersErrors,
+    Scope,
+    ServesGrpc,
+    ServesSockets,
+)
+from minutehand.ports.services import AnswersServices, Call
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -119,6 +131,15 @@ def strip_prefix(path: str, prefix: str) -> str:
 def _json_response(status: int, message: str, host: str) -> http.Response:
     return http.Response.make(
         status, json.dumps({"error": message, "host": host}).encode(), {"content-type": "application/json"}
+    )
+
+
+def _answered_as_service(calls: list[RecordedCall], host: str) -> bool:
+    """Whether a call to `host` was answered as a service nobody declared (`--capture-unknown model`): from then on
+    its reads are the service's too, not passed through to the real host."""
+    return any(
+        c.exchange.host == host and c.exchange.captured is not None and c.exchange.captured.mode is CaptureMode.SERVICE
+        for c in calls
     )
 
 
@@ -264,12 +285,10 @@ class ProxyAddon:
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
         capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
-        model: LanguageModel | None = None,
     ) -> None:
         self.routing = routing
         self.capturing = capturing or Capturing()
         self.capture_unknown = capture_unknown
-        self._model = model
         self.worlds: Worlds = one_run(
             store, clock, {}, scenario=None, provider=routing.registry.provider, capturing=self.capturing
         )
@@ -520,17 +539,29 @@ class ProxyAddon:
         burst.world.store.attach(exchange, first_seq=head + 1, last_seq=head, began=burst.began)
 
     def mount(
-        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario | None = None,
+        holds: HeldCalls | None = None,
     ) -> None:
         """`application.orchestrator.Mounts`: from now on calls are recorded in `world` and each of `apps` answers
         its provider's hosts. A provider claimed but not mounted is still built on its first call, over `world`,
         and seeded then with `scenario`'s people and things, unless `world` already holds anything of it. A burst
         in progress on a relayed tunnel is written to the run it began in first, and the gRPC and WebSocket
-        servers of the run before are stopped."""
+        servers of the run before are stopped. `holds` holds a call that waits on the world (`held`)."""
         self.flush()
         self._close_local(None)
         self.worlds = one_run(
-            world, clock, apps, scenario=scenario, provider=self.routing.registry.provider, capturing=self.capturing
+            world,
+            clock,
+            apps,
+            scenario=scenario,
+            provider=self.routing.registry.provider,
+            capturing=self.capturing,
+            holds=holds,
         )
 
     def route(self, worlds: Worlds) -> None:
@@ -595,15 +626,20 @@ class ProxyAddon:
                     await self._capture(flow, host, world, declared)
             return
         held = world or self.worlds.lobby
+        desk = held.capturing.services
+        service = desk.declared(host) if desk is not None and manifest is None else None
+        if desk is not None and service is not None:
+            await self._service(flow, host, held, desk, service)
+            return
         declaration = held.capturing.find(host) if manifest is None else None
         if (
             declaration is None
             and manifest is None
-            and self.capture_unknown is UnknownHosts.MODEL
-            and self._model is not None
-            and (request.method.upper() not in READ_METHODS or modeled.earlier(held.store.calls(), host))
+            and desk is not None
+            and desk.answers_undeclared
+            and (request.method.upper() not in READ_METHODS or _answered_as_service(held.store.calls(), host))
         ):
-            await self._modeled(flow, host, held, self._model)
+            await self._service(flow, host, held, desk, desk.undeclared(host))
             return
         if declaration is not None or (manifest is None and self.capture_unknown.captures(request.method)):
             await self._capture(flow, host, held, declaration)
@@ -842,32 +878,70 @@ class ProxyAddon:
         """Answer from the provider's app, guarded (`adapters.answering`): whatever building the app or answering
         lets out becomes the agent's answer, and how the call was answered is recorded on it. A call the provider
         says it does not serve (`NotServed`) on a host the world also declares (`falls_to`) is not answered here:
-        False, and the declaration answers it."""
-        async with world.lock:
-            first = world.store.head() + 1
-            original = flow.request.path
-            outcome = Outcome()
+        False, and the declaration answers it. A call the provider says waits on the world is held out of the
+        world's lock and answered afresh at each look (`held`); it is recorded once, as it is answered."""
+        waits = world.waits
+        waits.began(fresh=True)
+        held: Held | None = None
+        try:
+            while True:
+                async with world.lock:
+                    first = world.store.head() + 1
+                    original = flow.request.path
+                    outcome = Outcome(
+                        holds=waits.holds is not None,
+                        over=held is not None and held.ended_by(world.clock.now()),
+                    )
 
-            async def built(
-                scope: Scope, receive: Callable[[], Awaitable[Message]], send: Callable[[Message], Awaitable[None]]
-            ) -> None:
-                nonlocal first
-                app = world.app_for(manifest)
-                first = world.store.head() + 1  # what seeding a provider on its first call wrote is not this call's
-                await app(scope, receive, send)
+                    async def built(
+                        scope: Scope,
+                        receive: Callable[[], Awaitable[Message]],
+                        send: Callable[[Message], Awaitable[None]],
+                    ) -> None:
+                        nonlocal first
+                        app = world.app_for(manifest)
+                        # what seeding a provider on its first call wrote is not this call's
+                        first = world.store.head() + 1
+                        await app(scope, receive, send)
 
-            token = OUTCOME.set(outcome)
-            try:
-                flow.request.path = strip_prefix(original, manifest.path_prefix)
-                guarded = Guarded(built, self._renders(manifest), provider=manifest.key, clock=world.clock)
-                await asgiapp.serve(_path_decoded(guarded), flow)
-            finally:
-                OUTCOME.reset(token)
-                flow.request.path = original
-            if outcome.not_served and falls_to is not None:
-                flow.response = None
-                return False
-            exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
+                    token = OUTCOME.set(outcome)
+                    try:
+                        flow.request.path = strip_prefix(original, manifest.path_prefix)
+                        guarded = Guarded(built, self._renders(manifest), provider=manifest.key, clock=world.clock)
+                        await asgiapp.serve(_path_decoded(guarded), flow)
+                    finally:
+                        OUTCOME.reset(token)
+                        flow.request.path = original
+                    if outcome.waiting is not None and waits.holds is not None:
+                        flow.response = None
+                        if held is None:
+                            held = Held(ref=flow.id, until=outcome.waiting.until, waits=waits)
+                            waits.held[held.ref] = held
+                        again = outcome.waiting.again
+                        at = again if again is not None and again < held.until else held.until
+                        waits.holds.hold(held.ref, at, ends=at == held.until, look=held.look)
+                    else:
+                        if outcome.not_served and falls_to is not None:
+                            flow.response = None
+                            if held is not None:
+                                self._let_go(held)
+                            return False
+                        exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
+                        if held is not None:
+                            self._let_go(held)  # after the record, whose events end where the answer's do
+                        break
+                assert held is not None
+                held.looked.set()
+                waits.ended()
+                await held.turn.wait()
+                held.turn.clear()
+                waits.began(fresh=False)
+        finally:
+            waits.ended()
+            if held is not None:
+                held.looked.set()
+        if held is None:
+            waits.stir()  # what this call changed may answer a call held in the world
         response = flow.response
         minted = (
             credentials.minted(
@@ -879,6 +953,16 @@ class ProxyAddon:
         )
         self.worlds.answered(world, exchange, minted)
         return True
+
+    @staticmethod
+    def _let_go(held: Held) -> None:
+        """A held call is being answered now: no longer held, and the run is told."""
+        waits = held.waits
+        del waits.held[held.ref]
+        held.answered = True
+        waits.arrived.clear()
+        if waits.holds is not None:
+            waits.holds.answered(held.ref)
 
     def _renders(self, manifest: Manifest) -> RendersErrors:
         """The provider's error shape; the plain one when it has none, or cannot be built (which the guard then
@@ -999,31 +1083,6 @@ class ProxyAddon:
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
-
-    async def _modeled(self, flow: http.HTTPFlow, host: str, world: Mounted, model: LanguageModel) -> None:
-        """Answer a write to a host nobody declared, and every call to it after, as a model standing in for the
-        service says, from what it answered for that host before: never sent anywhere. A model that fails is
-        answered 502, naming it."""
-        request = flow.request
-        content_type = _first_header(request, "content-type")
-        shown = capture.keep(request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=[])
-        try:
-            found = await modeled.answer(
-                model,
-                host,
-                request.method,
-                redact.path(request.path),
-                shown.text,
-                modeled.earlier(world.store.calls(), host),
-            )
-        except ModelFailed as e:
-            flow.response = _json_response(502, f"the model standing in for this host failed: {e}", host)
-            await self._keep(flow, host, world, None, CaptureMode.MODELED, AnsweredBy.REFUSAL, note=str(e))
-            return
-        flow.response = http.Response.make(found.status, found.body.encode(), {"content-type": found.content_type})
-        await self._keep(
-            flow, host, world, None, CaptureMode.MODELED, AnsweredBy.MODEL, note=f"answered by {model.model_id}"
-        )
 
     async def _forward(self, flow: http.HTTPFlow, host: str, world: Mounted, declaration: Forward) -> None:
         """Send the call to its external emulator through the emulator's relay, unchanged but for the headers
@@ -1148,6 +1207,57 @@ class ProxyAddon:
                 note=kept.refused if kept is not None else None,
                 first=first,
                 locked=True,
+            )
+
+    async def _service(
+        self, flow: http.HTTPFlow, host: str, world: Mounted, desk: AnswersServices, service: Service
+    ) -> None:
+        """Answer a call to a service (`docs/services.md`), one the scenario declares or, under `--capture-unknown
+        model`, a host nobody declared: a route under its `collections` exactly as the `store` kind answers it,
+        anything else from the service's state and log, rendered. An item filed through a collection enters the
+        service's machine. A call to a host nobody declared is kept as declared by nobody."""
+        request = flow.request
+        kept_as: Acknowledge | DeclaredStore = (
+            DeclaredStore(host=service.host, name=service.key, collections=service.collections)
+            if service.collections
+            else Acknowledge(host=service.host, name=service.key)
+        )
+        async with world.lock:
+            first = world.store.head() + 1
+            raw = request.get_content(strict=False) or b""
+            call = Call(method=request.method, path=request.path, body=raw.decode("utf-8", errors="replace") or None)
+            kept = None
+            if isinstance(kept_as, DeclaredStore):
+                found = stored.find(kept_as, request.path)
+                if found is not None:
+                    kept = stored.answer(
+                        kept_as,
+                        found,
+                        request.method,
+                        request.path,
+                        call.body,
+                        store=world.store,
+                        clock=world.clock,
+                        seq=first,
+                    )
+            if kept is not None:
+                flow.response = http.Response.make(kept.answer.status, kept.answer.body, kept.answer.headers)
+                if kept.change is not None:
+                    world.store.apply(kept.change)
+                    after = kept.change.after
+                    if kept.change.operation is Operation.CREATE and isinstance(after, StoredSnapshot):
+                        route = f"{request.method.upper()} {after.path}"
+                        await desk.filed(service, after.id, call, route, world.store, world.clock)
+                answered_by, note = AnsweredBy.DECLARATION, kept.refused
+            else:
+                answered = await desk.answer(service, call, world.store, world.clock)
+                flow.response = http.Response.make(
+                    answered.status, answered.body.encode("utf-8"), {"content-type": "application/json"}
+                )
+                answered_by, note = answered.answered_by, answered.note
+            declared = kept_as if desk.declared(host) is not None else None
+            await self._keep(
+                flow, host, world, declared, CaptureMode.SERVICE, answered_by, note=note, first=first, locked=True
             )
 
     @staticmethod
@@ -1381,7 +1491,7 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         limit = declaration.body_limit if declaration is not None else BODY_LIMIT
-        paths = declaration.redact if declaration is not None else []
+        paths = capture.redacted_paths(declaration)
         asked = capture.keep(
             request.get_content(strict=False) or b"", _first_header(request, "content-type"), limit=limit, paths=paths
         )

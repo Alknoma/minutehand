@@ -36,7 +36,7 @@ async def test_done_after_an_instant_follow_up_with_the_ask_unanswered_fails_and
 ) -> None:
     played = scenario(
         people=[person("owner", Silent()), person("dania", Silent())],
-        ticket_fates=[],
+        tom_finishes=False,
         expect=[PersonAsked(person="dania")],
     )
     async with rigged(tmp_path) as rig:

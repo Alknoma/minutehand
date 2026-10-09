@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from minutehand.adapters.providers.slack import inbound, interactive, socket_mode, state, wire
-from minutehand.adapters.providers.slack.app import build_app
+from minutehand.adapters.providers.slack.app import SlackApi, build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
+from minutehand.adapters.providers.slack.pushing import Listener
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.application.conversations import PushedConversations
 from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
@@ -20,7 +22,7 @@ from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import MessagingHappening, Person, PersonCommands, Scenario
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, Wakes
 from minutehand.ports.store import Store
 
 
@@ -28,8 +30,28 @@ class SlackProvider:
     manifest: Manifest = MANIFEST
     seed_model = SlackSeed
 
+    def __init__(self) -> None:
+        self._listener: Listener | None = None
+        self._wakes: Wakes | None = None
+
+    def bind(self, wakes: Wakes) -> None:
+        """`BooksWakes`: where a scheduled message books the moment it is posted."""
+        self._wakes = wakes
+
+    async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """A scheduled message's moment has come: Slack posts it, as the app, at the run's clock."""
+        SlackApi(world, clock).post_scheduled(ref)
+
+    async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:
+        """A scheduled message is posted once: nothing follows it, delivered or dropped."""
+        del ref, world, clock
+
+    def listen(self, target: InboundTarget | None, secret: str | None) -> None:
+        """`ListensForAgent`: where the agent takes its events, so the ones its own calls set off reach it."""
+        self._listener = None if target is None or secret is None else Listener(target, secret)
+
     def app(self, world: Store, clock: Clock) -> ASGIApp:
-        return build_app(world, clock)
+        return build_app(world, clock, lambda: self._listener, lambda: self._wakes)
 
     def sockets(self, world: Store, clock: Clock) -> ASGIApp:
         """Socket Mode's connections, at the URL `apps.connections.open` hands out (`socket_mode`)."""
@@ -63,6 +85,10 @@ class SlackProvider:
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await interactive.press(reply, target, world, clock, secret=secret)
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
+        """`TalksToAgent`: people's answers to the agent's messages, pushed to `target` signed with `secret`."""
+        return PushedConversations(MANIFEST.key, self, target, secret)
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`SlackSeed.faults`, on a world already open."""
@@ -117,6 +143,6 @@ def _declare(faults: str, world: Store, clock: Clock) -> None:
 
 
 def build() -> SlackProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `ServesSockets`, `DeclaresFaults`,
+    """A `Provider` that also `PushesEvents`, `PushesPresses`, `ServesSockets`, `DeclaresFaults`,
     `ChangesPeople` and `MintsInboundCredentials`; the tests hold it to each."""
     return SlackProvider()

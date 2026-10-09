@@ -27,19 +27,21 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import secrets
 import shutil
 import signal
 import sqlite3
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import Field
+import httpx
+from pydantic import Field, JsonValue
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -47,7 +49,7 @@ from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
-from minutehand.adapters.model.openai_compatible import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
@@ -55,6 +57,7 @@ from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
+from minutehand.adapters.pushing import HttpPushes
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
@@ -66,6 +69,7 @@ from minutehand.application.checkpoint import CHECKPOINT, AgentState, checkpoint
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
+from minutehand.application.files import FileRefused, load_document, read_yaml
 from minutehand.application.forks import (
     ForkAccount,
     Outcomes,
@@ -76,13 +80,25 @@ from minutehand.application.forks import (
     summary,
 )
 from minutehand.application.inboxes import Inboxes
+from minutehand.application.items import provided_types, typed_items
+from minutehand.application.items import rhythm as declared_rhythm
+from minutehand.application.kept import KeptModel
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
+from minutehand.application.people import needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
-from minutehand.application.rewind import FORK_RECORD, RESTORE_RECORD, changed_scenario, fork_run, not_restorable
+from minutehand.application.rewind import (
+    FORK_RECORD,
+    RESTORE_RECORD,
+    changed_scenario,
+    fork_run,
+    memory_writes,
+    refused_by,
+)
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk, unvoiced
 from minutehand.application.steps import steps
 from minutehand.application.traffic import SeenCall
 from minutehand.checks.patterns import PATTERNS
@@ -91,9 +107,9 @@ from minutehand.checks.runner import (
     RunResult,
     broken,
     contract_breaks,
-    discover,
     evaluate,
     evaluate_judged,
+    finding_names,
     load_checks,
     view_of,
 )
@@ -107,36 +123,41 @@ from minutehand.domain.agent import (
     Polled,
     Reported,
 )
-from minutehand.domain.assessments import Rule, merged, refuse_unknown_people
-from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
+from minutehand.domain.assessments import IntegrityCheck, Rule, integrity_fails, merged, refuse_unknown_people
+from minutehand.domain.checks import (
+    Check,
+    CommitmentsReported,
+    DeclaredCollection,
+    Finding,
+    FindingKind,
+    RunView,
+    Severity,
+    Stability,
+    WakeRecord,
+)
+from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
-from minutehand.domain.outbound import Acknowledge, UnknownHosts
+from minutehand.domain.items import TypedItem
+from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
+from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
-from minutehand.domain.scenario import (
-    GeneratedSecret,
-    Model,
-    Person,
-    ProviderKey,
-    Scenario,
-    SecretFromEnvironment,
-    SigningSecret,
-    WrittenScenario,
-)
+from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import JudgedCheck
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
     BooksWakes,
-    EditsTickets,
-    HoldsTickets,
+    HeldCalls,
     Provider,
     PushesEvents,
     ServesSockets,
+    TypesItems,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -257,12 +278,17 @@ async def play(
     routing = _routing(registry, listen)
     services = _services(scenario, agent, registry)
     routes: dict[str, Running] = {}
-    capturing = capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts).with_emulators(routes)
+    desk = desk_for(scenario, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    capturing = (
+        capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
+        .with_emulators(routes)
+        .with_services(desk)
+    )
     outcomes: list[Outcome] = []
     first = _open(state, _new_run_id(), scenario)
     opened = [first[0]]
     async with (
-        intercepting(routing, first[0], first[1], state, listen, capturing=capturing, model=model) as proxy,
+        intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
     ):
         for sample in range(samples):
@@ -277,7 +303,10 @@ async def play(
                 judging=judge,
                 own=own_checks,
                 rules=rules,
+                fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
                 claims=_claims(registry, services),
+                rhythm=declared_rhythm(agent),
+                collections=declared_collections(agent),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -314,6 +343,8 @@ async def play(
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
                     outside=own_files,
+                    model=model,
+                    desk=desk,
                 )
             write_recordings(directory, store.calls())
             outcomes.append(_keep(directory, record, scorer))
@@ -345,14 +376,14 @@ async def fork(
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
-    if _contained(AgentUnderTest.model_validate_json((run_dir(state, parent_run) / AGENT).read_text(encoding="utf-8"))):
+    if _contained(stored_agent(run_dir(state, parent_run) / AGENT)):
         raise RunRefused(
             "a contained agent's sandbox clock cannot go back to a checkpoint, so its run cannot be forked"
         )
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
-    agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, agent, model)
@@ -374,7 +405,10 @@ async def fork(
         judging=judge,
         own=own_checks,
         rules=rules,
+        fail_on_integrity=integrity_fails(agent.fail_on_integrity, changed.fail_on_integrity),
         claims=_claims(registry, services),
+        rhythm=declared_rhythm(agent),
+        collections=declared_collections(agent),
     )
     signing = signing_for(agent, changed.people)
 
@@ -383,9 +417,10 @@ async def fork(
 
     holding = RunClock(scenario.starts_at)
     routes: dict[str, Running] = {}
-    capturing = capturing.with_emulators(routes)
+    desk = desk_for(changed, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    capturing = capturing.with_emulators(routes).with_services(desk)
     async with (
-        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing, model=model) as proxy,
+        intercepting(routing, open_parent(holding), holding, state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, child_id), telemetry, routes) as emulators,
     ):
         scorer.receiver = proxy.receiver
@@ -418,6 +453,8 @@ async def fork(
                     reach=reach_for(agent, env=env),
                     services=services,
                     replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
+                    model=model,
+                    desk=desk,
                     state_dir=state / RUNS,
                     wire=routing,
                     telemetry=telemetry,
@@ -471,6 +508,31 @@ def load(state: Path, run_id: str) -> Outcome:
         record=RunRecord.model_validate_json((directory / RECORD).read_text(encoding="utf-8")),
         result=RunResult.model_validate_json((directory / RESULT).read_text(encoding="utf-8")),
     )
+
+
+def recorded_view(state: Path, run_id: str) -> RunView:
+    """What every check reads of a finished run, built again from its world file, its inputs and its record: the
+    view a re-assessment or a test of a check reads."""
+    outcome = load(state, run_id)
+    directory = run_dir(state, run_id)
+    scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
+    registry = Registry.installed()
+    judge = _Judge(
+        scenario,
+        None,
+        judging=False,
+        rules=rules_for(agent, scenario),
+        fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
+        claims=_Claims(registry, frozenset()),
+        rhythm=declared_rhythm(agent),
+        collections=declared_collections(agent),
+    )
+    world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
+    try:
+        return judge.view(outcome.record, world)
+    finally:
+        world.close()
 
 
 def runs(state: Path) -> list[Outcome]:
@@ -537,8 +599,9 @@ def points_in(world: Store) -> list[ForkPoint]:
     """The checkpoints a world's log holds, each a point a fork may be taken from, and whether it can be: one the
     agent went on writing its memory after, in the same wake, cannot (`rewind.not_restorable`)."""
     points: list[ForkPoint] = []
+    writes = memory_writes(world.events())
     for seq, checkpoint in checkpoints(world).items():
-        refused = not_restorable(world, seq, checkpoint)
+        refused = refused_by(writes, seq, checkpoint)
         points.append(ForkPoint(wake=checkpoint.wake, seq=seq, agent=refused or checkpoint.agent))
     return points
 
@@ -644,10 +707,10 @@ class Collected(Model):
     skipped: list[str] = Field(default=[], description="World files that could not be swept, and why")
 
 
-def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
+def collect(state: Path, *, remove: Sequence[str] = (), settled: Collection[str] = ()) -> Collected:
     """Remove the run directories named in `remove`, then sweep every world file left under `state` of the stored
-    bodies nothing refers to. `minutehand gc`, `minutehand rm`, and a standing server's retention of closed worlds,
-    are this."""
+    bodies nothing refers to, but those of the directories in `settled`: swept already, and written by nothing
+    since. `minutehand gc`, `minutehand rm`, and a standing server's retention of closed worlds, are this."""
     removed_bytes = 0
     for run_id in remove:
         directory = run_dir(state, run_id)
@@ -658,6 +721,8 @@ def collect(state: Path, *, remove: Sequence[str] = ()) -> Collected:
     skipped: list[str] = []
     base = state / RUNS
     for directory in sorted(base.iterdir()) if base.is_dir() else []:
+        if directory.name in settled:
+            continue
         path = directory / WORLD
         roots = [run for run, parent, _ in _ReadOnlyStore.runs_in(path) if parent is None] if path.is_file() else []
         if not roots:
@@ -784,6 +849,35 @@ def scenario_of(state: Path, run_id: str) -> Scenario:
         entry = find(state, entry.parent_run)
 
 
+def stored_agent(path: Path) -> AgentUnderTest:
+    """A run's agent file as it was kept, read under today's model: a rule counting messages by what they convey
+    (`conveys:`, retired; every effect is now reviewed against the declared world) is left out, and an empty
+    `conveys` list dropped, so a run kept before the retirement still opens."""
+    kept = json.loads(path.read_text(encoding="utf-8"))
+    rules = []
+    for rule in kept.get("assess") or []:
+        messages = (rule.get("count") or {}).get("messages") if isinstance(rule, dict) else None
+        if isinstance(messages, dict) and messages.pop("conveys", None):
+            continue
+        rules.append(rule)
+    if "assess" in kept:
+        kept["assess"] = rules
+    return AgentUnderTest.model_validate(kept)
+
+
+def agent_of(state: Path, run_id: str) -> AgentUnderTest | None:
+    """The agent file as this run played it, or its parent's for a fork still running; None for a run no agent file
+    was written for (a standing world, a case)."""
+    entry = find(state, run_id)
+    while True:
+        path = run_dir(state, entry.run_id) / AGENT
+        if path.is_file():
+            return stored_agent(path)
+        if entry.parent_run is None:
+            return None
+        entry = find(state, entry.parent_run)
+
+
 def wakes_of(state: Path, run_id: str, world: Store) -> list[WakeRecord]:
     """The run's wakes: from its record once it has finished, and from the checkpoints in its log while it
     runs. A wake still in progress has no checkpoint and is not listed. Whether a running wake changed the
@@ -879,7 +973,7 @@ def rules_for(agent: AgentUnderTest, scenario: Scenario, own: Sequence[Check] = 
     unknown = sorted({r.pattern for r in rules if r.pattern is not None} - {p.key for p in PATTERNS})
     if unknown:
         raise RunRefused(f"the assessments: no pattern {', '.join(unknown)}; the patterns are in docs/patterns/")
-    taken = sorted({r.id for r in rules} & {c.id for c in discover(own)})
+    taken = sorted({r.id for r in rules} & finding_names(own))
     if taken:
         raise RunRefused(f"the assessments: a rule takes the id of a check: {', '.join(taken)}; rename the rule")
     return rules
@@ -910,6 +1004,16 @@ def _claims(registry: Registry, services: Services) -> _Claims:
     return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
 
 
+def declared_collections(agent: AgentUnderTest) -> list[DeclaredCollection]:
+    """Every collection the agent file's `store` hosts declare, as the simulation's health names them."""
+    return [
+        DeclaredCollection(host=d.host, collection=c.key)
+        for d in agent.outbound
+        if isinstance(d, DeclaredStore)
+        for c in d.collections
+    ]
+
+
 class _Judge:
     """`application.orchestrator.Scorer`: the run's view built from the world, and every check run over it;
     with `judging`, the judged checks too, by `model` or blocked for want of one. With `claims`, the calls the agent
@@ -923,10 +1027,16 @@ class _Judge:
         judging: bool,
         own: Sequence[Check] = (),
         rules: Sequence[Rule] = (),
+        fail_on_integrity: Sequence[IntegrityCheck] = (),
         claims: _Claims | None = None,
+        rhythm: timedelta | None = None,
+        collections: Sequence[DeclaredCollection] = (),
     ) -> None:
         self._claims = claims
+        self._rhythm = rhythm
+        self._collections = list(collections)
         self._rules = list(rules)
+        self._fail_on_integrity = list(fail_on_integrity)
         self._scenario = scenario
         self._own = list(own)
         self._model = model
@@ -937,17 +1047,32 @@ class _Judge:
         self.own_files: OwnDatabases | None = None
         """The agent's own databases for the run being judged, which its notes name as outside forks."""
 
-    async def score(self, record: RunRecord, world: Store) -> RunResult:
+    def _manifests(self) -> list[Manifest]:
+        return self._claims.registry.manifests if self._claims is not None else []
+
+    def _typed(self, world: Store) -> list[TypedItem]:
+        """The run's writes read as items of their kinds, each by the provider that holds it."""
+        events = world.events()
+        manifests = {m.key: m for m in self._manifests()}
+        typers: dict[ProviderKey, TypesItems] = {}
+        if self._claims is not None:
+            for key in sorted({e.entity.provider for e in events} & set(manifests)):
+                provider = self._claims.registry.provider(manifests[key])
+                if isinstance(provider, TypesItems):
+                    typers[key] = provider
+        return typed_items(events, self._scenario, manifests, typers, world, world.calls())
+
+    def view(self, record: RunRecord, world: Store) -> RunView:
+        """What every check reads of the finished run."""
         last = read_checkpoint(world)
         calls = world.calls()
         spans = world.spans()
         claims = self._claims
-        view = view_of(
+        return view_of(
             self._scenario,
             world.events(),
             record.wakes,
             world.replies(),
-            withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
@@ -960,10 +1085,33 @@ class _Judge:
                 uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
             ),
             rules=self._rules,
+            fail_on_integrity=self._fail_on_integrity,
             stop=record.stop,
+            calls=calls,
+            typed=self._typed(world),
+            item_types=provided_types(self._manifests()),
+            rhythm=self._rhythm,
+            person_calls=world.person_calls(),
+            collections=self._collections,
         )
+
+    async def score(self, record: RunRecord, world: Store) -> RunResult:
+        view = self.view(record, world)
+        model = self._model
+
+        def kept(check: JudgedCheck) -> LanguageModel:
+            assert model is not None
+            return KeptModel(
+                model,
+                world,
+                wrote=check.wrote,
+                prompt_version=check.prompt_version,
+                sim_time=record.ended_at,
+                wake=len(record.wakes),
+            )
+
         result = (
-            await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
+            await evaluate_judged(view, model, stop=record.stop, own=self._own, kept=kept)
             if self._judging
             else evaluate(view, stop=record.stop, own=self._own)
         )
@@ -1011,14 +1159,47 @@ def capturing_for(
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
 
 
+def desk_for(
+    scenario: Scenario, agent: AgentUnderTest | None, model: LanguageModel | None, *, undeclared: bool = False
+) -> ServiceDesk | None:
+    """The scenario's declared services (`docs/services.md`), with each one's OpenAPI document read once, from its
+    file or its URL, and, with `undeclared` (`--capture-unknown model`), every host nobody declared answered as a
+    service with no description; None when there is neither. Refused when a service's host is also one of the
+    agent's outbound hosts."""
+    if not scenario.services and not undeclared:
+        return None
+    declared = {d.host for d in agent.outbound} if agent is not None else set()
+    clashing = sorted(s.host for s in scenario.services if s.host in declared)
+    if clashing:
+        raise RunRefused(
+            f"{', '.join(clashing)} is declared both as a service of the scenario and as an outbound host of the agent "
+            "file: declare it once"
+        )
+    documents: dict[str, JsonValue] = {}
+    for service in scenario.services:
+        if service.openapi is None:
+            continue
+        try:
+            if service.openapi.startswith(("http://", "https://")):
+                fetched = httpx.get(service.openapi, timeout=30, follow_redirects=True)
+                fetched.raise_for_status()
+                documents[service.key] = json.loads(json.dumps(read_yaml(fetched.text, service.openapi), default=str))
+            else:
+                documents[service.key] = load_document(service.openapi)
+        except (httpx.HTTPError, FileRefused) as e:
+            raise RunRefused(f"service {service.key}: its OpenAPI document {service.openapi}: {e}") from e
+    return ServiceDesk(scenario, model, documents=documents, pushes=HttpPushes(), undeclared=undeclared)
+
+
 def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: LanguageModel | None) -> None:
     """A person whose words a model writes (conversing, a script step's words, a decision's reasons) needs a model;
     without one the run is refused before it starts, naming each and why."""
-    needing = unspoken(scenario, agent.inboxes)
+    needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario), *unvoiced(scenario)]
     if needing and model is None:
         raise RunRefused(
             f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
-            f"{API_KEY_VARIABLE}, and {BASE_URL_VARIABLE} for a service other than OpenAI's"
+            f"{API_KEY_VARIABLE}, {API_VARIABLE}=anthropic for Anthropic's Messages API, and {BASE_URL_VARIABLE} for "
+            "a service other than OpenAI's or Anthropic's"
         )
 
 
@@ -1067,6 +1248,7 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     named: set[ProviderKey] = {t.provider for t in scenario.tickets} | {d.provider for d in scenario.documents}
     named |= {s.provider for s in scenario.spaces} | {s.provider for s in scenario.provider_seeds}
     named |= {c.provider for c in scenario.channels}
+    named |= set(scenario.transitions_on)
     named |= {t.provider for t in agent.inbound}
     if isinstance(agent.goal, GoalByMessage):
         named.add(agent.goal.provider)
@@ -1081,8 +1263,6 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     refuse_unheld(scenario, manifests)
     providers: list[Provider] = [registry.provider(manifests[key]) for key in sorted(named)]
     pushes: dict[ProviderKey, PushesEvents] = {}
-    tickets: dict[ProviderKey, HoldsTickets] = {}
-    editors: dict[ProviderKey, EditsTickets] = {}
     schedulers: dict[ProviderKey, BooksWakes] = {}
     for provider in providers:
         key = provider.manifest.key
@@ -1090,18 +1270,14 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
             if not isinstance(provider, PushesEvents):
                 raise RunRefused(f"provider {key} declares pushes_events and does not implement PushesEvents")
             pushes[key] = provider
-        if provider.manifest.books_wakes:
+        if provider.manifest.books_wakes or provider.manifest.books_work:
             if not isinstance(provider, BooksWakes):
-                raise RunRefused(f"provider {key} declares books_wakes and does not implement BooksWakes")
+                raise RunRefused(f"provider {key} declares books_wakes or books_work and does not implement BooksWakes")
             schedulers[key] = provider
-        if isinstance(provider, HoldsTickets):
-            tickets[key] = provider
-        if isinstance(provider, EditsTickets):
-            editors[key] = provider
         socket_mode = any(t.provider == key and t.delivery is Delivery.SOCKET_MODE for t in agent.inbound)
         if socket_mode and not isinstance(provider, ServesSockets):
             raise RunRefused(f"agent {agent.name} takes {key}'s events in socket mode, and {key} serves no sockets")
-    return Services(providers=providers, pushes=pushes, tickets=tickets, editors=editors, schedulers=schedulers)
+    return Services(providers=providers, pushes=pushes, schedulers=schedulers)
 
 
 @dataclass(frozen=True)
@@ -1394,9 +1570,20 @@ class Intercepting:
     def flush(self) -> None:
         self.proxy.flush()
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
-        self.proxy.mount(world, clock, apps, scenario=scenario)
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        self.proxy.mount(world, clock, apps, scenario=scenario, holds=holds)
         self.receiver.mount(world, clock)
+
+    def memory_reads(self, wake: int) -> int:
+        return self.receiver.memory_reads(wake)
 
 
 @asynccontextmanager
@@ -1408,7 +1595,6 @@ async def intercepting(
     listen: Listen,
     *,
     capturing: Capturing | None = None,
-    model: LanguageModel | None = None,
 ) -> AsyncIterator[Intercepting]:
     """The proxy and the receiver, on the same host. The receiver holds the agent's memory and, unless `listen`
     turns it off, takes its telemetry, passing it on to wherever this process's own environment sent OTLP before
@@ -1425,7 +1611,6 @@ async def intercepting(
         record_model_calls=listen.record_model_calls,
         capturing=capturing,
         capture_unknown=listen.capture_unknown,
-        model=model,
         redirect_port=listen.transparent_port,
     ) as proxy:
         receiver = Receiver(

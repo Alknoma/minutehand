@@ -45,8 +45,42 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **base URLs** | The agent → the proxy's `/_host/…`, for a client without a proxy | As the real host | `base_urls[]` | No |
 | **model hosts** | The agent → its model API, tunnelled or recorded | As the real host | `--model-host`, `CreateWorld.model_hosts` | No |
 | **telemetry** | The agent → Minutehand's OTLP receiver | OTLP/HTTP or gRPC | Environment Minutehand hands out | No |
-| **assessments** | Minutehand reads the team's rules over the facts of every run and fork; nothing else judges how the agent behaves | YAML rules (`docs/assessments.md`) → findings named by each rule's `id` | `assess[]` in the agent file; `assess[]` and `assess_off[]` in a scenario | No: a run with none is reported as facts, `Not assessed` |
+| **assessments** | Every run's effects on the world, by kind of item, against the world its files declare (goal, deadline, people's facts and windows, services and their machines, the agent's rhythm); the team's own rules over the facts on top | findings that name what they were measured against (`docs/assessments.md`); with `--judge`, the shared reviewer's, for review | nothing for the automatic assessment; `assess[]` in the agent file, `assess[]` and `assess_off[]` in a scenario for the team's own | No |
 | **own checks** | Minutehand runs the agent's checks after every run and fork: the escape hatch for what a rule cannot say | A class with `id`, `needs` and `run(view) -> CheckReport`, reading the facts `minutehand.checks.facts` gives (`asks`, `messages`, `writes`, `planned_wakes`, `reported`) | `checks[]`: Python files, a relative path read from the agent file's folder | No |
+
+## The report, and how long Minutehand waits
+
+**`AgentReport.status`** is the agent's answer to `GET report_url`:
+
+| Status | Means | What Minutehand does |
+|---|---|---|
+| `working` | This wake is still in progress: the agent is still acting on it (a model's turn, a tool call) | Asks again, the wait doubling from `report_first_after` to `report_at_most_every`, until the status changes; a wake still `working` after `working_limit` (default 30 minutes) stops the run `agent_failed`, saying so. Nothing is printed while it waits |
+| `idle` | This wake is over; wake me at `next_wake` (or not at all) | Checkpoints the wake and moves the clock |
+| `done` | The goal is finished | Stops the run `agent_done` |
+
+An agent that answers `working` for "I have work open" rather than "this wake is still running" keeps every wake
+open until `working_limit`: say `idle`, with the work in `commitments`.
+
+**Timeouts, sized for a model's turns.** A scripted agent answers in milliseconds; an LLM agent may take minutes
+inside one call. Both waits are the agent file's:
+
+| Field | Default | What it bounds |
+|---|---|---|
+| `wakes[].wake_timeout` (`reported`, `marked`) | `PT10M` | One call to `wake_url` or `report_url`; a `marked` wake is the whole call |
+| `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
+
+Slack itself waits three seconds for an event's 2xx and then retries: an app that handles an event inside the request
+(a model's turn in the handler) is sent it again by the real service, and handles it more than once. The default
+`push_timeout` leaves room for such a handler so a first run is not cut short; set `push_timeout: PT3S` to be held to
+Slack's own window, which is how the duplicate handling a slow handler causes shows up in a run. A Socket Mode
+envelope is always held to Slack's three seconds.
+
+**A person's reply is delivered twice, by design.** When a person answers on a provider that pushes (a Slack message,
+a Bot Framework activity), the provider pushes the event to `inbound[].url` as the real service would, and the same
+moment is a wake: an agent with a wake endpoint is also woken with `reason: person_replied`. An agent that acts on
+the pushed event and again on the wake takes two turns for one reply; one that takes the event as its notice treats
+a `person_replied` wake as possibly handled already (its memory says so), or declares no wake source and hears only
+pushes.
 
 ## The agent's memory and its next wake
 
@@ -124,8 +158,9 @@ in TypeScript.
 | `assess` | agent file | The team's rules, for every scenario it runs (`docs/assessments.md`) |
 | `assess` | scenario | Rules for this situation; one with the id of an agent file's rule replaces it |
 | `assess_off` | scenario | Ids of the agent file's rules this scenario does not judge by; an id no rule has is refused |
+| `fail_on_integrity` | agent file, scenario | Integrity facts that fail the run when found: `around_proxy`, `agent_contract_changed`, `unmatched_call` (the scenario's are added to the agent file's). Unnamed, each is stated as `review` and never changes the verdict |
 | `expect` | scenario | What must be true of the world at the end |
-| `expect_outcome` | scenario | The verdict the scenario is written to reach: `passed` (default), `failed`, `unfinished`, `not_judged`. Read by `minutehand run-all`, which exits 1 when a run's verdict differs |
+| `expect_outcome` | scenario | The verdict the scenario is written to reach: `passed` (default), `failed`, `unfinished`, `not_judged`, `simulation_incomplete`. Read by `minutehand run-all`, which exits 1 when a run's verdict differs |
 | `checks` | agent file | Python checks of the team's own (above) |
 
 `RunResult.assessed_by` records what judged a run: each rule's id, `expectations`, `near_miss_name` and each of the
@@ -158,7 +193,7 @@ suggestions: the agent file names each URL.
 |---|---|
 | `minutehand schema agent\|scenario\|seed` | Prints the JSON Schema (2020-12) of each kind of file, generated by Pydantic and committed under `schemas/`. |
 | An editor header | A first line of `# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/main/schemas/agent.schema.json` (or `scenario`, `seed`) gives completion and inline errors in any editor using the YAML language server. |
-| `minutehand validate <file>…` | Loads each file with every load-time check, resolves each inbox operation in its document, and reads every rule of `assess` (an anchor its `each` lacks, no bound, a pattern there is not); given an agent file with scenarios, also the rules each scenario would be judged by. It prints each problem with its place (`inboxes[0].pending.id: …`) and exits 1 when there is any. |
+| `minutehand validate <file>…` | Loads each file with every load-time check, resolves each inbox operation in its document, and reads every rule of `assess` (an anchor its `each` lacks, no bound, a pattern there is not); given an agent file with scenarios, also the rules each scenario would be judged by. It prints each problem with its place (`inboxes[0].pending.id: …`) and exits 1 when there is any. It warns, without failing, of a declared service's responder who never acts on its items (declared silent, or a script that ends in silence with nothing pinned). |
 | `version: 1` | An agent file may name the version it was written for. A file naming a later version is refused, saying so. Absent means the current version. |
 
 ## Using the agent's own API description
@@ -179,7 +214,8 @@ What Minutehand does with it:
 - **On each answer** it checks the answer against the schema the document gives that status. A mismatch is the
   agent's contract having changed, named by field: "the agent's contract changed: listApprovals (openapi.yaml)
   answered 200 with what its API description does not allow: $.items[0].summary: 21 is not of type 'string'". That
-  is the check `agent_contract_changed`.
+  is the check `agent_contract_changed`, stated for review, and a failure only when the agent file or the scenario
+  names it in `fail_on_integrity`.
 
 It is built for inboxes only. How the other declarations would take it up:
 
@@ -202,7 +238,7 @@ New declarations (inboxes) use the following.
 | `input` | the decision's inputs, by name |
 | `clock` | `now` |
 | `page` | `cursor` |
-| `run` | `port`, `dir`: anywhere in the agent file and the agent's command under `minutehand run-all`, a free port and a folder of the scenario's own, so runs in parallel share neither; also `MINUTEHAND_RUN_PORT` and `MINUTEHAND_RUN_DIR` in the agent's environment |
+| `run` | `port`, `dir`: anywhere in the agent file and the agent's command under `minutehand run-all` (a free port and a folder of the scenario's own, so runs in parallel share neither) and `minutehand run` with a command (filled once); also `MINUTEHAND_RUN_PORT` and `MINUTEHAND_RUN_DIR` in the agent's environment. Refused by name where no agent is started (`env`, `doctor`, `run` with no command) |
 | `case` | reserved |
 | `person`, `ask`, `rule` | in an assessment's `message` and `holding`: `{person.key}`, `{person.name}`, `{ask.at}`, `{ask.answer}`, `{rule.id}`, `{rule.count}`, `{rule.moment}`, and in `holding` `{ask.facts}` (`docs/assessments.md`) |
 | `team` | a team's values in a library scenario: `goal`, `owner_key`, `owner_name`, `owner_email`, the same for `ask` and `other`, `answer`, `tell`, `credential_env`, `provider`, `wakes` (`docs/scenarios.md`) |
@@ -237,8 +273,8 @@ Each line is a name or shape that disagrees with this page. None is renamed in t
 5. **The dotted path syntax and its two readers** (`capture.values_at`, the emulator's) should become
    `domain/jsonpath.py`, with paths written `$.personalizations[*].to[*].email`.
 6. **`BodyPath` is declared twice**, in `domain/outbound.py` and `domain/emulator.py`.
-7. **`Scripted.replies[].to_ask` counts messages, while `decisions[].to_item` counts items.** Both are "the nth
-   ask".
+7. **`Scripted.replies[].to_ask` counts asks, while `Take.nth` counts items in a provider, or asks when it names
+   none.** Both are "the nth ask".
 8. **Only the agent file is versioned.** A scenario and a seed carry no version.
 9. **`application/restore.py` and `restore.json` say "restore"** for a fork's start, where nothing is restored: the
    memory is read from the log, and the agent's report compared.

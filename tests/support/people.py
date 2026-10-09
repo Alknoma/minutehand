@@ -4,15 +4,16 @@ sends, so a run with model-written people is repeatable and calls no real model.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 
 from examples.recipes import fake_model
-from minutehand.adapters.model.openai_compatible import (
-    API_KEY_VARIABLE,
-    BASE_URL_VARIABLE,
-    MODEL_VARIABLE,
-    OpenAICompatible,
-)
+from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.openai_compatible import OpenAICompatible
+from minutehand.application.people import People
+from minutehand.application.replier import PeopleReplier
+from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.ports.model import Model as LanguageModel
 
 MODEL = "people-fake"
 KEY = "sk-people-fake"
@@ -39,7 +40,24 @@ def people_environment() -> dict[str, str]:
 
 
 def people_requests() -> list[dict[str, object]]:
-    """Every request the stand-in was sent for a person, in order, as bodies."""
+    """Every request the stand-in was sent to write for a person, in order, as bodies: the checks of their replies
+    against what they know are `fact_checks()`."""
     _, served = _served()
     with served.lock:
-        return [body for path, body in served.received if fake_model.people_schema(body) is not None]
+        return [
+            body
+            for path, body in served.received
+            if fake_model.people_schema(body) not in (None, "FactCheck", "ItemReview")
+        ]
+
+
+def fact_checks() -> list[dict[str, object]]:
+    """Every check of a person's reply against what they know the stand-in was sent, in order, as bodies."""
+    _, served = _served()
+    with served.lock:
+        return [body for path, body in served.received if fake_model.people_schema(body) == "FactCheck"]
+
+
+def people_engine(scenario: Scenario, ports: Mapping[ProviderKey, object], model: LanguageModel | None) -> People:
+    """The people engine over `ports`, by provider key, with the scripted replier over the same model."""
+    return People(scenario, ports, PeopleReplier(scenario, model), model)

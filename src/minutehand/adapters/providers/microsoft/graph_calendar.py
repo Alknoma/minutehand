@@ -15,12 +15,15 @@ reply's moment.
   organizer's mailbox or calendar is notified. A reply written back to a request instead is an email to the
   organizer. An answer to a request a newer one replaced, or to an event since deleted, changes nothing.
 - **Query options** on a list or the view: `$top` (1 to 1000, 10 by default), `$skip`, `$select`; `$orderby` on
-  `start/dateTime` or `end/dateTime`; `$filter` on `start/dateTime` and `end/dateTime` compared to a quoted date
+  `start/dateTime` or `end/dateTime` (without it, by start ascending); `$filter` on `start/dateTime` and `end/dateTime` compared to a quoted date
   and time, and `subject eq`, joined by `and`. Anything else is not served (501).
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import operator
 import re
 from collections.abc import Callable
@@ -31,7 +34,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from starlette.requests import Request
 from starlette.responses import Response
 
-from minutehand.adapters.providers.microsoft import wire
+from minutehand.adapters.providers.microsoft import attachments, series, wire
 from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, graph_caller, query
 from minutehand.adapters.providers.microsoft.graph_mail import (
     RECIPIENTS_INVALID,
@@ -74,6 +77,9 @@ from minutehand.ports.clock import Clock
 PAGE_DEFAULT = 10
 PAGE_MAX = 1000
 EVENT_TYPE = "#Microsoft.Graph.Event"
+EVENT_DELTA_TYPE = "#microsoft.graph.event"
+OCCURRENCE = "~"
+"""Joins a series's id and the position of an occurrence in it, in the id this provider gives that occurrence."""
 CALENDAR_SEGMENTS = frozenset({"events", "calendar", "calendars", "calendarView", "findMeetingTimes"})
 NEVER = "0001-01-01T00:00:00Z"
 
@@ -159,10 +165,50 @@ class Calendar:
         return stored.event.model_copy(update={"isOrganizer": organizer, "responseStatus": status, "body": body})
 
     def _found(self, user: UserRecord, event: str) -> wire.StoredEvent:
-        stored = self._world.event(event)
+        master, _, position = event.partition(OCCURRENCE)
+        stored = self._world.event(master)
         if stored is None or (stored.organizer_id != user.user.id and self.attends(stored, user) is None):
             raise GraphRefusal(404, "ErrorItemNotFound", "The specified object was not found in the store.")
-        return stored
+        if not position:
+            return stored
+        found = (
+            series.occurrence(stored.event.recurrence, stored.starts, stored.ends, int(position))
+            if stored.event.recurrence is not None and position.isdigit()
+            else None
+        )
+        if found is None:
+            raise GraphRefusal(404, "ErrorItemNotFound", "The specified object was not found in the store.")
+        return self._occurrence(stored, int(position), *found)
+
+    @staticmethod
+    def _occurrence(master: wire.StoredEvent, position: int, starts: datetime, ends: datetime) -> wire.StoredEvent:
+        """One occurrence of a series: the master's event at another time, its own id, `type` occurrence."""
+        event = master.event.model_copy(
+            update={
+                "id": f"{master.event.id}{OCCURRENCE}{position}",
+                "type": "occurrence",
+                "seriesMasterId": master.event.id,
+                "recurrence": None,
+                "start": outlook_time(starts),
+                "end": outlook_time(ends),
+            }
+        )
+        return master.model_copy(update={"event": event, "starts": starts, "ends": ends})
+
+    def in_window(self, events: list[wire.StoredEvent], start: datetime, end: datetime) -> list[wire.StoredEvent]:
+        """The events that overlap the window, a series by its occurrences that do."""
+        found: list[wire.StoredEvent] = []
+        for stored in events:
+            recurrence = stored.event.recurrence
+            if recurrence is None:
+                if stored.starts < end and stored.ends > start:
+                    found.append(stored)
+                continue
+            found.extend(
+                self._occurrence(stored, position, began, over)
+                for position, began, over in series.between(recurrence, stored.starts, stored.ends, start, end)
+            )
+        return found
 
     # ------------------------------------------------------------------ Graph
 
@@ -179,19 +225,45 @@ class Calendar:
             return await self._schedule(request, owner)
         if rest == ["calendarView"] and method == "GET":
             return self._view(request, owner)
+        if rest in (["calendarView", "delta"], ["calendarView", "delta()"]) and method == "GET":
+            return self._delta(request, owner)
         if rest == ["events"] and method == "GET":
             return self._listed(request, owner, self.visible(owner), "events")
         if rest == ["events"] and method == "POST":
             return await self._create(request, owner)
         if len(rest) >= 2 and rest[0] == "events":
             stored = self._found(owner, rest[1])
+            if OCCURRENCE in rest[1] and (
+                method != "GET" or rest[2:3] == ["instances"]
+            ):  # enum-lint: exempt HTTP's method name
+                raise NotServed(f"{method} on an occurrence of a series: only reading one is held")
             if len(rest) == 2 and method == "GET":
                 self._world.saw(event_ref(stored.event.id), Operation.READ)
                 return self._one(request, owner, stored)
+            if rest[2:] == ["instances"] and method == "GET":
+                if stored.event.recurrence is None:
+                    raise NotServed(
+                        "the instances of an event that is no series master: Graph's answer is not documented"
+                    )
+                start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
+                self._world.saw(event_ref(stored.event.id), Operation.READ)
+                return self._listed(
+                    request, owner, self.in_window([stored], start, end), f"events/{stored.event.id}/instances"
+                )
+            if rest[2:] == ["cancel"] and method == "POST":  # enum-lint: exempt HTTP's method name
+                return await self._cancel(request, owner, stored)
             if len(rest) == 2 and method == "PATCH":
                 return await self._patch(request, owner, stored)
             if len(rest) == 2 and method == "DELETE":  # enum-lint: exempt HTTP's method name
                 return self._delete(owner, stored)
+            if (
+                rest[2:3] == ["attachments"] and method == "POST" and len(rest) == 3
+            ):  # enum-lint: exempt HTTP's method name
+                return await self._attach(request, owner, stored)
+            if rest[2:3] == ["attachments"] and method == "GET":
+                self._world.saw(event_ref(stored.event.id), Operation.READ)
+                where = f"{GRAPH}/$metadata#users('{owner.user.id}')/events('{stored.event.id}')/attachments"
+                return attachments.read(request, stored.attachments, rest[3:], where)
             if len(rest) == 3 and rest[2] in ANSWERS and method == "POST":
                 try:
                     asked = wire.read(wire.EventResponseRequest, await request.body())
@@ -199,6 +271,8 @@ class Calendar:
                     raise NotServed(
                         f"a request body that cannot be read ({e.message}): Graph's answer is not recorded"
                     ) from e
+                if asked.model_extra:
+                    raise NotServed(f"the parameters {', '.join(sorted(asked.model_extra))} of {rest[2]}: not served")
                 if stored.organizer_id == owner.user.id:
                     raise NotServed(
                         f"{rest[2]} by the organizer of the meeting: Graph's answer is not documented or recorded"
@@ -258,8 +332,6 @@ class Calendar:
                 raise NotServed(f"{option} on events")
         found = self._filtered(events, query(request, "$filter"))
         order = (query(request, "$orderby") or "").strip()
-        if not order and len(found) > 1:
-            raise NotServed("listing events without $orderby: Graph documents no order for them (user-list-events)")
         side, _, direction = (order or "start/dateTime").partition(" ")
         if side not in ("start/dateTime", "end/dateTime") or direction.lower() not in ("", "asc", "desc"):
             raise NotServed(f"$orderby on events: {order}")
@@ -302,8 +374,80 @@ class Calendar:
 
     def _view(self, request: Request, owner: UserRecord) -> Response:
         start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
-        inside = [e for e in self.visible(owner) if e.starts < end and e.ends > start]
-        return self._listed(request, owner, inside, "calendarView")
+        return self._listed(request, owner, self.in_window(self.visible(owner), start, end), "calendarView")
+
+    # ------------------------------------------------------------------ delta
+
+    @staticmethod
+    def _delta_token(since: int, offset: int, start: datetime, end: datetime) -> str:
+        text = "|".join([str(since), str(offset), start.isoformat(), end.isoformat()])
+        return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+    @staticmethod
+    def _delta_state(token: str) -> tuple[int, int, datetime, datetime]:
+        try:
+            since, offset, start, end = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode().split("|")
+            return int(since), int(offset), datetime.fromisoformat(start), datetime.fromisoformat(end)
+        except (binascii.Error, ValueError, UnicodeDecodeError) as e:
+            raise GraphRefusal(400, "invalidRequest", "The delta or skip token is not valid.") from e
+
+    def _delta(self, request: Request, owner: UserRecord) -> Response:
+        """`calendarView/delta`: the events in the window, paged by `$skiptoken` to a `@odata.deltaLink`; then the
+        events changed since. An event outside the window that was added, deleted or updated, and one deleted, is
+        `@removed` with the reason `deleted` (event-delta)."""
+        for option in ("$select", "$filter", "$orderby", "$search", "$expand", "$top", "$skip", "$count"):
+            if option in request.query_params:
+                raise NotServed(f"{option} on a calendar view delta: the page lists it unsupported or documents none")
+        token = query(request, "$skiptoken") or query(request, "$deltatoken")
+        if token:
+            since, offset, start, end = self._delta_state(token)
+        else:
+            since, offset = 0, 0
+            start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
+        changed: list[tuple[int, str]] = []
+        for seq, stored in self._world.event_versions():
+            if seq <= since or not self._sees(owner, stored):
+                continue
+            inside = self.in_window([stored], start, end)
+            for one in inside:
+                shown = self.seen_by(one, owner, request)
+                changed.append((seq, json.dumps({"@odata.type": EVENT_DELTA_TYPE, **json.loads(wire.dump(shown))})))
+            if not inside and since:
+                changed.append((seq, self._removed(stored)))
+        if since:
+            changed.extend(
+                (seq, self._removed(stored))
+                for seq, stored in self._world.removed_events(since)
+                if self._sees(owner, stored)
+            )
+        changed.sort(key=lambda pair: pair[0])
+        prefer = request.headers["prefer"] if "prefer" in request.headers else ""
+        wanted = re.search(r"odata\.maxpagesize\s*=\s*(\d+)", prefer)
+        size = max(1, int(wanted.group(1))) if wanted else PAGE_DEFAULT
+        link = f"{GRAPH}/users/{owner.user.id}/calendarView/delta"
+        if offset + size < len(changed):
+            following = self._delta_token(since, offset + size, start, end)
+            closing = f'"@odata.nextLink":{json.dumps(f"{link}?$skiptoken={following}")}'
+        else:
+            done = self._delta_token(self._world.store.head(), 0, start, end)
+            closing = f'"@odata.deltaLink":{json.dumps(f"{link}?$deltatoken={done}")}'
+        body = (
+            "{"
+            + f'"@odata.context":{json.dumps(f"{GRAPH}/$metadata#Collection(event)")},'
+            + closing
+            + ',"value":['
+            + ",".join(item for _, item in changed[offset : offset + size])
+            + "]}"
+        )
+        self._world.saw(user_ref(owner.user.id), Operation.SEARCH)
+        return Response(body, media_type=GRAPH_JSON, headers=preference_applied(request))
+
+    def _sees(self, user: UserRecord, stored: wire.StoredEvent) -> bool:
+        return stored.organizer_id == user.user.id or self.attends(stored, user) is not None
+
+    @staticmethod
+    def _removed(stored: wire.StoredEvent) -> str:
+        return json.dumps({"@odata.type": EVENT_DELTA_TYPE, "id": stored.event.id, "@removed": {"reason": "deleted"}})
 
     # ------------------------------------------------------------------ making and changing
 
@@ -370,6 +514,7 @@ class Calendar:
             attendees=self._attendees(asked.attendees or []),
             actor=Actor.AGENT,
             transaction=asked.transactionId,
+            recurrence=series.kept(asked.recurrence, starts) if asked.recurrence is not None else None,
         )
         if stored.event.attendees:
             stored = await self._invite(stored, owner, stored.event.attendees)
@@ -389,6 +534,7 @@ class Calendar:
         actor: Actor,
         transaction: str | None = None,
         seeded: str | None = None,
+        recurrence: wire.Recurrence | None = None,
     ) -> wire.StoredEvent:
         """Write a new event in `organizer`'s calendar, inviting nobody yet. `seeded` names an event the scenario
         seeds, so its id is derived from what it is rather than where the log stands."""
@@ -413,6 +559,8 @@ class Calendar:
                 attendees=attendees,
                 organizer=recipient_of(organizer),
                 isOrganizer=True,
+                type="singleInstance" if recurrence is None else "seriesMaster",
+                recurrence=recurrence,
                 responseStatus=wire.ResponseStatus(response=wire.ResponseKind.ORGANIZER, time=now),
                 webLink=f"https://outlook.office365.com/owa/?itemid={event_id}&exvsurl=1&path=/calendar/item",
             ),
@@ -460,8 +608,12 @@ class Calendar:
             )
         if stored.organizer_id != owner.user.id:
             raise NotServed("an attendee's own changes to an event: an event here is its organizer's one item")
+        if asked.recurrence is not None:
+            raise NotServed("a change to an event's recurrence: the page does not say how the series is rewritten")
         starts = moment(asked.start) if asked.start is not None else stored.starts
         ends = moment(asked.end) if asked.end is not None else stored.ends
+        if stored.event.recurrence is not None and starts.date().isoformat() != stored.event.recurrence.range.startDate:
+            raise NotServed("moving a series to another day: the range must start on the day the event does")
         if ends < starts:
             raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         event = stored.event
@@ -517,6 +669,63 @@ class Calendar:
             changed = await self._invite(changed, owner, added)
         await self._notify(changed, "updated")
         return self._one(request, owner, changed)
+
+    async def _attach(self, request: Request, owner: UserRecord, stored: wire.StoredEvent) -> Response:
+        """`POST …/attachments` on an event: a file attached to the event, 201 with the attachment
+        (event-post-attachments). The event is its organizer's one item, so only they attach to it."""
+        sent = await attachments.sent(request)
+        if stored.organizer_id != owner.user.id:
+            raise NotServed("an attendee's own changes to an event: an event here is its organizer's one item")
+        now = graph_time(self._clock.now())
+        made = attachments.kept(sent, outlook_id(stored.event.id, "attachment", str(len(stored.attachments)), now), now)
+        held = [*stored.attachments, made]
+        event = stored.event.model_copy(
+            update={
+                "hasAttachments": any(not a.isInline for a in held),
+                "lastModifiedDateTime": now,
+                "changeKey": outlook_id(stored.event.id, now, made.id),
+                "odata_etag": weak_etag(outlook_id(stored.event.id, now, made.id)),
+            }
+        )
+        changed = stored.model_copy(update={"event": event, "attachments": held})
+        self._world.write_event(
+            changed,
+            operation=Operation.UPDATE,
+            actor=Actor.AGENT,
+            after=RecordSnapshot(resource="event", text=stored.event.subject),
+        )
+        await self._notify(changed, "updated")
+        where = f"{GRAPH}/$metadata#users('{owner.user.id}')/events('{stored.event.id}')/attachments"
+        return Response(wire.with_context(wire.dump(made), f"{where}/$entity"), status_code=201, media_type=GRAPH_JSON)
+
+    async def _cancel(self, request: Request, owner: UserRecord, stored: wire.StoredEvent) -> Response:
+        """`cancel`: the organizer sends the attendees a cancellation, with their comment, and the event leaves the
+        calendar; 202 with no body. An attendee is 400 (event-cancel)."""
+        try:
+            asked = wire.read(wire.CancelRequest, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        if stored.organizer_id != owner.user.id:
+            raise GraphRefusal(
+                400, None, "Your request can't be completed. You need to be an organizer to cancel a meeting."
+            )
+        if stored.event.attendees:
+            await self._mail.send(
+                Composed(
+                    sender=owner,
+                    subject=None,
+                    body=None,
+                    said=asked.comment,
+                    to=[wire.Recipient(emailAddress=a.emailAddress) for a in stored.event.attendees],
+                    conversation=stored.conversation,
+                    meeting=wire.MeetingMessageType.CANCELLED,
+                    event=stored.event.id,
+                ),
+                actor=Actor.AGENT,
+                answerable=False,
+            )
+        self._delete(owner, stored)
+        return Response(status_code=202)
 
     def _delete(self, owner: UserRecord, stored: wire.StoredEvent) -> Response:
         if stored.organizer_id != owner.user.id:
@@ -634,9 +843,7 @@ class Calendar:
 
     def _busy(self, user: UserRecord, start: datetime, end: datetime) -> list[wire.ScheduleItem]:
         items: list[wire.ScheduleItem] = []
-        for stored in self.visible(user):
-            if not (stored.starts < end and stored.ends > start):
-                continue
+        for stored in self.in_window(self.visible(user), start, end):
             attendee = self.attends(stored, user)
             status: Literal["tentative", "busy"]
             if stored.organizer_id != user.user.id and attendee is not None:

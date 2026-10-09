@@ -31,11 +31,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from minutehand.adapters.providers.asana import wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.domain.scenario import TicketState
+from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -63,6 +65,11 @@ PROJECTS = "projects"
 CUSTOM_FIELDS = "custom_fields"
 TAGS = "tags"
 CREDENTIALS = "credentials"
+EVENTS = "events"
+WEBHOOKS = "webhooks"
+
+SYNC_LIFETIME = timedelta(hours=24)
+"""https://developers.asana.com/docs/events: "Tokens expire after 24 hours"."""
 
 _WIDTH = 16
 _MINTED = 1_200_000_000_000_000
@@ -171,6 +178,40 @@ def ticket_state(completed: bool, says: TicketState | None) -> TicketState:
     if says is None or says is TicketState.OPEN:
         return TicketState.DONE if completed else TicketState.OPEN
     return says
+
+
+@dataclass(frozen=True)
+class Doer:
+    """Who made a change, as an event reports it: the kind of actor, the user's gid (None: no user, as for an event
+    Asana makes itself) and the moment."""
+
+    actor: Actor
+    by: str | None
+    at: datetime
+
+
+def _named(kind: str, gid: str, name: str | None, subtype: str | None = None) -> wire.EventRef:
+    return wire.EventRef(gid=gid, resource_type=kind, resource_subtype=subtype, name=name)
+
+
+def _task_ref(task: wire.AsanaTask) -> wire.EventRef:
+    return _named("task", task.gid, task.name, task.resource_subtype.value)
+
+
+def _changed(field: str) -> wire.EventChange:
+    return wire.EventChange(field=field, action=wire.EventAction.CHANGED)
+
+
+def _valued(field: str, action: wire.EventAction, value: wire.EventRef) -> wire.EventChange:
+    """A field changed by a value that is an Asana resource: it is the `new_value`, `added_value` or `removed_value`
+    by the change's own action."""
+    match action:
+        case wire.EventAction.ADDED:
+            return wire.EventChange(field=field, action=action, added_value=value)
+        case wire.EventAction.REMOVED:
+            return wire.EventChange(field=field, action=action, removed_value=value)
+        case _:
+            return wire.EventChange(field=field, action=action, new_value=value)
 
 
 class AsanaWorld:
@@ -295,6 +336,56 @@ class AsanaWorld:
     def stories(self, task: str) -> list[wire.AsanaStory]:
         return [wire.parse(wire.AsanaStory, s.body) for s in self._pages(EntityKind.COMMENT, task)]
 
+    def attachments(self, task: str) -> list[wire.AsanaAttachment]:
+        return [a for a in self._records(task) if isinstance(a, wire.AsanaAttachment)]
+
+    def attachment(self, gid: str) -> wire.AsanaAttachment | None:
+        found = self._record(gid)
+        return found if isinstance(found, wire.AsanaAttachment) else None
+
+    def webhooks(self) -> list[wire.AsanaWebhook]:
+        return [w for w in self._records(WEBHOOKS) if isinstance(w, wire.AsanaWebhook)]
+
+    def webhook(self, gid: str) -> wire.AsanaWebhook | None:
+        found = self._record(gid)
+        return found if isinstance(found, wire.AsanaWebhook) else None
+
+    def events_after(self, position: str, resource: str | None = None) -> Iterator[wire.AsanaEvent]:
+        """Every event with a gid above `position`, in order, that bubbles up to `resource` (any, when None)."""
+        after = position
+        while True:
+            page = self._store.children(MANIFEST.key, EntityKind.RECORD, EVENTS, after=after, limit=_SCAN)
+            for stored in page:
+                event = wire.parse_record(stored.body)
+                if isinstance(event, wire.AsanaEvent) and (resource is None or resource in event.scope):
+                    yield event
+            if len(page) < _SCAN:
+                return
+            after = page[-1].entity.external_id
+
+    def head(self) -> int:
+        return self._store.head()
+
+    def position(self) -> str:
+        """The gid below every event not yet written: a sync token or a webhook made now hears of what follows."""
+        return str(_MINTED + self._store.head())
+
+    def sync_token(self, position: str, now: datetime) -> str:
+        """An opaque token for `position` made at `now`: 32 hex digits, as Asana's example."""
+        return f"{int(position):016x}{int(now.timestamp()):016x}"
+
+    def read_sync(self, token: str, now: datetime) -> str | None:
+        """The position a sync token names; None when it is not one this made or has expired."""
+        if len(token) != 32:
+            return None
+        try:
+            position, made = int(token[:16], 16), int(token[16:], 16)
+        except ValueError:
+            return None
+        if now - datetime.fromtimestamp(made, UTC) > SYNC_LIFETIME:
+            return None
+        return str(position)
+
     def next_gid(self) -> str:
         """The gid of the entity the next event writes: no two events share a sequence number."""
         return str(_MINTED + self._store.head() + 1)
@@ -401,8 +492,12 @@ class AsanaWorld:
         parent: str,
         actor: Actor,
         operation: Operation = Operation.CREATE,
+        by: str | None = None,
     ) -> WorldEvent:
-        return self._store.apply(
+        """The record's new version; a project, section or tag written by `by` (a user's gid, None for no user) is
+        reported to whoever subscribed to it (`events`)."""
+        was = self._record(record.gid) if operation is Operation.UPDATE else None
+        written = self._store.apply(
             Change(
                 entity=record_ref(record.gid),
                 operation=operation,
@@ -411,11 +506,139 @@ class AsanaWorld:
                 parent=parent,
             )
         )
+        self._record_events(was, record, Doer(actor, by, written.sim_time))
+        return written
 
-    def put_task(self, task: wire.AsanaTask, *, operation: Operation, actor: Actor) -> WorldEvent:
+    def delete_record(
+        self, record: wire.AsanaSection | wire.AsanaTag | wire.AsanaAttachment, *, parent: str, actor: Actor,
+        by: str | None = None,
+    ) -> None:  # fmt: skip
+        written = self._store.apply(
+            Change(entity=record_ref(record.gid), operation=Operation.DELETE, actor=actor, parent=parent)
+        )
+        doer = Doer(actor, by, written.sim_time)
+        match record:
+            case wire.AsanaSection():
+                self._emit(wire.EventAction.DELETED, _named("section", record.gid, record.name), doer,
+                           scope=[record.gid, record.project])  # fmt: skip
+            case wire.AsanaTag():
+                self._emit(wire.EventAction.DELETED, _named("tag", record.gid, record.name), doer, scope=[record.gid])
+            case wire.AsanaAttachment():
+                task = self.task(record.task)
+                if task is not None:
+                    self._emit(wire.EventAction.DELETED, _named("attachment", record.gid, record.name), doer,
+                               scope=self.scope(task), parent=_task_ref(task))  # fmt: skip
+
+    def delete_webhook(self, hook: wire.AsanaWebhook, *, actor: Actor) -> None:
+        self._store.apply(Change(entity=record_ref(hook.gid), operation=Operation.DELETE, actor=actor, parent=WEBHOOKS))
+
+    def _emit(
+        self,
+        action: wire.EventAction,
+        resource: wire.EventRef,
+        doer: Doer,
+        *,
+        scope: list[str],
+        parent: wire.EventRef | None = None,
+        change: wire.EventChange | None = None,
+    ) -> None:
+        """Keep one event, as the log's own record of it: `GET /events` and the webhooks read it from there. Seeding
+        (actor SCENARIO) is not an event: the world began as it was."""
+        if doer.actor is Actor.SCENARIO:
+            return
+        event = wire.AsanaEvent(
+            gid=self.next_gid(),
+            action=action,
+            resource=resource,
+            user=doer.by,
+            parent=parent,
+            change=change,
+            created_at=wire.stamp(doer.at),
+            scope=list(dict.fromkeys(scope)),
+        )
+        self._store.apply(
+            Change(
+                entity=record_ref(event.gid),
+                operation=Operation.CREATE,
+                actor=Actor.SYSTEM,
+                body=wire.dump(event),
+                parent=EVENTS,
+            )
+        )
+
+    def scope(self, task: wire.AsanaTask) -> list[str]:
+        """The resources whose subscribers hear of a change to the task: itself, its projects, and likewise each
+        task above it ("Change events bubble up ... subscribing to a project receives events for tasks within it,
+        including modifications to subtasks")."""
+        found: list[str] = []
+        above: wire.AsanaTask | None = task
+        while above is not None:
+            found += [above.gid, *(m.project for m in above.memberships)]
+            above = self.task(above.parent) if above.parent is not None else None
+        return found
+
+    def _record_events(self, was: wire.AnyRecord | None, now: wire.AnyRecord, doer: Doer) -> None:
+        match now:
+            case wire.AsanaSection():
+                where = [now.gid, now.project]
+                if was is None:
+                    self._emit(wire.EventAction.ADDED, _named("section", now.gid, now.name), doer, scope=where,
+                               parent=_named("project", now.project, None))  # fmt: skip
+                elif isinstance(was, wire.AsanaSection) and was.name != now.name:
+                    self._emit(wire.EventAction.CHANGED, _named("section", now.gid, now.name), doer, scope=where,
+                               change=_changed("name"))  # fmt: skip
+            case wire.AsanaAttachment() if was is None:
+                task = self.task(now.task)
+                if task is not None:
+                    self._emit(wire.EventAction.ADDED, _named("attachment", now.gid, now.name), doer,
+                               scope=self.scope(task), parent=_task_ref(task))  # fmt: skip
+            case wire.AsanaTag() if isinstance(was, wire.AsanaTag):
+                for field, before, after in (("name", was.name, now.name), ("color", was.color, now.color),
+                                             ("notes", was.notes, now.notes)):  # fmt: skip
+                    if before != after:
+                        self._emit(wire.EventAction.CHANGED, _named("tag", now.gid, now.name), doer, scope=[now.gid],
+                                   change=_changed(field))  # fmt: skip
+            case wire.AsanaProject() if isinstance(was, wire.AsanaProject):
+                for field, before, after in (("name", was.name, now.name), ("notes", was.notes, now.notes),
+                                             ("archived", was.archived, now.archived)):  # fmt: skip
+                    if before != after:
+                        self._emit(wire.EventAction.CHANGED, _named("project", now.gid, now.name), doer,
+                                   scope=[now.gid], change=_changed(field))  # fmt: skip
+                self._members_events(_named("project", now.gid, now.name), [now.gid], doer, "members",
+                                     was.members, now.members, "user")  # fmt: skip
+            case _:
+                return
+
+    def _members_events(
+        self, resource: wire.EventRef, scope: list[str], doer: Doer, field: str, before: list[str], after: list[str],
+        kind: str,
+    ) -> None:  # fmt: skip
+        """A list field changed by what it gained and lost: "When a collaborator is added to the task ... `Event.action`
+        will be `changed`, `Event.change.action` will be `added`, and `added_value` will be an object with the
+        user's `id` and `type`" (`EventResponse` in the OpenAPI subset)."""
+        for action, gids in ((wire.EventAction.ADDED, [g for g in after if g not in before]),
+                             (wire.EventAction.REMOVED, [g for g in before if g not in after])):  # fmt: skip
+            for gid in gids:
+                self._emit(wire.EventAction.CHANGED, resource, doer, scope=scope,
+                           change=_valued(field, action, _named(kind, gid, None)))  # fmt: skip
+
+    def put_task(
+        self,
+        task: wire.AsanaTask,
+        *,
+        operation: Operation,
+        actor: Actor,
+        who: str | None = None,
+        content: str = "{}",
+        by: str | None = None,
+    ) -> WorldEvent:
+        """The task's new version; when what its status says changed (`words`), the move recorded once as a
+        transition, by whoever made it (`who`, a person's key), carrying `content`; and each change reported to
+        whoever subscribed (`events`) as made by the user `by` (None: no user)."""
+        was = self.task(task.gid) if operation is Operation.UPDATE else None
         parent = task.memberships[0].project if task.memberships else task.workspace
         after: Snapshot = self.snapshot(task)
-        return self._store.apply(
+        written = self._store.apply(
             Change(
                 entity=task_ref(task.gid),
                 operation=operation,
@@ -425,26 +648,147 @@ class AsanaWorld:
                 after=after,
             )
         )
+        self._task_events(was, task, Doer(actor, by, written.sim_time))
+        if was is not None and self.words(was) != self.words(task):
+            moved = Transition(
+                provider=MANIFEST.key,
+                item=task_ref(task.gid),
+                name=self.words(task),
+                from_state=self.words(was),
+                to_state=self.words(task),
+                by=actor,
+                who=who,
+                content=content,
+                at=written.sim_time,
+            )
+            self._store.apply(transition_change(moved, at_seq=self._store.head() + 1))
+        return written
 
-    def delete_task(self, task: wire.AsanaTask, *, actor: Actor) -> None:
+    def words(self, task: wire.AsanaTask) -> str:
+        """What the workspace's status source shows of the task, in Asana's own words: `completed` or
+        `incomplete` for the box alone; the section it is in, or the status field's option, else; a ticked task
+        under either is `completed` as well. An approval task says its `approval_status`."""
+        if task.approval_status is not None:
+            return task.approval_status.value
+        rule = self.home().status
+        box = "completed" if task.completed else "incomplete"
+        match rule:
+            case wire.CompletedStatus():
+                return box
+            case wire.SectionStatus():
+                section = self.section(task.memberships[0].section) if task.memberships else None
+                where = section.name if section is not None else "(no section)"
+            case wire.FieldStatus():
+                value = next((v for v in task.custom_fields if v.field == rule.field), None)
+                field = self.custom_field(rule.field)
+                option = (
+                    next((o for o in field.enum_options if o.gid == value.option), None)
+                    if field is not None and value is not None and value.option is not None
+                    else None
+                )
+                where = option.name if option is not None else "(none)"
+        return f"{where} (completed)" if task.completed else where
+
+    def delete_task(self, task: wire.AsanaTask, *, actor: Actor, by: str | None = None) -> None:
         """Delete the task and, as Asana does, every subtask under it."""
         for child in self.subtasks(task.gid):
-            self.delete_task(child, actor=actor)
+            self.delete_task(child, actor=actor, by=by)
         parent = task.memberships[0].project if task.memberships else task.workspace
-        self._store.apply(Change(entity=task_ref(task.gid), operation=Operation.DELETE, actor=actor, parent=parent))
+        written = self._store.apply(
+            Change(entity=task_ref(task.gid), operation=Operation.DELETE, actor=actor, parent=parent)
+        )
+        self._emit(wire.EventAction.DELETED, _task_ref(task), Doer(actor, by, written.sim_time),
+                   scope=self.scope(task))  # fmt: skip
 
-    def put_story(self, story: wire.AsanaStory, *, actor: Actor) -> WorldEvent:
-        """A comment reaches nobody: Asana pushes nothing to the agent, so no person is asked by one."""
-        return self._store.apply(
+    def _task_events(self, was: wire.AsanaTask | None, now: wire.AsanaTask, doer: Doer) -> None:
+        """What a write to a task is to those subscribed to it: a task made or put in a project or under a task is
+        `added` there, one taken out is `removed`, and a field that differs is `changed` (`EventResponse` in the
+        OpenAPI subset), the new value named where it is an Asana resource."""
+        here, where = _task_ref(now), self.scope(now)
+        if was is None:
+            for membership in now.memberships:
+                self._emit(wire.EventAction.ADDED, here, doer, scope=where,
+                           parent=_named("project", membership.project, None))  # fmt: skip
+            if now.parent is not None:
+                self._emit(wire.EventAction.ADDED, here, doer, scope=where, parent=_named("task", now.parent, None))
+            return
+        before = {m.project: m.section for m in was.memberships}
+        after = {m.project: m.section for m in now.memberships}
+        for project in after:
+            if project not in before:
+                self._emit(wire.EventAction.ADDED, here, doer, scope=where, parent=_named("project", project, None))
+            elif before[project] != after[project]:
+                self._emit(wire.EventAction.ADDED, here, doer, scope=where,
+                           parent=_named("section", after[project], None))  # fmt: skip
+        for project in before:
+            if project not in after:
+                self._emit(wire.EventAction.REMOVED, here, doer, scope=[*where, project],
+                           parent=_named("project", project, None))  # fmt: skip
+        scalars: list[tuple[str, object, object]] = [
+            ("name", was.name, now.name),
+            ("notes", was.notes, now.notes),
+            ("completed", was.completed, now.completed),
+            ("approval_status", was.approval_status, now.approval_status),
+            ("due_on", was.due_on, now.due_on),
+            ("due_at", was.due_at, now.due_at),
+            ("custom_fields", was.custom_fields, now.custom_fields),
+        ]
+        for field, old, new in scalars:
+            if old != new:
+                self._emit(wire.EventAction.CHANGED, here, doer, scope=where, change=_changed(field))
+        if was.assignee != now.assignee:
+            change = (_valued("assignee", wire.EventAction.CHANGED, _named("user", now.assignee, None))
+                      if now.assignee is not None else _changed("assignee"))  # fmt: skip
+            self._emit(wire.EventAction.CHANGED, here, doer, scope=where, change=change)
+        if was.parent != now.parent:
+            change = (_valued("parent", wire.EventAction.CHANGED, _named("task", now.parent, None))
+                      if now.parent is not None else _changed("parent"))  # fmt: skip
+            self._emit(wire.EventAction.CHANGED, here, doer, scope=where, change=change)
+        for field, old_list, new_list, kind in (("followers", was.followers, now.followers, "user"),
+                                                ("tags", was.tags, now.tags, "tag"),
+                                                ("dependencies", was.dependencies, now.dependencies, "task")):  # fmt: skip
+            self._members_events(here, where, doer, field, old_list, new_list, kind)
+
+    def put_story(
+        self,
+        story: wire.AsanaStory,
+        *,
+        actor: Actor,
+        operation: Operation = Operation.CREATE,
+        by: str | None = None,
+    ) -> WorldEvent:
+        """A comment written or edited, reported to whoever subscribed to its task (`events`): `added` to the task
+        when it is written, `changed` in its text when it is edited."""
+        written = self._store.apply(
             Change(
                 entity=story_ref(story.gid),
-                operation=Operation.CREATE,
+                operation=operation,
                 actor=actor,
                 body=wire.dump(story),
                 parent=story.task,
                 after=MessageSnapshot(text=story.text, channel=story.task, thread_of=story.task),
             )
         )
+        task = self.task(story.task)
+        if task is not None:
+            here = _named("story", story.gid, None, "comment_added")
+            scope = [story.gid, *self.scope(task)]
+            doer = Doer(actor, by, written.sim_time)
+            if operation is Operation.CREATE:
+                self._emit(wire.EventAction.ADDED, here, doer, scope=scope, parent=_task_ref(task))
+            else:
+                self._emit(wire.EventAction.CHANGED, here, doer, scope=scope, change=_changed("text"))
+        return written
+
+    def delete_story(self, story: wire.AsanaStory, *, actor: Actor, by: str | None = None) -> None:
+        written = self._store.apply(
+            Change(entity=story_ref(story.gid), operation=Operation.DELETE, actor=actor, parent=story.task)
+        )
+        task = self.task(story.task)
+        if task is not None:
+            self._emit(wire.EventAction.DELETED, _named("story", story.gid, None, "comment_added"),
+                       Doer(actor, by, written.sim_time), scope=[story.gid, *self.scope(task)],
+                       parent=_task_ref(task))  # fmt: skip
 
     def saw(self, ref: EntityRef, operation: Operation) -> WorldEvent:
         """Record that the agent read or searched something. It changes nothing."""

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Nobody ever decides. The agent reminds Nadia once, asks Marta at two days, and orders nothing; the run is left
+# unfinished, with both requests pending, which is what this scenario is written to reach.
+name: inbox_never_decides
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P5D
+expect_outcome: unfinished
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    reply:
+      kind: scripted
+      delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
+      then: silent                            # nothing pinned and nothing more: every item left pending
+  - key: marta
+    name: Marta Holm
+    email: marta@example.com
+    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}

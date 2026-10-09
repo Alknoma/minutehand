@@ -20,36 +20,15 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
 
-from minutehand.domain.assessments import Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.common import (
+    ProviderKey,
+    SigningSecret,
+    Window,
+)
 from minutehand.domain.memory import SeededMemory
 from minutehand.domain.model import Model
-
-ProviderKey = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$")]
-"""A provider's registry key ("slack", "asana"). Open, because the set of providers
-is whatever is installed; it is checked against the registry when a scenario loads."""
-
-
-VariableName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
-
-
-class GeneratedSecret(Model):
-    """A fresh secret made for every run and handed to the agent's command in the variable `env`.
-
-    Only a command Minutehand starts receives it; an agent already running has a secret of its own."""
-
-    kind: Literal["generated"] = "generated"
-    env: VariableName = Field(description="The variable the agent reads its signing secret from")
-
-
-class SecretFromEnvironment(Model):
-    """The agent's own secret, configured where it already runs: Minutehand reads the same value from its own
-    variable `env` when the run starts, and refuses the run when it is not set."""
-
-    kind: Literal["from_env"] = "from_env"
-    env: VariableName = Field(description="The variable in Minutehand's own environment that holds the secret")
-
-
-SigningSecret = Annotated[GeneratedSecret | SecretFromEnvironment, Field(discriminator="kind")]
+from minutehand.domain.services import Service, refuse_unknown_responders
 
 
 class AbsenceTrigger(StrEnum):
@@ -81,21 +60,6 @@ class DelayRange(Model):
         return self
 
 
-class Window(Model):
-    """When a person's answer lands: a moment drawn uniformly between `min` and `max` of the person's AVAILABLE
-    time after the ask, the time inside their working hours and outside their absences. Two hours of available
-    time asked at 16:00 on a Friday, of a person working 9 to 17 on weekdays, is 10:00 on Monday."""
-
-    min: timedelta = Field(ge=timedelta(0))
-    max: timedelta
-
-    @model_validator(mode="after")
-    def _ordered(self) -> Window:
-        if self.max < self.min:
-            raise ValueError(f"a window's max ({self.max}) is before its min ({self.min})")
-        return self
-
-
 class Reminded(Model):
     """What a follow-up does to an answer this person owes: a moment is drawn again from `sooner_within`, of their
     available time after the follow-up, and the answer moves there when that is sooner. Never later."""
@@ -110,16 +74,6 @@ class FormInput(Model):
         default=None, description="The provider's own id for the field; None is the form's only text field"
     )
     value: str
-
-
-class ScriptedPress(Model):
-    """Use a control on the message being answered instead of writing back: the one whose label reads `label`, as
-    the person sees it, in any case. When the agent answers the press by opening a form, the person fills it with
-    `form` and submits it."""
-
-    label: str = Field(min_length=1)
-    picks: str | None = Field(default=None, description="Person.key chosen, when the control picks a person")
-    form: list[FormInput] = []
 
 
 class Intent(StrEnum):
@@ -137,7 +91,7 @@ class ScriptedReply(Model):
 
     By default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the
     person's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that
-    needs those words and no others. `press` uses a control on the message instead of writing back."""
+    needs those words and no others. A step never uses a control on the message: that is a take (`Person.takes`)."""
 
     to_ask: int = Field(ge=1)
     facts: list[str] = Field(
@@ -147,15 +101,12 @@ class ScriptedReply(Model):
     verbatim: str | None = Field(
         default=None, min_length=1, description="These exact words and no model: the rare opt-in"
     )
-    press: ScriptedPress | None = None
     within: Window | None = Field(
         default=None, description="When this reply lands, in place of the person's own `reply_within` or delay"
     )
 
     @model_validator(mode="after")
     def _one_way(self) -> ScriptedReply:
-        if self.press is not None and (self.facts or self.verbatim is not None or self.intent is not Intent.ANSWER):
-            raise ValueError("a scripted step that presses a control writes nothing: no facts, verbatim or intent")
         if self.verbatim is not None and (self.facts or self.intent is not Intent.ANSWER):
             raise ValueError("a verbatim step says exactly its words: no facts or intent beside them")
         return self
@@ -163,13 +114,11 @@ class ScriptedReply(Model):
     @property
     def written(self) -> bool:
         """Whether a model writes this step's words."""
-        return self.press is None and self.verbatim is None
+        return self.verbatim is None
 
     @property
     def said(self) -> list[str]:
         """Everything this step puts into the world in the person's words, or the facts the model writes it from."""
-        if self.press is not None:
-            return [f.value for f in self.press.form]
         if self.verbatim is not None:
             return [self.verbatim]
         return list(self.facts)
@@ -216,26 +165,6 @@ class Answers(Speaks):
     kind: Literal["answers"] = "answers"
 
 
-class ScriptedDecision(Model):
-    """What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth
-    such item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins
-    over one for every item. What they give with it (a reason, an answer) is written by a model from `facts`,
-    unless `inputs` fixes the words."""
-
-    to_item: int | None = Field(default=None, ge=1, description="The nth item waiting on them, from 1; None: every one")
-    inbox: ProviderKey | None = Field(
-        default=None, description="The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only"
-    )
-    decision: str = Field(pattern=r"^[a-z][a-z0-9_]*$", description="The name of one of the inbox's decisions")
-    facts: list[str] = Field(default=[], description="Why they decide so, as facts the model writes each input from")
-    inputs: dict[str, str] = Field(
-        default={}, description="Each input the decision takes, by its name, in exact words: no model for those"
-    )
-    within: Window | None = Field(
-        default=None, description="When this decision is made, in place of the person's own `reply_within` or delay"
-    )
-
-
 class AfterScript(StrEnum):
     """What a scripted person does once every step of their script is used."""
 
@@ -254,18 +183,6 @@ class Scripted(Speaks):
     kind: Literal["scripted"] = "scripted"
     replies: list[ScriptedReply] = []
     then: AfterScript = AfterScript.ANSWERS
-    decisions: list[ScriptedDecision] | None = Field(
-        default=None,
-        description="What they decide on items waiting on them in the agent's own product, after their delay like "
-        "a reply. None says nothing: with `then: answers` a model decides every item, and with `then: silent` a run "
-        "whose agent declares an inbox they can receive items in is refused. `[]` leaves every item to `then`",
-    )
-    presses_every: ScriptedPress | None = Field(
-        default=None,
-        description="On every message the agent sends them that carries a control reading this label (an approval "
-        "card's Approve), they press it after their delay, however many there are; a scripted reply to that ask "
-        "is used instead when there is one",
-    )
 
     @model_validator(mode="after")
     def _steps_once(self) -> Scripted:
@@ -306,6 +223,56 @@ class WorkingHours(Model):
     opens: time = time(9)
     closes: time = time(17)
     weekdays_only: bool = True
+
+
+class Take(Model):
+    """What a person is pinned to do on an item waiting on them (`docs/design-transitions.md`): the offer they take,
+    instead of the one their script or a model would, and, with `after` or `within`, when. The words it carries are
+    exactly `verbatim` and `fields`, or a model's from `facts`."""
+
+    provider: ProviderKey | None = Field(
+        default=None,
+        description="The provider the item is in: a ticket tracker, a messaging service, an inbox of the agent's own "
+        "product (its `name`), a declared service. None: any, `nth` counting their asks (messages, invitations, items "
+        "in the agent's product) across every provider, in the order asked",
+    )
+    nth: int | None = Field(
+        default=None,
+        ge=1,
+        description="The nth item waiting on them there, from 1, in the order asked; None: every one",
+    )
+    take: str = Field(
+        min_length=1,
+        description="The offer, in any case: by its name, the state it reaches, the label the person sees, or for a "
+        "ticket what that state means (open, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'",
+    )
+    after: timedelta | None = Field(
+        default=None,
+        ge=timedelta(0),
+        description="Exactly this long after the item began to wait on them; None: drawn as their answers are",
+    )
+    within: Window | None = Field(
+        default=None,
+        description="Drawn within this of their available time, in place of their own `reply_within` or delay",
+    )
+    verbatim: str | None = Field(
+        default=None, min_length=1, description="Exact words for the offer's text (a reply, a comment): no model"
+    )
+    fields: dict[str, str] = Field(
+        default={},
+        description="Exact values of the offer's fields, by name: a decision's inputs, `picks` for a control that "
+        "picks a person (their key). No model writes them",
+    )
+    form: list[FormInput] = Field(default=[], description="What they type into the form the control they use opens")
+    facts: list[str] = Field(default=[], description="What its words carry, which a model writes them from")
+
+    @model_validator(mode="after")
+    def _one_source_of_words(self) -> Take:
+        if self.verbatim is not None and self.facts:
+            raise ValueError(f"a take of {self.take!r} gives `verbatim` words or `facts` to write them from, not both")
+        if self.after is not None and self.within is not None:
+            raise ValueError(f"a take of {self.take!r} lands `after` a fixed time or `within` a window, not both")
+        return self
 
 
 class Account(StrEnum):
@@ -351,6 +318,12 @@ class Person(Model):
         description="How Minutehand signs in to the agent's own product as this person, to read what waits on them "
         "and decide it (`AgentUnderTest.inboxes`, `{credential}` in `as_person`): generated per run and handed to the "
         "agent's command in its variable, or read from Minutehand's own environment. Never stored",
+    )
+    takes: list[Take] = Field(
+        default=[],
+        description="What this person is pinned to do on items waiting on them: a ticket moved, a control used, a "
+        "decision made, an invitation answered (`docs/design-transitions.md`); without one their script answers in "
+        "words, or a model picks among what is offered",
     )
 
     def knows_at(self, at: datetime, starts_at: datetime) -> tuple[list[str], list[str]]:
@@ -712,9 +685,8 @@ TicketAction = Annotated[Moves | Reassigns | Comments | Deletes, Field(discrimin
 class TicketHappening(Model):
     """A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.
 
-    It lands on the run's clock through the provider that holds the ticket (`ports.provider.ActsOnTickets`),
-    recorded as that person's change, and wakes nobody, as a ticket fate does not. A ticket already deleted by
-    then is left alone.
+    It lands on the run's clock as that person's transition of the ticket, through the provider that holds it
+    (`ports.transitions`), and wakes nobody. A ticket already deleted by then is left alone.
     """
 
     kind: Literal["ticket"] = "ticket"
@@ -726,26 +698,11 @@ class TicketHappening(Model):
 
 Happening = Annotated[TicketHappening | DocumentHappening | MessagingHappening, Field(discriminator="kind")]
 """Something a person does by themselves, unprompted, at a moment the scenario sets. Three families, one per kind of
-thing acted on, each landing through the port its provider implements: a `TicketHappening` through `ActsOnTickets`,
-a `DocumentHappening` through `ChangesDocuments`, a `MessagingHappening` through `PushesEvents.happen`. A scenario
+thing acted on, each landing through the port its provider implements: a `TicketHappening` as a transition
+(`ports.transitions`), a `DocumentHappening` through `ChangesDocuments`, a `MessagingHappening` through `PushesEvents.happen`. A scenario
 whose happening lands on a provider without that port is refused before the run starts. A ticket happening wakes
 nobody; a document happening wakes the agent only when it watches that provider's changes; a messaging happening is
 pushed to the agent, as a reply is. A new family is a new member with its own `kind` and its own port."""
-
-
-class TicketFate(Model):
-    """What happens to a ticket the agent hands to a person: it reaches a state, or its assignee deletes it."""
-
-    assignee: str = Field(description="Person.key")
-    becomes: TicketState | None = Field(default=None, description="The state it reaches; None when it is deleted")
-    deleted: bool = Field(default=False, description="Its assignee deletes it instead, through `DeletesTickets`")
-    after: timedelta
-
-    @model_validator(mode="after")
-    def _one_outcome(self) -> Self:
-        if (self.becomes is None) == (not self.deleted):
-            raise ValueError("a ticket's fate is a state it becomes or its deletion; give exactly one")
-        return self
 
 
 class Direction(Model):
@@ -949,6 +906,7 @@ class ExpectedOutcome(StrEnum):
     FAILED = "failed"
     UNFINISHED = "unfinished"
     NOT_JUDGED = "not_judged"
+    SIMULATION_INCOMPLETE = "simulation_incomplete"
 
 
 _RATE = re.compile(r"^\s*(?P<op>>=|<=|==|>|<)\s*(?P<value>[0-9]*\.?[0-9]+)\s*$")
@@ -1003,11 +961,15 @@ class OutcomeRate(Model):
     failed: Rate | None = None
     unfinished: Rate | None = None
     not_judged: Rate | None = None
+    simulation_incomplete: Rate | None = None
 
     @model_validator(mode="after")
     def _one(self) -> Self:
         if len(self.named()) != 1:
-            raise ValueError("an outcome rate names exactly one verdict: passed, failed, unfinished or not_judged")
+            raise ValueError(
+                "an outcome rate names exactly one verdict: passed, failed, unfinished, not_judged or "
+                "simulation_incomplete"
+            )
         return self
 
     def named(self) -> list[tuple[ExpectedOutcome, Rate]]:
@@ -1016,6 +978,7 @@ class OutcomeRate(Model):
             (ExpectedOutcome.FAILED, self.failed),
             (ExpectedOutcome.UNFINISHED, self.unfinished),
             (ExpectedOutcome.NOT_JUDGED, self.not_judged),
+            (ExpectedOutcome.SIMULATION_INCOMPLETE, self.simulation_incomplete),
         ]
         return [(outcome, rate) for outcome, rate in said if rate is not None]
 
@@ -1047,7 +1010,16 @@ class _ScenarioBody(Model):
     documents: list[SeededDocument] = []
     spaces: list[SharedSpace] = []
     sign_ins: list[SignIn] = []
-    ticket_fates: list[TicketFate] = []
+    transitions_on: list[ProviderKey] = Field(
+        default=[],
+        description="Providers whose people the people engine plays (docs/design-transitions.md): what waits on a "
+        "person there is pending on them, and at their moment they take one of its legal transitions",
+    )
+    services: list[Service] = Field(
+        default=[],
+        description="Hosts no provider fakes that the agent files things with and people respond through: each "
+        "item's state held and moved along a machine, what the agent is answered rendered from it (docs/services.md)",
+    )
     directions: list[Direction] = []
     channels: list[SeededChannel] = Field(default=[], description="Conversations that exist when the run starts")
     happenings: list[Happening] = Field(
@@ -1064,6 +1036,11 @@ class _ScenarioBody(Model):
     )
     assess_off: list[str] = Field(
         default=[], description="Ids of the agent file's rules this scenario does not judge by"
+    )
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="Integrity facts that fail the run, besides those the agent file names, when they are found (`around_proxy`, "
+        "`agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
     )
     expect_outcome: ExpectedOutcome | OutcomeRate = Field(
         default=ExpectedOutcome.PASSED,
@@ -1113,16 +1090,9 @@ class _ScenarioBody(Model):
         named += [k for c in self.channels for k in c.members]
         named += [p.by for c in self.channels for p in _every_post(c.history)]
         named += [h.person for h in self.happenings]
-        named += [
-            r.press.picks
-            for p in self.people
-            if isinstance(p.reply, Scripted)
-            for r in p.reply.replies
-            if r.press is not None and r.press.picks
-        ]
+        named += [t.fields["picks"] for p in self.people for t in p.takes if "picks" in t.fields]
         named += [t.assignee for t in self.tickets if t.assignee]
         named += [c.by for t in self.tickets for c in t.comments]
-        named += [f.assignee for f in self.ticket_fates]
         named += [a.delegate for p in self.people for a in p.absences if a.delegate]
         named += [e.person for e in self.expect if isinstance(e, PersonAsked)]
         named += [e.assignee for e in self.expect if isinstance(e, (TicketCreated, TicketInState)) and e.assignee]
@@ -1149,7 +1119,24 @@ class _ScenarioBody(Model):
             self._refuse_tell(relayed)
         refuse_repeated_rules(self.assess)
         refuse_unknown_people(self.assess, keys)
+        refuse_unknown_responders(self.services, keys)
+        self._takes_resolve()
         return self
+
+    def played(self) -> list[ProviderKey]:
+        """Every provider the people engine plays: those `transitions_on` names, and every declared service."""
+        return [*self.transitions_on, *(s.key for s in self.services)]
+
+    def _takes_resolve(self) -> None:
+        """Each provider is played once, and a person pins one take for one item, or for every one, once."""
+        played = self.played()
+        if len(played) != len(set(played)):
+            raise ValueError("transitions_on names a provider twice, or one a declared service is named")
+        for person in self.people:
+            said = [(t.provider, t.nth) for t in person.takes]
+            twice = sorted({f"{p or 'any'} {n or 'every'}" for p, n in said if said.count((p, n)) > 1})
+            if twice:
+                raise ValueError(f"{person.key} pins two takes on the same item: {', '.join(twice)}")
 
     def happening_ticket(self, happening: TicketHappening) -> SeededTicket:
         """The one seeded ticket a happening acts on, found by its title."""
@@ -1289,13 +1276,14 @@ class _ScenarioBody(Model):
 
 def _knowable(person: Person) -> list[str]:
     """Everything a person may say: their script's words and step facts, their facts at any moment, their stale
-    facts, and the inputs and reasons of their scripted decisions."""
+    facts, and the words and facts of what they are pinned to do."""
     said: list[str] = [*person.facts, *person.stale_facts]
     said += [f for c in person.fact_changes for f in [*c.facts, *(c.stale_facts or [])]]
     if isinstance(person.reply, Scripted):
         said += [text for r in person.reply.replies for text in r.said]
-        for d in person.reply.decisions or []:
-            said += [*d.facts, *d.inputs.values()]
+    for take in person.takes:
+        said += [*take.facts, *take.fields.values(), *(f.value for f in take.form)]
+        said += [take.verbatim] if take.verbatim is not None else []
     return said
 
 

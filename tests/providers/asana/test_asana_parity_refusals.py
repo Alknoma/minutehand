@@ -230,13 +230,6 @@ async def test_every_call_is_answered_429_with_retry_after_while_throttled(
     assert (await agent.get(f"/tasks/{INCIDENT}")).status_code == 200
 
 
-async def test_webhooks_are_said_to_be_unserved(agent: httpx.AsyncClient) -> None:
-    refused = await agent.post(
-        "/webhooks", json={"data": {"resource": INCIDENT, "target": "https://agent.example/hook"}}
-    )
-    assert unserved(refused) == "POST /webhooks (createWebhook)"
-
-
 @pytest.fixture
 def free(tmp_path: Path) -> Workspace:
     clock = RunClock(PLAIN.starts_at)

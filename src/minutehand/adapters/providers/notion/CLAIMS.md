@@ -16,7 +16,7 @@ served, 13 refused).
 
 ## Credentials
 
-Minutehand deliberately does not enforce credentials or scopes. Notion answers a call with no token, or a token that
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). What Notion would refuse, and this stack does not test, follows. Notion answers a call with no token, or a token that
 is not one, 401 `unauthorized` (`tests/data/notion_api/real-service-without-a-token-2026-10-08.txt`); this fake answers
 it, as the agent's integration: the first the seed declares. A seed that declares none is refused at seeding, saying
 an integration must be declared; none is invented. A token the seed holds or `/v1/oauth/token` minted acts as its integration. Removed and never refused:

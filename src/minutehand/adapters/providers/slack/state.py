@@ -7,13 +7,16 @@
 | membership  | RECORD   | `<channel>.<user>`          | the channel |
 | message     | MESSAGE  | its `ts`, unique in the run | the channel |
 | file        | DOCUMENT | file id                     | the team |
-| file content | RECORD  | `content.<file>`            | `files` |
+| file content (its bytes, base64) | RECORD | `content.<file>` | `files` |
 | a scenario post's key | RECORD | `post.<key>`        | `posts` |
 | view (modal, Home tab) | RECORD | `view.<id>`         | `views` |
 | trigger_id  | RECORD   | `trigger.<id>`              | `triggers` |
 | response_url | RECORD  | `hook.<id>`                 | `hooks` |
 | a person's press or submission | RECORD | `interaction.<trigger_id>` | `interactions` |
 | a slash command | RECORD | `command.<trigger_id>`    | `commands` |
+| a scheduled message | RECORD | `scheduled.<id>` | `scheduled` |
+| a file's upload ticket | RECORD | `upload.<file>` | `uploads` |
+| a pinned message | RECORD | `pin.<channel>.<ts>` | `pins.<channel>` |
 | the app's install | RECORD | `install`               | `app` |
 | a fault     | RECORD   | `fault.<position>`          | `faults` |
 | a workspace the app is in | RECORD | `workspace.<team>` | `workspaces` |
@@ -98,6 +101,11 @@ def named_channel_id(name: str, team: str = TEAM_ID) -> str:
     return _derived("C", "channel", name) if team == TEAM_ID else _derived("C", "channel", team, name)
 
 
+def created_channel_id(seq: int, team: str = TEAM_ID) -> str:
+    """The id of a channel the agent made whose name's own id is taken, named by the log position that made it."""
+    return _derived("C", "created", str(seq)) if team == TEAM_ID else _derived("C", "created", team, str(seq))
+
+
 def conversation_id(users: list[str]) -> str:
     """An IM (two members) or a group DM (more): one id per set of members, so opening one is idempotent."""
     members = sorted(set(users))
@@ -149,6 +157,33 @@ def post_ref(key: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"post.{key}")
 
 
+def upload_ref(file: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"upload.{file}")
+
+
+def upload_url(team: str, file: str, ticket: str) -> str:
+    """Where the agent uploads a file's bytes: Slack's examples are `https://files.slack.com/upload/v1/` and an opaque key."""
+    return f"https://{FILES_HOST}/upload/v1/{team}-{file}-{ticket}"
+
+
+def pin_ref(channel: str, ts: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"pin.{channel}.{ts}")
+
+
+def pins_of(channel: str) -> str:
+    """The parent of a channel's pins: not the channel itself, whose children are its members."""
+    return f"pins.{channel}"
+
+
+def scheduled_ref(scheduled: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"scheduled.{scheduled}")
+
+
+def scheduled_id(seq: int) -> str:
+    """A `scheduled_message_id`: Slack's examples are a `Q` and ten digits, here the log position that scheduled it."""
+    return f"Q{1_000_000_000 + seq}"
+
+
 def view_ref(view: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"view.{view}")
 
@@ -182,6 +217,8 @@ def unlisted_email_ref(user: str) -> EntityRef:
 
 
 FILES = "files"
+SCHEDULED = "scheduled"
+UPLOADS = "uploads"
 EMAILS = "emails"
 POSTS = "posts"
 VIEWS = "views"
@@ -484,6 +521,15 @@ class SlackWorld:
     def file(self, file: str) -> wire.SlackFile | None:
         stored = self._store.get(file_ref(file))
         return None if stored is None or stored.parent != self.team.id else wire.parse(wire.SlackFile, stored.body)
+
+    def every_file(self) -> list[wire.SlackFile]:
+        """Every file of the workspace that has not been deleted, oldest first."""
+        found = [wire.parse(wire.SlackFile, s.body) for s in self._pages(EntityKind.DOCUMENT, self.team.id)]
+        return sorted(found, key=lambda f: (f.created, f.id))
+
+    def was_file(self, file: str) -> bool:
+        """Whether a file of this id once was, and is gone."""
+        return self._store.get(file_ref(file)) is None and bool(self._store.versions(file_ref(file)))
 
     # ------------------------------------------------------------------ writes
 

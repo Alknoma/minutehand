@@ -13,6 +13,13 @@
 | a rate limit's spent calls                | RECORD | `fault:<n>`        | `faults` |
 | issue                                     | TICKET | its id             | the project's id |
 | comment                                   | COMMENT | its id            | the issue's id |
+| worklog                                   | RECORD | `worklog:<id>`     | `worklog:<issue id>` |
+| attachment                                | RECORD | `attachment:<id>`  | `attachment:<issue id>` |
+| an attachment's bytes                     | RECORD | `blob:<id>`        | `blobs` |
+| remote link                               | RECORD | `remotelink:<id>`  | `remotelink:<issue id>` |
+| an issue's watchers                       | RECORD | `watchers:<issue id>` | `watchers` |
+| project component                         | RECORD | `component:<id>`   | `component:<project id>` |
+| project version                           | RECORD | `version:<id>`     | `version:<project id>` |
 
 An id Jira hands out while the world runs (an issue's, a comment's, a project's, a link's) is `10000` plus the
 sequence of the event that writes the thing, so ids are deterministic, numeric strings as Jira's are, and never
@@ -30,6 +37,7 @@ Nothing here is held between calls: every read is a query of the store.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator, Sequence
 
 from minutehand.adapters.providers.jira import wire
@@ -55,6 +63,8 @@ BOARDS = "boards"
 SPRINTS = "sprints"
 LINKS = "links"
 FAULTS = "faults"
+BLOBS = "blobs"
+WATCHERS = "watchers"
 
 _SCAN = 1000
 
@@ -138,6 +148,34 @@ def fault_ref(index: str) -> EntityRef:
     return _ref(EntityKind.RECORD, f"fault:{index}")
 
 
+def worklog_ref(worklog: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"worklog:{worklog}")
+
+
+def attachment_ref(attachment: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"attachment:{attachment}")
+
+
+def blob_ref(attachment: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"blob:{attachment}")
+
+
+def remote_link_ref(link: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"remotelink:{link}")
+
+
+def watchers_ref(issue: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"watchers:{issue}")
+
+
+def component_ref(component: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"component:{component}")
+
+
+def version_ref(version: str) -> EntityRef:
+    return _ref(EntityKind.RECORD, f"version:{version}")
+
+
 DECLARED_LIMITS = _ref(EntityKind.RECORD, "declared-limits")
 
 
@@ -154,6 +192,10 @@ class JiraWorld:
 
     def __init__(self, store: Store) -> None:
         self._store = store
+
+    @property
+    def store(self) -> Store:
+        return self._store
 
     # ------------------------------------------------------------------ reads
 
@@ -251,6 +293,57 @@ class JiraWorld:
         """Its seeded comments in the seed's order, then every later one in the order it was written."""
         found = [wire.parse(wire.StoredComment, s.body) for s in self._all(EntityKind.COMMENT, issue)]
         return sorted(found, key=lambda c: (c.seededFrom is None, c.seededFrom or 0, int(c.id)))
+
+    def worklogs(self, issue: str) -> list[wire.StoredWorklog]:
+        """In the order they were created, as the reference lists them."""
+        found = [wire.parse(wire.StoredWorklog, s.body) for s in self._all(EntityKind.RECORD, f"worklog:{issue}")]
+        return sorted(found, key=lambda w: int(w.id))
+
+    def worklog(self, worklog: str) -> wire.StoredWorklog | None:
+        stored = self._store.get(worklog_ref(worklog))
+        return None if stored is None else wire.parse(wire.StoredWorklog, stored.body)
+
+    def attachments(self, issue: str) -> list[wire.StoredAttachment]:
+        found = [wire.parse(wire.StoredAttachment, s.body) for s in self._all(EntityKind.RECORD, f"attachment:{issue}")]
+        return sorted(found, key=lambda a: int(a.id))
+
+    def attachment(self, attachment: str) -> wire.StoredAttachment | None:
+        stored = self._store.get(attachment_ref(attachment))
+        return None if stored is None else wire.parse(wire.StoredAttachment, stored.body)
+
+    def blob(self, attachment: str) -> bytes | None:
+        stored = self._store.get(blob_ref(attachment))
+        if stored is None:
+            return None
+        return base64.b64decode(wire.parse(wire.StoredBlob, stored.body).base64)
+
+    def remote_links(self, issue: str) -> list[wire.StoredRemoteLink]:
+        found = [wire.parse(wire.StoredRemoteLink, s.body) for s in self._all(EntityKind.RECORD, f"remotelink:{issue}")]
+        return sorted(found, key=lambda link: int(link.id))
+
+    def remote_link(self, link: str) -> wire.StoredRemoteLink | None:
+        stored = self._store.get(remote_link_ref(link))
+        return None if stored is None else wire.parse(wire.StoredRemoteLink, stored.body)
+
+    def watchers(self, issue: str) -> list[str]:
+        stored = self._store.get(watchers_ref(issue))
+        return [] if stored is None else wire.parse(wire.StoredWatchers, stored.body).accounts
+
+    def components(self, project: str) -> list[wire.StoredComponent]:
+        found = [wire.parse(wire.StoredComponent, s.body) for s in self._all(EntityKind.RECORD, f"component:{project}")]
+        return sorted(found, key=lambda c: int(c.id))
+
+    def component(self, component: str) -> wire.StoredComponent | None:
+        stored = self._store.get(component_ref(component))
+        return None if stored is None else wire.parse(wire.StoredComponent, stored.body)
+
+    def versions(self, project: str) -> list[wire.StoredVersion]:
+        found = [wire.parse(wire.StoredVersion, s.body) for s in self._all(EntityKind.RECORD, f"version:{project}")]
+        return sorted(found, key=lambda v: int(v.id))
+
+    def version(self, version: str) -> wire.StoredVersion | None:
+        stored = self._store.get(version_ref(version))
+        return None if stored is None else wire.parse(wire.StoredVersion, stored.body)
 
     def links(self) -> list[wire.StoredLink]:
         found = [wire.parse(wire.StoredLink, s.body) for s in self._all(EntityKind.RECORD, LINKS)]
@@ -396,6 +489,68 @@ class JiraWorld:
                 after=MessageSnapshot(text=wire.adf_text(comment.body), channel=comment.issue, thread_of=comment.issue),
             )
         )
+
+    def update_comment(self, comment: wire.StoredComment, *, actor: Actor) -> WorldEvent:
+        return self._store.apply(
+            Change(
+                entity=comment_ref(comment.id),
+                operation=Operation.UPDATE,
+                actor=actor,
+                body=wire.dump(comment),
+                parent=comment.issue,
+                after=MessageSnapshot(text=wire.adf_text(comment.body), channel=comment.issue, thread_of=comment.issue),
+            )
+        )
+
+    def delete_comment(self, comment: wire.StoredComment, *, actor: Actor) -> WorldEvent:
+        return self._store.apply(
+            Change(entity=comment_ref(comment.id), operation=Operation.DELETE, actor=actor, parent=comment.issue)
+        )
+
+    def write_worklog(self, worklog: wire.StoredWorklog, *, actor: Actor, create: bool) -> WorldEvent:
+        return self._write(worklog_ref(worklog.id), worklog, f"worklog:{worklog.issue}", actor=actor, create=create)
+
+    def delete_worklog(self, worklog: wire.StoredWorklog, *, actor: Actor) -> WorldEvent:
+        return self._delete(worklog_ref(worklog.id), f"worklog:{worklog.issue}", actor)
+
+    def write_attachment(self, attachment: wire.StoredAttachment, content: bytes, *, actor: Actor) -> WorldEvent:
+        self._write(
+            blob_ref(attachment.id),
+            wire.StoredBlob(base64=base64.b64encode(content).decode("ascii")),
+            BLOBS,
+            actor=actor,
+            create=True,
+        )
+        return self._write(
+            attachment_ref(attachment.id), attachment, f"attachment:{attachment.issue}", actor=actor, create=True
+        )
+
+    def delete_attachment(self, attachment: wire.StoredAttachment, *, actor: Actor) -> WorldEvent:
+        self._delete(blob_ref(attachment.id), BLOBS, actor)
+        return self._delete(attachment_ref(attachment.id), f"attachment:{attachment.issue}", actor)
+
+    def write_remote_link(self, link: wire.StoredRemoteLink, *, actor: Actor, create: bool) -> WorldEvent:
+        return self._write(remote_link_ref(link.id), link, f"remotelink:{link.issue}", actor=actor, create=create)
+
+    def delete_remote_link(self, link: wire.StoredRemoteLink, *, actor: Actor) -> WorldEvent:
+        return self._delete(remote_link_ref(link.id), f"remotelink:{link.issue}", actor)
+
+    def write_watchers(self, issue: str, accounts: list[str], *, actor: Actor) -> WorldEvent:
+        create = self._store.get(watchers_ref(issue)) is None
+        return self._write(
+            watchers_ref(issue), wire.StoredWatchers(accounts=accounts), WATCHERS, actor=actor, create=create
+        )
+
+    def write_component(self, component: wire.StoredComponent, *, actor: Actor) -> WorldEvent:
+        return self._write(
+            component_ref(component.id), component, f"component:{component.project}", actor=actor, create=True
+        )
+
+    def write_version(self, version: wire.StoredVersion, *, actor: Actor) -> WorldEvent:
+        return self._write(version_ref(version.id), version, f"version:{version.project}", actor=actor, create=True)
+
+    def _delete(self, ref: EntityRef, parent: str, actor: Actor) -> WorldEvent:
+        return self._store.apply(Change(entity=ref, operation=Operation.DELETE, actor=actor, parent=parent))
 
     def write_link(self, link: wire.StoredLink, *, actor: Actor) -> WorldEvent:
         return self._write(link_ref(link.id), link, LINKS, actor=actor, create=True)

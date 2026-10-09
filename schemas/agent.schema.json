@@ -240,6 +240,76 @@
       "title": "Booked",
       "type": "object"
     },
+    "Calls": {
+      "additionalProperties": false,
+      "description": "The agent's own HTTP calls, answered or refused, each counted at the moment it was made: what it read, polled\nand tried, beside what it changed. Calls Minutehand made as a person, and tunnels relayed unopened, are not the\nagent's calls and are never counted.",
+      "properties": {
+        "answer_changed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: its answer differed from the answer to the agent's previous call of the same method and path (or there was none); False: it answered as that one had, so the call learned nothing new",
+          "title": "Answer Changed"
+        },
+        "host": {
+          "default": [],
+          "description": "To any of these hosts, exactly, in any case; empty: to any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Host",
+          "type": "array"
+        },
+        "method": {
+          "default": [],
+          "description": "With any of these methods (GET, POST, ...); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Method",
+          "type": "array"
+        },
+        "refused": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: answered 400 or more, by the service or because nothing claimed its host; False: answered below 400",
+          "title": "Refused"
+        },
+        "route": {
+          "default": [],
+          "description": "At any of these paths, the query left out; `{name}` stands for one segment of it, so `/v1/requests/{id}` is every request; empty: at any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Route",
+          "type": "array"
+        },
+        "status": {
+          "default": [],
+          "description": "Answered with any of these statuses: a number (`400`) or a class (`4xx`); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Status",
+          "type": "array"
+        }
+      },
+      "title": "Calls",
+      "type": "object"
+    },
     "Collection": {
       "additionalProperties": false,
       "description": "One REST collection a `store` host keeps: `path` lists and creates (GET, POST), and `<path>/<id>` reads,\nreplaces, patches and deletes one item (GET, PUT, PATCH, DELETE). A `{name}` segment of `path` matches any one\nsegment, and each value of it is a collection of its own: `/v1/companies/{company}/contacts`.",
@@ -435,6 +505,17 @@
           ],
           "default": null
         },
+        "calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Calls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "commitments": {
           "anyOf": [
             {
@@ -536,6 +617,17 @@
           ],
           "default": null
         },
+        "transitions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transitions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "until": {
           "anyOf": [
             {
@@ -598,19 +690,6 @@
           "title": "Name",
           "type": "string"
         },
-        "permits": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Whether it lets what the item gates go ahead (approve: true, reject: false); None: it says nothing about that (an answer to a question)",
-          "title": "Permits"
-        },
         "reads": {
           "anyOf": [
             {
@@ -641,6 +720,12 @@
             }
           ],
           "title": "Request"
+        },
+        "settles": {
+          "default": true,
+          "description": "False: a note the person leaves on the item that decides nothing and leaves it waiting on them (a comment): where an away person's automatic reply goes, its first input their words. Only a take, or their automatic reply, uses it",
+          "title": "Settles",
+          "type": "boolean"
         },
         "succeeds": {
           "$ref": "#/$defs/Succeeds",
@@ -688,7 +773,7 @@
     },
     "DeclaredStore": {
       "additionalProperties": false,
-      "description": "What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the\nagent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what\nits collection says the API assigns (`id`, `stamps`); credentials are never checked.\n\nA call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection\nwhose path it is under, else with `answer`.",
+      "description": "What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the\nagent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what\nits collection says the API assigns (`id`, `stamps`); credentials are never checked, and a field named like one\n(`token`, `password`) is kept like any other.\n\nA call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection\nwhose path it is under, else with `answer`.",
       "properties": {
         "answer": {
           "$ref": "#/$defs/Answer",
@@ -739,17 +824,6 @@
           "description": "What its world events are recorded under; derived from the host when None",
           "title": "Name"
         },
-        "redact": {
-          "default": [],
-          "description": "Body fields kept as [redacted], in the request and the answer, besides credentials",
-          "items": {
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*(\\.[A-Za-z0-9_\\-$@]+(\\[(\\*|\\d+)\\])*)*$",
-            "type": "string"
-          },
-          "title": "Redact",
-          "type": "array"
-        },
         "routes": {
           "default": [],
           "items": {
@@ -781,7 +855,8 @@
         "run",
         "ask",
         "handoff",
-        "person"
+        "person",
+        "transition"
       ],
       "title": "Each",
       "type": "string"
@@ -1275,6 +1350,13 @@
           "title": "Provider",
           "type": "string"
         },
+        "push_timeout": {
+          "default": "PT5M",
+          "description": "How long one push to `url` or `interactivity_url` may take before it counts as unanswered and is sent again, as the vendor retries it. The default leaves room for a model's turn handled inside the request; Slack itself waits three seconds (PT3S), and a Socket Mode envelope is always held to that",
+          "format": "duration",
+          "title": "Push Timeout",
+          "type": "string"
+        },
         "secret": {
           "anyOf": [
             {
@@ -1322,6 +1404,16 @@
       "title": "InboundTarget",
       "type": "object"
     },
+    "IntegrityCheck": {
+      "description": "A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails\nthe run only when the agent file or the scenario names it in `fail_on_integrity`.",
+      "enum": [
+        "around_proxy",
+        "agent_contract_changed",
+        "unmatched_call"
+      ],
+      "title": "IntegrityCheck",
+      "type": "string"
+    },
     "ItemId": {
       "additionalProperties": false,
       "description": "Where an item's id is in its JSON, and how it is made: the one field of an item the API assigns besides\n`stamps`. The item is read and written at `<collection path>/<id>`.",
@@ -1368,8 +1460,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT5M",
-          "description": "How long one call to wake_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url may take: the whole wake, a model's turns and all",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"
@@ -1572,6 +1664,17 @@
       },
       "title": "Messages",
       "type": "object"
+    },
+    "Mover": {
+      "description": "Who made a transition, as a rule names it (`domain.world.Actor`).",
+      "enum": [
+        "agent",
+        "person",
+        "system",
+        "timer"
+      ],
+      "title": "Mover",
+      "type": "string"
     },
     "OnMiss": {
       "enum": [
@@ -2210,8 +2313,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT2M",
-          "description": "How long one call to wake_url or report_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url or report_url may take; the default leaves room for a model's turn taken inside the call",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"
@@ -2356,7 +2459,7 @@
             }
           ],
           "default": null,
-          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}, and for `each: transition` {transition.provider}, {transition.item}, {transition.name}, {transition.from}, {transition.to}, {transition.by}, {transition.who}",
           "title": "Message"
         },
         "pattern": {
@@ -2387,8 +2490,13 @@
         "where": {
           "$ref": "#/$defs/Where",
           "default": {
+            "by": [],
+            "first": false,
+            "name": [],
             "person": [],
-            "person_not": []
+            "person_not": [],
+            "provider": [],
+            "to": []
           }
         }
       },
@@ -2648,6 +2756,100 @@
       "title": "Touches",
       "type": "object"
     },
+    "Transitions": {
+      "additionalProperties": false,
+      "description": "Transitions of items' states, by anyone (docs/design-transitions.md): each counted at the moment it was\nmade. States and names are the provider's own words, in any case.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "Made by any of these; empty: by anyone",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "from": {
+          "default": [],
+          "description": "Out of any of these states; empty: out of any",
+          "items": {
+            "type": "string"
+          },
+          "title": "From",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "Named any of these by the provider; empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
+        "not_reached": {
+          "default": [],
+          "description": "Its item had been in none of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Reached",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "In any of these providers; empty: in any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "reached": {
+          "default": [],
+          "description": "Its item had been in one of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Reached",
+          "type": "array"
+        },
+        "same_item": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: of the item of the transition the rule is read for (`each: transition`)",
+          "title": "Same Item"
+        },
+        "to": {
+          "default": [],
+          "description": "Into any of these states; empty: into any",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
+        },
+        "who": {
+          "default": [],
+          "description": "Made by any of these people; empty: by anyone or anything",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Who",
+          "type": "array"
+        }
+      },
+      "title": "Transitions",
+      "type": "object"
+    },
     "Upstream": {
       "additionalProperties": false,
       "description": "Where the emulator listens: `http://host:port`, `https://host:port` (verified against `ca` when given, else\nthe system's roots), or `unix:///path/to.sock`. A path on an http(s) URL is put before every forwarded path.",
@@ -2755,8 +2957,32 @@
     },
     "Where": {
       "additionalProperties": false,
-      "description": "Which of the things the rule is read for: by the person asked or handed the work.",
+      "description": "Which of the things the rule is read for: by the person asked or handed the work, or who made the\ntransition; and, for `each: transition`, by its provider, name, states and who made it.",
       "properties": {
+        "by": {
+          "default": [],
+          "description": "For `each: transition`: made by these only",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run (the first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+          "title": "First",
+          "type": "boolean"
+        },
+        "name": {
+          "default": [],
+          "description": "For `each: transition`: named these by the provider only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
         "person": {
           "default": [],
           "description": "Only these; empty: everyone",
@@ -2776,6 +3002,24 @@
           },
           "title": "Person Not",
           "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "For `each: transition`: in these providers only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "to": {
+          "default": [],
+          "description": "For `each: transition`: into these states only",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
         }
       },
       "title": "Where",
@@ -2794,19 +3038,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {
@@ -2909,21 +3140,6 @@
           "default": null,
           "description": "In an item: the names of the decisions allowed on it; None: every one declared",
           "title": "Decisions"
-        },
-        "gates": {
-          "anyOf": [
-            {
-              "description": "A JSONPath query (RFC 9535)",
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "In an item: the id of the operation it holds back, which a later call of the agent's carries when it goes ahead (`checks.acted_without_approval`)",
-          "title": "Gates"
         },
         "id": {
           "description": "In an item: its own id",
@@ -3112,6 +3328,15 @@
         "$ref": "#/$defs/ExternalEmulator"
       },
       "title": "Emulators",
+      "type": "array"
+    },
+    "fail_on_integrity": {
+      "default": [],
+      "description": "Integrity facts that fail the run when they are found (`around_proxy`, `agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
+      "items": {
+        "$ref": "#/$defs/IntegrityCheck"
+      },
+      "title": "Fail On Integrity",
       "type": "array"
     },
     "goal": {

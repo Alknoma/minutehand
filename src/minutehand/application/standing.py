@@ -3,8 +3,9 @@
 `minutehand serve` holds many of these at once, one per test. Nothing in one happens by itself: its clock
 stands still until whoever opened it moves it (`advance`), and only then do the things the world owes fall
 due, in order: what people do by themselves (the scenario's happenings, of every family, whether or not
-scripted people speak), a scripted person's reply to a message the agent sent them, a ticket's fate, the
-owner's directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
+scripted people speak), what a scripted person does about what waits on them (an answer to a message the agent
+sent them, a decision in its product, a move on a ticket; the people engine's, as in a run), the owner's
+directions. With `scripted` off, nobody answers but the test, which speaks for people itself (`say`,
 `reply`, `move_ticket`, `edit_ticket`).
 
 A world is read the way a finished run is: its log, its calls, and the same checks over it as of now.
@@ -14,6 +15,7 @@ only in the run loop.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -22,13 +24,17 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from minutehand.application.checkpoint import PendingService
 from minutehand.application.further_seed import Scratch, land
-from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_undecided
+from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_untakeable
 from minutehand.application.model_calls import per_wake
-from minutehand.application.moments import automatic_reply, decision_text, follow_up_of, messages_to, sooner
+from minutehand.application.moments import decision_text
+from minutehand.application.orchestrator import acting
+from minutehand.application.people import Booking, People, happen, move, needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk
 from minutehand.application.steps import STEP, steps
 from minutehand.checks.runner import RunResult, broken, contract_breaks, evaluate, view_of
 from minutehand.domain.agent import AgentReport
@@ -44,7 +50,6 @@ from minutehand.domain.people import (
     PersonReply,
     Plan,
     Press,
-    Writing,
 )
 from minutehand.domain.provider import Manifest, PersonChange, merged_seed
 from minutehand.domain.run import StopReason
@@ -63,39 +68,40 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
+from minutehand.domain.transitions import ASSIGNEE, DELETE, FORM, PICKS, REASSIGN, REPLY, TEXT, Transition
 from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
     InboxItemSnapshot,
     ItemStatus,
-    MessageSnapshot,
     Operation,
+    PendingSnapshot,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.model import ModelFailed
 from minutehand.ports.provider import (
-    ActsOnTickets,
     ASGIApp,
     BooksWakes,
     ChangesDocuments,
     ChangesPeople,
     DeclaresFaults,
-    DeletesTickets,
     DeliversInBackground,
-    EditsTickets,
     GrantsPermissions,
-    HoldsTickets,
+    ListensForAgent,
     MintsInboundCredentials,
     NotifiesChanges,
     OwnsSeed,
     Provider,
     PushesEvents,
-    PushesInteractions,
 )
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions, TalksToAgent
+
+TRANSITION = "transition"
+"""How an owed move of a person's is written, as `OwedByPerson.writing` says it: the people engine's."""
 
 FIRST_WAKE = 1
 """What happens after the seed and before any step is in this wake: the seed is wake 0, as in a run. A step marked
@@ -163,13 +169,13 @@ class _Unfired:
 class _Owed:
     at: datetime
     what: str
-    reply: PersonReply | None = None
-    plan: Plan | None = None
-    asked: int | None = None
     failed: str | None = None
-    fate: tuple[EntityRef, TicketState | None] | None = None
     direction: str | None = None
     happening: Happening | None = None
+    service: PendingService | None = None
+    """A declared service's timer or system move on one of its items."""
+    transition: EntityRef | None = None
+    """The people engine's record of an item pending on a person, who acts on it then (`application.people`)."""
 
 
 @dataclass(frozen=True)
@@ -198,20 +204,21 @@ class StandingWorld:
         scripted: bool,
         inboxes: Inboxes | None = None,
         model: LanguageModel | None = None,
+        desk: ServiceDesk | None = None,
     ) -> None:
         """`provider` builds a provider by key; it is seeded into this world the first time it is had.
         `signing` is the secret each inbound target's events are signed with. `scripted` lets the scenario's
-        people answer and decide, its tickets meet their fates and its directions be said, as the clock passes
-        each. `model` writes what people say, as in a run; a world whose people speak in a model's words with no
+        people answer, decide and move what waits on them, and its directions be said, as the clock passes each. `model` writes what people say, as in a run; a world whose people speak in a model's words with no
         model is refused, naming them."""
         if scripted:
             needing = unspoken(scenario, [r.declared for r in inboxes.reaches.values()] if inboxes else [])
+            needing += needs_model(scenario)
             if needing and model is None:
                 raise WorldRefused(f"a model writes what {'; '.join(needing)} say, and no model is configured")
         if inboxes is not None:
             try:
                 if scripted:
-                    refuse_undecided(scenario, list(inboxes.reaches.values()))
+                    refuse_untakeable(scenario, list(inboxes.reaches.values()))
                 refuse_clashing(list(inboxes.reaches.values()), [t.provider for t in inbound])
             except RunRefused as e:
                 raise WorldRefused(str(e)) from e
@@ -230,9 +237,12 @@ class StandingWorld:
         self._people = {p.email: p for p in scenario.people}
         self.inboxes = inboxes
         self._model = model
+        self.desk = desk
+        """The world's declared services (`application.services`): what the proxy answers them from."""
         self._replier = self._people_for(scenario) if scripted else None
+        self._engine: People | None = None
+        self._named: list[ProviderKey] = []
         self._owed: list[_Owed] = []
-        self._fated: set[EntityRef] = set()
         self._seen = 0
         self._acted: list[Happening] = []
         self._pushing: dict[int, str] = {}
@@ -253,6 +263,9 @@ class StandingWorld:
         step: the first, or, for a world joining a case, the case's step in progress."""
         for key in named:
             self.provider(key)
+        self._named = list(named)
+        if self.scripted:
+            self._engine = self._engine_for(self.scenario)
         for n, happening in enumerate(self.scenario.happenings, start=1):
             self._lands(happening, n)
             at = self.scenario.starts_at + happening.after
@@ -269,6 +282,30 @@ class StandingWorld:
 
     def close(self) -> None:
         self.end_wake()
+
+    def _engine_for(self, scenario: Scenario) -> People:
+        """The people engine over every provider of the world people act through: each one opened (one that pushes
+        answers to the agent bound to its inbound target), each inbox of the agent's product, each declared
+        service."""
+        assert self._replier is not None
+        ports: dict[ProviderKey, object] = {}
+        for key in self._named:
+            found = self.provider(key)
+            if isinstance(found, TalksToAgent):
+                target = self._inbound[key] if key in self._inbound else None
+                ports[key] = found.talking(target, self._signing[key] if key in self._signing else None)
+            else:
+                ports[key] = found
+        if self.inboxes is not None:
+            for key in self.inboxes.reaches:
+                ports[key] = self.inboxes
+        if self.desk is not None:
+            for service in scenario.services:
+                ports[service.key] = self.desk.provider(service.key)
+        try:
+            return People(scenario, ports, self._replier, self._model)
+        except RunRefused as e:
+            raise WorldRefused(str(e)) from e
 
     def enter_wake(self, wake: int) -> None:
         """A step begins: the wake in progress ends and `wake`'s window opens."""
@@ -309,6 +346,11 @@ class StandingWorld:
             found = self._provider(key)
             if isinstance(found, BooksWakes):
                 found.bind(_Unfired())
+            if isinstance(found, ListensForAgent):
+                found.listen(
+                    self._inbound[key] if key in self._inbound else None,
+                    self._signing[key] if key in self._signing else None,
+                )
             if not any(e.entity.provider == key for e in self.store.events()):
                 with _refusing():
                     found.seed(self.scenario, self.store)
@@ -359,47 +401,48 @@ class StandingWorld:
         return [(o.at, o.what) for o in sorted(self._owed, key=lambda o: o.at)]
 
     def owed_by_people(self) -> list[OwedByPerson]:
-        """Every answer and decision people owe, earliest first: when, to what, how its words are written."""
+        """Every answer, decision and move people owe, earliest first: when, to what, how its words are written."""
         found: list[OwedByPerson] = []
         for o in sorted(self._owed, key=lambda o: o.at):
-            if o.plan is not None:
-                found.append(
-                    OwedByPerson(
-                        at=o.at,
-                        person=o.plan.person,
-                        answers=o.plan.asked,
-                        decision=o.plan.decision is not None or o.plan.asked.kind is EntityKind.INBOX_ITEM,
-                        writing=o.plan.writing.value,
-                        failed=o.failed,
-                    )
+            if o.transition is None or self._engine is None:
+                continue
+            held = self._engine.pending(o.transition, self.store)
+            plan = Plan.model_validate_json(held.plan) if held.plan is not None else None
+            found.append(
+                OwedByPerson(
+                    at=o.at,
+                    person=held.person,
+                    answers=held.item,
+                    decision=held.item.kind is EntityKind.INBOX_ITEM,
+                    writing=plan.writing.value if plan is not None else TRANSITION,
+                    failed=o.failed if o.failed is not None else held.failure,
                 )
-            elif o.reply is not None:
-                found.append(
-                    OwedByPerson(
-                        at=o.at,
-                        person=o.reply.person,
-                        answers=o.reply.in_reply_to,
-                        decision=o.reply.decides is not None,
-                        writing=o.reply.writing.value,
-                        failed=None,
-                    )
-                )
+            )
         return found
 
     async def look(self) -> Looked:
-        """Read every inbox of the agent's own product as each person (`application.inboxes`), withdraw a decision
-        owed on an item gone undecided, then observe what the agent did."""
+        """Read every inbox of the agent's own product as each person (`application.inboxes`), then observe what
+        the agent did: an item gone undecided no longer waits on its person, and what they owed on it is dropped."""
         looked = Looked()
         if self.inboxes is not None:
             looked = await self.inboxes.look(self.store, self.clock)
-            self._owed = [
-                o
-                for o in self._owed
-                if not (o.reply is not None and o.reply.in_reply_to in looked.withdrawn)
-                and not (o.plan is not None and o.plan.asked in looked.withdrawn)
-            ]
         await self.observe()
         return looked
+
+    def transitions(self) -> tuple[list[tuple[EntityRef, PendingSnapshot, datetime]], list[Transition]]:
+        """Every item the people engine has held pending on a person (its record as it stands, and when it began to
+        wait), and every transition of any item by anyone, in order."""
+        events = self.store.events()
+        since: dict[EntityRef, datetime] = {}
+        held: dict[EntityRef, PendingSnapshot] = {}
+        moves: list[Transition] = []
+        for e in events:
+            if isinstance(e.after, PendingSnapshot):
+                since.setdefault(e.entity, e.sim_time)
+                held[e.entity] = e.after
+            elif isinstance(e.after, TransitionSnapshot):
+                moves.append(Transition.of(e))
+        return [(ref, item, since[ref]) for ref, item in held.items()], moves
 
     def pending_items(self) -> list[tuple[EntityRef, InboxItemSnapshot, datetime]]:
         """Every item still waiting on a person, with the moment it was first seen, in the order seen."""
@@ -416,25 +459,29 @@ class StandingWorld:
 
     def due_decisions(self) -> list[tuple[datetime, str, EntityRef, Decides | None]]:
         """Every decision people owe, earliest first, with when it falls due, whose it is, the item, and the
-        decision when it is known before its moment (a script's exact one); None: a model writes it then."""
+        decision when it is known before its moment (a take's, every input exact); None: a model picks it then."""
         found: list[tuple[datetime, str, EntityRef, Decides | None]] = []
-        for o in sorted(self._owed, key=lambda o: o.at):
-            if o.reply is not None and o.reply.decides is not None:
-                found.append((o.at, o.reply.person, o.reply.in_reply_to, o.reply.decides))
-            elif o.plan is not None and isinstance(self._item(o), InboxItemSnapshot):
-                known = (
-                    Decides(decision=o.plan.decision.decision, inputs=o.plan.decision.inputs)
-                    if o.plan.decision is not None and o.plan.writing is Writing.VERBATIM
-                    else None
-                )
-                found.append((o.at, o.plan.person, o.plan.asked, known))
+        for o, held in self._deciding():
+            person = self._person(held.person)
+            take = next(
+                (t for t in person.takes if t.take == held.take and t.provider in (None, held.item.provider)), None
+            )
+            known = Decides(decision=take.take, inputs=take.fields) if take is not None and not take.facts else None
+            found.append((o.at, held.person, held.item, known))
         return found
 
-    def _item(self, owed: _Owed) -> object:
-        if owed.asked is None:
-            return None
-        found = next((e for e in self.store.events(since=owed.asked - 1) if e.seq == owed.asked), None)
-        return found.after if found is not None else None
+    def _deciding(self) -> list[tuple[_Owed, PendingSnapshot]]:
+        """Every move owed on an item of the agent's own product, earliest first, with the engine's record of it."""
+        if self._engine is None:
+            return []
+        found: list[tuple[_Owed, PendingSnapshot]] = []
+        for o in sorted(self._owed, key=lambda o: o.at):
+            if o.transition is None:
+                continue
+            held = self._engine.pending(o.transition, self.store)
+            if held.item.kind is EntityKind.INBOX_ITEM:
+                found.append((o, held))
+        return found
 
     async def perform_due(self, now: datetime) -> list[WorldEvent]:
         """Read the inboxes, then make every decision due by `now` (the world's clock, or its case's when that is
@@ -442,11 +489,8 @@ class StandingWorld:
         nothing else owed is fired."""
         await self.look()
         done: list[WorldEvent] = []
-        for owed in sorted(self._owed, key=lambda o: o.at):
-            deciding = (owed.reply is not None and owed.reply.decides is not None) or (
-                owed.plan is not None and owed.plan.asked.kind is EntityKind.INBOX_ITEM
-            )
-            if not deciding or owed.at > max(now, self.clock.now()):
+        for owed, _ in self._deciding():
+            if owed.at > max(now, self.clock.now()):
                 continue
             self._owed.remove(owed)
             self.clock.jump(max(owed.at, self.clock.now()))
@@ -484,185 +528,91 @@ class StandingWorld:
             decision.refuse_inputs(decides.inputs, person)
         except ValueError as e:
             raise WorldRefused(str(e)) from e
-        answer = PersonReply(
-            person=person,
-            in_reply_to=item,
-            text=decision_text(decides.decision, decides.inputs),
-            at=self.clock.now(),
-            decides=decides,
+        self.store.remember(
+            PersonReply(
+                person=person,
+                in_reply_to=item,
+                text=decision_text(decides.decision, decides.inputs),
+                at=self.clock.now(),
+                decides=decides,
+            )
         )
-        self.store.remember(answer)
-        self._owed = [
-            o
-            for o in self._owed
-            if not (o.reply is not None and o.reply.in_reply_to == item)
-            and not (o.plan is not None and o.plan.asked == item)
-        ]
+        before = self.store.head()
         async with self._push(f"{person} decides {decides.decision} on {item.external_id}"):
-            made = await self._decide(answer)
-        assert made is not None
-        return made
-
-    async def _decide(self, reply: PersonReply) -> WorldEvent | None:
-        assert self.inboxes is not None
-        with _refusing():
-            return await self.inboxes.decide(reply, self.store, self.clock)
+            with _refusing():
+                await self.inboxes.apply(
+                    item, decides.decision, Actor.PERSON, found, json.dumps(decides.inputs), self.store, self.clock
+                )
+        await self.look()  # what the person owed on it is theirs no longer
+        return next(e for e in self.store.events(since=before) if isinstance(e.after, InboxItemSnapshot))
 
     async def observe(self) -> None:
-        """Read what the agent did since the last look and schedule what the world owes back: a scripted reply
-        to each message it sent a person, the fate of each ticket it handed to a person who has one. A message
-        is answered as it read when it was first seen; an edit is not put to the person again."""
+        """Read what the agent did since the last look and schedule what the world owes back: a declared service's
+        own moves, and what people do about what waits on them now (the people engine's)."""
         new = self.store.events(since=self._seen)
         if new:
             self._seen = new[-1].seq
-        if self._replier is None:
+        if self.desk is not None and self.scripted:
+            for event in new:
+                for owed in self.desk.bookings(event, self.store):
+                    what = f"{owed.service} item {owed.item}: {owed.transition}"
+                    self._owed.append(_Owed(at=owed.due.at, what=what, service=owed))
+        if self._engine is None:
             return
-        history: list[WorldEvent] | None = None
-        for event in new:
-            if event.actor is not Actor.AGENT or event.operation not in (Operation.CREATE, Operation.UPDATE):
+        await self._transitions(self._engine)
+
+    def _doing(self, engine: People, booked: Booking) -> str:
+        """What a person's owed move is, as its owed line says it: the take pinned, or a move of their own pick."""
+        take = engine.pending(booked.pending, self.store).take
+        return f"takes {take!r} on" if take is not None else "acts on"
+
+    def _writing(self, engine: People, booked: Booking) -> str:
+        """How the words of an answer are written, as its owed line says it: its plan's, or the engine's pick."""
+        held = engine.pending(booked.pending, self.store)
+        return Plan.model_validate_json(held.plan).writing.value if held.plan is not None else TRANSITION
+
+    async def _transitions(self, engine: People) -> None:
+        """What waits on people, looked at now: each new item owed at its person's moment, each one whose moment
+        moved (a follow-up, an edit) owed then instead, each gone undone dropped."""
+        looked = await engine.look(self.store, self.clock)
+        dropped = [*looked.gone, *(b.pending for b in looked.moved)]
+        self._owed = [o for o in self._owed if o.transition is None or o.transition not in dropped]
+        for booked in [*looked.booked, *looked.moved]:
+            if booked.at is None:
                 continue
-            after = event.after
-            if isinstance(after, TicketSnapshot) and after.assignee_email in self._people:
-                self._fate(self._people[after.assignee_email], event)
-            if event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot) and after.person:
-                history = history if history is not None else self.store.events()
-                asked = next((p for p in self.scenario.people if p.key == after.person), None)
-                if asked is not None:
-                    await self._ask(asked, event, [h for h in history if h.seq <= event.seq])
-            if event.operation is Operation.CREATE and isinstance(after, MessageSnapshot):
-                history = history if history is not None else self.store.events()
-                for email in after.recipient_emails:
-                    if email in self._people:
-                        await self._ask(self._people[email], event, [h for h in history if h.seq <= event.seq])
-
-    def _owed_answers(self) -> list[tuple[EntityRef, datetime]]:
-        """Every answer people gave or owe, by the message it answers: what tells a follow-up from a new ask."""
-        given = [(r.in_reply_to, r.at) for r in self.store.replies() if r.answers]
-        planned = [(o.plan.asked, o.at) for o in self._owed if o.plan is not None]
-        return [*given, *planned]
-
-    async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
-        """`person` was asked something: their automatic reply at once if they are away while someone covers; a
-        follow-up on an answer they owe moves it only when they declare `reminded`; else what they plan, owed at its
-        moment and written when it falls due."""
-        assert self._replier is not None
-        automatic = automatic_reply(self.scenario, person, asked, history, self.store.replies())
-        if automatic is not None:
-            self.store.remember(automatic)
-            self._owed.append(_Owed(at=automatic.at, what=f"{person.key}'s automatic reply", reply=automatic))
-        owed = self._owed_answers()
-        if isinstance(asked.after, MessageSnapshot) and asked.operation is Operation.CREATE:
-            reminded = follow_up_of(asked, messages_to(person, history), owed)
-            if reminded is not None:
-                self._remind(person, asked, reminded, history)
-                return
-        planned = self._replier.plan(person, asked, history, owed)
-        if planned is None:
-            return
-        what = (
-            f"{person.key} decides on {asked.entity.provider} item {asked.entity.external_id}"
-            if isinstance(asked.after, InboxItemSnapshot)
-            else f"{person.key}'s reply ({planned.writing.value})"
-        )
-        self._owed.append(_Owed(at=planned.at, what=what, plan=planned, asked=asked.seq))
-
-    def _remind(self, person: Person, follow_up: WorldEvent, reminded: WorldEvent, history: list[WorldEvent]) -> None:
-        """A follow-up on an answer `person` owes: drawn again from their `reminded.sooner_within`, moved when sooner."""
-        owing = next(
-            (
-                o
-                for o in self._owed
-                if o.plan is not None and o.plan.asked == reminded.entity and o.plan.person == person.key
-            ),
-            None,
-        )
-        if owing is None or owing.plan is None:
-            return
-        drawn = sooner(self.scenario, person, follow_up, history, owing.at)
-        if drawn is None:
-            return
-        owing.plan = owing.plan.model_copy(update={"drawn": drawn})
-        owing.at = max(drawn.lands_at, self.clock.now())
-
-    def _fate(self, person: Person, assigned: WorldEvent) -> None:
-        fate = next((f for f in self.scenario.ticket_fates if f.assignee == person.key), None)
-        if fate is None or assigned.entity in self._fated:
-            return
-        self._fated.add(assigned.entity)
-        self._owed.append(
-            _Owed(
-                at=assigned.sim_time + fate.after,
-                what=f"{person.key} "
-                + (
-                    f"moves {assigned.entity.external_id} to {fate.becomes.value}"
-                    if fate.becomes is not None
-                    else f"deletes {assigned.entity.external_id}"
-                ),
-                fate=(assigned.entity, fate.becomes),
+            kind = booked.item.kind
+            what = (
+                f"{booked.person} decides on {booked.item.provider} item {booked.item.external_id}"
+                if kind is EntityKind.INBOX_ITEM
+                else f"{booked.person}'s reply ({self._writing(engine, booked)})"
+                if booked.conversation
+                else f"{booked.person} {self._doing(engine, booked)} {booked.item.provider} {booked.item.external_id}"
             )
-        )
+            self._owed.append(_Owed(at=max(booked.at, self.clock.now()), what=what, transition=booked.pending))
 
     async def _fire(self, owed: _Owed) -> bool:
         """Carry out one thing owed; False when a person's words could not be written, and they still owe them."""
-        if owed.plan is not None:
-            written = await self._words(owed)
-            if written is None:
-                return owed.failed is None
-            owed.reply = written
-            owed.plan = None
+        if owed.service is not None:
+            assert self.desk is not None
+            await self.desk.fire(owed.service, self.store, self.clock)
+            return True
+        if owed.transition is not None:
+            assert self._engine is not None
+            acted = await self._engine.act(owed.transition, self.store, self.clock)
+            owed.failed = acted.failure
+            return acted.failure is None
         if owed.happening is not None:
             await self._happen(owed.happening)
-        elif owed.reply is not None and owed.reply.decides is not None:
-            await self._decide(owed.reply)
-        elif owed.reply is not None:
-            provider = owed.reply.in_reply_to.provider
-            if owed.reply.press is not None:
-                found = self.provider(provider)
-                if not isinstance(found, PushesInteractions):
-                    raise WorldRefused(f"{provider} carries no controls a person can use")
-                await found.press(
-                    owed.reply, self._target(provider), self.store, self.clock, secret=self._signing[provider]
-                )
-            else:
-                await self._pushes(provider).deliver(
-                    owed.reply, self._target(provider), self.store, self.clock, secret=self._signing[provider]
-                )
-        elif owed.fate is not None:
-            ticket, becomes = owed.fate
-            if becomes is None:
-                self._deletes(ticket.provider).delete_ticket(ticket, self.store, self.clock)
-            else:
-                self._holds(ticket.provider).transition(ticket, becomes, self.store, self.clock)
         elif owed.direction is not None:
             await self.say(self.scenario.owner, owed.direction, provider=self._only_inbound())
         return True
-
-    async def _words(self, owed: _Owed) -> PersonReply | None:
-        """The words of a plan, written now through the model when they are a model's, and kept with the world.
-        None when the person found nothing to answer, or when the model failed (`owed.failed` says why)."""
-        assert self._replier is not None and owed.plan is not None and owed.asked is not None
-        events = self.store.events()
-        asked = next(e for e in events if e.seq == owed.asked)
-        person = self._person(owed.plan.person)
-        history = [e for e in events if e.seq <= asked.seq]
-        try:
-            reply = await self._replier.write(person, asked, owed.plan, history, self.store, self.clock)
-        except ModelFailed as e:
-            owed.failed = str(e)
-            return None
-        owed.failed = None
-        if reply is None:
-            return None
-        reply = reply.model_copy(update={"at": self.clock.now()})
-        self.store.remember(reply)
-        return reply
 
     def _lands(self, happening: Happening, n: int) -> None:
         """Refuse, before the world opens, a happening whose provider lacks the port its family lands through."""
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
-            port, ok = "ActsOnTickets", isinstance(found, ActsOnTickets)
+            port, ok = "seeded tickets a person can act on", isinstance(acting(found), HoldsSeeded)
         elif isinstance(happening, DocumentHappening):
             port, ok = "ChangesDocuments", isinstance(found, ChangesDocuments)
         else:
@@ -677,8 +627,9 @@ class StandingWorld:
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
-            assert isinstance(found, ActsOnTickets)
-            found.act(happening, self.scenario, self.store, self.clock)
+            port = acting(found)
+            assert isinstance(port, ProvidesTransitions)
+            await happen(self.scenario, port, happening, self.store, self.clock)
         elif isinstance(happening, DocumentHappening):
             assert isinstance(found, ChangesDocuments)
             found.change(happening, self.scenario, self.store, self.clock)
@@ -703,16 +654,11 @@ class StandingWorld:
         return self._written(before)
 
     async def reply(self, person: str, text: str, *, to: EntityRef) -> WorldEvent:
-        """`person` answers a message: in its thread in a channel, as a new message in a DM."""
-        self._person(person)
-        before = self.store.head()
+        """`person` answers a message the agent sent them, in their own words, now: the transition its provider takes
+        it through (in Slack, the event pushed to the agent)."""
         answer = PersonReply(person=person, in_reply_to=to, text=text, at=self.clock.now())
-        self.store.remember(answer)
         async with self._push(f"{person} replies {text[:40]!r} on {to.provider}"):
-            pushes, target = self._pushes(to.provider), self._target(to.provider)
-            with _refusing():
-                await pushes.deliver(answer, target, self.store, self.clock, secret=self._signing[to.provider])
-        return self._written(before)
+            return await self._answer(answer, REPLY, {TEXT: text})
 
     async def happen_now(self, happening: Happening) -> WorldEvent:
         """`happening`, of any family, done now rather than at its offset: checked as a scenario's would be (its
@@ -739,17 +685,27 @@ class StandingWorld:
     async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
         """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
         agent's interactivity target the way the provider's service pushes it."""
-        self._person(person)
-        found = self.provider(on.provider)
-        if not isinstance(found, PushesInteractions):
-            raise WorldRefused(f"{on.provider} carries no controls a person can use")
-        before = self.store.head()
+        given: dict[str, str] = {}
+        if press.picks is not None:
+            given[PICKS] = press.picks
+        if press.form:
+            given[FORM] = json.dumps([f.model_dump() for f in press.form])
         answer = PersonReply(person=person, in_reply_to=on, text=press.label, at=self.clock.now(), press=press)
-        self.store.remember(answer)
         async with self._push(f"{person} presses {press.label!r} on {on.provider}"):
-            target = self._target(on.provider)
-            with _refusing():
-                await found.press(answer, target, self.store, self.clock, secret=self._signing[on.provider])
+            return await self._answer(answer, press.action_id, given)
+
+    async def _answer(self, answer: PersonReply, offer: str, given: dict[str, str]) -> WorldEvent:
+        """A person's answer, by hand, taken through the message's provider as any answer is, and kept as said."""
+        who = self._person(answer.person)
+        to = answer.in_reply_to
+        found = self.provider(to.provider)
+        if not isinstance(found, TalksToAgent):
+            raise WorldRefused(f"{to.provider} carries no answers a person pushes to the agent")
+        port = found.talking(self._target(to.provider), self._signing[to.provider])
+        before = self.store.head()
+        with _refusing():
+            await port.apply(to, offer, Actor.PERSON, who, json.dumps(given), self.store, self.clock)
+        self.store.remember(answer)
         return self._written(before)
 
     def declare_faults(self, provider: ProviderKey, faults: str) -> None:
@@ -763,20 +719,15 @@ class StandingWorld:
             except ValueError as e:
                 raise WorldRefused(f"{provider} cannot declare these faults: {e}") from e
 
-    def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
-        """A person deletes the ticket now: one the agent filed, or one seeded."""
+    async def delete_ticket(self, ticket: EntityRef) -> WorldEvent:
+        """A person deletes the ticket now, one the agent filed or one seeded: its assignee, or the owner when it has
+        none, through its provider."""
+        port = self._tickets(ticket.provider)
         before = self.store.head()
-        deletes = self._deletes(ticket.provider)
-        try:
-            deletes.delete_ticket(ticket, self.store, self.clock)
-        except LookupError as e:
-            if isinstance(e, (KeyError, IndexError)):
-                raise
-            raise WorldRefused(str(e.args[0]) if e.args else str(e)) from e
-        except ValueError as e:
-            if isinstance(e, ValidationError):
-                raise
-            raise WorldRefused(str(e)) from e
+        with _refusing():
+            port.legal(ticket, Actor.PERSON, None, self.store)  # the provider's own word on a ticket that is not there
+            who = self._assignee(ticket) or self._person(self.scenario.owner)
+            await move(port, ticket, DELETE, Actor.PERSON, who, {}, self.store, self.clock)
         return self._written(before)
 
     # -- the world changed from outside, while open ---------------------------------------------------------------
@@ -837,6 +788,7 @@ class StandingWorld:
         self._people = {p.email: p for p in after.people}
         if self._replier is not None:
             self._replier = self._people_for(after)
+            self._engine = self._engine_for(after)
         for key in sorted(named - set(held)):
             self._built.pop(key, None)
             self._apps.pop(key, None)
@@ -882,23 +834,30 @@ class StandingWorld:
             except ValueError as e:
                 raise WorldRefused(f"{provider} cannot sign that: {e}") from e
 
-    def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
-        """The ticket's assignee moves it, as actor PERSON."""
+    async def move_ticket(self, ticket: EntityRef, to: TicketState) -> WorldEvent:
+        """The ticket's assignee moves it to a state that means `to`, as actor PERSON, through its provider."""
         before = self.store.head()
-        holds = self._holds(ticket.provider)
+        port = self._tickets(ticket.provider)
         with _refusing():
-            holds.transition(ticket, to, self.store, self.clock)
+            port.legal(ticket, Actor.PERSON, None, self.store)  # the provider's own word on a ticket that is not there
+        assignee = self._assignee(ticket)
+        if assignee is None:
+            raise WorldRefused(f"{ticket.provider} {ticket.external_id} has no assignee to move it")
+        with _refusing():
+            await move(port, ticket, to.value, Actor.PERSON, assignee, {}, self.store, self.clock)
         return self._written(before)
 
-    def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
-        """The ticket is rewritten from outside the agent (reassigned, reopened), as actor SCENARIO."""
+    async def edit_ticket(self, ticket: EntityRef, *, state: TicketState | None, assignee: str | None) -> WorldEvent:
+        """The ticket is rewritten from outside the agent (reassigned, its state set past any workflow), as actor
+        SCENARIO, through its provider."""
+        port = self._tickets(ticket.provider)
         email = self._person(assignee).email if assignee is not None else None
-        provider = self.provider(ticket.provider)
-        if not isinstance(provider, EditsTickets):
-            raise WorldRefused(f"{ticket.provider} holds no tickets that can be rewritten")
         before = self.store.head()
         with _refusing():
-            provider.edit(ticket, state=state, assignee_email=email, world=self.store, clock=self.clock)
+            if state is not None:
+                await move(port, ticket, state.value, Actor.SCENARIO, None, {}, self.store, self.clock)
+            if email is not None:
+                await move(port, ticket, REASSIGN, Actor.SCENARIO, None, {ASSIGNEE: email}, self.store, self.clock)
         return self._written(before)
 
     # -- reading ------------------------------------------------------------------------------------------------
@@ -944,17 +903,26 @@ class StandingWorld:
             )
         return next(iter(self._inbound))
 
-    def _deletes(self, provider: ProviderKey) -> DeletesTickets:
+    def _tickets(self, provider: ProviderKey) -> ProvidesTransitions:
         found = self.provider(provider)
-        if not isinstance(found, DeletesTickets):
-            raise Unsupported(f"{provider} holds no tickets a person can delete")
-        return found
+        port = acting(found)
+        if not isinstance(port, ProvidesTransitions) or EntityKind.TICKET not in found.manifest.kinds:
+            raise Unsupported(f"{provider} holds no tickets a person can act on")
+        return port
 
-    def _holds(self, provider: ProviderKey) -> HoldsTickets:
-        found = self.provider(provider)
-        if not isinstance(found, HoldsTickets):
-            raise WorldRefused(f"{provider} holds no tickets a person can move")
-        return found
+    def _assignee(self, ticket: EntityRef) -> Person | None:
+        """Who the ticket is assigned to now, as the world last recorded it."""
+        stood = next(
+            (
+                e.after
+                for e in reversed(self.store.events())
+                if e.entity == ticket and isinstance(e.after, TicketSnapshot)
+            ),
+            None,
+        )
+        if stood is None:
+            return None
+        return next((p for p in self.scenario.people if p.email == stood.assignee_email), None)
 
 
 def score(
@@ -982,6 +950,7 @@ def score(
         broken_calls=broken(calls),
         contract_breaks=contract_breaks(calls),
         rules=merged([], scenario.assess, scenario.assess_off),
+        fail_on_integrity=scenario.fail_on_integrity,
         stop=stop,
     )
     return evaluate(view, stop=stop, ended=ended)

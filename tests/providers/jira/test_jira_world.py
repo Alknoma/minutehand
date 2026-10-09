@@ -28,9 +28,11 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot
-from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
+from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, TransitionSnapshot
+from minutehand.ports.provider import Provider
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
 from tests.providers.jira.jira_site import API, IRIS, NOOR, SCENARIO, START, TOMAS, Site, ok
+from tests.support.tickets import acted, assignee_moves, edited
 
 
 def _ref(site: Site, key: str) -> state.EntityRef:
@@ -100,11 +102,15 @@ async def test_transition_walks_the_workflow_as_the_assignee(
     site: Site, to: TicketState, status: str, resolution: str
 ) -> None:
     site.clock.jump(START + timedelta(days=2))
-    site.provider.transition(_ref(site, "LAUNCH-1"), to, site.store, site.clock)
+    await assignee_moves(site.provider, _ref(site, "LAUNCH-1"), to, SCENARIO, site.store, site.clock)
 
-    last = site.store.events()[-1]
+    events = site.store.events()
+    last = [e for e in events if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.PERSON, Operation.UPDATE)
     assert isinstance(last.after, TicketSnapshot) and last.after.state is to
+    moved = events[-1].after
+    assert isinstance(moved, TransitionSnapshot) and events[-1].actor is Actor.PERSON, "each step is a transition"
+    assert (moved.item, moved.to_state) == (_ref(site, "LAUNCH-1"), status)
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "status,resolution,resolutiondate"}))
     assert read["fields"]["status"]["name"] == status and read["fields"]["resolution"]["name"] == resolution
     assert read["fields"]["resolutiondate"] == "2026-08-26T10:50:03.000+0000"
@@ -114,7 +120,7 @@ async def test_transition_walks_the_workflow_as_the_assignee(
 
 
 async def test_transition_back_to_open_clears_the_resolution(site: Site) -> None:
-    site.provider.transition(_ref(site, "LAUNCH-2"), TicketState.OPEN, site.store, site.clock)
+    await assignee_moves(site.provider, _ref(site, "LAUNCH-2"), TicketState.OPEN, SCENARIO, site.store, site.clock)
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-2", params={"fields": "status,resolution,resolutiondate"}))
     assert (read["fields"]["status"]["name"], read["fields"]["resolution"], read["fields"]["resolutiondate"]) == (
         "In Progress",
@@ -123,20 +129,21 @@ async def test_transition_back_to_open_clears_the_resolution(site: Site) -> None
     )
 
 
-def test_transition_of_an_unassigned_issue_is_refused(site: Site) -> None:
+async def test_transition_of_an_unassigned_issue_is_refused(site: Site) -> None:
     with pytest.raises(ValueError, match="no assignee"):
-        site.provider.transition(_ref(site, "FIELD-1"), TicketState.DONE, site.store, site.clock)
+        await assignee_moves(site.provider, _ref(site, "FIELD-1"), TicketState.DONE, SCENARIO, site.store, site.clock)
 
 
 async def test_edit_rewrites_state_and_assignee_as_the_scenario(site: Site) -> None:
-    site.provider.edit(
+    await edited(
+        site.provider,
         _ref(site, "LAUNCH-1"),
         state=TicketState.CANCELLED,
         assignee_email="iris@example.com",
         world=site.store,
         clock=site.clock,
     )
-    last = site.store.events()[-1]
+    last = [e for e in site.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert last.actor is Actor.SCENARIO
     assert last.after == TicketSnapshot(
         title="Write the release notes",
@@ -147,10 +154,15 @@ async def test_edit_rewrites_state_and_assignee_as_the_scenario(site: Site) -> N
     )
 
 
-def test_edit_to_an_email_nobody_has_is_refused(site: Site) -> None:
-    with pytest.raises(LookupError, match=r"nobody@example\.com"):
-        site.provider.edit(
-            _ref(site, "LAUNCH-1"), state=None, assignee_email="nobody@example.com", world=site.store, clock=site.clock
+async def test_edit_to_an_email_nobody_has_is_refused(site: Site) -> None:
+    with pytest.raises(ValueError, match=r"nobody@example\.com"):
+        await edited(
+            site.provider,
+            _ref(site, "LAUNCH-1"),
+            state=None,
+            assignee_email="nobody@example.com",
+            world=site.store,
+            clock=site.clock,
         )
 
 
@@ -158,15 +170,15 @@ def _happening(person: str, after: timedelta, action: TicketAction) -> TicketHap
     return TicketHappening(person=person, ticket="Write the release notes", after=after, action=action)
 
 
-def _act(site: Site, *happenings: TicketHappening) -> None:
+async def _act(site: Site, *happenings: TicketHappening) -> None:
     for happening in happenings:
-        site.provider.act(happening, SCENARIO, site.store, site.clock)
+        await acted(site.provider, happening, SCENARIO, site.store, site.clock)
 
 
 async def test_a_person_reassigns_comments_on_and_deletes_an_issue_at_their_moment(site: Site) -> None:
     at = timedelta(hours=5)
     site.clock.jump(START + at)
-    _act(
+    await _act(
         site,
         _happening("iris", at, Reassigns(to="noor")),
         _happening("iris", at, Comments(text="Noor has it now.")),
@@ -189,16 +201,18 @@ async def test_a_person_reassigns_comments_on_and_deletes_an_issue_at_their_mome
     acts = [e for e in site.store.events() if e.actor is Actor.PERSON]
     assert {e.sim_time for e in acts} == {START + at}
 
-    _act(site, _happening("iris", at, Deletes()))
+    await _act(site, _happening("iris", at, Deletes()))
     assert (await site.http.get(f"{API}/issue/LAUNCH-1")).status_code == 404
     assert site.store.events()[-1].actor is Actor.PERSON
     head = site.store.head()
-    _act(site, _happening("iris", at, Comments(text="Too late.")), _happening("iris", at, Moves(to=TicketState.OPEN)))
+    await _act(
+        site, _happening("iris", at, Comments(text="Too late.")), _happening("iris", at, Moves(to=TicketState.OPEN))
+    )
     assert site.store.head() == head, "an act on an issue that is gone writes nothing"
 
 
 async def test_a_person_reassigning_to_nobody_leaves_the_issue_unassigned(site: Site) -> None:
-    _act(site, _happening("tomas", timedelta(hours=1), Reassigns(to=None)))
+    await _act(site, _happening("tomas", timedelta(hours=1), Reassigns(to=None)))
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "assignee"}))
     assert read["fields"]["assignee"] is None
 
@@ -232,15 +246,13 @@ def test_a_jira_seed_naming_a_key_no_ticket_has_is_refused(tmp_path: Path) -> No
         build().seed(scenario, SqliteStore(tmp_path / "w.db", "w", clock))
 
 
-def test_the_provider_meets_its_four_ports() -> None:
+def test_the_provider_is_one_people_act_through() -> None:
     provider = build()
     held: Provider = provider
-    holds: HoldsTickets = provider
-    edits: EditsTickets = provider
-    acts: ActsOnTickets = provider
-    assert held.manifest is MANIFEST and holds is edits is acts
-    assert isinstance(provider, HoldsTickets) and isinstance(provider, EditsTickets)
-    assert isinstance(provider, ActsOnTickets)
+    acting: ProvidesTransitions = provider
+    seeded: HoldsSeeded = provider
+    assert held.manifest is MANIFEST and acting is seeded
+    assert isinstance(provider, ProvidesTransitions) and isinstance(provider, HoldsSeeded)
 
 
 def test_the_manifest_claims_jira_and_imports_nothing_else_of_the_provider() -> None:

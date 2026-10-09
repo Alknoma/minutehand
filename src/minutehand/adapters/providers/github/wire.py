@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar, get_args
 
-from pydantic import ConfigDict, Field, JsonValue
+from pydantic import ConfigDict, Field, JsonValue, TypeAdapter
 
-from minutehand.domain.errors import Asked, Rendered, ServiceRefusal
+from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
 API = "https://api.github.com"
@@ -313,6 +314,28 @@ class License(Wire):
     spdx_id: str
 
 
+class ChangeStatus(StrEnum):
+    """How a commit changed a path: GitHub's `status` of a file in a diff."""
+
+    ADDED = "added"
+    MODIFIED = "modified"
+    REMOVED = "removed"
+
+
+class FileChange(Wire):
+    """One path a commit changed: the blob it holds afterwards (None when removed) and the one it held before."""
+
+    path: str
+    status: ChangeStatus
+    sha: str | None
+    previous_sha: str | None
+
+
+class TreeEntry(Wire):
+    path: str
+    sha: str
+
+
 class StoredCommit(Wire):
     sha: str
     message: str
@@ -326,6 +349,17 @@ class StoredCommit(Wire):
     date: str
     paths: list[str]
     parent: str | None
+    merged: str | None = Field(default=None, description="The second parent of a merge commit")
+    changes: list[FileChange] = Field(default=[], description="What it changed, for a commit made through the API")
+
+
+class StoredLine(Wire):
+    """A branch that has commits of its own, beyond the default branch's head it was made at."""
+
+    name: str
+    fork: str = Field(description="The default branch's commit it was made at")
+    base: list[TreeEntry] = Field(description="The default branch's tree at that commit")
+    commits: list[StoredCommit] = Field(description="Its own commits, newest first")
 
 
 class StoredRepository(Wire):
@@ -340,7 +374,8 @@ class StoredRepository(Wire):
     default_branch: str
     branches: list[str]
     collaborators: list[Collaborator]
-    commits: list[StoredCommit] = Field(description="Newest first; every branch points at the first")
+    commits: list[StoredCommit] = Field(description="Newest first; every branch but a line points at the first")
+    lines: list[StoredLine] = Field(default=[], description="Branches with commits of their own")
     stargazers_count: int
     forks_count: int
     network_count: int
@@ -361,6 +396,182 @@ class StoredFile(Wire):
     sha: str
 
 
+class StoredBlob(Wire):
+    """The bytes of one git blob, kept under its sha for as long as a branch or a diff may need them."""
+
+    sha: str
+    content: str = Field(description="The bytes, base64, unwrapped")
+    size: int
+
+
+class IssueState(StrEnum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class StateReason(StrEnum):
+    COMPLETED = "completed"
+    REOPENED = "reopened"
+    NOT_PLANNED = "not_planned"
+    DUPLICATE = "duplicate"
+
+
+LockReason = Literal["off-topic", "too heated", "resolved", "spam"]
+"""Why a conversation is locked: the four the reference lists, as a `Literal` since "resolved" is also Jira's word."""
+
+
+class ReviewState(StrEnum):
+    APPROVED = "APPROVED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    COMMENTED = "COMMENTED"
+
+
+class ReviewEvent(StrEnum):
+    APPROVE = "APPROVE"
+    REQUEST_CHANGES = "REQUEST_CHANGES"
+    COMMENT = "COMMENT"
+
+
+class Side(StrEnum):
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+
+
+class Association(StrEnum):
+    """How an author is associated with a repository, in GraphQL's `CommentAuthorAssociation` words."""
+
+    COLLABORATOR = "COLLABORATOR"
+    CONTRIBUTOR = "CONTRIBUTOR"
+    MEMBER = "MEMBER"
+    NONE = "NONE"
+    OWNER = "OWNER"
+
+
+class StateFilter(StrEnum):
+    """What a list's `state` asks for."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    ALL = "all"
+
+
+class IssueSort(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+    COMMENTS = "comments"
+
+
+class PullSort(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+    POPULARITY = "popularity"
+    LONG_RUNNING = "long-running"
+
+
+class CommentSort(StrEnum):
+    CREATED = "created"
+    UPDATED = "updated"
+
+
+class Direction(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+NO_ONE = "none"
+"""What a filter takes in place of a name to mean no such thing (an issue with no assignee, milestone or type)."""
+ANYONE = "*"
+"""What a filter takes in place of a name to mean any (an issue with an assignee)."""
+
+
+class StoredLabel(Wire):
+    id: int
+    name: str
+    color: str
+    description: str | None
+    default: bool = False
+
+
+class StoredPull(Wire):
+    """What makes an issue a pull request: GitHub numbers both from one sequence."""
+
+    id: int = Field(description="The pull request's own id, not the issue's")
+    head: str = Field(description="The branch the changes are on")
+    base: str = Field(description="The branch they are to be merged into")
+    draft: bool = False
+    maintainer_can_modify: bool = False
+    requested_reviewers: list[str] = []
+    merged: bool = False
+    merged_at: str | None = None
+    merged_by: str | None = None
+    merge_commit_sha: str | None = None
+    head_sha: str | None = Field(default=None, description="The head's commit once the pull request is closed")
+    base_sha: str | None = Field(default=None, description="The base's commit once the pull request is closed")
+
+
+class StoredIssue(Wire):
+    number: int
+    id: int
+    title: str
+    body: str | None
+    author: str = Field(description="Login")
+    state: IssueState = IssueState.OPEN
+    state_reason: StateReason | None = None
+    labels: list[str] = []
+    assignees: list[str] = []
+    locked: bool = False
+    lock_reason: LockReason | None = None
+    created_at: str
+    updated_at: str
+    closed_at: str | None = None
+    closed_by: str | None = None
+    pull: StoredPull | None = None
+
+
+class StoredComment(Wire):
+    id: int
+    issue: int = Field(description="The number of the issue or pull request it is on")
+    author: str
+    body: str
+    created_at: str
+    updated_at: str
+
+
+class StoredReview(Wire):
+    id: int
+    pull: int
+    author: str
+    state: ReviewState
+    body: str
+    commit_id: str
+    submitted_at: str
+
+
+class StoredReviewComment(Wire):
+    id: int
+    pull: int
+    review: int | None
+    author: str
+    body: str
+    path: str
+    commit_id: str
+    diff_hunk: str
+    position: int | None
+    line: int | None
+    side: Side | None
+    start_line: int | None = None
+    start_side: Side | None = None
+    in_reply_to: int | None = None
+    created_at: str
+    updated_at: str
+
+
+class StoredCounter(Wire):
+    """The next id GitHub hands out of one kind."""
+
+    next: int
+
+
 class StoredFault(Wire):
     fault: Fault
     answered: int = 0
@@ -376,6 +587,13 @@ StoredModel = TypeVar(
     StoredFile,
     StoredFault,
     StoredBudget,
+    StoredBlob,
+    StoredLabel,
+    StoredIssue,
+    StoredComment,
+    StoredReview,
+    StoredReviewComment,
+    StoredCounter,
 )
 
 
@@ -824,3 +1042,420 @@ class GraphQLIn(Wire):
     query: str
     variables: dict[str, JsonValue] | None = None
     operation_name: str | None = Field(default=None, alias="operationName")
+
+
+# --------------------------------------------------------------------------- what a request sends
+
+
+class Sent(Wire):
+    """A request body read as the JSON object GitHub requires, for the keys a route names. A body that is not JSON is
+    400 "Problems parsing JSON", and one that is JSON and not an object 400 "Body should be a JSON object"; a key the
+    reference does not name is let by, as GitHub lets it. https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"""
+
+    fields: dict[str, JsonValue]
+    section: str
+
+    @classmethod
+    def read(cls, raw: bytes, *, section: str, optional: bool = False) -> Sent:
+        if optional and not raw.strip():
+            return cls(fields={}, section=section)
+        found = cls.parsed(raw)
+        if not isinstance(found, dict):
+            raise Refusal(400, "Body should be a JSON object", section=section)
+        return cls(fields=found, section=section)
+
+    @staticmethod
+    def parsed(raw: bytes) -> JsonValue:
+        try:
+            return TypeAdapter(JsonValue).validate_json(raw)
+        except ValueError as error:
+            raise Refusal(400, "Problems parsing JSON") from error
+
+    def invalid(self) -> Refusal:
+        """What omitting a required parameter, or giving one the wrong type, is."""
+        return Refusal(422, "Invalid request", section=self.section)
+
+    def present(self, name: str) -> bool:
+        """Whether the request sent `name` with a value (null counts as none)."""
+        return name in self.fields and self.fields[name] is not None
+
+    def named(self, name: str) -> bool:
+        return name in self.fields
+
+    def required(self, name: str) -> JsonValue:
+        if not self.present(name):
+            raise self.invalid()
+        return self.fields[name]
+
+    def text(self, name: str, *, required: bool = False, numbers: bool = False) -> str | None:
+        """A string parameter; `numbers` lets a whole number stand as its text (GitHub's `title` takes either)."""
+        if not self.present(name):
+            if required:
+                raise self.invalid()
+            return None
+        found = self.fields[name]
+        if isinstance(found, str):
+            return found
+        if numbers and isinstance(found, int) and not isinstance(found, bool):
+            return str(found)
+        raise self.invalid()
+
+    def lock_reason(self, name: str) -> LockReason | None:
+        text = self.text(name)
+        if text is None:
+            return None
+        if text not in get_args(LockReason):
+            raise self.invalid()
+        return TypeAdapter(LockReason).validate_python(text)
+
+    def member[Choice: StrEnum](self, name: str, vocabulary: type[Choice]) -> Choice | None:
+        """A string parameter the reference gives a closed vocabulary."""
+        text = self.text(name)
+        if text is None:
+            return None
+        try:
+            return vocabulary(text)
+        except ValueError:
+            raise self.invalid() from None
+
+    def flag(self, name: str) -> bool | None:
+        if not self.present(name):
+            return None
+        found = self.fields[name]
+        if isinstance(found, bool):
+            return found
+        raise self.invalid()
+
+    def whole(self, name: str, *, required: bool = False) -> int | None:
+        if not self.present(name):
+            if required:
+                raise self.invalid()
+            return None
+        found = self.fields[name]
+        if isinstance(found, int) and not isinstance(found, bool):
+            return found
+        raise self.invalid()
+
+    def texts(self, name: str) -> list[str] | None:
+        """An array of strings."""
+        if not self.present(name):
+            return None
+        found = self.fields[name]
+        if isinstance(found, list) and all(isinstance(item, str) for item in found):
+            return [item for item in found if isinstance(item, str)]
+        raise self.invalid()
+
+    def object(self, name: str) -> dict[str, JsonValue] | None:
+        if not self.present(name):
+            return None
+        found = self.fields[name]
+        if isinstance(found, dict):
+            return found
+        raise self.invalid()
+
+    def refuse(self, *names: str, why: str) -> None:
+        """A parameter the reference names and this provider does not serve: refused by name when it is sent with a
+        value."""
+        sent = [n for n in names if self.present(n)]
+        if sent:
+            raise NotServed(f"the parameter {', '.join(sent)}: {why}")
+
+
+# --------------------------------------------------------------------------- the tracker's answers
+
+
+class LabelOut(Wire):
+    """A label; none is ever archived, which the reference writes as `null` ("or `null` if it has not been archived")."""
+
+    archived_at: None = None
+    archived_by: None = None
+    id: int
+    node_id: str
+    url: str
+    name: str
+    description: str | None
+    color: str
+    default: bool
+
+
+class IssuePullOut(Wire):
+    url: str
+    html_url: str
+    diff_url: str
+    patch_url: str
+    merged_at: str | None
+
+
+class IssueOut(Wire):
+    """`GET /repos/{o}/{r}/issues/{n}` and each of a list: the description's `issue`. No milestone, issue type or
+    sub-issue exists in the world, so the first two are null and the summaries are left out."""
+
+    url: str
+    repository_url: str
+    labels_url: str
+    comments_url: str
+    events_url: str
+    html_url: str
+    id: int
+    node_id: str
+    number: int
+    state: IssueState
+    state_reason: StateReason | None
+    title: str
+    body: str | None
+    user: AccountOut
+    labels: list[LabelOut]
+    assignee: AccountOut | None
+    assignees: list[AccountOut]
+    milestone: None = None
+    locked: bool
+    active_lock_reason: LockReason | None
+    comments: int
+    closed_at: str | None
+    closed_by: AccountOut | None
+    created_at: str
+    updated_at: str
+    author_association: Association
+
+
+class IssueOfPullOut(IssueOut):
+    """An issue that is a pull request: the "Issues" routes mark it with `pull_request`."""
+
+    pull_request: IssuePullOut
+    draft: bool
+
+
+class CommentOut(Wire):
+    url: str
+    html_url: str
+    issue_url: str
+    id: int
+    node_id: str
+    user: AccountOut
+    created_at: str
+    updated_at: str
+    author_association: Association
+    body: str
+
+
+class HrefOut(Wire):
+    href: str
+
+
+class PullSideOut(Wire):
+    label: str
+    ref: str
+    sha: str
+    user: AccountOut
+    repo: RepositoryOut
+
+
+class PullLinksOut(Wire):
+    self_: HrefOut = Field(alias="self")
+    html: HrefOut
+    issue: HrefOut
+    comments: HrefOut
+    review_comments: HrefOut
+    review_comment: HrefOut
+    commits: HrefOut
+    statuses: HrefOut
+
+
+class PullSimpleOut(Wire):
+    """`GET /repos/{o}/{r}/pulls`: the description's `pull-request-simple`."""
+
+    url: str
+    id: int
+    node_id: str
+    html_url: str
+    diff_url: str
+    patch_url: str
+    issue_url: str
+    commits_url: str
+    review_comments_url: str
+    review_comment_url: str
+    comments_url: str
+    statuses_url: str
+    number: int
+    state: IssueState
+    locked: bool
+    title: str
+    user: AccountOut
+    body: str | None
+    labels: list[LabelOut]
+    milestone: None = None
+    active_lock_reason: LockReason | None
+    created_at: str
+    updated_at: str
+    closed_at: str | None
+    merged_at: str | None
+    merge_commit_sha: str | None
+    assignee: AccountOut | None
+    assignees: list[AccountOut]
+    requested_reviewers: list[AccountOut]
+    requested_teams: list[AccountOut] = []
+    head: PullSideOut
+    base: PullSideOut
+    links: PullLinksOut = Field(alias="_links")
+    author_association: Association
+    auto_merge: None = None
+    draft: bool
+
+
+class PullOut(PullSimpleOut):
+    """A pull request got, created, updated: the description's `pull-request`, with what is computed from its diff."""
+
+    merged: bool
+    mergeable: bool | None
+    mergeable_state: str
+    merged_by: AccountOut | None
+    comments: int
+    review_comments: int
+    maintainer_can_modify: bool
+    commits: int
+    additions: int
+    deletions: int
+    changed_files: int
+
+
+class DiffEntryOut(Wire):
+    sha: str | None
+    filename: str
+    status: ChangeStatus
+    additions: int
+    deletions: int
+    changes: int
+    blob_url: str
+    raw_url: str
+    contents_url: str
+    patch: str
+
+
+class MergeResultOut(Wire):
+    sha: str
+    merged: bool
+    message: str
+
+
+class ReviewLinksOut(Wire):
+    html: HrefOut
+    pull_request: HrefOut
+
+
+class ReviewOut(Wire):
+    id: int
+    node_id: str
+    user: AccountOut
+    body: str
+    state: ReviewState
+    html_url: str
+    pull_request_url: str
+    author_association: Association
+    links: ReviewLinksOut = Field(alias="_links")
+    submitted_at: str
+    commit_id: str
+
+
+class ReviewCommentLinksOut(Wire):
+    self_: HrefOut = Field(alias="self")
+    html: HrefOut
+    pull_request: HrefOut
+
+
+class ReviewCommentOut(Wire):
+    url: str
+    pull_request_review_id: int | None
+    id: int
+    node_id: str
+    diff_hunk: str
+    path: str
+    position: int | None
+    original_position: int | None
+    commit_id: str
+    original_commit_id: str
+    in_reply_to_id: int | None = None
+    user: AccountOut
+    body: str
+    created_at: str
+    updated_at: str
+    html_url: str
+    pull_request_url: str
+    author_association: Association
+    links: ReviewCommentLinksOut = Field(alias="_links")
+    start_line: int | None
+    original_start_line: int | None
+    start_side: Side | None
+    line: int | None
+    original_line: int | None
+    side: Side | None
+    subject_type: Literal["line", "file"]
+
+
+class CommitAuthorOut(Wire):
+    name: str
+    email: str
+    date: str
+
+
+class FileCommitDetailOut(Wire):
+    sha: str
+    node_id: str
+    url: str
+    html_url: str
+    author: CommitAuthorOut
+    committer: CommitAuthorOut
+    tree: ShaRefOut
+    message: str
+    parents: list[ParentOut]
+
+
+class ContentRefOut(Wire):
+    name: str
+    path: str
+    sha: str
+    size: int
+    url: str
+    html_url: str
+    git_url: str
+    download_url: str
+    type: Literal["file"] = "file"
+    links: LinksOut = Field(alias="_links")
+
+
+class FileCommitOut(Wire):
+    """`PUT` and `DELETE /repos/{o}/{r}/contents/{path}`: the description's `file-commit`; a delete has no content."""
+
+    content: ContentRefOut | None
+    commit: FileCommitDetailOut
+
+
+# --------------------------------------------------------------------------- what GitHub pushes
+
+
+def as_value(entity: Wire) -> JsonValue:
+    """An answer as JSON, to be put into the body of a push."""
+    return TypeAdapter(JsonValue).validate_json(entity.model_dump_json(by_alias=True))
+
+
+class ReactionsOut(Wire):
+    """A reaction rollup: the webhook payloads of an issue and a comment require one; nothing here is reacted to."""
+
+    url: str
+    total_count: int = 0
+    plus_one: int = Field(default=0, alias="+1")
+    minus_one: int = Field(default=0, alias="-1")
+    laugh: int = 0
+    hooray: int = 0
+    confused: int = 0
+    heart: int = 0
+    rocket: int = 0
+    eyes: int = 0
+
+
+class WebhookBody(Wire):
+    """The body of a push: the keys the event carries, in the order they are written."""
+
+    keys: dict[str, JsonValue]
+
+    def encode(self) -> bytes:
+        return json.dumps(self.keys, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

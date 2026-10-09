@@ -1,0 +1,10 @@
+# A fork of a rejected run, from a checkpoint before Nadia decided: from there on she approves instead. Every item
+# still pending at the fork is put to her again under her new script.
+#   minutehand fork <run> --at <seq> --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
+overrides:
+  - kind: person_change
+    person: nadia
+    takes: [{take: approve}]
+    reply:
+      kind: scripted
+      then: silent

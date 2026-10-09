@@ -1,14 +1,14 @@
 """The Microsoft provider: sign-in, the Bot Framework connector, Graph for Teams, files, Outlook mail and calendars,
 and the people of the tenant acting in Teams, on files, by email and on invitations.
 
-It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesInteractions`,
-`LandsReplies`,
+It implements `Provider`, `PushesEvents` (a person installing the bot is `PersonAddsAgent`), `PushesPresses`,
+`LandsAnswers`,
 `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `ChangesPeople` (a user removed, disabled or enabled again
 by an administrator) and `MintsInboundCredentials` (the Bot Framework's token for an activity a test posts itself). A person's change to a seeded document (edit, rename, move, share, delete)
 lands at its moment as that person, recorded as actor PERSON, and owes every live Graph subscription on the drive a
 notification; `notify` sends what is owed, through the same `subscriptions.notify` an agent's own change goes
 through. A person's reply to an email is an email back into the mailbox it answers, and a press of Accept, Tentative or
-Decline on a meeting request answers the invitation (`LandsReplies`); neither is pushed to the bot, so an agent that
+Decline on a meeting request answers the invitation (`LandsAnswers`); neither is pushed to the bot, so an agent that
 talks to people only by email declares no Teams inbound target. A Graph subscription on the mailbox it lands in is
 notified, and that notification is the wake (`heard`). A file held open is
 not something a person does here: it is a fault the scenario declares
@@ -16,6 +16,8 @@ not something a person does here: it is a fault the scenario declares
 """
 
 from __future__ import annotations
+
+from pydantic import ValidationError
 
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
@@ -35,7 +37,9 @@ from minutehand.adapters.providers.microsoft.state import (
     message_ref,
     user_ref,
 )
+from minutehand.application.conversations import PushedConversations
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import ItemKind, TypedItem, read_as
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -57,7 +61,7 @@ from minutehand.domain.scenario import (
     Shared,
     Trashed,
 )
-from minutehand.domain.world import Actor, EntityKind, Operation
+from minutehand.domain.world import Actor, EntityKind, Operation, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -103,14 +107,19 @@ class MicrosoftProvider:
     ) -> None:
         await People(world, clock).happen(happening, target)
 
-    # ------------------------------------------------------------------ PushesInteractions
+    # ------------------------------------------------------------------ PushesPresses
 
     async def press(
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await People(world, clock).press(reply, target)
 
-    # ------------------------------------------------------------------ LandsReplies
+    # ------------------------------------------------------------------ LandsAnswers
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
+        """`TalksToAgent`: people's answers to the agent's Teams messages pushed to `target` signed with `secret`,
+        and to its emails and meeting requests landed where it reads them."""
+        return PushedConversations(MANIFEST.key, self, target, secret)
 
     def lands(self, reply: PersonReply, world: Store) -> bool:
         """A reply to a message that was ever in a mailbox lands by mail; a reply to a Teams message is pushed."""
@@ -127,6 +136,8 @@ class MicrosoftProvider:
         if found is None:
             return False
         _, asked = found
+        if asked.message.from_ is None:
+            return False
         asker, person = mw.user_by(asked.message.from_.emailAddress.address), mw.person(reply.person)
         watches: set[str] = set()
         for user, folder in ((asker, wire.MailFolderName.INBOX), (person, wire.MailFolderName.SENT)):
@@ -191,6 +202,31 @@ class MicrosoftProvider:
         mw.owe(drive.drive.id, stored.item.id, actor=Actor.PERSON)
 
     # ------------------------------------------------------------------ DeclaresFaults
+
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """`TypesItems`: a Teams message, an Outlook email, a file's content, or a calendar event, each told from its
+        own record as that write left it; an event's times and attendees read from it."""
+        kind = event.entity.kind
+        if kind is EntityKind.DOCUMENT:
+            return read_as(event, ItemKind.DOCUMENT)
+        if kind not in (EntityKind.MESSAGE, EntityKind.RECORD):
+            return None
+        version = next((v for v in world.versions(event.entity) if v.seq == event.seq), None)
+        if kind is EntityKind.MESSAGE:
+            mail = version is not None and _parses(wire.StoredMail, version.body)
+            return read_as(event, ItemKind.EMAIL if mail else ItemKind.CHAT_MESSAGE)
+        if version is None or not _parses(wire.StoredEvent, version.body):
+            return None
+        held = wire.StoredEvent.model_validate_json(version.body)
+        return read_as(event, ItemKind.CALENDAR_EVENT).model_copy(
+            update={
+                "text": f"{held.event.subject}\n{held.event.bodyPreview}".strip(),
+                "people": [a.emailAddress.address for a in held.event.attendees],
+                "starts": held.starts,
+                "ends": held.ends,
+                "conversation": held.conversation,
+            }
+        )
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`MicrosoftSeed.faults` and `.holds`, on a world already open, each counted from now."""
@@ -278,6 +314,14 @@ def _by(user: UserRecord) -> wire.IdentitySet:
 
 
 def build() -> MicrosoftProvider:
-    """A `Provider` that also `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`,
+    """A `Provider` that also `PushesEvents`, `PushesPresses`, `LandsAnswers`, `ChangesDocuments`, `NotifiesChanges`,
     `DeclaresFaults`, `ChangesPeople` and `MintsInboundCredentials`."""
     return MicrosoftProvider()
+
+
+def _parses(model: type[wire.StoredMail] | type[wire.StoredEvent], body: str) -> bool:
+    try:
+        model.model_validate_json(body)
+    except ValidationError:
+        return False
+    return True

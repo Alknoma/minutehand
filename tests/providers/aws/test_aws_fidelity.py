@@ -116,8 +116,9 @@ def test_a_long_poll_that_finds_a_message_answers_at_once(run: AwsRun) -> None:
 
 @pytest.mark.timeout(30)
 def test_a_long_poll_that_would_wait_is_refused_by_name_and_never_waits(run: AwsRun) -> None:
-    """Waiting needs the run's clock to move inside a call, which it does not: refused, whether the wait is the
-    call's or the queue's ReceiveMessageWaitTimeSeconds; an explicit WaitTimeSeconds of 0 is a short poll."""
+    """Here nothing holds a call while the run's clock moves (as in a standing world, whose clock only its control
+    API moves; a run's proxy holds it, `tests/e2e/test_long_poll_run.py`): refused, whether the wait is the call's
+    or the queue's ReceiveMessageWaitTimeSeconds; an explicit WaitTimeSeconds of 0 is a short poll."""
     sqs = run.proxy.client("sqs", read_timeout=10)
     url, _ = run.queue()
     waiting, _ = run.queue("waiting", ReceiveMessageWaitTimeSeconds="20")

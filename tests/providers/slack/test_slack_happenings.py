@@ -5,6 +5,7 @@ guests and deactivated accounts."""
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -346,6 +347,39 @@ async def test_an_event_the_agent_refuses_is_sent_again_with_slacks_retry_header
     retries = [(r.headers.get("x-slack-retry-num"), r.headers.get("x-slack-retry-reason")) for r in agent.received]
     assert retries == [(None, None), ("1", "http_error"), ("2", "http_error"), ("3", "http_error")]
     assert len({r.body for r in agent.received}) == 1, "a retry is the same event"
+
+
+async def test_a_push_slower_than_the_targets_push_timeout_is_sent_again_as_an_http_timeout(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint
+) -> None:
+    async def slow(got: Received) -> Response:
+        await asyncio.sleep(0.4)
+        return Response(status_code=200)
+
+    agent.answer = slow
+    provider, store, clock = seeded
+    hurried = agent.target().model_copy(update={"push_timeout": timedelta(seconds=0.1)})
+    with pytest.raises(DeliveryRefused):
+        await provider.happen(
+            PersonPosts(provider="slack", person="tomas", text="hi"), hurried, store, clock, secret=SECRET
+        )
+    retries = [(r.headers.get("x-slack-retry-num"), r.headers.get("x-slack-retry-reason")) for r in agent.received]
+    assert retries == [(None, None), ("1", "http_timeout"), ("2", "http_timeout"), ("3", "http_timeout")]
+
+
+async def test_by_default_a_push_waits_out_a_handler_that_takes_a_model_turn(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint
+) -> None:
+    async def thinking(got: Received) -> Response:
+        await asyncio.sleep(
+            0.4
+        )  # stands for the seconds to minutes of a model's turn: past the old fixed limit's share
+        return Response(status_code=200)
+
+    agent.answer = thinking
+    await happen(seeded, agent, PersonPosts(provider="slack", person="tomas", text="hi"))
+    assert [r.headers.get("x-slack-retry-num") for r in agent.received] == [None]
+    assert agent.target().push_timeout == timedelta(minutes=5)
 
 
 async def test_url_verification_wants_the_challenge_back(agent: AgentEndpoint) -> None:

@@ -10,6 +10,7 @@ from typing import Annotated, ClassVar, Self, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, JsonValue, model_validator
 
+from minutehand.domain.items import ItemType
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityKind
 
@@ -95,6 +96,12 @@ class Manifest(Model):
     books_wakes: bool = Field(
         default=False, description="True for a scheduler: what the agent books here becomes a wake"
     )
+    books_work: bool = Field(
+        default=False,
+        description="True for a service whose API books work that falls due later (Slack's scheduled messages): in a "
+        "run it is held to `BooksWakes` and its bookings enter the dispatch table, but a `Booked` agent does not name "
+        "it, since its bookings are not the agent's wake-ups",
+    )
     ticket_fields: list[TicketField] = Field(
         default=[],
         description="The optional `SeededTicket` fields its tickets hold; a scenario that sets any other on one of "
@@ -125,6 +132,12 @@ class Manifest(Model):
         default=[],
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
         "is refused at the call, naming these",
+    )
+    item_types: list[ItemType] = Field(
+        default=[],
+        description="The kinds of item it holds that the agent's effects are assessed as (`domain.items`), each with "
+        "its checks and what the model reviewer looks for; two of one entity kind mean the provider tells its items "
+        "apart itself (`ports.provider.TypesItems`)",
     )
     state_outside_log: str | None = Field(
         default=None,

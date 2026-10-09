@@ -22,22 +22,23 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.application.conversations import PushedConversations
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.provider import Manifest, Tier
 from minutehand.domain.scenario import (
-    Deletes,
     MessagingHappening,
     Model,
-    Moves,
+    Person,
     PersonPosts,
     ProviderKey,
     Scenario,
-    TicketHappening,
+    SeededTicket,
     TicketState,
 )
+from minutehand.domain.transitions import DELETE, DELETED, Offer, Transition, Waiting, ticket_acts
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -46,11 +47,13 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     RecordSnapshot,
+    Stored,
     TicketSnapshot,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Wakes
+from minutehand.ports.provider import ASGIApp, HeldCalls, Wakes
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import record
 
 CHAT = "testchat"
 SCHED = "testsched"
@@ -97,6 +100,11 @@ class Chat:
     def __init__(self) -> None:
         self.pushed: list[str] = []
         self.signatures: list[str] = []
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> ChatPeople:
+        """People's answers to the agent's messages, pushed to its inbound URL as `deliver` pushes them, and their
+        moves on its tickets."""
+        return ChatPeople(self, target, secret)
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         async def post_message(request: Request) -> Response:
@@ -243,28 +251,6 @@ class Chat:
         message = PersonMessage(person=happening.person, text=happening.text, at=clock.now())
         await self.say(message, target, world, clock, secret=secret)
 
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
-        self._rewrite(ticket, Actor.PERSON, state=to, assignee_email=None, world=world)
-
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None:
-        self._rewrite(ticket, Actor.SCENARIO, state=state, assignee_email=assignee_email, world=world)
-
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
-        seeded = scenario.happening_ticket(happening)
-        n = [t for t in scenario.tickets if t.provider == CHAT].index(seeded)
-        ticket = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}")
-        if world.get(ticket) is None:
-            return
-        action = happening.action
-        if isinstance(action, Moves):
-            self._rewrite(ticket, Actor.PERSON, state=action.to, assignee_email=None, world=world)
-        elif isinstance(action, Deletes):
-            world.apply(Change(entity=ticket, operation=Operation.DELETE, actor=Actor.PERSON, parent="P"))
-        else:
-            raise NotImplementedError(f"the test chat cannot {action.kind} a ticket")
-
     def _rewrite(
         self, ticket: EntityRef, actor: Actor, *, state: TicketState | None, assignee_email: str | None, world: Store
     ) -> None:
@@ -285,6 +271,81 @@ class Chat:
                 ),
             )
         )
+
+
+class ChatPeople:
+    """`ProvidesTransitions` for the test chat, bound to one agent: its messages are asks (`PushedConversations`),
+    and a ticket assigned to a person and not done waits on them, who moves it to another state, or deletes it."""
+
+    def __init__(self, chat: Chat, target: InboundTarget | None, secret: str | None) -> None:
+        self._chat = chat
+        self._talk = PushedConversations(CHAT, chat, target, secret)
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        tickets = [
+            Waiting(item=s.entity, state=body.state.value, shown=body.title)
+            for s in world.children(CHAT, EntityKind.TICKET, "P", limit=1000) + _seeded(world)
+            if (body := TicketBody.model_validate_json(s.body)).assignee == person.email
+            and body.state is not TicketState.DONE
+        ]
+        return [*self._talk.items_for(person, world), *tickets]
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        if item.kind is not EntityKind.TICKET:
+            return self._talk.legal(item, by, who, world)
+        stored = world.get(item)
+        if stored is None:
+            return []
+        now = TicketBody.model_validate_json(stored.body).state
+        moves = [Offer(name=s.value, to_state=s.value, means=s) for s in TicketState if s is not now]
+        return [*moves, *(o for o in ticket_acts(now.value) if o.name == DELETE)]
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        if item.kind is not EntityKind.TICKET:
+            return await self._talk.apply(item, offer, by, who, content, world, clock)
+        stored = world.get(item)
+        if stored is None or offer not in [o.name for o in self.legal(item, by, who, world)]:
+            raise ValueError(f"ticket {item.external_id} offers no {offer!r}")
+        was = TicketBody.model_validate_json(stored.body).state
+        if offer == DELETE:
+            world.apply(Change(entity=item, operation=Operation.DELETE, actor=by, parent=stored.parent))
+        else:
+            self._chat._rewrite(item, by, state=TicketState(offer), assignee_email=None, world=world)
+        moved = Transition(
+            provider=CHAT,
+            item=item,
+            name=offer,
+            from_state=was.value,
+            to_state=DELETED if offer == DELETE else offer,
+            by=by,
+            who=who.key if who is not None else None,
+            content=content,
+            at=clock.now(),
+        )
+        return record(world, moved)
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        if item.kind is EntityKind.TICKET:
+            return False
+        return self._talk.heard_of(item, who, world, clock)
+
+    def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None:
+        n = [t for t in scenario.tickets if t.provider == CHAT].index(ticket)
+        ref = EntityRef(provider=CHAT, kind=EntityKind.TICKET, external_id=f"seed{n}")
+        return ref if world.get(ref) is not None else None
+
+
+def _seeded(world: Store) -> list[Stored]:
+    """The chat's seeded tickets, which live under their seeded project."""
+    found: list[Stored] = []
+    for e in world.events():
+        if e.entity.provider == CHAT and e.entity.kind is EntityKind.TICKET and e.entity.external_id.startswith("seed"):
+            stored = world.get(e.entity)
+            if stored is not None and stored not in found:
+                found.append(stored)
+    return found
 
 
 class Scheduler:
@@ -391,7 +452,16 @@ class Switchboard:
     def waiting(self) -> list[str]:
         return list(self.answering)
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        """It answers every call at once: no provider of its says a call waits."""
         self.apps = dict(apps)
 
     def flush(self) -> None:

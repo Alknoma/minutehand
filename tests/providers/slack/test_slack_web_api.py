@@ -154,10 +154,10 @@ async def test_a_token_in_the_form_body_is_accepted(client: httpx.AsyncClient) -
 
 
 async def test_a_method_the_fake_does_not_serve_is_refused_as_not_served_by_name(client: httpx.AsyncClient) -> None:
-    """Slack has `views.push`; the fake leaves it out and says so, which the proxy answers 501 naming it, or hands
+    """Slack has `bookmarks.add`; the fake leaves it out and says so, which the proxy answers 501 naming it, or hands
     to the run's own declaration for slack.com (`tests/capture/test_store.py`)."""
-    with pytest.raises(NotServed, match=r"views\.push, a Slack Web API method this fake does not serve"):
-        await form(client, "views.push")
+    with pytest.raises(NotServed, match=r"bookmarks\.add, a Slack Web API method this fake does not serve"):
+        await form(client, "bookmarks.add")
 
 
 async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient) -> None:

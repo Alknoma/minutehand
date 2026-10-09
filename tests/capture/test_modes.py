@@ -17,10 +17,12 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.outbound import described, outbound_uses, suggested
 from minutehand.application.run_clock import RunClock
+from minutehand.application.services import ServiceDesk
 from minutehand.domain.outbound import Acknowledge, Answer, PassThrough, Route, UnknownHosts
-from minutehand.domain.world import AnsweredBy, BodyKept, CaptureMode
-from minutehand.ports.model import Answered, ModelFailed
+from minutehand.domain.scenario import Scenario
+from minutehand.domain.world import AnsweredBy, BodyKept, CaptureMode, ServiceRecordSnapshot
 from minutehand.ports.model import Model as LanguageModel
+from minutehand.ports.model import ModelFailed
 from tests.capture.support import (
     SECRET_API_KEY,
     SECRET_BODY,
@@ -38,6 +40,7 @@ from tests.capture.support import (
 from tests.proxy.support import client
 from tests.proxy.upstream import Answer as UpstreamAnswer
 from tests.proxy.upstream import Authority, model_api
+from tests.support.people import people_model
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
@@ -52,16 +55,28 @@ def _proxy(
     capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
     model: LanguageModel | None = None,
 ) -> Proxy:
+    """A proxy capturing `declared`; with `model`, a host nobody declared is answered as a service it renders."""
+    desk = ServiceDesk(_NOBODY, model, undeclared=True) if model is not None else None
     return Proxy(
         Routing(registry),
         store,
         clock,
         confdir=tmp_path / "ca",
         upstream_ca=authority.ca_cert,
-        capturing=Capturing(declared),
+        capturing=Capturing(declared, services=desk),
         capture_unknown=capture_unknown,
-        model=model,
     )
+
+
+_NOBODY = Scenario.model_validate(
+    {
+        "name": "undeclared",
+        "goal": "g",
+        "owner": "owen",
+        "starts_at": "2026-08-24T09:00:00Z",
+        "people": [{"key": "owen", "name": "Owen", "email": "owen@example.com", "reply": {"kind": "silent"}}],
+    }
+)
 
 
 async def test_an_acknowledged_send_never_leaves_the_machine_and_is_answered_as_declared(
@@ -299,38 +314,22 @@ def test_the_capture_unknown_flag_says_which_calls_pass(flags: list[str], means:
     assert UnknownHosts(args.capture_unknown) is means
 
 
-class PaymentsModel:
-    """Stands in for the model port: answers as a payments API would, from the history it is shown."""
+class Failing:
+    """A model port that cannot be reached."""
 
-    model_id = "stand-in"
+    model_id = "unreachable"
 
-    def __init__(self, *, fails: bool = False) -> None:
-        self.fails = fails
-        self.shown: list[str] = []
-
-    async def answer(self, system, messages, answer, *, model=None, temperature=None):
-        asked = messages[-1].text
-        self.shown.append(asked)
-        if self.fails:
-            raise ModelFailed("the model answered twice with something that is not the answer asked for")
-        if asked.rstrip().split("The request to answer now:\n", 1)[1].startswith("POST /charges"):
-            return Answered(
-                answer=answer(status=201, body=json.dumps({"id": "ch_1", "amount": 500})), model=self.model_id
-            )
-        listed = (
-            [{"id": "ch_1", "amount": 500}] if "POST /charges" in asked.split("The request to answer now:")[0] else []
-        )
-        return Answered(answer=answer(status=200, body=json.dumps({"data": listed})), model=self.model_id)
+    async def answer(self, system, messages, answer, *, model=None, temperature=None):  # type: ignore[no-untyped-def]
+        raise ModelFailed("the model could not be reached")
 
 
-async def test_a_model_answers_writes_to_an_undeclared_host_and_every_call_after_from_what_it_answered(
+async def test_a_host_nobody_declared_is_answered_as_a_service_from_what_the_agent_did_there(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
 ) -> None:
-    stand_in = PaymentsModel()
     async with (
         model_api(authority, host=V6) as real,
         _proxy(
-            registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.MODEL, model=stand_in
+            registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.MODEL, model=people_model()
         ) as proxy,
     ):
         before, made, after = await by_environment(
@@ -342,17 +341,21 @@ async def test_a_model_answers_writes_to_an_undeclared_host_and_every_call_after
             ],
         )
     assert before.status == 200 and len(real.received) == 1, "only the read before any write reached the real host"
-    assert (made.status, after.status) == (201, 200) and json.loads(after.body)["data"][0]["id"] == "ch_1"
+    assert (made.status, after.status) == (201, 200)
+    assert [i["amount"] for i in json.loads(after.body)["items"]] == [500], "what was created there exists"
     modes = [(c.exchange.captured.mode, c.exchange.captured.answered_by) for c in store.calls() if c.exchange.captured]
     assert modes == [
         (CaptureMode.DISCOVERED, AnsweredBy.REAL_HOST),
-        (CaptureMode.MODELED, AnsweredBy.MODEL),
-        (CaptureMode.MODELED, AnsweredBy.MODEL),
+        (CaptureMode.SERVICE, AnsweredBy.MODEL),
+        (CaptureMode.SERVICE, AnsweredBy.MODEL),
     ]
-    assert "(none: the service is empty)" in stand_in.shown[0] and '"amount": 500' in stand_in.shown[1]
-    modeled_use = [u for u in outbound_uses(store.calls()) if u.mode is CaptureMode.MODELED]
-    assert [described(u) for u in modeled_use] == [
-        "::1: 2 calls, answered by a model standing in for it (--capture-unknown model), never sent"
+    assert {c.exchange.captured.declared_as for c in store.calls() if c.exchange.captured} == {None}
+    machine = [e.after for e in store.events() if isinstance(e.after, ServiceRecordSnapshot)]
+    assert [m.record.value for m in machine][:1] == ["machine"], "its machine proposed from the first write"
+    used = [u for u in outbound_uses(store.calls()) if u.mode is CaptureMode.SERVICE]
+    assert [described(u) for u in used] == [
+        "::1: 2 calls, answered from the state of its service (`services`, or undeclared under --capture-unknown "
+        "model), never sent"
     ]
     assert "host: ::1" in suggested(outbound_uses(store.calls()))
 
@@ -363,13 +366,7 @@ async def test_a_model_that_fails_is_answered_502_and_nothing_is_sent_is_refused
     async with (
         model_api(authority, host=V6) as real,
         _proxy(
-            registry,
-            store,
-            clock,
-            tmp_path,
-            authority,
-            capture_unknown=UnknownHosts.MODEL,
-            model=PaymentsModel(fails=True),
+            registry, store, clock, tmp_path, authority, capture_unknown=UnknownHosts.MODEL, model=Failing()
         ) as proxy,
     ):
         [made] = await by_environment(proxy, [Call("POST", f"https://[::1]:{real.port}/charges", "{}")])

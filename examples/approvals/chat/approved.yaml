@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# Nadia presses Approve on the agent's Slack message a few hours in.
+name: chat_approved
+goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+deadline_after: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    reply_within: {min: PT2H, max: PT6H}
+    takes: [{nth: 1, take: Approve}]     # the button on the agent's first message to her
+    reply:
+      kind: scripted
+      then: silent
+  - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
+assess:
+  - id: orders_only_once_answered      # no order while Nadia's request is open
+    each: ask
+    where: {person: [nadia]}
+    count: {stored: {host: api.orders.example, collection: orders}, until: closed-PT1S}
+    at_most: 0
+    message: "an order was placed before {person.name} answered"
+    pattern: act_on_the_decision

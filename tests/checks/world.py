@@ -25,7 +25,6 @@ from minutehand.domain.scenario import (
     Person,
     ReplyBehaviour,
     Scenario,
-    TicketFate,
     TicketState,
 )
 from minutehand.domain.world import (
@@ -41,6 +40,7 @@ from minutehand.domain.world import (
     Snapshot,
     StoredSnapshot,
     TicketSnapshot,
+    TransitionSnapshot,
     WorldEvent,
 )
 
@@ -59,7 +59,6 @@ def person(key: str, reply: ReplyBehaviour = QUICK, absences: list[Absence] | No
 def scenario(
     *people: Person,
     deadline_after: timedelta | None = None,
-    fates: list[TicketFate] | None = None,
     expect: list[Expectation] | None = None,
 ) -> Scenario:
     return Scenario(
@@ -69,7 +68,6 @@ def scenario(
         starts_at=START,
         deadline_after=deadline_after,
         people=list(people),
-        ticket_fates=fates or [],
         expect=expect or [],
     )
 
@@ -168,6 +166,33 @@ class Log:
         assert isinstance(message.after, MessageSnapshot)
         snapshot = message.after.model_copy(update={"text": text})
         return self._add(hours, Actor.AGENT, Operation.UPDATE, message.entity, snapshot, wake)
+
+    def transition(
+        self,
+        provider: str,
+        item: str,
+        hours: float,
+        to: str,
+        *,
+        from_state: str | None = None,
+        name: str | None = None,
+        actor: Actor = Actor.AGENT,
+        who: Person | None = None,
+        kind: EntityKind = EntityKind.TICKET,
+        wake: int = 1,
+    ) -> WorldEvent:
+        """One move of an item's state, recorded as a provider records it (`domain.transitions.transition_change`)."""
+        moved = EntityRef(provider=provider, kind=kind, external_id=item)
+        ref = EntityRef(provider=provider, kind=EntityKind.TRANSITION, external_id=f"{item}@{len(self.events) + 1}")
+        snapshot = TransitionSnapshot(
+            item=moved,
+            name=name or to,
+            from_state=from_state,
+            to_state=to,
+            who=who.key if who is not None else None,
+            content="{}",
+        )
+        return self._add(hours, actor, Operation.CREATE, ref, snapshot, wake)
 
     def read(self, entity: EntityRef, hours: float, *, wake: int = 1) -> WorldEvent:
         return self._add(hours, Actor.AGENT, Operation.READ, entity, None, wake)

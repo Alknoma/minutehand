@@ -26,7 +26,6 @@ from mitmproxy.addons.proxyserver import Proxyserver
 from mitmproxy.master import Master
 from mitmproxy.proxy import mode_specs
 
-from minutehand.adapters import reaching
 from minutehand.adapters.proxy.addon import ProxyAddon
 from minutehand.adapters.proxy.base_url import BaseUrls
 from minutehand.adapters.proxy.capture import Capturing
@@ -37,8 +36,7 @@ from minutehand.application.traffic import SeenCall
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.ports.clock import Clock
-from minutehand.ports.model import Model as LanguageModel
-from minutehand.ports.provider import ASGIApp
+from minutehand.ports.provider import ASGIApp, HeldCalls
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
@@ -66,7 +64,6 @@ class Proxy:
         record_model_calls: bool = False,
         capturing: Capturing | None = None,
         capture_unknown: UnknownHosts = UnknownHosts.REFUSE,
-        model: LanguageModel | None = None,
         redirect_port: int | None = None,
     ) -> None:
         """`redirect_port`, when given, opens a second listener on `host` for connections the network redirects to
@@ -83,7 +80,6 @@ class Proxy:
             record_model_calls=record_model_calls,
             capturing=capturing,
             capture_unknown=capture_unknown,
-            model=model,
         )
         self.base_urls = BaseUrls(routing)
         self._confdir = confdir
@@ -111,11 +107,17 @@ class Proxy:
         return self._confdir / BUNDLE
 
     def mount(
-        self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario | None = None
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario | None = None,
+        holds: HeldCalls | None = None,
     ) -> None:
-        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, and the scenario a
-        provider first called mid-run is seeded with."""
-        self.addon.mount(world, clock, apps, scenario=scenario)
+        """`application.orchestrator.Mounts`: the run the proxy now answers and records for, the scenario a
+        provider first called mid-run is seeded with, and what holds a call that waits on that run's world."""
+        self.addon.mount(world, clock, apps, scenario=scenario, holds=holds)
 
     def flush(self) -> None:
         """`application.orchestrator.Mounts`: every burst in progress on a tunnel it relays, recorded now."""
@@ -168,7 +170,6 @@ class Proxy:
             self.redirect_port = redirected[0][1]
         self._master = master
         _running.append(self)
-        reaching.trust(self.ca_bundle)
         return self
 
     async def __aexit__(
@@ -178,7 +179,6 @@ class Proxy:
         if master is None:
             return
         _running.remove(self)
-        reaching.trust(None)
         server = master.addons.get("proxyserver")
         assert isinstance(server, Proxyserver)
         await server.servers.update([])

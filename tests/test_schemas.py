@@ -126,3 +126,40 @@ def test_validate_rejects_a_rule_whose_moment_its_each_does_not_have(
     rule = "  - {id: r, count: {messages: {}, since: answer}, at_least: 1}\n"
     code, err = _validated(tmp_path, capsys, AGENT + "assess:\n" + rule, SCENARIO)
     assert code == 1 and "names answer, which only an ask or a hand-off has" in err
+
+
+SERVICE_SCENARIO = """\
+name: approvals
+goal: Order the laptops once approved.
+owner: owen
+starts_at: "2026-08-24T09:00:00Z"
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: silent}}
+  - {key: nadia, name: Nadia Ek, email: nadia@example.com, reply: %s}
+services:
+  - {host: api.approvals.example, name: approvals, responders: [nadia], within: {min: PT3H, max: P1D}}
+"""
+
+
+@pytest.mark.parametrize(
+    ("nadia", "warned"),
+    [
+        ("{kind: scripted, then: silent}", "responder nadia's script ends in silence (`then: silent`)"),
+        ("{kind: silent}", "responder nadia is declared silent, so nobody ever acts on its items"),
+    ],
+)
+def test_validate_warns_of_a_service_responder_who_never_acts_and_still_accepts_the_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], nadia: str, warned: str
+) -> None:
+    (tmp_path / "scenario.yaml").write_text(SERVICE_SCENARIO % nadia, encoding="utf-8")
+    assert main(["validate", str(tmp_path / "scenario.yaml")]) == 0
+    err = capsys.readouterr().err
+    assert "scenario.yaml: warning: services[0] (approvals): " + warned in err
+
+
+def test_validate_says_nothing_of_a_service_responder_who_answers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "scenario.yaml").write_text(SERVICE_SCENARIO % "{kind: scripted, then: answers}", encoding="utf-8")
+    assert main(["validate", str(tmp_path / "scenario.yaml")]) == 0
+    assert "warning" not in capsys.readouterr().err

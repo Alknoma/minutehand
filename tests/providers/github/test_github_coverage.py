@@ -12,29 +12,114 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import pytest
 
-from tests.providers.github.github_world import Hub
+from minutehand.adapters.providers.github.seed import GitHubSeed, number
+from tests.providers.github.github_world import TOMAS, Hub, tracker_seed
+from tests.providers.github.schema import missing, resolve
 
 SUBSET = Path(__file__).parent / "openapi" / "api.github.com.subset.json"
 DESCRIPTION = json.loads(SUBSET.read_text())
 
-SERVED: dict[tuple[str, str], str] = {
-    ("GET", "/user"): "/user",
-    ("GET", "/user/repos"): "/user/repos",
-    ("GET", "/repos/{owner}/{repo}"): "/repos/lanternworks/ledger",
-    ("GET", "/repos/{owner}/{repo}/languages"): "/repos/lanternworks/ledger/languages",
-    ("GET", "/repos/{owner}/{repo}/branches"): "/repos/lanternworks/ledger/branches",
-    ("GET", "/repos/{owner}/{repo}/contents/{path}"): "/repos/lanternworks/ledger/contents/README.md",
-    ("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}"): "/repos/lanternworks/ledger/git/blobs/{readme}",
-    ("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}"): "/repos/lanternworks/ledger/git/trees/main",
-    ("GET", "/repos/{owner}/{repo}/commits"): "/repos/lanternworks/ledger/commits",
-    ("GET", "/search/code"): "/search/code?q=retry",
-    ("GET", "/rate_limit"): "/rate_limit",
-    ("POST", "/app/installations/{installation_id}/access_tokens"): "/app/installations/7/access_tokens",
+
+@dataclass(frozen=True)
+class Call:
+    """A call of a served operation against the seeded world: its address, what it sends and how it must answer."""
+
+    url: str
+    json: object = None
+    status: int = 200
+    before: tuple[Call, ...] = ()
+    """Calls made first, to put the world where this one can be answered."""
+
+
+LEDGER = "/repos/lanternworks/ledger"
+COMMENT = number("comment/lanternworks/ledger/1/0")
+"""The id the seed derives for the first comment on issue 1."""
+REVIEW = number("review/lanternworks/ledger/4/0")
+"""The id the seed derives for the first review of pull request 4."""
+MERGE = Call(f"{LEDGER}/pulls/4/merge", {}, 200)
+SERVED: dict[tuple[str, str], Call] = {
+    ("GET", "/user"): Call("/user"),
+    ("GET", "/user/repos"): Call("/user/repos"),
+    ("GET", "/repos/{owner}/{repo}"): Call(LEDGER),
+    ("GET", "/repos/{owner}/{repo}/languages"): Call(f"{LEDGER}/languages"),
+    ("GET", "/repos/{owner}/{repo}/branches"): Call(f"{LEDGER}/branches"),
+    ("GET", "/repos/{owner}/{repo}/contents/{path}"): Call(f"{LEDGER}/contents/README.md"),
+    ("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}"): Call(f"{LEDGER}/git/blobs/{{readme}}"),
+    ("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}"): Call(f"{LEDGER}/git/trees/main"),
+    ("GET", "/repos/{owner}/{repo}/commits"): Call(f"{LEDGER}/commits"),
+    ("GET", "/search/code"): Call("/search/code?q=retry"),
+    ("GET", "/rate_limit"): Call("/rate_limit"),
+    ("POST", "/app/installations/{installation_id}/access_tokens"): Call("/app/installations/7/access_tokens", {}, 201),
+    ("GET", "/repos/{owner}/{repo}/issues"): Call(f"{LEDGER}/issues?state=all"),
+    ("POST", "/repos/{owner}/{repo}/issues"): Call(f"{LEDGER}/issues", {"title": "A title", "body": "A body"}, 201),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}"): Call(f"{LEDGER}/issues/1"),
+    ("PATCH", "/repos/{owner}/{repo}/issues/{issue_number}"): Call(f"{LEDGER}/issues/3", {"state": "closed"}),
+    ("PUT", "/repos/{owner}/{repo}/issues/{issue_number}/lock"): Call(f"{LEDGER}/issues/1/lock", None, 204),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/lock"): Call(f"{LEDGER}/issues/1/lock", None, 204),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}/comments"): Call(f"{LEDGER}/issues/1/comments"),
+    ("POST", "/repos/{owner}/{repo}/issues/{issue_number}/comments"): Call(
+        f"{LEDGER}/issues/1/comments", {"body": "A comment"}, 201
+    ),
+    ("GET", "/repos/{owner}/{repo}/issues/comments"): Call(f"{LEDGER}/issues/comments"),
+    ("GET", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(f"{LEDGER}/issues/comments/{COMMENT}"),
+    ("PATCH", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(
+        f"{LEDGER}/issues/comments/{COMMENT}", {"body": "Edited"}
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/issues/comments/{comment_id}"): Call(
+        f"{LEDGER}/issues/comments/{COMMENT}", None, 204
+    ),
+    ("GET", "/repos/{owner}/{repo}/labels"): Call(f"{LEDGER}/labels"),
+    ("POST", "/repos/{owner}/{repo}/labels"): Call(f"{LEDGER}/labels", {"name": "new", "color": "ffffff"}, 201),
+    ("GET", "/repos/{owner}/{repo}/labels/{name}"): Call(f"{LEDGER}/labels/bug"),
+    ("GET", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(f"{LEDGER}/issues/1/labels"),
+    ("POST", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(
+        f"{LEDGER}/issues/3/labels", {"labels": ["bug"]}
+    ),
+    ("PUT", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(
+        f"{LEDGER}/issues/3/labels", {"labels": ["bug"]}
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels"): Call(f"{LEDGER}/issues/1/labels", None, 204),
+    ("DELETE", "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}"): Call(f"{LEDGER}/issues/1/labels/bug"),
+    ("GET", "/repos/{owner}/{repo}/pulls"): Call(f"{LEDGER}/pulls?state=all"),
+    ("POST", "/repos/{owner}/{repo}/pulls"): Call(
+        f"{LEDGER}/pulls", {"title": "Describe the notes", "head": "notes", "base": "main"}, 201
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}"): Call(f"{LEDGER}/pulls/4"),
+    ("PATCH", "/repos/{owner}/{repo}/pulls/{pull_number}"): Call(f"{LEDGER}/pulls/4", {"title": "Raise it"}),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/files"): Call(f"{LEDGER}/pulls/4/files"),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/commits"): Call(f"{LEDGER}/pulls/4/commits"),
+    ("PUT", "/repos/{owner}/{repo}/pulls/{pull_number}/merge"): MERGE,
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/merge"): Call(
+        f"{LEDGER}/pulls/4/merge", None, 204, before=(MERGE,)
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews"): Call(f"{LEDGER}/pulls/4/reviews"),
+    ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews"): Call(
+        f"{LEDGER}/pulls/4/reviews", {"event": "COMMENT", "body": "A review"}
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"): Call(
+        f"{LEDGER}/pulls/4/reviews/{REVIEW}"
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments"): Call(
+        f"{LEDGER}/pulls/4/reviews/{REVIEW}/comments"
+    ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(f"{LEDGER}/pulls/4/comments"),
+    ("PUT", "/repos/{owner}/{repo}/contents/{path}"): Call(
+        f"{LEDGER}/contents/docs/new.md", {"message": "Add it", "content": "eA=="}, 201
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/contents/{path}"): Call(
+        f"{LEDGER}/contents/README.md", {"message": "Drop it", "sha": "{readme}"}
+    ),
+    ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/comments"): Call(
+        f"{LEDGER}/pulls/4/comments",
+        {"body": "Why?", "commit_id": "{head}", "path": "services/billing/config.py", "line": 1, "side": "RIGHT"},
+        201,
+    ),
 }
 """Each operation the provider serves, and a call of it against the seeded world."""
 
@@ -43,7 +128,6 @@ PENDING: dict[str, str] = {
     'needs a credential; left out rather than made up (CLAIMS.md, "Pending a recording")',
 }
 """Required fields deliberately not answered, each with its reason, by their place in the answer."""
-INDEX = re.compile(r"\[[0-9]+\]")
 
 PLACEHOLDER = re.compile(r"\{([^}]+)\}")
 WORLD_VALUES = {"owner": "lanternworks", "repo": "ledger", "username": "iris-calder", "org": "lanternworks"}
@@ -64,64 +148,38 @@ REFUSED = [op for op in OPERATIONS if op not in SERVED]
 
 
 def _resolve(schema: dict[str, object]) -> dict[str, object]:
-    while "$ref" in schema:
-        reference = schema["$ref"]
-        assert isinstance(reference, str)
-        _, _, section, name = reference.split("/", 3)
-        schema = DESCRIPTION["components"][section][name]
-    return schema
+    return resolve(DESCRIPTION["components"], schema)
 
 
 def _missing(schema: dict[str, object], value: object, where: str) -> list[str]:
     """Every field the description requires that `value` lacks, at any depth, by its path."""
-    schema = _resolve(schema)
-    if value is None:
-        return []
-    for combined in ("oneOf", "anyOf"):
-        if combined in schema:
-            choices = schema[combined]
-            assert isinstance(choices, list)
-            each = [_missing(choice, value, where) for choice in choices]
-            return [] if any(not m for m in each) else min(each, key=len)
-    if "allOf" in schema:
-        parts = schema["allOf"]
-        assert isinstance(parts, list)
-        return [m for part in parts for m in _missing(part, value, where)]
-    if isinstance(value, list):
-        items = schema["items"] if "items" in schema else {}
-        assert isinstance(items, dict)
-        return [m for n, item in enumerate(value) for m in _missing(items, item, f"{where}[{n}]")]
-    if not isinstance(value, dict):
-        return []
-    required = schema["required"] if "required" in schema else []
-    properties = schema["properties"] if "properties" in schema else {}
-    assert isinstance(required, list) and isinstance(properties, dict)
-    gaps = [
-        f"{where}.{name}"
-        for name in required
-        if name not in value and INDEX.sub("[]", f"{where}.{name}") not in PENDING
-    ]
-    for name, held in value.items():
-        if name in properties:
-            gaps += _missing(properties[name], held, f"{where}.{name}")
-    return gaps
+    return missing(DESCRIPTION["components"], schema, value, where, PENDING)
 
 
 def _success_schema(method: str, path: str) -> dict[str, object] | None:
     responses = DESCRIPTION["paths"][path][method.lower()]["responses"]
-    status = next(s for s in ("200", "201") if s in responses)
+    status = next(s for s in ("200", "201", "204") if s in responses)
+    if "content" not in _resolve(responses[status]):
+        return None
     content = _resolve(responses[status])["content"]
     assert isinstance(content, dict)
     return content["application/json"]["schema"] if "application/json" in content else None
 
 
-async def _call(http: httpx.AsyncClient, method: str, url: str) -> httpx.Response:
-    return await http.request(method, url, json={} if method in ("POST", "PUT", "PATCH") else None)
+async def _call(http: httpx.AsyncClient, method: str, url: str, sent: object = None) -> httpx.Response:
+    if sent is None and method in ("POST", "PUT", "PATCH"):
+        sent = {}
+    return await http.request(method, url, json=sent)
+
+
+@pytest.fixture
+def seeded() -> GitHubSeed:
+    return tracker_seed()
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 169 operations, 12 served, 157 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 12, 157)
+    """The counts the provider's README states: 169 operations, 48 served, 121 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 48, 121)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 
@@ -129,14 +187,27 @@ def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
 async def test_a_served_operation_answers_every_field_the_description_requires(
     hub: Hub, method: str, path: str
 ) -> None:
-    async with hub.client() as http:
-        readme = (await http.get("/repos/lanternworks/ledger/contents/README.md")).json()["sha"]
-        answered = await _call(http, method, SERVED[(method, path)].replace("{readme}", readme))
-    assert answered.status_code in (200, 201), answered.text
+    call = SERVED[(method, path)]
+    async with hub.client(TOMAS) as http:
+        readme = (await http.get(f"{LEDGER}/contents/README.md")).json()["sha"]
+        head = (await http.get(f"{LEDGER}/pulls/4")).json()["head"]["sha"]
+        for earlier in call.before:
+            assert (await _call(http, "PUT", earlier.url, earlier.json)).status_code == earlier.status
+        answered = await _call(http, method, call.url.replace("{readme}", readme), _filled(call.json, head, readme))
+    assert answered.status_code == call.status, answered.text
     schema = _success_schema(method, path)
+    if call.status == 204:
+        assert answered.content == b""
+        return
     assert schema is not None
     gaps = _missing(schema, answered.json(), "$")
     assert gaps == [], " ".join(gaps)
+
+
+def _filled(sent: object, head: str, readme: str) -> object:
+    if isinstance(sent, dict):
+        return {k: _filled(v, head, readme) for k, v in sent.items()}
+    return {"{head}": head, "{readme}": readme}.get(sent, sent) if isinstance(sent, str) else sent
 
 
 async def test_every_operation_the_provider_does_not_serve_is_refused_by_name(hub: Hub) -> None:

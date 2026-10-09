@@ -7,24 +7,27 @@ the agent sent, every change it made, its wakes, the wakes it planned, and what 
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.checks.ledger import Away, absences, carries, recipients
+from minutehand.checks.ledger import Away, absences, recipients
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
+from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import DispatchFault, Model, TicketState
+from minutehand.domain.transitions import Transition, moves
 from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
-    InboxItemSnapshot,
-    ItemStatus,
     MessageSnapshot,
     Operation,
+    RecordedCall,
+    Snapshot,
     TicketSnapshot,
     WorldEvent,
 )
@@ -38,6 +41,7 @@ class Fact(Model):
 
     at: AwareDatetime
     seqs: list[int] = Field(default=[], description="WorldEvent.seq of what shows it; empty for a wake or a plan")
+    calls: list[int] = Field(default=[], description="The agent's calls that show it, by their place among the calls")
 
 
 class Ask(Model):
@@ -47,9 +51,14 @@ class Ask(Model):
     obligation: Obligation
     follow_ups: list[Fact] = Field(description="The agent's writes the person could see while it was open, in order")
     touches: list[Fact] = Field(description="Every write of the agent's on the person, the thread or the ticket")
-    answer: str | None = Field(default=None, description="What the person answered, when they did by a reply")
+    answer: str | None = Field(
+        default=None,
+        description="What the person answered: their words; for a decision, its inputs as given, else its name",
+    )
     answer_facts: list[str] = Field(
-        default=[], description="The facts the answer's script step carried, which a model put in the person's words"
+        default=[],
+        description="What the answer carried: a decision's inputs as given, or the facts its script step carried, "
+        "which a model put in the person's words",
     )
 
     @property
@@ -78,6 +87,13 @@ def ended_at(view: RunView) -> datetime:
 def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON) -> list[Ask]:
     """Every wait of `kind` the ledger opened, in the order it opened, with what followed it."""
     by_seq = {e.seq: e for e in view.events}
+    invisible = unchanged(view.events)
+    # What can touch a wait, gathered once: the agent's visible writes, its messages apart and the rest by entity.
+    acts = [e for e in view.events if e.actor is Actor.AGENT and e.operation in VISIBLE and e.seq not in invisible]
+    said = [e for e in acts if isinstance(e.after, MessageSnapshot)]
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]] = {}
+    for e in acts:
+        by_entity.setdefault((e.entity.provider, e.entity.kind, e.entity.external_id), []).append(e)
     found: list[Ask] = []
     for o in view.obligations:
         if o.kind is not kind:
@@ -87,14 +103,14 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
             for s in o.agent_touches
             if s in by_seq
             and by_seq[s].operation in VISIBLE
-            and not unchanged(by_seq[s], by_seq)
+            and s not in invisible
             and (o.settled_at is None or by_seq[s].sim_time < o.settled_at)
         ]
         found.append(
             Ask(
                 obligation=o,
                 follow_ups=sorted(follow_ups, key=lambda f: f.at),
-                touches=_touches(view, o, by_seq),
+                touches=_touches(view, o, _candidates(o, said, by_entity, by_seq, invisible)),
                 answer=_answer(view, o),
                 answer_facts=_answer_facts(view, o),
             )
@@ -102,14 +118,29 @@ def asks(view: RunView, kind: ObligationKind = ObligationKind.ANSWER_FROM_PERSON
     return found
 
 
-def _touches(view: RunView, o: Obligation, by_seq: dict[int, WorldEvent]) -> list[Fact]:
+def _candidates(
+    o: Obligation,
+    said: list[WorldEvent],
+    by_entity: dict[tuple[str, str, str], list[WorldEvent]],
+    by_seq: dict[int, WorldEvent],
+    invisible: frozenset[int],
+) -> list[WorldEvent]:
+    """The agent's visible writes that could touch the wait `o`, in log order: its messages, its writes to the
+    wait's entity, and those the ledger counted."""
+    seqs = {e.seq for e in said}
+    if o.entity is not None:
+        seqs.update(e.seq for e in by_entity.get((o.entity.provider, o.entity.kind, o.entity.external_id), []))
+    named = [*o.agent_touches, *([o.first_touch_after_settled] if o.first_touch_after_settled is not None else [])]
+    seqs.update(s for s in named if s in by_seq and by_seq[s].operation in VISIBLE and s not in invisible)
+    return [by_seq[s] for s in sorted(seqs) if by_seq[s].actor is Actor.AGENT]
+
+
+def _touches(view: RunView, o: Obligation, candidates: list[WorldEvent]) -> list[Fact]:
     person = next((p for p in view.scenario.people if p.key == o.person), None)
     emails = {person.email} if person is not None else set()
     touched: list[Fact] = []
-    for event in view.events:
-        if event.actor is not Actor.AGENT or event.seq <= o.opened_by or event.operation not in VISIBLE:
-            continue
-        if unchanged(event, by_seq):
+    for event in candidates:
+        if event.seq <= o.opened_by:
             continue
         after = event.after
         on_it = o.entity is not None and (
@@ -126,29 +157,44 @@ def _touches(view: RunView, o: Obligation, by_seq: dict[int, WorldEvent]) -> lis
 
 
 def _answer(view: RunView, o: Obligation) -> str | None:
-    if o.settled_at is None or o.person is None:
+    """What the person answered: their words; for a decision, what it carries (its inputs as given), else its name."""
+    said = _said(view, o)
+    if said is None:
         return None
-    said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return said[0].text if said else None
+    if said.decides is not None:
+        given = [v for v in said.decides.inputs.values() if v.strip()]
+        return "; ".join(given) if given else said.decides.decision
+    return said.text
 
 
 def _answer_facts(view: RunView, o: Obligation) -> list[str]:
-    if o.settled_at is None or o.person is None:
+    """What the answer carried: a decision's inputs as given, else the facts its words were written from."""
+    said = _said(view, o)
+    if said is None:
         return []
+    if said.decides is not None:
+        return [v for v in said.decides.inputs.values() if v.strip()]
+    return list(said.facts)
+
+
+def _said(view: RunView, o: Obligation) -> PersonReply | None:
+    if o.settled_at is None or o.person is None:
+        return None
     said = [r for r in view.replies if r.person == o.person and r.at == o.settled_at]
-    return list(said[0].facts) if said else []
+    return said[0] if said else None
 
 
-def unchanged(event: WorldEvent, events: dict[int, WorldEvent]) -> bool:
-    """An update that leaves the entity as it was: an edit nobody can see."""
-    if event.operation is not Operation.UPDATE:
-        return False
-    before = max(
-        (e for e in events.values() if e.seq < event.seq and e.entity == event.entity and e.after is not None),
-        key=lambda e: e.seq,
-        default=None,
-    )
-    return before is not None and before.after == event.after
+def unchanged(events: list[WorldEvent]) -> frozenset[int]:
+    """The seqs of updates that leave their entity as it was: edits nobody can see. One pass over the log."""
+    last: dict[tuple[str, str, str], Snapshot] = {}
+    found: set[int] = set()
+    for event in sorted(events, key=lambda e: e.seq):
+        key = (event.entity.provider, event.entity.kind, event.entity.external_id)
+        if event.operation is Operation.UPDATE and key in last and last[key] == event.after:
+            found.add(event.seq)
+        if event.after is not None:
+            last[key] = event.after
+    return frozenset(found)
 
 
 class Sent(Model):
@@ -192,14 +238,13 @@ class Written(Model):
         default=False, description="A ticket created with the title of one still open in the same project"
     )
     in_repeated_wake: bool = Field(default=False, description="Written in the second delivery of one wake")
-    gated: bool = Field(
-        default=False,
-        description="A call carrying an operation an item held back, made while the item was pending, turned down, "
-        "or taken back",
-    )
 
 
-_NOT_WRITES = frozenset({EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE})
+_NOT_WRITES = frozenset(
+    {EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE, EntityKind.TRANSITION}
+)
+"""Not counted as writes: the run loop's own table, the agent's own memory and plan, and a transition, which is
+recorded beside the write that made it (the ticket moved, the answer set) and counted as `transitions`."""
 _WORD = re.compile(r"\w+")
 
 
@@ -210,22 +255,20 @@ def normalised(title: str) -> str:
 
 def writes(view: RunView) -> list[Written]:
     """Every change the agent made that a person could see, in order."""
-    by_seq = {e.seq: e for e in view.events}
+    invisible = unchanged(view.events)
     repeated = repeated_wakes(view)
     duplicates = _duplicates(view.events)
-    gated = _gated(view.events)
     return [
         Written(
             event=e,
             repeats_open_ticket=e.seq in duplicates,
             in_repeated_wake=e.wake in repeated,
-            gated=e.seq in gated,
         )
         for e in view.events
         if e.actor is Actor.AGENT
         and e.operation in VISIBLE
         and e.entity.kind not in _NOT_WRITES
-        and not unchanged(e, by_seq)
+        and e.seq not in invisible
     ]
 
 
@@ -249,50 +292,6 @@ def _duplicates(events: list[WorldEvent]) -> set[int]:
         else:
             live[key] = event
     return found
-
-
-def _gated(events: list[WorldEvent]) -> set[int]:
-    """The agent's first write carrying each item's gated operation, when the item as it stood then forbade it."""
-    found: set[int] = set()
-    for opening in events:
-        item = opening.after
-        if not (
-            opening.actor is Actor.AGENT
-            and opening.operation is Operation.CREATE
-            and isinstance(item, InboxItemSnapshot)
-            and item.gates
-        ):
-            continue
-        act = next(
-            (
-                e
-                for e in events
-                if e.actor is Actor.AGENT
-                and e.operation in VISIBLE
-                and e.entity != opening.entity
-                and carries(e, item.gates)
-            ),
-            None,
-        )
-        if act is None:
-            continue
-        stood = next((e.after for e in reversed(events) if e.seq < act.seq and e.entity == opening.entity), item)
-        if isinstance(stood, InboxItemSnapshot) and (
-            stood.status in (ItemStatus.PENDING, ItemStatus.WITHDRAWN) or stood.permits is False
-        ):
-            found.add(act.seq)
-    return found
-
-
-def gates_declared(view: RunView) -> bool:
-    """Whether the run can say what went ahead unapproved: no item was asked of anyone, or one says what it holds
-    back (`pending.gates` of its inbox)."""
-    items = [
-        e.after
-        for e in view.events
-        if e.actor is Actor.AGENT and e.operation is Operation.CREATE and isinstance(e.after, InboxItemSnapshot)
-    ]
-    return not items or any(isinstance(i, InboxItemSnapshot) and i.gates for i in items)
 
 
 def repeated_wakes(view: RunView) -> set[int]:
@@ -327,6 +326,85 @@ def planned_wakes(view: RunView, ended: datetime) -> list[Fact]:
         ),
         key=lambda f: f.at,
     )
+
+
+class Moved(Model):
+    """One transition of an item's state (`domain.transitions.Transition`), with the states its item had been in
+    before it."""
+
+    event: WorldEvent
+    transition: Transition
+    reached: list[str] = Field(
+        description="Every state the item was in before this transition: earlier transitions' states, and its own "
+        "`from_state`"
+    )
+
+    @property
+    def at(self) -> datetime:
+        return self.event.sim_time
+
+
+def transitions(view: RunView) -> list[Moved]:
+    """Every move in the run, by anyone, in order (`domain.transitions.moves`): each recorded transition, and each
+    other write to an item in the world as the move it made."""
+    by_seq = {e.seq: e for e in view.events}
+    been: dict[tuple[str, str, str], list[str]] = {}
+    found: list[Moved] = []
+    for moved in moves(view.events):
+        if moved.seq is None:
+            continue
+        event = by_seq[moved.seq]
+        key = (moved.item.provider, moved.item.kind.value, moved.item.external_id)
+        states = been.setdefault(key, [])
+        if moved.from_state is not None and moved.from_state not in states:
+            states.append(moved.from_state)
+        found.append(Moved(event=event, transition=moved, reached=list(states)))
+        if moved.to_state not in states:
+            states.append(moved.to_state)
+    return found
+
+
+class Called(Model):
+    """One of the agent's own calls, with its place among the run's calls and whether its answer was new."""
+
+    call: RecordedCall
+    position: int = Field(ge=1, description="Its place among every call the run recorded (calls.call_id)")
+    answer_changed: bool = Field(
+        description="Its answer differed from the answer to the agent's previous call of the same method and path, "
+        "or there was none"
+    )
+
+    @property
+    def at(self) -> datetime:
+        return self.call.sim_time
+
+    @property
+    def route(self) -> str:
+        return self.call.exchange.path.split("?", 1)[0]
+
+
+def calls(view: RunView) -> list[Called]:
+    """Every call the agent itself made, in order: not Minutehand's as a person, not a tunnel relayed unopened."""
+    found: list[Called] = []
+    last: dict[tuple[str, str, str], str] = {}
+    for position, call in enumerate(view.calls or [], start=1):
+        x = call.exchange
+        if x.inbox_call is not None or x.tunnelled is not None:
+            continue
+        key = (x.method, x.host, x.path)
+        answer = body_content(x.response_body if x.response_body is not None else repr(x.response_bytes))
+        changed = key not in last or last[key] != answer
+        last[key] = answer
+        found.append(Called(call=call, position=position, answer_changed=changed))
+    return found
+
+
+def body_content(body: str) -> str:
+    """A body as what it says: JSON with its keys in order and its spacing gone, else its text stripped."""
+    try:
+        return json.dumps(json.loads(body), sort_keys=True, separators=(",", ":"))
+    except ValueError:
+        return body.strip()
 
 
 class Reported(Model):

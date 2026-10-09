@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
-from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana import state, webhooks, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, seeded_gid
 from minutehand.adapters.providers.asana.state import AsanaWorld
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
-from minutehand.domain.scenario import (
-    Comments,
-    Deletes,
-    Moves,
-    Person,
-    Reassigns,
-    Scenario,
-    TicketHappening,
-    TicketState,
+from minutehand.domain.scenario import Person, Scenario, SeededTicket, TicketState
+from minutehand.domain.transitions import (
+    ASSIGNEE,
+    COMMENT,
+    DELETE,
+    DELETED,
+    REASSIGN,
+    Offer,
+    OfferField,
+    Transition,
+    Waiting,
+    content_of,
+    item_parent,
+    ticket_acts,
 )
-from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
+from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation, TransitionSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import record
 
 
 class AsanaProvider:
@@ -59,33 +65,6 @@ class AsanaProvider:
             operation=Operation.UPDATE,
         )
 
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
-        """The assignee moves the task to `to` the way the workspace's status source says it: ticks it done,
-        or moves it to the section, or sets the status field, that means `to`."""
-        asana = AsanaWorld(world)
-        task = _task(asana, ticket)
-        asana.put_task(asana.moved(task, to, now=clock.now()), operation=Operation.UPDATE, actor=Actor.PERSON)
-
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None:
-        asana = AsanaWorld(world)
-        task = _task(asana, ticket)
-        if state is not None:
-            task = asana.moved(task, state, now=clock.now())
-        if assignee_email is not None:
-            user = asana.user_by_email(assignee_email)
-            if user is None:
-                raise LookupError(f"no asana user has the email {assignee_email}")
-            task = task.model_copy(update={"assignee": user.gid, "modified_at": wire.stamp(clock.now())})
-        asana.put_task(task, operation=Operation.UPDATE, actor=Actor.SCENARIO)
-
-    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
-        """The task is deleted, with its subtasks, as its assignee (or the owner) deletes it in Asana."""
-        asana = AsanaWorld(world)
-        asana.delete_task(_task(asana, ticket), actor=Actor.PERSON)
-        del clock
-
     def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
         """An administrator removes the person from the workspace: no longer listed or a team's member, refused as
         an assignee or a follower; what they did before still names them. A token naming them still acts as them:
@@ -112,43 +91,205 @@ class AsanaProvider:
                 )
         del clock
 
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
-        """The person does what the happening says to the seeded task, as themself. A task no longer there
-        (the agent deleted it) is left alone: there is nothing for them to act on, and nothing is written."""
-        seeded = scenario.happening_ticket(happening)
+    # -- transitions (`ProvidesTransitions`) ---------------------------------------------------------------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        """Every task assigned to the person that is neither done nor cancelled, as they read it in Asana."""
         asana = AsanaWorld(world)
-        task = asana.task(seeded_gid(scenario, seeded))
-        if task is None:
-            return
-        person = state.user_gid(happening.person)
+        user = asana.user_by_email(person.email)
+        if user is None:
+            return []
+        return [
+            Waiting(item=state.task_ref(t.gid), state=asana.words(t), shown=_shown(asana, t))
+            for t in asana.tasks()
+            if t.assignee == user.gid and asana.state_of(t) is TicketState.OPEN
+        ]
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        """What a person can make the task say as its status source reads it: each place (the completed box, a
+        section, the status field's option) that means another of open, done or cancelled, as a person leaves it
+        when they move it there, each with a comment and what it means. An approval task is decided instead:
+        `approved`, `rejected` or `changes_requested`, whichever it is not now, each with a comment. Then, only for what
+        the scenario has someone do: a comment, a reassignment, the task's deletion."""
+        del by, who
+        asana = AsanaWorld(world)
+        task = _task(asana, item)
+        moves: list[Offer] = []
+        if task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            moves = [
+                Offer(
+                    name=d.value,
+                    to_state=d.value,
+                    fields=[OfferField(name=COMMENT, description="A comment added to the task as it is decided")],
+                )
+                for d in DECISIONS
+                if d is not task.approval_status
+            ]
+            return [*moves, *ticket_acts(asana.words(task))]
+        for to in TicketState:
+            words = _words_if_moved(asana, task, to) if to is not asana.state_of(task) else None
+            if words is None or words == asana.words(task) or any(o.name == words for o in moves):
+                continue
+            moves.append(
+                Offer(
+                    name=words,
+                    to_state=words,
+                    means=to,
+                    fields=[OfferField(name=COMMENT, description="A comment added to the task as it moves")],
+                )
+            )
+        return [*moves, *ticket_acts(asana.words(task))]
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        """The person moves the task as Asana's own status source reads it (`AsanaWorld.moved`), or decides an
+        approval task (`approved`, `rejected`, `changes_requested`: `completed` and `approval_status` set together, as
+        the reference says they are kept in step), with their comment as a story; or comments, reassigns or deletes it
+        as the API does; as themselves. The scenario moves it as no one. The webhooks that hear of it are sent what
+        they are owed."""
+        moved = self._apply(item, offer, by, who, content, world, clock)
+        await webhooks.deliver(AsanaWorld(world), clock)
+        return moved
+
+    def _apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        asana = AsanaWorld(world)
+        task = _task(asana, item)
+        found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
+        if found is None and task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            raise ValueError(f"asana approval {task.gid} offers no decision {offer!r}")
+        if found is None:
+            raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
+        given = content_of(content, found, who.key if who is not None else by.value)
+        if who is None and by is not Actor.SCENARIO:
+            raise ValueError("an asana task is changed by a person: name them")
+        person = state.user_gid(who.key) if who is not None else None
+        before = asana.words(task)
         now = wire.stamp(clock.now())
-        match happening.action:
-            case Moves():
-                asana.put_task(
-                    asana.moved(task, happening.action.to, now=clock.now()),
-                    operation=Operation.UPDATE,
-                    actor=Actor.PERSON,
-                )
-            case Reassigns():
-                to = state.user_gid(happening.action.to) if happening.action.to is not None else None
-                asana.put_task(
-                    task.model_copy(update={"assignee": to, "modified_at": now}),
-                    operation=Operation.UPDATE,
-                    actor=Actor.PERSON,
-                )
-            case Comments():
-                asana.put_story(
-                    wire.AsanaStory(
-                        gid=asana.next_gid(),
-                        text=happening.action.text,
-                        task=task.gid,
-                        created_by=person,
-                        created_at=now,
-                    ),
-                    actor=Actor.PERSON,
-                )
-            case Deletes():
-                asana.delete_task(task, actor=Actor.PERSON)
+        if offer == COMMENT:
+            if who is None:
+                raise ValueError(f"a comment on asana task {task.gid} is written by a person: name them")
+            self._story(asana, task, given[COMMENT], who, by, clock)
+            return _recorded(world, item, offer, before, before, by, who, content, clock)
+        if offer == REASSIGN:
+            address = given[ASSIGNEE].strip() if ASSIGNEE in given else ""
+            user = asana.user_by_email(address) if address else None
+            if address and user is None:
+                raise ValueError(f"no asana user has the email {address}")
+            changed = task.model_copy(update={"assignee": user.gid if user is not None else None, "modified_at": now})
+            asana.put_task(changed, operation=Operation.UPDATE, actor=by, by=person)
+            return _recorded(world, item, offer, before, before, by, who, content, clock)
+        if offer == DELETE:
+            asana.delete_task(task, actor=by, by=person)
+            return _recorded(world, item, offer, before, DELETED, by, who, content, clock)
+        if task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            decision = next(d for d in DECISIONS if d.value == offer)
+            moved = task.model_copy(
+                update={
+                    "completed": True,
+                    "approval_status": decision,
+                    "completed_at": task.completed_at if task.completed else now,
+                    "modified_at": now,
+                }
+            )
+        else:
+            assert found.means is not None
+            moved = asana.moved(task, found.means, now=clock.now())
+        asana.put_task(
+            moved,
+            operation=Operation.UPDATE,
+            actor=by,
+            who=who.key if who is not None else None,
+            content=content,
+            by=person,
+        )
+        if COMMENT in given and given[COMMENT].strip() and who is not None:
+            self._story(asana, task, given[COMMENT], who, by, clock)
+        moves = world.children(MANIFEST.key, EntityKind.TRANSITION, item_parent(item), limit=1000)
+        last = max(moves, key=lambda s: s.seq)
+        event = next(e for e in world.events(since=last.seq - 1) if e.seq == last.seq)
+        assert isinstance(event.after, TransitionSnapshot)
+        return Transition.of(event)
+
+    def _story(self, asana: AsanaWorld, task: wire.AsanaTask, text: str, who: Person, by: Actor, clock: Clock) -> None:
+        asana.put_story(
+            wire.AsanaStory(
+                gid=asana.next_gid(),
+                text=text,
+                task=task.gid,
+                created_by=state.user_gid(who.key),
+                created_at=wire.stamp(clock.now()),
+            ),
+            actor=by,
+            by=state.user_gid(who.key),
+        )
+
+    def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None:
+        """The task seeded from `ticket`, while it is there."""
+        task = AsanaWorld(world).task(seeded_gid(scenario, ticket))
+        return state.task_ref(task.gid) if task is not None else None
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Whether a webhook on the task, or on a project or task above it, hears of the move: that push is a wake.
+        Otherwise the agent finds a person's move on its next read."""
+        del who, clock
+        asana = AsanaWorld(world)
+        return webhooks.watching(asana, asana.scope(_task(asana, item)))
+
+
+def _recorded(
+    world: Store,
+    item: EntityRef,
+    offer: str,
+    before: str,
+    after: str,
+    by: Actor,
+    who: Person | None,
+    content: str,
+    clock: Clock,
+) -> Transition:
+    """A comment, a reassignment or a deletion, recorded once as the move it is."""
+    return record(
+        world,
+        Transition(
+            provider=MANIFEST.key,
+            item=item,
+            name=offer,
+            from_state=before,
+            to_state=after,
+            by=by,
+            who=who.key if who is not None else None,
+            content=content,
+            at=clock.now(),
+        ),
+    )
+
+
+DECISIONS = (wire.ApprovalStatus.APPROVED, wire.ApprovalStatus.REJECTED, wire.ApprovalStatus.CHANGES_REQUESTED)
+"""What an approver decides: the `approval_status` values that translate to `completed` true."""
+
+
+def _words_if_moved(asana: AsanaWorld, task: wire.AsanaTask, to: TicketState) -> str | None:
+    """What the task would say moved to `to` as a person moves it; None when the status source cannot say `to`."""
+    moved_at = wire.parse_stamp(task.modified_at)
+    assert moved_at is not None
+    try:
+        return asana.words(asana.moved(task, to, now=moved_at))
+    except state.StateUnexpressible:
+        return None
+
+
+def _shown(asana: AsanaWorld, task: wire.AsanaTask) -> str:
+    """The task as its assignee reads it: its name, status, notes and stories, oldest first."""
+    lines = [task.name, f"Status: {asana.words(task)}"]
+    if task.notes:
+        lines += ["", task.notes]
+    for story in asana.stories(task.gid):
+        author = asana.user(story.created_by)
+        lines.append(f"{author.name if author else 'Someone'}: {story.text}")
+    return "\n".join(lines)
 
 
 def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:
@@ -161,5 +302,5 @@ def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:
 
 
 def build() -> AsanaProvider:
-    """A `Provider` that also `HoldsTickets`, `EditsTickets` and `ActsOnTickets`; the tests hold it to all four."""
+    """A `Provider` that also `ProvidesTransitions` and `HoldsSeeded`; the tests hold it to all four."""
     return AsanaProvider()

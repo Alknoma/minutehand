@@ -17,7 +17,7 @@ import pytest
 
 from examples.recipes import fake_model
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound
-from minutehand.adapters.model.openai_compatible import VARIABLES
+from minutehand.adapters.model.environment import VARIABLES
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Seed
 from minutehand.testing.background import serve_in_background
@@ -87,8 +87,9 @@ def test_a_person_a_model_writes_for_answers_only_once_advance_passes_their_mome
             assert receiver.texts() == [SAID]
             view = written.client.world(world.world_id)
             assert view.people_owe == []
-            [call] = view.person_calls
-            assert call.wrote is Wrote.REPLY and call.model == "people-fake" and call.prompt_version == "person-reply/3"
+            call, checked = view.person_calls
+            assert call.wrote is Wrote.REPLY and call.model == "people-fake" and call.prompt_version == "person-reply/4"
+            assert checked.wrote is Wrote.FACT_CHECK and checked.prompt_version == "person-fact-check/1"
             assert call.input_tokens and call.output_tokens and not call.replayed
         finally:
             written.client.close_world(world.world_id)
@@ -156,7 +157,7 @@ def test_a_person_a_model_writes_for_decides_an_item_in_the_services_own_product
             world.advance(timedelta(hours=2))
             assert product.state("a1") == "approved"
             [call] = written.client.world(world.world_id).person_calls
-            assert call.wrote is Wrote.DECISION and call.prompt_version == "person-decision/2"
+            assert call.wrote is Wrote.TRANSITION and call.prompt_version == "person-transition/1"
         finally:
             written.client.close_world(world.world_id)
 

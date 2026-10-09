@@ -24,20 +24,20 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | External emulators: `domain/emulator.py`, `adapters/emulator/`, `application/emulators.py` | A host declared `forward` is sent to a fake outside Minutehand (any language, a process or a container), through a loopback relay to its TCP port, Unix socket or HTTPS server; started or attached to, waited on (HTTP, TCP or log readiness) and health-checked; its answers told apart (`Exchange.outcome`); its failure answered 502/504 naming it and stopping the run `ENVIRONMENT_FAILED`, exit 2; its health changes in the log and the export; its OTLP received and joined by the forwarded `traceparent`; one per `serve` shared by worlds. See `docs/external-emulators.md` | Built and tested | 14 functions, 20 cases (`tests/emulators/` 12, `tests/serve/test_emulator_worlds.py` 2), and 1 marked `docker` (stripe-mock) | Its state is neither scored nor rewound: a fork after its first use is refused. Never restarted. Not seeded from the scenario, and people cannot act on it. |
 | Proxy: `adapters/proxy/` | mitmproxy embedded in the process: answers claimed hosts, tunnels, edits or records model APIs, captures declared outbound hosts, refuses the rest; hands the agent one CA bundle (public roots plus its own CA); remembers the agent's latest call for settling; takes connections a container redirects to it; sends a claimed host's gRPC calls and WebSocket upgrades to a server of its provider's on a loopback port (`adapters/proxy/local.py`) and records each call and each message | Built and tested | 82 (`tests/proxy/`), and 1 marked `docker` (`tests/providers/slack/test_slack_redirected_container.py`), and gRPC and WebSockets through the providers that serve them (`test_cloud_tasks_grpc.py`, `test_slack_socket_mode.py`) | One proxy per process. A client that ignores proxy settings is given a base URL instead (`/_host/<host>`, below), or, in a Linux container, captured by a redirect to a second listener ("Transparent capture"); otherwise a call it made that the agent's telemetry names fails the run (`around_proxy`). Model API calls are recorded only with `--record-model-calls`, as spans. A tunnel is relayed as bytes, never decrypted: a request on it is seen and held until a TLS record comes back that is not of a TLS 1.3 server's session tickets, judged record by record from their headers (`adapters/proxy/tunnel.py`). Unary gRPC methods only, and gRPC needs `minutehand[grpc]`. A WebSocket connection is routed to its world only under `minutehand run`. |
 | Outbound capture: `domain/outbound.py`, `adapters/proxy/capture.py`, `application/outbound.py` | Hosts that are not places the agent keeps state, declared per agent or per standing world: `acknowledge` (answered here, never sent), `pass_through` (sent on, both sides kept), `replay` (answered from a run's recording); `--capture-unknown` for a first run; a send read as a message to a person. See `docs/capture.md` | Built and tested | 41 (`tests/capture/` 28, `tests/checks/test_captured_messages.py` 5, `tests/e2e/test_capture_run.py` 3, `tests/e2e/test_example_capture.py` 1, `tests/serve/test_capture_worlds.py` 3, `tests/model/` 1) | People answer a captured send only when its declaration says how (`replies`); the standing mode's `act` cannot answer through one. Replay matches a body by its hash, so an unlisted timestamp or nonce misses. Discovery mode sends for real. |
-| Slack provider | 23 Web API methods, the other 370 Slack lists refused 501 by name (`tests/providers/slack/test_slack_method_coverage.py`), `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; Socket Mode (`apps.connections.open`, events as `events_api` envelopes on the agent's WebSocket, acknowledged or sent again); seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 124 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk`, Socket Mode with its `SocketModeClient`; and 1 whole run on Socket Mode (`tests/e2e/test_whole_run.py`) | Workspaces are per world (`SlackSeed.workspaces`, see its `README.md`); with none declared, one workspace in which any token, or none, acts as the bot: no credential is ever refused (`CLAIMS.md`). `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. Over Socket Mode only `events_api` envelopes: a press or a slash command to a socket-mode agent is refused. See "Slack, against its production caller". |
+| Slack provider | 50 Web API methods, the other 343 Slack lists refused 501 by name (`tests/providers/slack/test_slack_method_coverage.py`), `response_url`, `url_private`; every Events API shape its production caller handles, plus edits, deletes, reactions and joins; buttons, person pickers, modals and slash commands pushed as interactivity payloads and the agent's answers applied; Socket Mode (`apps.connections.open`, events as `events_api` and presses and submissions as `interactive` envelopes on the agent's WebSocket, acknowledged or sent again); the events the agent's own calls cause pushed to it; scheduled messages as dispatch-table bookings; files by the v2 flow with the bytes kept as sent; seeded channels, history, threads, files, guests, bots and deactivated accounts; scenario-declared faults including `ratelimited` with `Retry-After` | Built and tested | 365 (`tests/providers/slack/`), most through the real proxy with stock `slack_sdk`, Socket Mode with its `SocketModeClient`; and 1 whole run on Socket Mode (`tests/e2e/test_whole_run.py`) | Workspaces are per world (`SlackSeed.workspaces`, see its `README.md`); with none declared, one workspace in which any token, or none, acts as the bot: no credential is ever refused (`CLAIMS.md`). `X-Slack-Request-Timestamp` is real time while `ts` and `event_time` are simulated. Over Socket Mode `events_api` and `interactive` envelopes: a slash command to a socket-mode agent is refused. A scheduled message posts in a run, not in `minutehand serve`. See "Slack, against its production caller". |
 | Asana provider | 51 of the 251 operations of Asana's OpenAPI document over users, teams, workspaces, projects and their members, sections, custom fields and their settings, tags, tasks, subtasks and stories, and `/-/oauth_token`; the other 200 (webhooks, events, attachments, portfolios, goals among them) answer 501 by name; a scenario's Asana seed; a declared status source; people acting on seeded tasks; see its `CLAIMS.md` | Built and tested | 139 (`tests/providers/asana/`) | Credentials are not enforced: a seeded token acts as its person, any other or none as the agent. `opt_fields` answers exactly what it names, and a field the provider never answers is 501 by name; `html_notes` is refused (Asana documents neither conversion). A bare `custom_fields` in `opt_fields` answers each field's compact record with its value. Every refusal is in Asana's documented or reported words, or refused by name (CLAIMS.md). No system stories (assigned, moved, completed) are written. |
 | YouTrack provider | 55 of the 184 operations YouTrack's OpenAPI description lists for its issues, projects, fields, users, tags, links, commands and activities, each at `/api` and `/youtrack/api` (the other 129 answer 501 naming the operation), and 9 Hub routes at `/hub/api/rest`: issues, custom fields of every single-valued type with per-project bundles, defaults and required flags, comments, tags, links, activities read from the log, projects and their fields, the instance's fields and bundles, users, commands, `issuesGetter/count`, a project's team joined at `team/ownUsers`; Hub's users, instance groups, permissions cache and OAuth tokens (Hub holds no YouTrack project or team since 2026.1); the query language every shape a production client builds; people acting on seeded issues (`ActsOnTickets`) | Built and tested | 171 (`tests/providers/youtrack/`, 417 cases with parameters; most through the proxy) | Only a seeded `*.youtrack.cloud` or `*.myjetbrains.com` host is reached: a self-hosted instance's own host cannot be declared. Multi-valued fields (`enum[*]`, `user[*]`, `version[*]`), text fields, work items, attachments, saved searches, agile boards and sprints as boards are not served. No credential is checked and no permission enforced. A request whose answer YouTrack neither documents nor shows on its public instance (recorded in `tests/providers/youtrack/data/observed/`) is a 501 naming it. A project template's fields of types not held (Default's Subsystem, versions and build; Scrum's multi-valued Priority and Sprints) are not attached. Wording of 429 and several 400s, the activity item `$type`s for tags, links and summary, and the default issue order are not verified against the real service. |
-| Google Workspace provider: `adapters/providers/google_workspace/` | Drive v3 (files incl. multipart, media and resumable uploads, export, copy, permissions, comments, about, drives, changes, channels), Docs v1 `documents.get|create|batchUpdate`, Slides v1 `presentations.get|create|batchUpdate`, Gmail v1 (`messages.send|list|get|modify`, `threads.get|list`, `labels.list`, `getProfile`, `history.list`; search operators), Calendar v3 scoped from its discovery document, every other method and parameter refused 501 by name (`events.insert|get|list|patch|update|delete` with guests, sync tokens, `If-Match` and `showDeleted`, `events.watch` and `channels.stop`, `freeBusy.query`, `calendarList.list|insert`, `calendars.get|insert`, `acl.insert|list`), Google's `/token` and `/revoke`, OAuth2 v2 `userinfo`, the `iamcredentials` boundary lookup; per-user My Drives, mailboxes and primary calendars, secondary calendars shared by ACL, shared drives; seeded emails and events; a person's reply to the agent's email landing in its mailbox, and a guest's Yes, Maybe or No on its invitation, at their moment (`LandsReplies`); a person's change to a document at its moment, pushed to a `changes.watch` address; a change to an event on a watched calendar, the agent's own or a guest's answer, pushed to an `events.watch` address, and every push recorded with how the address answered; declared faults; see its `CLAIMS.md` | Built and tested | 151 (`tests/providers/google_workspace/`; 23 run Google's own clients in a process of their own through the proxy) and 1 whole run (`tests/e2e/test_mail_and_calendar_run.py`) | A credential is matched by name, never by signature. `httplib2` reaches the proxy only when PySocks is installed beside it. No Sheets API (a Sheet is exported as CSV). Drive does not notify the agent of its own changes (Calendar does). Docs has no headers, footers, footnotes or suggestions, and images are never fetched. Content is capped at 5 MiB per file. Gmail pushes nothing (`users.watch`, which delivers through Pub/Sub, answers 501): an agent polls its mailbox. A push address must be HTTPS with a certificate the run's CA signed (`adapters.reaching`); a push is never retried, since Google documents no schedule. No drafts, user labels, attachments by id or recurring events. A reply landing in a standing world (`minutehand serve`) is refused, since only the run loop lands one. |
+| Google Workspace provider: `adapters/providers/google_workspace/` | Drive v3 (files incl. multipart, media and resumable uploads, export, copy, permissions, comments, about, drives, changes, channels), Docs v1 `documents.get|create|batchUpdate`, Slides v1 `presentations.get|create|batchUpdate`, Gmail v1 (`messages.send|list|get|modify`, `threads.get|list`, `labels.list`, `getProfile`, `history.list`; search operators), Calendar v3 scoped from its discovery document, every other method and parameter refused 501 by name (`events.insert|get|list|patch|update|delete` with guests, sync tokens, `If-Match` and `showDeleted`, `events.watch` and `channels.stop`, `freeBusy.query`, `calendarList.list|insert`, `calendars.get|insert`, `acl.insert|list`), Google's `/token` and `/revoke`, OAuth2 v2 `userinfo`, the `iamcredentials` boundary lookup; per-user My Drives, mailboxes and primary calendars, secondary calendars shared by ACL, shared drives; seeded emails and events; a person's reply to the agent's email landing in its mailbox, and a guest's Yes, Maybe or No on its invitation, at their moment (`LandsReplies`); a person's change to a document at its moment, pushed to a `changes.watch` address; a change to an event on a watched calendar, the agent's own or a guest's answer, pushed to an `events.watch` address, and every push recorded with how the address answered; declared faults; see its `CLAIMS.md` | Built and tested | 151 (`tests/providers/google_workspace/`; 23 run Google's own clients in a process of their own through the proxy) and 1 whole run (`tests/e2e/test_mail_and_calendar_run.py`) | No credential is enforced: any token, or none, acts, a seeded one as its person and any other as `WorkspaceSeed.unknown_credentials_act_as` (by default the scenario's owner); a credential is matched by name, never by signature. `httplib2` reaches the proxy only when PySocks is installed beside it. No Sheets API (a Sheet is exported as CSV). Drive does not notify the agent of its own changes (Calendar does). Docs has no headers, footers, footnotes or suggestions, and images are never fetched. Content is capped at 5 MiB per file. Gmail pushes nothing (`users.watch`, which delivers through Pub/Sub, answers 501): an agent polls its mailbox. A push address must be HTTPS, as part of Google's request shape, and the receiver's certificate is never checked; a push is never retried, since Google documents no schedule. No drafts, user labels, attachments by id or recurring events. A reply landing in a standing world (`minutehand serve`) is refused, since only the run loop lands one. |
 | Microsoft provider | Identity platform sign-in (client credentials, authorization code, refresh) issuing RS256 JWTs from a published key; the Bot Framework connector (10 routes) and its OpenID metadata; Graph `v1.0` for users, teams, channels, chats and messages, SharePoint and OneDrive files (sites, drives, items by id and path, children, 302 downloads, simple and session uploads, folders, move, copy, delete, invite, links, search, `delta`), subscriptions with the validation handshake; people's messages, edits, deletes, reactions, joins, installs (`PersonAddsAgent`) and card presses pushed with a Bot Framework JWT; people's file changes (`ChangesDocuments`) notified to subscriptions (`NotifiesChanges`); Outlook mail (`sendMail`, messages listed with the filters and orderings clients send, read, marked read, replied to, `delta`, subscriptions on a mailbox) and calendars (events, `calendarView`, `getSchedule`, answers), a sent email being the agent's ask threaded by `conversationId` and an invitation its ask of each attendee; people's replies by email into the mailbox they answer and their Accept, Tentative or Decline on an invitation at its moment; `MicrosoftSeed.mailbox`, `.emails`, `.events`, `.faults` and `.holds` | Built and tested | 111 (`tests/providers/microsoft/`), one a whole run of an agent emailing a person and booking her (`test_microsoft_outlook_whole_run.py`), through the real proxy with plain `httpx`, PyJWT and `python-docx` | Graph is gated by its own published OpenAPI description: 127 of the 2,103 operations kept for the claimed resources are served, every other one refused by name (501). Credentials are deliberately not enforced: any secret, client or token works. Token lifetimes are real time. Ids derive from the scenario's name. No comments on files and no record-shaped documents. No drafts, attachments or recurring events; an event is one item seen from every attendee's calendar; a person's email is only ever a reply. A production client's adapters were run against it once, outside this repo (see Evidence). See the provider's `README.md`. |
 | Jira provider | Jira Cloud REST v3 and Agile 1.0 at `<site>.atlassian.net` and `api.atlassian.com/ex/jira/{cloudId}`: issues, transitions through per-project workflows and screens, comments in ADF, changelog, links, JQL search, projects, users, project membership by role, boards and sprints; tokens at `auth.atlassian.com`; people's acts (`ActsOnTickets`); `JiraSeed.rate_limits`; every other operation of Atlassian's reference for those resources refused by name (`surface.py`, 45 of 212 served) | Built and tested | 182 (`tests/providers/jira/`, 392 cases with parameters) | Credentials and permissions are not enforced: any credential, or none, is let in, a seeded one acting as its account and any other as the agent; project membership still decides what a caller sees. No webhooks, no API v2. Link direction read from Atlassian's reference, not verified live. See its `README.md` and `CLAIMS.md`. |
 | Notion provider | Notion API `2022-06-28` at `api.notion.com`: pages, blocks, databases and their queries, search, users, comments, OAuth tokens (20 of 65 operations; the other 45 of Notion's OpenAPI document, and every other version, answer 501 by name; every validation message Notion's reported words or refused by name); seeded workspaces, integrations and what is shared with them; people's changes (`ChangesDocuments`); integration webhooks (`NotifiesChanges`), verified and signed; `NotionSeed.faults`; see its `CLAIMS.md` | Built and tested | 115 (`tests/providers/notion/`; most through the official SDK) | Credentials and capabilities are not enforced: any token, or none, acts as an integration. Webhook signing, verification and payloads are written from the reference, not verified live; events are not aggregated, delayed or retried. A person cannot move or share a page. See its `README.md`. |
-| GitHub provider: `adapters/providers/github/` | REST at `api.github.com` (`/user`, `/user/repos`, a repository, its languages, branches, contents, blobs, trees and commits, code search with text matches, `/rate_limit`, installation-token exchange) and `/graphql` (`viewer`, `repository`); every other operation of GitHub's REST description for those resources refused by name (501), held against a committed subset of that description; any credential accepted (credentials deliberately not enforced; visibility is world data); `ETag` and `If-None-Match`; primary rate limits counted per user and per address in the store; seeded faults (`rate_limited`, `secondary_rate_limited`, `server_error`); see its `README.md` and `CLAIMS.md` | Built and tested | 184 (`tests/providers/github/`) | Repository reads only: no issues, pull requests, webhooks or OAuth web flow. A GraphQL query costs one point. Every branch and commit shows the head's files. The seed comes beside the scenario (`GitHubProvider.seed_with`), not from it. |
-| AWS provider: `adapters/providers/aws/` | moto in the process, on the run's clock, for EventBridge Scheduler and SQS; every operation of botocore's `scheduler` and `sqs` models served or refused by name, every other AWS service refused; EventBridge Scheduler bookings become wakes delivered to SQS; no credential checked; see its `CLAIMS.md` | Built and tested | 69 (`tests/providers/aws/`) and whole runs (`tests/e2e/test_booked_on_aws.py`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. A target other than an SQS queue in the run's account is refused at `CreateSchedule`. A long poll that finds no message is refused by name, since the run's clock does not move inside a call. |
+| GitHub provider: `adapters/providers/github/` | REST at `api.github.com` (`/user`, `/user/repos`, a repository, its languages, branches, contents, blobs, trees and commits, code search with text matches, `/rate_limit`, installation-token exchange) and `/graphql` (`viewer`, `repository`); every other operation of GitHub's REST description for those resources refused by name (501), held against a committed subset of that description; any credential accepted (credentials deliberately not enforced; visibility is world data); `ETag` and `If-None-Match`; primary rate limits counted per user and per address in the store; seeded faults (`rate_limited`, `secondary_rate_limited`, `server_error`); see its `README.md` and `CLAIMS.md` | Built and tested | 184 (`tests/providers/github/`) | Repository reads and the tracker (issues, comments, labels, pull requests, reviews, merges, contents writes), people acting on it through the transitions port and the webhooks that tell the agent of it; no milestones, no OAuth web flow. A GraphQL query costs one point. Every branch and commit shows the head's files, except a branch with commits of its own. The seed comes beside the scenario (`GitHubProvider.seed_with`), not from it. |
+| AWS provider: `adapters/providers/aws/` | moto in the process, on the run's clock, for EventBridge Scheduler and SQS; every operation of botocore's `scheduler` and `sqs` models served or refused by name, every other AWS service refused; EventBridge Scheduler bookings become wakes delivered to SQS; an SQS long poll held and answered on the run's clock ("A call that waits on the world"); no credential checked; see its `CLAIMS.md` | Built and tested | 69 (`tests/providers/aws/`) and whole runs (`tests/e2e/test_booked_on_aws.py`, `tests/e2e/test_long_poll_run.py`) | AWS's own state lives in moto's memory and cannot be rewound; each run's app takes a fresh AWS account, so a fork starts with none of its parent's queues. A target other than an SQS queue in the run's account is refused at `CreateSchedule`. In a standing world a long poll that finds no message is refused by name, since nothing moves its clock while the call waits. |
 | Google Cloud Tasks provider: `adapters/providers/google_cloud_tasks/` | Queues and HTTP tasks over the REST API and over gRPC, the client's default, from the same operations and world; a task's `scheduleTime` booked as a wake and delivered as an HTTP call to the agent's handler with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff until its attempts run out; a task's name taken for 24 hours after it ran or was deleted; every method of the v2 discovery document and of the gRPC service served or refused by name; queues seeded by `CloudTasksSeed`; see its `CLAIMS.md` | Built and tested | 40 (`tests/providers/google_cloud_tasks/` 36 through the real proxy with Google's own `google-cloud-tasks`, 11 on its REST transport and 5 on gRPC; `tests/e2e/test_cloud_tasks_run.py` 4 whole runs, one on gRPC) | gRPC needs `minutehand[grpc]` (grpcio and Google's messages); without it a gRPC call is answered UNIMPLEMENTED, saying so. Tasks asking for signed OIDC or OAuth tokens, App Engine tasks, `tasks:run` and batch calls answer 501. Only a task URL on this machine is called. |
 | Run loop, fork, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint, with its own seed and pinned reply times | Built and tested | `tests/orchestrator/` | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. |
 | People: `application/replier.py`, `application/moments.py`, `domain/people.py` | Every word a person says or decides, in a run and a standing world alike: a script of facts and intents whose words a model writes, conversing from their facts once the script is used, exact words where a step says `verbatim`; each moment drawn from the run's seed, the person and the ask, in a window of their available time; follow-ups, reminders, automatic replies while away; what each person can see of the world as their context; every model call kept with the world and replayed for the same context. See "People" | Built and tested | `tests/orchestrator/test_moments.py`, `test_conversing.py`, `test_reply_draws.py`, `tests/model/`, `tests/serve/test_written_people.py` | The fact a relay must carry is checked as a substring (`Relayed.holding`, `{ask.facts}`): a relay that paraphrases the value itself is not counted. A follow-up is told from a new ask by its conversation (channel and thread), never by its text. |
 | The agent's memory: `minutehand/agent/` (`store`, `wake`), `domain/memory.py`, `application/memory.py`, `application/restore.py`, the receiver's `/minutehand/agent` routes | What the agent remembers, as JSON under string keys, through one import inert in production; under Minutehand every write recorded in the run's log and every read answered from it, so each run and fork has its own memory and a fork starts from its parent's at the checkpoint with no hooks; the agent's next wake marked the same way; a fork's agent proven by its memory's digest and its report; a fresh empty SQLite file per run for each database of its own the agent file names | Built and tested | `tests/agent/` 21, `tests/e2e/test_memory_run.py` 4, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py` 8 | Only state written through the store is part of a run: anything the agent keeps elsewhere is not simulated, not kept apart between runs and not rewound, and is seen only when its report shows it or the agent file names the database ("The agent's memory"). The package ships inside `minutehand`, whose own dependencies are heavy; it imports none of them. |
-| Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py` | The facts of a run (`checks/facts.py`), the team's YAML rules over them (`checks/assessments.py`), the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`), the agent's own checks, the obligations ledger, `Effectiveness` (facts only), 10 patterns | Built and tested | `tests/checks/`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A rule counts; whether a message meant something is a judgement no rule makes. |
+| Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py`, `domain/items.py` | The facts of a run (`checks/facts.py`, the agent's calls among them); the assessment of every effect of the agent's by kind of item against the declared world (`checks/items.py`, deterministic, on every run; `checks/judged/review.py`, the shared reviewer, with `--judge`), each provider declaring its item types (`Manifest.item_types`); the team's YAML rules over the facts (`checks/assessments.py`); the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`); the agent's own checks; the obligations ledger; `Effectiveness` (facts only); 10 patterns | Built and tested | `tests/checks/` (`test_item_checks.py` and `judged/test_review.py` over four runs of a model-driven agent in `tests/data/trial/`), `tests/providers/test_provider_item_types.py`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A deterministic check that leans on a threshold the declarations only imply is for review; whether an effect means what it should is the reviewer's reading, for review too. A dependency is read from the goal's words and a service's machine only: an order the goal does not tie to a decision is not held to one. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
 | Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own; what the agent keeps outside the store is carried from one sample into the next. |
@@ -48,9 +48,10 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 41 (`tests/inboxes/` 33, `tests/architecture/test_approvals.py` 7, `tests/web/test_viewer_decisions.py` 1), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. |
 | Scenario library: `src/minutehand/library/`, `domain/library.py`, `application/library.py` | Eleven ready-made scenarios with the team's goal, owner, person asked and answer as `{team.*}` placeholders; `minutehand scenarios`, `scenarios show`, `scenarios new`; see `docs/scenarios.md` | Built and tested | 22 functions, 113 cases (`tests/test_library.py` 18 functions, 51 cases; `tests/architecture/test_library.py` 4 functions, 62 cases, 60 of them one run each of a scenario against an example agent's behaviour) | Not graded and no pass mark. Conflicting answers are not in it. Three scenarios' main check never fires against either example agent. |
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
-| MCP tools: `adapters/mcp/`, `minutehand mcp` | Seven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
-| Run viewer: `adapters/web/`, `minutehand view` | A read-only JSON API over a state directory (runs and the fork tree, wakes, events, calls, obligations, findings, scorecard, messages, model calls and traffic, steps and spans) and the one page that draws it, its libraries vendored under `static/` | Built and tested | 20 (`tests/web/`) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. |
-| Container image, judged checks, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+| MCP tools: `adapters/mcp/`, `minutehand mcp` | Eleven tools over stdio (`list_scenarios`, `run_scenario`, `list_findings`, `show_evidence`, `rerun_from`, `list_outbound_calls`, `list_runs`, and over the read model `schema`, `query_run`, `trace`, `explain`) reading and writing the state directory through `session`, as the command line does; see "What a coding agent calls" | Built and tested | 14 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | One run at a time per process: a second `run_scenario` or `rerun_from` while one plays is refused, not queued. |
+| Read model: `adapters/query/`, `minutehand query`, `trace`, `explain` | A run's (or a fork's) record as documented, versioned views over one SQLite database built on demand from the store's own readers, every body decoded: `actions`, `messages` with what the ledger knows of each, `recipients` in their working hours, `calls` with their bodies, `wakes` with their reasons, `dispatch`, `memory` over time, `stored`, `replies`, `model_calls` with tokens and declared prices, `findings`, `evidence`, `spans`; read-only SQL, a trace of the agent's acts and an explanation of one event, on the command line and over MCP; see `docs/querying.md` | Built and tested | 49 functions, 74 cases (`tests/query/`), on a run written by hand and its fork; 12 functions, 43 cases on real runs of the follow-up example and the reference agent through the installed command (`tests/architecture/test_read_model_on_real_runs.py`) | Built per process on first read and kept while the run's files are unchanged; a run with very many events is built in full before the first row. A message's sender among people is known only when a reply of theirs landed as it. |
+| Run viewer: `adapters/web/`, `minutehand view` | One page for inspecting a run of any length: the verdict and headline numbers, a canvas swimlane timeline that bins dense lanes by calendar unit, one view per measure, an inspector for whatever is selected; a typed read-only JSON API over a state directory, its tables read from the run's read model (`adapters/query`); plain ES modules with d3 and Observable Plot vendored under `static/`, no build. See "The viewer" | Built and tested | 36 (`tests/web/`), of which 3 drive the page in Chromium (`-m browser`, the `browser` CI job) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. The timeline does not draw the parent's record after a fork's split; the forks view gives the fork's account instead. |
+| Container image, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
@@ -72,9 +73,9 @@ What is sold is the know-how, in three forms:
 
 A finding carries its pattern (`Finding.pattern`, from the rule's `pattern`), so the coding agent that reads "followed up 33 hours late" is handed "give every wait an expiry and wake on it" in the same answer.
 
-**Facts in the core, judgement with the team.** Minutehand holds no opinion of how an agent should behave. When to follow up and how often, whether to acknowledge an answer, when to escalate and to whom, what counts as nagging: two teams with good agents answer differently, and a team that wants an agent which reminds every hour may have one. The core records what happened and when (who was asked what, every follow-up, every answer, every write, every wake and the wakes the agent planned, what it reported) and states it. Nothing judges a run but what the team declared: its rules (`assess:`), the scenario's expectations (`expect:`) and protected names, and its own Python checks. Minutehand's library scenarios carry rules too, but as text written into the team's own file, theirs to change. The checks left in the core state the scenario's own words (`expectations`, `near_miss_name`) or whether the run can be trusted at all (`around_proxy`, `unmatched_call`, `agent_contract_changed`); none is about how an agent should behave.
+**Facts in the core, measured against the world the team declared.** Minutehand holds no opinion of how agents in general should behave. When to follow up and how often, whether to acknowledge an answer, when to escalate and to whom, what counts as nagging: two teams with good agents answer differently, and a team that wants an agent which reminds every hour may have one. The core records what happened and when and states it, and it assesses every effect the agent had on the world against what the team's own files already declare: the goal and its deadline, the people with their facts, reply windows, hours and absences, the services with their descriptions and machines, the agent's own rhythm (`docs/assessments.md`, "What every run is assessed on"). Each item a provider holds is assessed by its kind (a chat message, an email, a ticket, a document, a calendar event, a service's item, a stored record), each finding names the declaration it was measured against, and nobody writes how an item is assessed: write the scenario, get the assessment. What the world cannot imply (a team's chasing budget, what it wants its owner told) is the team's to add as rules (`assess:`), beside the scenario's expectations (`expect:`), protected names and its own Python checks. The checks left in the core besides state the scenario's own words (`expectations`, `near_miss_name`) or whether the run can be trusted at all (`around_proxy`, `unmatched_call`, `agent_contract_changed`).
 
-What it gets wrong: a team that declares nothing gets no verdict, only facts (`Not assessed`), so a first run teaches less than it did when Minutehand judged by itself. The library's rules are the answer to that, and they are a suggestion a team must read.
+What it gets wrong: a judgement the declarations only imply is a threshold (a chase inside a reply window, a reaction slower than the agent's rhythm, reads that learned nothing), so such findings are for review and never fail a run alone; and meaning (an invented figure, a misreported decision) is a model's reading, for review too.
 
 Monitoring is how the know-how is delivered. It is not the product.
 
@@ -118,10 +119,9 @@ protected_names: [Ayven]
 people:
   - {key: owner,  name: Test User,      email: owner@example.com, reply: {kind: silent}}
   - {key: sofia,  name: Sofia Romano,   email: sofia@example.com, reply_within: {min: PT2H, max: PT6H},
-     reply: {kind: scripted, replies: [{to_ask: 1, facts: ["the agreement is signed and sent back"]}]}}
+     reply: {kind: scripted, replies: [{to_ask: 1, facts: ["the agreement is signed and sent back"]}]},
+     takes: [{take: done, after: P3D}]}           # a ticket handed to her: she moves it to done three days on
   - {key: dania,  name: Dania Kovac,    email: dania@example.com, reply: {kind: silent}}
-ticket_fates:
-  - {assignee: sofia, becomes: done, after: P3D}
 expect:
   - {kind: person_asked,   person: owner}
   - {kind: ticket_created, assignee: dania, by: P5D}
@@ -138,13 +138,13 @@ inbound:
      secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}}
 ```
 
-An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
+An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `push_timeout` (default `PT5M`) is how long one push to it may take before it is sent again, as the vendor retries (`docs/agent-contract.md`). `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
 
 ```yaml
   - kind: reported
     wake_url: http://platform:8025/minutehand/wake
     report_url: http://platform:8025/minutehand/report
-    wake_timeout: PT2M            # one call to wake_url or report_url (default 2 minutes)
+    wake_timeout: PT10M           # one call to wake_url or report_url (default 10 minutes: room for a model's turn)
     report_first_after: PT0.1S    # the first ask for the report; each wait doubles from here
     report_at_most_every: PT10S   # up to this
     working_limit: PT30M          # a wake still WORKING after this stops the run AGENT_FAILED, saying so
@@ -200,7 +200,7 @@ checkpoints
 exit 1
 ```
 
-The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the moment Sofia's answer fell due was reached and the rule read. Without `assess:` and `expect:` the same run says `Not assessed` and exits 5: the scorecard still shows one wait open and no follow-up made.
+The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the moment Sofia's answer fell due was reached and the rule read. Without `assess:` and `expect:` the same run is still assessed against what its scenario declares, and finds nothing wrong in what the agent did: that a follow-up was owed and not sent is the team's rule, not the world's, and the scorecard still shows one wait open and no follow-up made.
 
 ### The checks on a captured run
 
@@ -245,7 +245,7 @@ src/minutehand/
                       ProviderSeed, Happening (TicketHappening (Moves, Reassigns, Comments, Deletes) |
                       DocumentHappening (Edited, Renamed, Moved, Shared, Trashed, Commented, FieldSet) |
                       MessagingHappening (PersonPosts, PersonEdits, PersonDeletes, PersonReacts, PersonJoins,
-                      PersonAddsAgent, PersonOpensAgent, PersonCommands)), TicketFate, Direction, PersonAsked, TicketCreated, TicketDeleted,
+                      PersonAddsAgent, PersonOpensAgent, PersonCommands)), Take, Direction, PersonAsked, TicketCreated, TicketDeleted,
                       TicketInState, Relayed, DocumentCreated, DocumentShared; `{{start+P2D}}` in any text (DATED)
     world.py          WorldEvent, Change, Stored, Exchange (CallOutcome, CallFailure), Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, GrantSnapshot,
@@ -269,8 +269,8 @@ src/minutehand/
     errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
     memory.py         SeededMemory, StoreCall (MemoryGet, MemoryList, MemoryWrite), WakeMark: the agent's memory on the wire
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
-  ports/              Store, Clock, Provider, PushesEvents, PushesInteractions, HoldsTickets, EditsTickets,
-                      ActsOnTickets, DeletesTickets, ChangesDocuments, NotifiesChanges, DeclaresFaults,
+  ports/              Store, Clock, Provider, ProvidesTransitions, SteersPeople, TalksToAgent, HoldsSeeded,
+                      PushesEvents, ChangesDocuments, NotifiesChanges, DeclaresFaults,
                       ChangesPeople, GrantsPermissions, MintsInboundCredentials, OwnsSeed, BooksWakes, Wakes,
                       AgentDriver, Reports, Replier, Telemetry
   application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (a fork's agent proven),
@@ -383,7 +383,7 @@ class CheckReport(Model):
 
 ### The provider port
 
-Nine protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub:
+Many small protocols, because most services push nothing, hold no tickets and book nothing, and a method that returns nothing on their behalf would be a stub. Those people act through:
 
 ```python
 class Provider(Protocol):
@@ -395,11 +395,30 @@ class Provider(Protocol):
 
 
 @runtime_checkable
-class PushesEvents(Protocol):
-    async def deliver(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None: ...
+class ProvidesTransitions(Protocol):
+    def items_for(self, person: Person, world: Store) -> list[Waiting]: ...
 
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]: ...
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition: ...
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool: ...
+
+
+@runtime_checkable
+class TalksToAgent(Protocol):
+    def talking(self, target: InboundTarget | None, secret: str | None) -> ProvidesTransitions: ...
+
+
+@runtime_checkable
+class HoldsSeeded(Protocol):
+    def seeded(self, scenario: Scenario, ticket: SeededTicket, world: Store) -> EntityRef | None: ...
+
+
+@runtime_checkable
+class PushesEvents(Protocol):
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
@@ -407,39 +426,6 @@ class PushesEvents(Protocol):
     async def happen(
         self, happening: MessagingHappening, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None: ...
-
-
-@runtime_checkable
-class LandsReplies(Protocol):
-    def lands(self, reply: PersonReply, world: Store) -> bool: ...
-
-    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool: ...
-
-    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None: ...
-
-
-@runtime_checkable
-class PushesInteractions(Protocol):
-    async def press(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None: ...
-
-
-@runtime_checkable
-class HoldsTickets(Protocol):
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None: ...
-
-
-@runtime_checkable
-class EditsTickets(Protocol):
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None: ...
-
-
-@runtime_checkable
-class ActsOnTickets(Protocol):
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None: ...
 
 
 @runtime_checkable
@@ -488,18 +474,18 @@ class ServesSockets(Protocol):
 
 | Provider | `Manifest.key` | Hosts (`path_prefix`) | Ports beyond `Provider` |
 |---|---|---|---|
-| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com`, `hooks.slack.com` and Socket Mode's `wss-primary.slack.com` included) | `PushesEvents`, `PushesInteractions`, `ServesSockets`, `DeclaresFaults` |
-| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
-| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
-| Google Workspace (Drive, Docs, Slides, Gmail, Calendar) | `google_workspace` | `www.googleapis.com` (Drive at `/drive/v3`, Calendar at `/calendar/v3`), `oauth2.googleapis.com`, `gmail.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `OwnsSeed` |
-| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `PushesEvents`, `PushesInteractions`, `LandsReplies`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
+| Slack | `slack` | `slack.com`, `*.slack.com` (`files.slack.com`, `hooks.slack.com` and Socket Mode's `wss-primary.slack.com` included) | `TalksToAgent`, `PushesEvents`, `ServesSockets`, `DeclaresFaults` |
+| Asana | `asana` | `app.asana.com` (`/api/1.0`, and `/-/oauth_token` outside it) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
+| YouTrack | `youtrack` | `*.youtrack.cloud`, `*.myjetbrains.com` (none; the app answers `/api`, `/youtrack/api` and Hub's `/hub/api/rest`) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
+| Google Workspace (Drive, Docs, Slides, Gmail, Calendar) | `google_workspace` | `www.googleapis.com` (Drive at `/drive/v3`, Calendar at `/calendar/v3`), `oauth2.googleapis.com`, `gmail.googleapis.com`, `docs.googleapis.com`, `slides.googleapis.com`, `iamcredentials.googleapis.com` | `ProvidesTransitions`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults`, `OwnsSeed` |
+| Microsoft | `microsoft` | `login.microsoftonline.com`, `login.botframework.com`, `smba.trafficmanager.net`, `graph.microsoft.com`, `*.sharepoint.com` | `TalksToAgent`, `PushesEvents`, `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 | AWS | `aws` | `*.amazonaws.com` | `BooksWakes` |
 | Google Cloud Tasks | `google_cloud_tasks` | `cloudtasks.googleapis.com` | `BooksWakes`, `ConfirmsDelivery`, `ServesGrpc`, `OwnsSeed` |
 | GitHub | `github` | `api.github.com` (REST and `/graphql`; no prefix) | none: repository reads only, see its `README.md` |
-| Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeclaresFaults` |
+| Jira Cloud | `jira` | `*.atlassian.net`, `api.atlassian.com`, `auth.atlassian.com` (none; the app reads the site path and `/ex/jira/{cloudId}` itself) | `ProvidesTransitions`, `HoldsSeeded`, `DeclaresFaults` |
 | Notion | `notion` | `api.notion.com` | `ChangesDocuments`, `NotifiesChanges`, `DeclaresFaults` |
 
-Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker is a `TicketFate`: `HoldsTickets.transition` moves the ticket as actor `PERSON`, and the agent finds it on its next read. A person replying by email, or answering a calendar invitation, is a reply like any other, decided by the replier when the agent's message reaches them, but it lands through `LandsReplies.land` (Google Workspace; Microsoft for a reply to an email or a meeting request, which `LandsReplies.lands` tells from a reply to a Teams message): in the agent's mailbox, threaded with what it answers, or as the guest's `responseStatus` (the invitation offers Yes, Maybe and No as controls, so a scripted `press` answers it) or response comment. Nothing is pushed to an inbound target, so the agent needs none for it. It wakes nobody unless the service itself tells the agent (`LandsReplies.heard`: a live Graph subscription on the mailbox or calendar it lands in, or a live Calendar `events.watch` channel on a calendar the event is on; Gmail never has one): otherwise the agent finds it on its next poll, and `Orchestrator._unheard` counts it with ticket fates. `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
+Every provider but GitHub is `Tier.FINISHED`. Whatever a person does to an item that waits on them is a transition through `ProvidesTransitions` (`docs/design-transitions.md`): the provider says what is legal now (`legal`: a tracker's workflow, an invitation's response states, a message's reply and controls) and takes it through its own code path (`apply`), recorded once as theirs. The people engine (`application/people.py`) decides which, and when: a take (`Person.takes`) pins it, or a model picks among what a person would do unprompted (a delete, a comment or a note only by a take). A person moving a tracker's item is found by the agent on its next read. A reply by email, or an answer to a calendar invitation, lands where the service keeps it (the agent's mailbox, threaded; the guest's `responseStatus` or response comment) and wakes nobody unless the service itself tells the agent (`heard_of`: a live Graph subscription on the mailbox or calendar it lands in, or a live Calendar `events.watch` channel; Gmail never has one): otherwise the agent finds it on its next poll. A chat answer is pushed to the agent's inbound target (`TalksToAgent`). `session._services` holds each provider to the ports its manifest claims (`pushes_events`, `books_wakes`) and refuses a mismatch by name, and refuses a seeded ticket that sets a field its provider's `Manifest.ticket_fields` does not hold (`key`, `labels`, `comments`), naming the ticket: YouTrack and Jira hold all three (each one's own seed names a ticket by its `key`); Asana holds `labels` (as tags) and `comments` (as stories by their people), and has no meaning for `key`. `refusals.refuse_unheld` also refuses a document happening whose action is not in its provider's `Manifest.document_changes`, naming it: Drive shows every change but `field_set`; Notion `edited`, `renamed`, `trashed`, `commented` and `field_set`; Microsoft `edited`, `renamed`, `moved`, `shared` and `trashed`. `Manifest.world_keys` says which host label or path segment of a request names its world (a Microsoft tenant, an Atlassian site or cloud id, a YouTrack or SharePoint site), for `minutehand serve` (`docs/serve.md`).
 
 ### Things people do by themselves
 
@@ -507,7 +493,7 @@ Every provider but GitHub is `Tier.FINISHED`. A person "replying" on a tracker i
 
 | Family | Members (`kind`) | Names its target | Lands through | Wakes the agent |
 |---|---|---|---|---|
-| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | `ActsOnTickets.act` (Asana, YouTrack, Jira) | never: it is found on the next read |
+| Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | a person transition of the seeded item (`HoldsSeeded.seeded`, then `apply`: Asana, YouTrack, Jira) | never: it is found on the next read |
 | Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)`, `Trashed()`, `Commented(text)` or `FieldSet(field, value)`, as far as the provider's `Manifest.document_changes` allows | the seeded document's `title`, exactly one (a Notion seed's page or row is one by its `document`) | `ChangesDocuments.change` (Drive, Notion, Microsoft) | only when the agent watches (`NotifiesChanges`: Drive's `changes.watch`, a Graph subscription on the drive, a seeded Notion webhook); that wake carries no `WakeRequest`, and inside it `notify` sends what the service sends |
 | Messaging | `MessagingHappening`: `PersonPosts` (`posts`), `PersonEdits` (`edits`), `PersonDeletes` (`deletes`), `PersonReacts` (`reacts`), `PersonJoins` (`joins`), `PersonAddsAgent` (`adds_agent`: Slack invites the bot to a channel; Teams installs the app in a channel or, with none, the person's own chat), `PersonOpensAgent` (`opens_agent`), `PersonCommands` (`commands`) | its own `provider`, channel and post keys | `PushesEvents.happen` (Slack, Microsoft) | yes, `PERSON_REPLIED`, as a pushed reply does |
 
@@ -653,20 +639,20 @@ Orchestrator.run():
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
     clock.jump(jump.now)
-    only ticket fates, ticket or document happenings and unheard landed replies fired -> HoldsTickets.transition,
-                     ActsOnTickets.act, ChangesDocuments.change, LandsReplies.land; no wake, unless the agent watches a changed provider's documents
-                     (NotifiesChanges.watched), then a DUE wake in which NotifiesChanges.notify tells it
+    only people's moves the service tells the agent of by no push, ticket or document happenings fired
+                     -> People.act (ProvidesTransitions.apply), ChangesDocuments.change; no wake, unless the agent
+                     watches a changed provider's documents (NotifiesChanges.watched), then a DUE wake in which
+                     NotifiesChanges.notify tells it
     otherwise, one wake:
-      fire in order: fates (transition), replies (LandsReplies.land where the agent reads them, PushesEvents.deliver,
-                     or PushesInteractions.press for a
-                     reply that uses a control), happenings (ActsOnTickets.act for a ticket,
-                     ChangesDocuments.change for a document, PushesEvents.happen for a message), directions by
-                     message (say),
+      fire in order: people's moves (People.act -> ProvidesTransitions.apply: a reply, a control, a decision, a
+                     ticket moved), happenings (a transition for a ticket, ChangesDocuments.change for a document,
+                     PushesEvents.happen for a message), directions by message (say),
                      bookings (BooksWakes.deliver_booking, .advance_booking), the next Polled tick
       WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
-      read the new events: an agent message to a person, as its text reads when the wake ends
-                           -> Replier.plan (when, and how) -> Replier.write (the words) -> a pending reply
-                           an agent ticket assigned to a person with a TicketFate -> a pending fate
+      People.look: what now waits on each person in each provider (items_for), as it reads when the wake ends
+                           -> a conversation: Replier.plan (when, and how) -> Replier.write (the words)
+                           -> anything else: a take, or the model's pick at its moment
+                           -> a PendingSnapshot in the log, due as PERSON_REPLY or TRANSITION
       AgentReport.next_wake replaces the agent's previous DUE wake
       the last next wake the agent marked in the wake (`minutehand.agent.wake`) replaces its next wake
       checkpoint: a Checkpoint row in the log, carrying the agent's report and its memory's digest
@@ -674,7 +660,7 @@ Orchestrator.run():
   RunRecord -> Scorer (the team's rules and checks, the core's checks) -> Telemetry.found, Telemetry.run_ended
 ```
 
-- A person answers a message as it reads when the wake ends. A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. An edit in a later wake that changes the text is put to the person again unless they have already answered that message, and a reply to the old text still on its way is withdrawn. The withdrawn reply stays in the `reply` table and its position is kept in every later `Checkpoint.withdrawn`: the ledger reads it as the replier's decision that the message asked something, and never as an answer, so a wait whose only reply was withdrawn stays open (`test_a_reply_withdrawn_by_an_edit_that_gets_no_answer_settles_no_wait`). Before, the ledger read the latest reply to a message, and an edit that got no answer was settled by the withdrawn one, and then `slow_to_react` failed the agent for never acting on an answer that never arrived.
+- A person answers a message as it reads when the people engine looks at it, at the end of the wake (`application/people.py`). A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. Their answer is planned and its words written then, and kept on the engine's record of the ask (`PendingSnapshot.plan`, `PendingSnapshot.answer`) until its moment, when it lands and is kept as said. An edit in a later wake that changes what the ask says or offers is put to the person again unless they have already answered it: the answer on its way is planned and written afresh from the new text, and an ask that, so read, needs no answer passes (`PendingStatus.PASSED`) and opens no wait (`test_an_ask_edited_into_one_that_needs_no_answer_opens_no_wait`). Only what landed is in the `replies` table; the ledger reads an answer planned and not yet landed from the engine's record.
 - A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
 - When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
 - A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
@@ -754,7 +740,7 @@ The rule: what goes in is what comes out, and the record is exactly that. Every 
 
 #### Housekeeping
 
-`minutehand runs` shows each run's size on disk in two parts that do not overlap: its rows and the stored bodies only it refers to. `minutehand checkpoints <run>` lists each checkpoint and whether a fork can start at it. `minutehand gc` sweeps every world file under the state directory of stored bodies nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest. `minutehand rm <run>...` removes runs with every fork of each.
+`minutehand runs` shows each run's size on disk in two parts that do not overlap: its rows and the stored bodies only it refers to. `minutehand checkpoints <run>` lists each checkpoint and whether a fork can start at it. `minutehand gc` sweeps every world file under the state directory of stored bodies nothing refers to and prints what it freed. A standing server's retention of closed worlds is the same function (`session.collect`): it removes the directories of worlds beyond `keep`, then sweeps the rest, but a closed world's file it has swept since the world closed, which nothing writes again (sweeping all `keep` at every close made each close open as many stores as worlds were kept, and closing 350 worlds took five times as long). `minutehand rm <run>...` removes runs with every fork of each.
 
 ### One container
 
@@ -860,8 +846,8 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   world whose call minted them. Each world has its own lock, so calls in different worlds do not wait on each
   other.
 - **A world** is `application/standing.py`'s `StandingWorld` over a `Seed` (`domain/scenario.py`): its own
-  store and `RunClock`, providers seeded on first use, and, with scripted people on, the replies, decisions, fates
-  and directions it owes, fired only when its clock is moved past them; people's words are written then, by the
+  store and `RunClock`, providers seeded on first use, and, with scripted people on, the people's moves (replies,
+  decisions, tickets moved) and directions it owes, fired only when its clock is moved past them; people's words are written then, by the
   server's model, exactly as in a run ("People").
 - **The record.** A world is a run (`StopReason.CLOSED` when closed), so `findings`, `view` and the MCP tools
   read it; the newest `--keep` closed worlds are kept.
@@ -875,7 +861,7 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   wrote that the first did not is landed; refused with nothing written when it would renumber, rewrite something
   changed since it was seeded, or take an id in use), a person's account changed (`ChangesPeople`, each provider's
   `Manifest.people_changes`), a named permission (`GrantsPermissions`), a provider's switches as typed faults
-  (`DeclaresFaults`), a ticket deleted by a person (`DeletesTickets`), the headers a pushed request is signed with
+  (`DeclaresFaults`), a ticket deleted by a person (its `delete` transition), the headers a pushed request is signed with
   (`MintsInboundCredentials`), a reset in place to the seed, and a provider's raw state for a person to read.
   `GET /v1/providers` says which of these each provider has; a provider asked for one it has not answers 409 with
   `kind: unsupported`.
@@ -887,8 +873,9 @@ used to seed an emulator, call its own services and inspect the emulator can do 
   window). `docs/serve.md`, "Scoring a run you drive yourself"; `tests/e2e/test_driven_case.py`.
 - **Messages.** Every message event carries its `MessageSnapshot`, a delete what the message said when it went
   (Slack and Teams); the scorecard counts rewrites in place and deletes (`messages_edited`, `messages_deleted`);
-  the viewer lists every message under the timeline ("rewrote the message to Dani from '…' to '…'"), the model
-  calls by step with the message each wrote, and one line per model host relayed on tunnels.
+  the viewer marks every message in its person's lane (a rewrite or a delete as one of its own) and opens each
+  with its conversation and the model call that wrote it, and its model cost view counts the calls relayed on
+  tunnels to each model host.
 
 When to use which: `run` measures an agent over simulated days and gives a verdict; `serve` stands in for a set
 of emulators under an ordinary service-level suite, where the test drives and asserts.
@@ -1038,7 +1025,7 @@ A met expectation carries no pattern: there is nothing to fix. Only `FAIL` findi
 ```
 
 - **The values are facts, the author's.** Phrases only `said_by`'s answer carries. The scenario is refused when its goal, a direction, a seeded ticket or document, or anyone else's script or facts holds one, when `said_by` is `Silent`, and when none of their script's steps or facts holds it.
-- **The person must say it first.** A reply of `said_by`'s, not withdrawn and not automatic, must carry every value: in its words, or in the facts the script step it was written from carried (`PersonReply.facts`), since a model writes the words and may reword the fact. The relay must come after that reply lands; an agent message (or anything not a person's) that held the values before it means the agent did not hear them from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
+- **The person must say it first.** A reply of `said_by`'s that landed, not automatic, must carry every value: in its words, or in the facts the script step it was written from carried (`PersonReply.facts`), since a model writes the words and may reword the fact. The relay must come after that reply lands; an agent message (or anything not a person's) that held the values before it means the agent did not hear them from them, and the finding says so: "the agent wrote it (seq 1) before rosa said it, so nothing relayed it".
 - **A match** is an agent message to `to`, after that reply, holding every value, in any case.
 
 What it gets wrong: a value is a substring, so a relay that paraphrases the value itself ("the hall by the lake") is not counted, and one that quotes it inside a sentence that contradicts it is.
@@ -1069,8 +1056,8 @@ people:
         - {to_ask: 1, intent: ask_back, facts: ["she needs the headcount first"]}
         - {to_ask: 2, facts: ["the lakeside hall is booked for the 14th"], within: {min: PT1H, max: PT1H}}
         - {to_ask: 3, verbatim: "Confirmed: LH-2291."}     # exact words, no model: the rare opt-in
-      decisions: [{decision: reject, facts: ["the office has a room that day"]}]   # a model writes the reason
       then: answers                                        # once used, she keeps conversing (default); or silent
+    takes: [{provider: approvals, take: reject, facts: ["the office has a room that day"]}]   # a model words why
 ```
 
 **A script is a plan of facts.** `Scripted.replies` are steps: the nth ask (`to_ask`) is answered with what the step
@@ -1082,15 +1069,15 @@ unless `inputs` fixes the words. `Answers` is a person with no plan.
 
 **Then the person keeps talking.** Once the steps are used (`then: answers`, the default), and for `Answers`, each
 further ask is answered by the model from the person's facts, stale facts (for a `mistaken` person), helpfulness
-and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions likewise
-(`person-decision/2`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
+and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions, and any
+other move on an item, are picked from what it offers (`person-transition/1`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
 ever the author's: `Silent`, or `then: silent`. Each reply records how its words were written (`PersonReply.writing`:
 `script`, `verbatim`, `conversing`, `automatic`, `by_hand`), and a team's rule counts them (`count: {replies: {by,
 written}}`, `docs/assessments.md`).
 
 **A model is required whenever a person may speak.** `replier.unspoken` names everyone a model writes for (an
 `Answers` person, a script that goes on conversing, a step or decision a model words); with no model configured
-(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`), a run, a fork, and a standing world
+(`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, and `MINUTEHAND_MODEL_API`: `openai`, any OpenAI-compatible chat-completions API with JSON-schema output, the default, or `anthropic`, Anthropic's Messages API with the answer as a forced tool's input), a run, a fork, and a standing world
 with `scripted_people: true` are refused before anything starts, naming each person and why. `minutehand doctor`
 says whether one is configured. Nobody goes silent mid-run for want of one.
 
@@ -1151,7 +1138,7 @@ told apart by the reply owed, not by their text.
 
 ### A person acting in the agent's own product
 
-Built and tested; the whole of it is in `docs/inboxes.md`. Some of what a person does never touches a SaaS: approving
+Built and tested; the whole of it is in `docs/inboxes.md`. `docs/approvals.md` sets up an approval in each place one lives (the agent's own product, chat buttons, email, a calendar invitation, a ticket, an approval service no provider fakes), with the rules that judge it and the gaps each place has. Some of what a person does never touches a SaaS: approving
 an operation in the agent's own web app, answering a question on its own page. The agent file declares each such
 place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Minutehand signs in as a person
 (`as_person`, from `Person.credential`), how to list what waits on them (`pending`) and the decisions they can make
@@ -1160,28 +1147,29 @@ place as an inbox (`AgentUnderTest.inboxes`, `domain.inboxes.HttpInbox`): how Mi
 - **Seeing the ask.** At the end of every wake and before the clock moves, every inbox is read as every person
   Minutehand can act as. A new item is the agent asking that person (`InboxItemSnapshot`, actor AGENT); one gone
   undecided is withdrawn. The reads are Minutehand's own calls (`Exchange.inbox_call`), never the agent's.
-- **The person decides, never by default.** The replier seam decides as for a reply (`PersonReply.decides`): a
-  script's decision for the nth or every item, a model's pick, or nothing from a `Silent` person. A person who can
-  receive items and whose script says nothing of them refuses the run. When due, the declared call is made as them;
-  the product taking it is their change (`DECIDED`); its refusal is recorded and the wait stays open.
+- **The person decides as the people engine says.** A take pins the decision (`Person.takes`, for the nth or every
+  item), a model picks, or a `Silent` person leaves it. When due, the person's transition is recorded and the declared
+  call is made as them; the product taking it is their change (`DECIDED`); its refusal is a SYSTEM `refuse`
+  transition, and the wait stays open.
 - **Scored by reuse.** An item is an `ANSWER_FROM_PERSON` wait in the ledger, so every rule that counts `follow_ups`
-  or `touches` on an ask reads it. Going ahead with an operation the item `gates`, while pending, rejected or
-  withdrawn, is the fact `writes: {gated: true}`; a team that holds that against its agent writes a rule.
+  or `touches` on an ask reads it, and each decision is a transition a rule reads (`each: transition`, `by`,
+  `first`). Going ahead before an approval, or after a rejection, is a team's rule over those.
 
 ### Pillar one: proactive effectiveness
 
 A run ends with the facts of it and, when the team declared any, its judgement. Nothing in either is the agent's own account of itself, and nothing in the facts is measured against what the agent should have done.
 
-**Facts in the core, judgement with the team.** Minutehand holds no opinion of how an agent should behave. It states what happened: the waits it opened and when each settled, every follow-up with its time, every message and to whom, every change to the world, every wake and the wakes the agent planned, and what the agent reported. Whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is a team's policy; the team writes it as rules (`docs/assessments.md`) and nothing else judges how its agent behaves. Before this, fourteen checks and two verdict rules held Minutehand's own opinion: a real agent that by design never acknowledges an answer, follows up twice and then escalates and stops, failed `slow_to_react` on every run and was asked by `no_follow_up` for a third reminder, and its team could not say otherwise. Each of those checks is now a rule a team may copy (the table in `docs/assessments.md`), and `tests/orchestrator/test_team_rules.py` judges a scripted copy of that agent by its team's policy in YAML.
+**Facts in the core, judgement with the team.** Minutehand holds no opinion of how an agent should behave. It states what happened: the waits it opened and when each settled, every follow-up with its time, every message and to whom, every change to the world, every wake and the wakes the agent planned, and what the agent reported. Whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is a team's policy, which the team writes as rules (`docs/assessments.md`); what the world the team declared does imply (a chase inside a person's declared reply window, an order before the approval the goal waits on, a move the service refuses, a figure nobody gave the agent) is assessed on every run, each finding naming the declaration it was held to. Before this, fourteen checks and two verdict rules held Minutehand's own opinion: a real agent that by design never acknowledges an answer, follows up twice and then escalates and stops, failed `slow_to_react` on every run and was asked by `no_follow_up` for a third reminder, and its team could not say otherwise. Each of those checks is now a rule a team may copy (the table in `docs/assessments.md`), and `tests/orchestrator/test_team_rules.py` judges a scripted copy of that agent by its team's policy in YAML.
 
 | Layer | Answers | Whose | State |
 |---|---|---|---|
 | Facts (`checks/facts.py`, the ledger, `RunView`) | What happened, and when | Minutehand's: stated, never judged | Built and tested |
 | Scorecard (`Effectiveness`, `checks/effectiveness.py`) | The facts counted, in numbers that compare across runs, prompts and models | Minutehand's | Built and tested; ends every run |
-| Assessments (`assess:`, `checks/assessments.py`) | Did the agent behave as the team wants | The team's rules, in the agent file and the scenario | Built and tested |
+| The assessment of the agent's effects (`checks/items.py`, `checks/judged/review.py`, `domain/items.py`) | Was each message, ticket, document, event, service item and record the agent wrote right, in time and needed, against the world the files declare | Minutehand's checks and reviewer, held to the team's own declarations; each provider declares its item types | Built and tested; reads every run |
+| Assessments (`assess:`, `checks/assessments.py`) | Did the agent behave as the team's own policy wants, where the world implies nothing | The team's rules, in the agent file and the scenario | Built and tested |
 | Expectations (`expect:`, `checks/expectations.py`) and protected names (`near_miss_name`) | Did the world end up right | The scenario author's words | Built and tested |
 | The agent's own checks (`checks:`) | Anything a rule cannot say, in Python over the same facts | The team's | Built and tested |
-| Integrity (`around_proxy`, `unmatched_call`, `agent_contract_changed`) | Can the run be trusted at all | Minutehand's: about the run, never the agent's behaviour | Built and tested |
+| Integrity (`around_proxy`, `unmatched_call`, `agent_contract_changed`) | Can the run be trusted at all | Minutehand's facts, stated as `REVIEW`; a failure only when the agent file or the scenario names one in `fail_on_integrity` | Built and tested |
 | Patterns (`checks/patterns.py`) | What design fixes it | Named by a rule's `pattern` | 10, each with a page in `docs/patterns/` |
 | Verdict (`Verdict`) | Did what the team declared hold, and did the agent finish | Read from findings and how the run stopped | Built and tested; ends every run and sets the exit code |
 | Stability (`Stability`) | How often, over several samples | | Built: `--samples N` reports "passed k of N"; a sample that did not finish did not pass |
@@ -1205,7 +1193,8 @@ class Effectiveness(Model):
     )
     slowest_reaction: timedelta | None = Field(
         default=None,
-        description="The longest stretch from a wait settling to the agent's next write on it, or to the run's end "
+        description="The longest stretch from a wait settling to the agent's next write anywhere a person could see "
+        "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
     messages_to_people: int = Field(default=0, ge=0)
@@ -1219,20 +1208,21 @@ Every number is a count or a stretch of time. What it no longer holds is what wa
 
 What a follow-up is, as a fact (`checks/facts.asks`): an agent write the person could see while the wait was open, a message to them or their delegate, or a change to the ask's thread or ticket. A read is not one: looking at the channel tells nobody anything. One message chasing two waits is one follow-up in `follow_ups_made`.
 
-What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent never came back, so a run stopped early makes it shorter.
+What it gets wrong: `idle_wakes` counts wakes that wrote nothing and changed no commitment, so a wake that learned something it kept in its own memory reads as idle. `slowest_reaction` runs to the end of the run when the agent wrote nothing more, so a run stopped early makes it shorter; and it counts any write after the answer as the reaction, so an agent that went on with something unrelated reads as having reacted (it once counted only writes to the wait's own person or entity, and an agent that heard an answer and at once filed the approval it was for read as 4.8 days slow).
 
 #### The verdict
 
-Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). The verdict reads only the findings of what the team declared (its rules, the scenario's expectations and protected names, its own checks), the core's integrity checks, and how the run stopped. It holds no rule of its own about how an agent should behave. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is. `RunResult.assessed_by` records what judged the run.
+Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `tests/e2e/test_unfinished_verdict.py`). The verdict reads only the findings of what the team declared (its rules, the scenario's expectations and protected names, the integrity facts its files name in `fail_on_integrity`, its own checks), and how the run stopped; an integrity fact nobody named is stated as `REVIEW` and never changes it. It holds no rule of its own about how an agent should behave. `RunResult.verdict` is a `Verdict` (`domain/run.py`): its kind, how the run stopped, how many waits and commitments were still open, and one sentence that the command, the viewer, `list_findings`, `run_scenario` and `list_runs` all print as it is. `RunResult.assessed_by` records what judged the run.
 
 | `VerdictKind` | When | Exit |
 |---|---|---|
 | `ENVIRONMENT_FAILED` | The run stopped `ENVIRONMENT_FAILED`: an external emulator it forwarded to was unavailable (`docs/external-emulators.md`). Not the agent's failure; the checks still run and are listed | 2 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
-| `NOT_JUDGED` | No finding failed, and nothing was assessed: neither the scenario nor the agent file declares `assess`, `expect`, `protected_names` or its own `checks` ("Not assessed"; the facts are still reported); or a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED` | 5 |
+| `NOT_JUDGED` | No finding failed, and a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED`. A run whose files declare no rule is still judged: the assessment of its effects (`items`) reads every run | 5 |
 | `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
 | `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
+| `SIMULATION_INCOMPLETE` | Neither of the two above, and the simulated world did not play as its files declare: an incomplete kind of the run's health ("The simulation's health", below). The agent is still judged on what did happen: that verdict's kind is kept in `Verdict.on_what_happened` and its sentence follows "on what did happen:" in the words, so a failure is never hidden by it | 6 |
 
 ```
 run 5c1e0a9f2b77: partner_pricing
@@ -1245,10 +1235,38 @@ Exit 3 is not a failure: a scenario whose point is that nobody answers ends at i
 What the rule gets wrong:
 
 - **It takes `DONE` at the agent's word.** An agent that reports done with a question it asked unanswered passes, unless a rule says otherwise. The verdict once held two rules of its own here (done with an ask never followed up was `UNFINISHED`, and a "follow-up" in the same wake as the ask did not count); both were opinions, and both are now rules a team may write: `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0`, and `each: ask`, `count: {follow_ups: {}, until: ask+PT1H}`, `at_most: 0`.
-- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question. The one exception: once every expectation is met, a message to a `Silent` owner sent with or after the last of them is the result being reported, and keeps nothing open. A silent person other than the owner still leaves the run `UNFINISHED`.
+- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question, the owner's included: a message telling a silent owner the result keeps the run `UNFINISHED` unless the agent reports `DONE` (or the scenario declares `expect_outcome: unfinished`). The verdict once read such a message as "the result being reported" once every expectation was met; that was Minutehand's reading, not the user's, and is gone.
 - **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 - **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
 
+
+#### The simulation's health
+
+Built and tested (`checks/health.py`, `tests/checks/test_health.py`, `tests/services/test_service_health.py`). Always
+read, over every run and fork; facts about the simulated world, never about the agent, and kept apart from the
+agent's findings (`RunResult.simulation`, a list of `HealthFinding`: kind, whether it makes the run incomplete, one
+sentence, the person, the entity, since when, the seqs). The report prints them under `simulation`, the run's notes
+repeat each as `simulation: ...`, the read model holds them in `simulation_health`, and the viewer shows them beside
+the verdict.
+
+| `HealthKind` | Makes the run `SIMULATION_INCOMPLETE` | When |
+|---|---|---|
+| `responder_never_acts` | yes | An item of a declared service waited on a responder whose script ends in silence (`then: silent`) with no `takes` for the service: declared to respond, they never can (`application/people._picks`). A responder who never decides is declared `{kind: silent}`, or the service lists none (`docs/services.md`) |
+| `waits_on_nobody` | yes | An item of a declared service sat in a state only a person moves it out of, responders declared, and the engine held it pending on nobody |
+| `owed_unbooked` | yes | Someone owes a move or an answer (they speak for themselves, or a take pins it) with no moment booked, or a moment booked that the table of what is due never held |
+| `model_failed` | yes | A people model call failed and no later call with the same context answered it, or a move is still owed with a model's failure on it |
+| `push_failed` | yes | An event the world pushed to the agent (a Slack event, a declared service's push) was never taken, after every retry its service makes |
+| `waits_by_declaration` | no | An item waited on someone the files declare never acts: a `Silent` person, or a script that ends in silence where no service names them a responder |
+| `never_exercised` | no | A declared service, `store` collection or person nothing in the run touched |
+| `step_never_fired` | no | A scripted step whose ask never came |
+
+Precedence: `ENVIRONMENT_FAILED` and `TOOL_FAILED` stand, since such a run says nothing either way; otherwise an
+incomplete world outranks every other kind, and `minutehand run-all` and samples order it after those two and
+before `FAILED`. `expect_outcome: simulation_incomplete` is a scenario written to show one. `minutehand validate`
+warns of every service responder who never acts before any run.
+
+What it gets wrong: coverage counts a person touched by any message to them or any item pending on them, so a
+person only copied on a group message counts as exercised; a collection read and never written counts as unused.
 
 #### The checks left in the core
 
@@ -1259,9 +1277,9 @@ Discovered by `checks/runner.py` (any class in a module of `checks/` with `id`, 
 | `assessments` | One finding per broken bound of each of the team's rules, named by the rule's `id`, with its `severity` and `message`; a note for each rule not read for want of a moment the run never reached | The team's | the rule's `pattern` |
 | `expectations` | `FAIL` per unmet expectation; `INFORMATIONAL` per met one, quoting what met it | The scenario author's | `honest_closure` |
 | `near_miss_name` | `FAIL`: a name the scenario protects written one letter off | The scenario author's | `confirm_names` |
-| `agent_contract_changed` | `FAIL`: the agent's own product answered Minutehand's call against its own API description | The agent's own document | none |
-| `around_proxy` | `FAIL`: the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW`: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none: the run's integrity | none |
-| `unmatched_call` | `REVIEW`: a call to a host no provider claims | none: the run's integrity | none |
+| `agent_contract_changed` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): the agent's own product answered Minutehand's call against its own API description | The agent's own document | none |
+| `around_proxy` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): the agent's own HTTP client spans name calls to a host a provider claims that the proxy never saw; `REVIEW` always: the agent was woken and called none of the providers the run names. Both name the fixes ("Transparent capture") | none: the run's integrity | none |
+| `unmatched_call` | `REVIEW` (`FAIL` when named in `fail_on_integrity`): a call to a host no provider claims | none: the run's integrity | none |
 
 Not built:
 
@@ -1318,7 +1336,7 @@ def on_wake(now: datetime) -> None:
 | `wake` | Does nothing; the agent's own scheduler does the work. | `wake.at(moment)` is recorded as the agent's next wake (`EntityKind.NEXT_WAKE`, actor AGENT): the last said in a wake replaces any it marked or reported before; `wake.clear()` says none. |
 
 - **The API.** `get(key, default)`, `put(key, value)`, `delete(key)`, `list(prefix)` (ordered by key), `query(prefix, where={field: value})` (a field may be a dotted path), `batch()` (all or none, `with` or `async with`), `collection(name)` (a namespace of its own keys), and `aget`, `aput`, `adelete`, `alist`, `aquery`. Values are JSON; anything else is refused when written. The package imports the standard library only (`test_the_agent_package_imports_nothing_but_the_standard_library`).
-- **What a run records.** Each write is an entity version in the world's log: `EntityKind.MEMORY`, provider `memory`, external id `<collection>/<key>`, actor AGENT, the wake and simulated moment it was made at, the value as canonical JSON in its `MemorySnapshot`. A batch is one transaction (`Store.apply_all`). Each read is an event with no version (`READ` for a get, `SEARCH` for a listing), so `WakeRecord.memory_reads` and `memory_writes` count both per wake. Neither counts as a change to the world (`world_changes`, `writes`), the viewer's events or a fork's first difference: they are the agent's own memory, not something a person could see.
+- **What a run records.** Each write is an entity version in the world's log: `EntityKind.MEMORY`, provider `memory`, external id `<collection>/<key>`, actor AGENT, the wake and simulated moment it was made at, the value as canonical JSON in its `MemorySnapshot`. A batch is one transaction (`Store.apply_all`). Each read is counted in its wake (`WakeRecord.memory_reads`, from `application/memory.Reads`), and kept as an event with no version (`READ` for a get, `SEARCH` for a listing) only when it is the first of its key or prefix in the wake or finds something other than the last one kept did; `memory_writes` counts the writes. A read not kept found what the log already says was found: the reference agent's worker lists its queue every 50 ms, and a run of it kept 71 to 125 reads (more the slower the machine ran, 136 to 190 events in all) and keeps 53 to 57 (118 to 122), loaded or not, while `memory_reads` still counts every one (`test_a_poll_of_memory_that_has_not_changed_is_counted_every_time_and_kept_in_the_log_once`). Neither counts as a change to the world (`world_changes`, `writes`), the viewer's events or a fork's first difference: they are the agent's own memory, not something a person could see.
 - **Where a run's memory starts.** From the scenario's `memory:` (`SeededMemory`: a key, its JSON value, an optional collection), written as actor SCENARIO before the first wake, and nothing else. Each sample is a run of its own, so samples are independent in their memory.
 - **Robustness.** A call that never reached Minutehand, or one answered 502, 503 or 504, is tried again, six times over about three seconds; then `MinutehandUnreachable`, naming the URL. With MINUTEHAND_ON set the store never falls back to the agent's own database. Any other refusal is `MinutehandRefused` with what the receiver said. `minutehand env` hands MINUTEHAND_ON always, and MINUTEHAND_AGENT_URL when the receiver's port is fixed (`--telemetry-port`; the receiver runs whether or not telemetry is received); an agent handed the first without the second refuses to use its store. Under `minutehand serve` neither is handed: a standing world holds no agent's memory, and the store stays the team's own.
 - **A fork** reads its parent's log up to the checkpoint, so its memory is exactly the parent's there, with nothing copied, replayed or restarted. Every checkpoint keeps the memory's digest (`Remembered.memory`) and the agent's last report. A fork (`application/restore.start_fork`) proves the memory it sees digests the same, starts the agent's program once the fork exists when Minutehand runs it (so whatever it reads as it starts is the fork's: the receiver holds the agent's calls until then), and asks for the agent's report, which must equal the one recorded at the checkpoint (`differences`). A report that differs is refused, naming the likely cause: state outside the store. An agent with no report endpoint is forked with its memory proven and its report unverified, and `restore.json` says so.
@@ -1356,8 +1374,8 @@ class Fork(Model):
 
 | Override | What changes | Where | Tested |
 |---|---|---|---|
-| `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every message to them not answered by the fork is put to them again; a reply decided before the fork that had not landed by it is withdrawn first, since it was never said | `changed_scenario`, `_ask_again` in `application/rewind.py` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
-| `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | `EditsTickets.edit` | `tests/orchestrator/test_rewind.py` |
+| `PersonChange` | A person's `ReplyBehaviour` from the fork onward; every ask they had not answered by the fork is planned and worded again under it, and an answer on its way is moved to its new moment, since it was never said | `changed_scenario`, `_replanned` in `application/rewind.py`, `People.replan` | Through a whole run (`tests/e2e/test_fork_calls_telemetry.py`) |
+| `TicketEdit` | A ticket's state or assignee, as actor `SCENARIO` | a SCENARIO transition through `ProvidesTransitions.apply` | `tests/orchestrator/test_rewind.py` |
 | `DeadlineShift` | The scenario's deadline | `changed_scenario` | `tests/orchestrator/test_rewind.py` |
 | `MemoryEdit` | Keys of the agent's memory set or removed at the fork; the agent's own planned wakes replaced by the report it gives after | `memory.edit`, `start_fork`, `Orchestrator.resume(replan=)` | Through a whole run (`tests/e2e/test_memory_run.py`) |
 | `DispatchChange` | The scenario's dispatch rules, from the fork on: the same run with the agent's wakes delivered late, twice or dropped; an nth counts the wakes before the fork | `changed_scenario` | `tests/orchestrator/test_dispatch.py` |
@@ -1376,8 +1394,8 @@ in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.j
 verified and by what (`Restored.verified_by`: its memory, its report) or why not; and, once both runs have
 finished, the two verdicts, each scorecard line that differs, findings gained, lost and changed, and the first
 change in the world after the split at which the two records part (`tests/web/test_fork_account.py`). The viewer
-shades the parent's shared record left of the split, fades its marks, and draws what the parent did after the
-split in a lane of its own. `scripts/screenshot.py` screenshots a viewer page with headless Edge or Chrome
+marks the split on the timeline and gives this account in its forks view, under the tree of the run and its forks.
+`scripts/screenshot.py` screenshots a viewer page with headless Edge or Chrome
 (`?open` opens every collapsed section) and ends the browser itself: on a profile of its own, headless Edge
 writes the file and never exits, on any page.
 
@@ -1401,7 +1419,7 @@ The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`
 
 | Source | What the agent must do | Exact? | Cost of a quiet fortnight | State |
 |---|---|---|---|---|
-| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer: `LandsReplies`, which wakes nobody) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
+| **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer, through `ProvidesTransitions.apply`, which wakes nobody unless the service tells the agent) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
 | **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
 | **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
 | **`Marked`**: the agent marks its next wake with `minutehand.agent.wake`, and is woken at `wake_url` | One import, and a wake endpoint whose call returns when the wake is done | Yes | None | Built and tested (`tests/orchestrator/test_wake_marks.py`); a mark is also the next wake of any other source, replacing what it reported in that wake |
@@ -1423,6 +1441,19 @@ Every scheduler is translated into one internal shape (`Due`, booked through `Wa
 | A fixed schedule set at deploy time (Cloud Scheduler, a Kubernetes CronJob, Vercel cron) | Not booked at run time at all | `Polled`, with the schedule written in the agent file | Designed |
 | A workflow engine's timers (Temporal, Inngest) | Inside the engine | The engine's own time-skipping test server would have to be driven | Not designed |
 
+#### A call that waits on the world
+
+Built and tested (`adapters/proxy/held.py`, `adapters/answering.waits`, `ports.provider.HeldCalls`, `PendingCall`; `tests/e2e/test_long_poll_run.py`). Some calls wait for the world to change before they answer: an SQS `ReceiveMessage` with `WaitTimeSeconds` (or its queue's `ReceiveMessageWaitTimeSeconds`) answers at once when a message is visible, else when one becomes visible or the wait ends. The run's clock does not move inside a call, so such a call cannot wait inside the provider: it is held outside it, and the run moves the clock to it.
+
+- **Saying a call waits.** A provider's app that finds the call would wait calls `answering.waits(until, again)`: the latest moment it waits to, and the next moment the world may answer it by itself (for SQS, the first moment a message of the queue is visible and not delayed, read from moto). True means the proxy holds it and what the app answers now is dropped; False, that nothing can hold it, and the app answers now (the AWS provider refuses by name). Once the wait is over, `answering.wait_over()` tells the app to answer as the world stands (moto is asked with no wait).
+- **Holding it.** The proxy gives the world's lock back and keeps the call (`Held`, by its flow id) out of every lock, and tells the run (`HeldCalls.hold`), which puts it in its table of what is due as a `PendingCall` (`DueKind.CALL`, `DueSource.CALL`) at the earlier of `again` and `until` (`ends` when it is `until`). The call is recorded once, when it is answered, at that moment of the run's clock and in that wake.
+- **Looking again.** A held call is answered through the app afresh, on the world and the clock as they then stand, whenever it is looked at: by the proxy after it answers any other call in the same world (another actor sent what it waits for), and by the run after everything it fires (a schedule's delivery to the queue, the call's own moment). It is answered with what came, or, once the clock has reached `until`, with whatever is there, nothing included; otherwise it is held to its next moment.
+- **In the run loop.** A held call answered at a moment the world brought something (`ends` false) is a wake, as a booking's delivery is: no wake request, the loop waits on the agent's main driver. One answered empty at the end of its wait is no wake. After answering a held call the run waits up to `AGAIN_WITHIN` (2 s of real time) for the agent's next call, as a worker polling in a loop makes one within milliseconds, and before it moves its clock it waits until every call that reached the world is answered or held (`HeldCalls.answering`), so the next poll is held from the moment the last ended. A table holding nothing but calls waiting out their wait has nothing due: the run stops as `NOTHING_PENDING`, or runs on to its deadline, and every call still held is answered as the world stands when the run ends.
+- **Forks.** A held call is a connection of the process that played the run: a fork drops the `PendingCall` entries its checkpoint holds, and its agent makes its own calls. (AWS cannot be forked after its first use anyway.)
+- **Standing worlds** lend no `HeldCalls`: their clock moves only when the control API advances it, so a call that would wait there is refused by its provider, by name.
+
+What it gets wrong: a worker that answers its empty poll by doing something else first, and polls again later than `AGAIN_WITHIN`, has its next poll held from wherever the run's clock has moved to, and finds a message that became visible in between only then. A worker polling with a 20-second wait across a two-week deadline is answered every 20 simulated seconds, as on the real service, when anything else is due later: tens of thousands of looks.
+
 #### The table, as the log records it
 
 Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tests/checks/test_planned_wakes.py`). What the run loop holds pending is a table it dispatches from (`Dues`), and every change to it is written to the world's log as it happens: an entity of `EntityKind.DUE` per entry, actor SCENARIO as the checkpoint is, a version when the entry enters and one when it leaves (`DueEntry`). Each says what is due and when, its source (`DueSource`: the agent's report, its booking, its declared rhythm, a person's reply, a ticket's fate, a happening, a direction), and how it left (`DueClosed`: fired, replaced by another moment from the same source, or cancelled undispatched).
@@ -1430,7 +1461,7 @@ Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tes
 | Rule | Why |
 |---|---|
 | A next wake the agent names again, the same moment, is the entry already there | An agent asked for its report after every wake would otherwise read as rescheduling every wake |
-| A next wake of none cancels the one before; a booking deleted is cancelled; a reply withdrawn is cancelled | Each is the plan changing, and a check can see when |
+| A next wake of none cancels the one before; a booking deleted is cancelled; a reply planned again is cancelled and booked anew | Each is the plan changing, and a check can see when |
 | A fork takes up its checkpoint's table against the log it shares: an entry the checkpoint dropped (a reply a `PersonChange` withdrew) is cancelled at the fork, and one it added is entered | The fork's table and its log agree from its first event |
 | The rows are left out of the viewer's event list, as checkpoints are, and no check counts them as the agent's | They are the run loop's own record, not the world |
 
@@ -1486,7 +1517,7 @@ class Obligation(Model):
 | `ObligationKind` | Opens when | `expected_by` | Settles when |
 |---|---|---|---|
 | `ANSWER_FROM_PERSON` | The agent messages a person who has a reply decided to it, or is `Silent`, and owes no answer in that conversation already | The message's time plus the person's patience: the calendar time `reply_within.max` of their available time takes from the ask, else their `DelayRange.longest`; `patience` is that span | The first reply to any message on the wait, if the run reached it and it was not withdrawn |
-| `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus that person's `TicketFate.after`; none without a fate | The person moves it to `DONE` or `CANCELLED` |
+| `WORK_WITH_PERSON` | The agent creates a ticket assigned to a person, or reassigns one to them | The assignment's time plus the moment their take on it sets; none without one | The person moves it to `DONE` or `CANCELLED` |
 | `ANSWER_FROM_PERSON` (an item) | An item waiting on a person in the agent's own product is first seen (`docs/inboxes.md`) | First seen plus the person's longest delay | The person decides it and the product takes the decision, or the agent withdraws it |
 | `DATE` | The scenario has a deadline | The deadline | The run reaches it |
 
@@ -1516,7 +1547,7 @@ What follows from that spike:
 - **The monitor still cannot see when an in-process scheduler next wants to run.** Jumping straight to the next reply would skip a follow-up the agent meant to send in between, and the run would blame the agent for lateness the jump caused. Such an agent is `Polled` at a declared rhythm, or `Reported`.
 - Untested: a JVM under a faked clock (the Firestore emulator), Node, and a faked clock across several containers at once.
 
-Real time still enters a run in two places: `WorldEvent.wall_time`; and the Slack provider's `X-Slack-Request-Timestamp`, which the agent's signature verifier checks against its own clock. moto's SQS and Scheduler read the run's clock (`adapters/providers/aws/clock.py`); an SQS long poll that would wait is refused by name until the orchestrator can move the clock while a call is held.
+Real time still enters a run in two places: `WorldEvent.wall_time`; and the Slack provider's `X-Slack-Request-Timestamp`, which the agent's signature verifier checks against its own clock. moto's SQS and Scheduler read the run's clock (`adapters/providers/aws/clock.py`); an SQS long poll that would wait is held and answered on that clock ("A call that waits on the world").
 
 ### Telemetry
 
@@ -1580,9 +1611,9 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 
   An attribute's value keeps OTLP's kinds (string, bool, int, double, bytes, array, key/value list) as a union discriminated on `kind`. The run loop records the real moment each wake begins and, after its checkpoint, ends (`Store.wake_began`, `wake_ended`). `Store.receive(spans, source=)` places each span in the wake whose window holds the span's own start (`Placement.WINDOW`), or, when none does (setup, or between wakes), in the wake it arrived in (`Placement.ARRIVAL`); the arrival wake, simulated time and head of the log are kept too. Its own start and end stay the real times its SDK gave it. `Store.spans(trace_id=, wake=)` reads them back by placement, and a fork's view of its parent's spans uses the same placement.
 - **Passing it on.** When the environment Minutehand was started from already names an OTLP endpoint (`OTEL_EXPORTER_OTLP_ENDPOINT`, or a signal's own `…_TRACES_ENDPOINT`), every payload the receiver takes, traces, logs and metrics, read or not, is sent on to it unchanged with `OTEL_EXPORTER_OTLP_HEADERS`, in the background (`forward.py`). A failure is recorded in the run (`Store.forward_failed`, the `forward_failure` table) and never fails it. A destination that is the receiver itself is dropped rather than looped.
-- **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
+- **The wire as the fallback trace.** For an agent with no tracing, `--record-model-calls` puts model hosts under `HostPolicy.RECORD`: each call is decrypted, sent on unchanged, and kept as a span of `SpanSource.WIRE` in the same stored shape, with GenAI-convention attributes (`gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.system_instructions`, `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.usage.input_tokens` (every input token, cached ones included), `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens`, `gen_ai.usage.output_tokens`). The three request shapes `edit.py` knows are read, answered as JSON or as server-sent events. A stream reaches the agent as a stream: the addon sets mitmproxy's `response.stream` to a function that passes each chunk on as it arrives and keeps a copy, and reads the copy when the stream ends (`test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole` holds the model API's second chunk back until the client has the first). A call that carried a `traceparent` is put in that trace under that span. Nothing from the request's headers or query string is stored; a test searches the store file's bytes for the key. Off by default: without the flag a model host stays `TUNNEL`.
 - **The join.** `application/model_calls.trace_of(event, world)`: from the `traceparent` the intercepted call carried, the agent's calling span, its ancestors to the root, every span of that trace with a `gen_ai.*` attribute, and the model call that led to the event: of the spans whose `gen_ai.operation.name` is `chat`, `text_completion` or `generate_content` (or that name no operation and carry a model), the last to END before the calling span started. With no `traceparent`, or no model call in the trace, a message is joined BY CONTENT when it can be (`JoinedBy.CONTENT`, `by_content`): its text, trimmed of whitespace at both ends and at least `CONTENT_LEAST` (20) characters, appears verbatim in what a model call placed in the same wake answered (`gen_ai.output.messages`, or any string inside it read as JSON, however deep), the call having ended before the event was written, real time; of several, the last to end. Nothing else is normalised and no likeness is scored. Otherwise it takes the last model call of the same wake that ended before the event, a wire-recorded one only if it was kept before the event's seq, and says so (`JoinedBy.WAKE`: the nearest call, not a proven cause). Every surface says which (`tests/test_model_call_join.py`).
-- **Where it shows.** `show_evidence` gives each cited event its `model_call` (model, the messages the span carries, token counts), `joined_by` and the agent's span names, and says in `telemetry` when the run received nothing. The viewer serves `GET /api/runs/{run_id}/model-calls` (each event a finding cites, joined) and `GET /api/runs/{run_id}/traces/{trace_id}`; its page shows "What the model was asked and answered" under a finding, or that no telemetry was received.
+- **Where it shows.** `show_evidence` gives each cited event its `model_call` (model, the messages the span carries, token counts), `joined_by` and the agent's span names, and says in `telemetry` when the run received nothing. The viewer serves `GET /api/runs/{run_id}/model-calls` (each event a finding cites, joined), `GET /api/runs/{run_id}/model-calls/{span_id}` and `GET /api/runs/{run_id}/traces/{trace_id}`; its inspector shows a message's writer and, for a model call, what it was asked and answered.
 - **Privacy.** Received spans often hold whole prompts. They are kept in the run's `world.db` on the machine running Minutehand and go nowhere else except to the endpoint the agent's own environment already named.
 
 #### How telemetry serves the two pillars
@@ -1591,6 +1622,64 @@ Built and tested (`tests/telemetry/test_receiver.py`, `tests/test_store_spans.py
 |---|---|---|
 | Measuring | A finding says what went wrong in the world; its evidence now says what the agent's model was asked and answered just before, so "followed up 33 hours late" comes with the prompt that chose silence. Every span is placed in the wake its start fell in, so a wake's model calls and tokens can be read beside what it changed. | The join and its surfaces. `RunView.model_calls` holds each wake's model calls, for a check of the team's own. No scorecard number counts tokens. |
 | Comparing a fork with its parent | A fork sees its parent's spans of the wakes up to the fork, and keeps its own after it; the same event in parent and child can be read with the model call behind each, so a `PromptPatch` can be judged by what the model was then asked and answered, not only by what the world did. | The fork's view of spans. No side-by-side of a parent's and a child's model calls. |
+
+### The viewer
+
+`minutehand view [--state DIR] [--port N] [--prices FILE]` serves one page on 127.0.0.1, for a person inspecting a
+run: what was asked, how it came out, and every act of the agent and the world behind that, over a run of minutes or
+of years.
+
+- **Layout.** A top bar with the run (name, id, picker of every run with its verdict, forks under their parents),
+  its verdict in colour, seed, simulated and real span, deadline and how it stopped; the headline numbers (failed
+  findings, rules held, follow-ups, median reply, slowest comeback, model tokens, messages), each a link to its view;
+  and the failed and review findings in order of severity, each a link to its moment and evidence. Below, the
+  timeline across the middle, the views under it, reached from a rail on the left, and an inspector on the right.
+  Colour is kept for the verdict, severity and the selection; everything else is greys. Light and dark follow the
+  system, with a toggle kept per viewer.
+- **The timeline** (`static/timeline.js`) is drawn on a canvas from `GET /api/runs/{run_id}/timeline`: every mark of
+  the run, compact and sorted (simulated and real time, lane, kind, ref, a few words), in lanes for the wakes, each
+  person (messages both ways, replies, waits as bands), each provider and host (its calls, a failed one red), the
+  dispatch table (a faulted entry red), the agent's model calls, the people's model calls, memory, stored items and
+  spans, with a row of findings on top. A lane holding more marks in the window than it has room for is binned by
+  the calendar unit that fits (year, month, week, day, six hours, hour, ten minutes, minute, ten seconds, second): a
+  heat strip with each bin's count and a red stripe for its failures; the findings likewise. Zoomed in, each mark is
+  drawn, a range as a bar. Range presets (all, year, month, week, day, hour), a minimap of the whole run with the
+  window to drag, drag to pan, wheel or pinch to zoom, the simulated or the real clock, a filter, a hidden lane per
+  click on its name. Hover says what a mark or bin holds; a click selects a mark, or zooms into a bin.
+- **Views** (`static/views.js`), one measure each with what it is made of: findings; assessments (each of the team's
+  rules: held, failed, review, unread or not applied, how often read, its findings; from `RunResult.rules_read`);
+  conversations (per person, chat-style, who wrote each line: the agent, a script worded by a model, the script's own
+  words); replies (the median time people took, each reply's draw); response times (the agent's comeback after each
+  answer); follow-ups; model cost (tokens, and a cost when `--prices` names the model, as `minutehand query`
+  prices it); memory (keys, each write with the value it replaced); stored items; calls (filterable by who answered);
+  the dispatch table (windows, draws, faults); forks (the tree, and a fork's account of itself); samples (a
+  `run-all --samples` batch, kept as `run-all/<batch>/batch.json`: pass rate per scenario, every seed openable).
+  Long lists are virtualised (`static/vlist.js`): a table of a hundred thousand rows holds only those in view.
+- **The inspector** (`static/inspector.js`) reads one thing whole: a message with its conversation and writer, an
+  HTTP call with its request and answer (JSON laid out) and who answered it, a model call with what it was asked and
+  answered and its tokens, a memory write or stored item as a diff of before and after, a dispatch entry with its
+  draw, a reply with how it was written and drawn, a wait, a wake with its span waterfall, a finding with its
+  evidence.
+- **Keys.** `j`/`k` the next or previous mark, `←`/`→` pan, `+`/`−` zoom, `0` the whole run, `c` the clock, `/` the
+  filter, `f` the next finding, `[`/`]` the views, `Esc`, `?`.
+- **The API** (`adapters/web/app.py`, typed by `responses.py`, read by `reading.py`). The tables of calls, the
+  dispatch table, memory, stored items and model calls are rows of the run's read model (`adapters/query`,
+  `docs/querying.md`), so the page and `minutehand query` say the same; the timeline, one event or call whole,
+  people, assessments and batches are read from the run as the read model is. Every path the page calls is listed
+  in `static/api.js` and `tests/web/test_viewer_api.py` requests each.
+- **Stack.** Plain ES modules served from the package, d3 (scales, calendar intervals) and Observable Plot (the
+  views' charts) vendored with their licences: nothing is fetched from elsewhere and nothing is built, so
+  `pip install minutehand` serves the page with no network and no JavaScript toolchain anywhere. A framework would
+  bring a build into CI and the wheel for a page whose weight is a canvas and a few tables.
+- **Size.** Measured (`tests/web/test_viewer_page.py`, headless Chromium, this machine): a synthetic run of 400
+  simulated days and about 34,000 marks loads in about 2 s, most of it the server building the timeline once (a
+  finished run's timeline is kept for the next read); each frame of the timeline from the whole year to an hour
+  draws in under 3 ms; its 4,600 calls tabulate in 0.1 s.
+- **Listeners are bound once.** The page before this one hung: every draw bound another click listener to its main
+  element, so each click that redrew (switching the clock, the refresh of a running run) doubled the work of the
+  next; fourteen clock switches took four seconds. Every listener on the window, the document and the page's shell
+  is now bound once, at load, and `test_redrawing_never_adds_a_listener_to_what_outlives_the_draw` counts them
+  across redraws.
 
 ### What a coding agent calls
 
@@ -1605,6 +1694,10 @@ Built and tested (`adapters/mcp/server.py`, `minutehand mcp`, `tests/mcp/`): ser
 | `rerun_from(run_id, at_seq, changes, command, samples)` | a new `run_id` started from that checkpoint with the overrides applied |
 | `list_outbound_calls(run_id)` | per declared outbound host its use, and every captured call with the events it wrote |
 | `list_runs()` | every run in the state directory, forks saying what they changed |
+| `schema()` | the read model's views and columns, and its version (`docs/querying.md`) |
+| `query_run(run_id, sql, limit, offset, prices)` | one read-only SELECT over a run's read model, a page of at most 1,000 rows |
+| `trace(run_id, person, provider, kind, since, until, wake)` | the agent's acts in order (`actions`) |
+| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers (a reply), follows up (a follow-up) or comes after (another message), the model call and HTTP call behind it; the agent's acts named `action N` by their place in `actions`, apart from seqs, and the replies, follow-ups and findings after it |
 
 The command line (`cli.py`) does the same:
 
@@ -1613,6 +1706,9 @@ minutehand run <scenario.yaml> --agent <agent.yaml> [--state DIR] [--samples N] 
 minutehand findings <run_id> [--state DIR] [--json]
 minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--state DIR] [--json] [-- <command...>]
 minutehand runs [--state DIR]
+minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] | --schema
+minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
+minutehand explain <run> <seq> [--json]
 minutehand env --agent <agent.yaml> --proxy-port N [--format shell|compose] [--service NAME...] [--ca-path PATH]
 minutehand scenarios [show <name> | new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>' ...]
 ```
@@ -1706,7 +1802,7 @@ Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/pattern
 | `one_open_ask_per_person` | Sends the same question twice | Track what is already open with each person before asking | `count: {writes: {repeats_open_ticket: true}}`, `at_most: 0` | A judge that compares each outgoing question with those already open with the same person |
 | `no_double_tick` | Does the weekly task twice | A recurring task has one instance per period | `count: {writes: {in_repeated_wake: true}}`, `at_most: 0`, review | A check for an existing instance in the current period before each cadence tick creates anything |
 | `honest_closure` | Reports done when it is not | Closing is decided from the state of the world, not from the agent's last message | `expect:`; `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0` | Closure evaluated against the recorded state of every piece of work the goal depends on |
-| `act_on_the_decision` | Goes ahead with what a person has still to approve, or turned down | Hold each gated operation until a decision that permits it; on a rejection close the work and say so | `count: {writes: {gated: true}}`, `at_most: 0` | The operation's state read at the moment it is performed, against the approval it needs |
+| `act_on_the_decision` | Goes ahead with what a person has still to approve, or turned down | Hold each operation until a decision that allows it; on a rejection close the work and say so | per ask, the operation's message `until: closed-PT1S`, `at_most: 0`; and `each: transition` on a rejection, `since: transition`, `at_most: 0` | The operation's state read at the moment it is performed, against the approval it needs |
 | `confirm_names` | Acts on a name it guessed | A name that matters is carried exactly as given, and an assumption is asked about before it is acted on | `near_miss_name`, over `protected_names` | None. Run `f431fc97f427` is the evidence one is needed. |
 
 - Patterns are documentation in the repo, one page each, and data the tool returns (`pattern(key)`; the CLI prints the pattern under each finding). They are not code the user must import.
@@ -1717,13 +1813,13 @@ Ten, in `checks/patterns.py`; each `Pattern.reference` is its page `docs/pattern
 
 ### Checks that need a model
 
-Designed, not built. "Does this ticket make sense to the person it was assigned to" cannot be computed. A judged check implements the same `Check` protocol and returns the same `Finding`, with three differences:
+Built for two things (`checks/judged/`), both run only under `--judge`: `asked_about`, which reads a scenario's `PersonAsked.about`, and `review`, the shared reviewer of every effect the agent had on the world, by kind of item, against the declared world as it stood (`docs/assessments.md`, "The shared reviewer"). A check that judged every ticket the agent filed for clarity by Minutehand's own idea of clarity (`ticket_is_actionable`) was removed; the reviewer judges an effect only against what the scenario declares and what the agent was given. Every call either makes is kept with the world and replayed (`application/kept.py`), and listed in `model_calls` (side `judge` or `assessor`). A person's reply a model wrote is checked against what they know the same way (`person-fact-check/1`); one that still goes beyond it is a fact of the simulation's health, `beyond_facts`. A judged check returns the same `Finding`, with three differences:
 
-- `FindingKind.REVIEW` unless the scenario sets a pass rate over several samples.
+- `FindingKind.REVIEW`.
 - The model, its prompt version and its rationale are recorded with the finding.
-- It runs after the deterministic checks and only on entities they passed, so a ticket already failed for a wrong name is not judged for clarity.
+- It runs after the deterministic checks and only on entities they passed.
 
-Every finding, judged or not, becomes one OpenTelemetry log record in the trace of the entity it is about, so "tickets judged unclear, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
+Every finding, judged or not, becomes one OpenTelemetry log record in the trace of the entity it is about, so "asks judged off-topic, by scenario, across ten thousand runs" is a query in whatever store receives the telemetry.
 
 ## Build tracks
 
@@ -1744,7 +1840,8 @@ The contracts came first, alone; the parallel tracks were written against them.
 | **Composition and end-to-end**: `session.py`, files, agent drivers, a real agent process on stock `slack_sdk` | Built |
 | **Adoption in the parent repository**: one container in compose and CI, the adapter, the deletions | Not built here; see the adoption guide in `docs/` |
 | **People written by a model** | Not built |
-| **Generated providers** (the `GENERATED` engine), then **judged checks** | Not built |
+| **Generated providers** (the `GENERATED` engine) | Not built |
+| **Judged checks**: `asked_about` and the shared reviewer of the agent's effects | Built |
 
 Every fake of the parent repository now has a provider here: Jira, Notion and Microsoft (Teams and Graph, one provider since they share a host and a directory) landed on `integrate/providers-2`.
 
@@ -1829,6 +1926,31 @@ The patch adds an offset to the sandbox's realtime and monotonic clocks, applied
 
 What it took beyond the patch: the release's own sidecar binaries do not match a build of the `go` branch (the sentry and its prewarmer are separate binaries now), so the patched sentry (`runsc/cmd/sentry/sentry_main.go`, absent from the `go` branch) and the prewarmer (`runsc/prewarmer/prewarmer.c`) were built from the same source; `runsc do` needs `--ignore-cgroups` nested in a container, and `iptables` and `sysctl` to reach the network. Then through Minutehand itself (`Contained`, 2026-10-07): a stock Python agent under `runsc do`, asking Rosa in Slack on its first wake and following up only from an in-process `threading.Timer` of 36 hours, with Minutehand's proxy on the sandbox's gateway (192.168.10.3) and the two `Contained` commands wrapping `runsc debug`. Three simulated days took 3 seconds; the follow-up landed 36 hours less 0.42 s after the ask (real time spent inside the first wake), in a wake of its own, with no wake endpoint for it. Two things only the real run showed: `http.server`'s 0.5 s poll is a deadline like any other (a timer that fires and does nothing is withdrawn as a wake, and the period it fired at is learned as that task's housekeeping, so the run is not stopped at every poll; `--deadlines` reports each task's deadline for it), and the sandbox prints fields `Contained` does not read. Not tried: a pending real call holding time still, checkpoint and restore as a fork, and x86-64.
 
+## Authentication is out of scope
+
+Minutehand simulates the services an agent works with; it does not authenticate or authorize anything. Authentication
+workflows are tested with separate tools, outside this stack.
+
+- **Any credential acts.** A token, key, secret or sign-in the world seeded or issued acts as its account, expired or
+  revoked alike; any other credential, or none at all, acts as the account the world names for it
+  (`unknown_credentials_act_as`, or the provider's equivalent default: the agent's account, the scenario's owner or
+  the first seeded user). A token endpoint answers every grant in the vendor's shape.
+- **Nothing on the agent's own calls is checked:** no scope, grant, role, permission, client secret or signature.
+- **Shapes are still the vendor's.** A request missing a parameter the vendor requires, or naming a grant type it
+  does not have, is refused as the vendor refuses it. A push address must be `https://`, because the scheme is part
+  of Google's request shape (`changes.watch`, `events.watch`).
+- **Who sees what is world data, and stays:** membership, sharing, whose mailbox, calendar or drive it is, and an
+  account the directory disabled or does not hold (Microsoft's AADSTS50057 and AADSTS50034).
+- **What a service sends the agent is kept,** since it is the service's request, not a check Minutehand makes: Slack
+  signs its events with the world's signing secret, Graph sends its subscription validation handshake, a Bot
+  Framework push carries its JWT.
+- **No certificate is ever checked.** A Google push (`changes.watch`, `events.watch`) is delivered to the agent's
+  `https://` address whatever certificate the receiver serves, self-signed included: the scheme is required only as
+  part of Google's request shape.
+
+Each provider's `CLAIMS.md` points here and lists what its vendor would refuse, so a reader knows what this stack
+does not test.
+
 ## Known issues / limitations
 
 - **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample is a run of its own with a memory of its own; what the agent keeps outside the store is carried from one sample into the next.
@@ -1838,10 +1960,10 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 - **A fork starts only at a checkpoint the agent did not go on writing its memory after, in the same wake.** An agent that reports IDLE while a process of its own still writes makes that wake's checkpoints not restorable.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
-- **Slack's default workspace accepts any token.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`, in which any `xoxb-` or `xoxp-` token acts as the bot; a world that declares workspaces accepts only their tokens.
-- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called.
+- **A Slack token only picks a workspace.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`; in a world that declares several, a token answers in the workspace that declares or minted it, else the first that declares none, else the first. No token is refused.
+- **A Slack event retry is not spaced out.** Slack retries after about a minute and then five; the fake retries at once, since no simulated time passes while the agent is called. Every send and retry is recorded as it ends (`EntityKind.PUSH`, a `PushSnapshot` with the event id, the address, the retry's number and `X-Slack-Retry-Reason`, the status or the timeout, and the real seconds it took; the read model's `pushes`), so an event the agent handled twice is in the record. An event still refused after the last retry stops the run `AGENT_FAILED`, its failure naming the event and how each send ended, and the run's health says `push_failed`. A person's reply whose push failed stands in the record as said, since the service took it: the message, their reply (`replies`) and its transition are kept, the wait it answered is settled, and the record of what was owed carries the failure. How long a send took is real time and never parts a fork from its parent.
 - **A press that means to fill a form waits three real seconds** for the agent to open it with the press's `trigger_id`, as Slack's trigger lives three seconds; an agent slower than that fails the run (`FormNeverOpened`).
-- **Most providers accept any token.** Slack treats any `xoxb-` or `xoxp-` token as the bot; Asana accepts any bearer token unless its seed declares tokens; YouTrack and Jira accept any credential or none, a seeded one acting as its user and any other as the agent. Drive accepts only tokens its `/token` issued, which expire an hour of simulated time later; `/token` matches a refresh token or a service account by name and verifies no signature.
+- **No provider authenticates** (see "Authentication is out of scope"): any credential, or none, acts, a seeded one as its account and any other as the world's default identity; Google's `/token` matches a refresh token or a service account by name and verifies no signature.
 - **No fake's wire details have been verified against the real service.**
 - **A rule cannot read meaning.** It counts facts between moments: a thank-you and a chase under an answered ask are both a message `in_thread`, and two messages minutes apart are close whether or not they ask the same thing. Such a rule is best `severity: review`; telling them apart is a judgement, for a check a model judges (not built) or the team's own Python.
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
@@ -1853,7 +1975,7 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 - **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
 - **A fork is proven by its memory's digest and its agent's report.** The report carries status, next wake and commitments; state outside the store it does not reflect, and a process left running with another moment in memory whose report reads the same, are not seen.
 - **A tunnelled call is a burst of bytes, not a request.** Within one wake, two requests on one connection less than `BURST_QUIET` apart are one record (the agent sending in a later wake always starts a new one, so wakes never share a record), and requests multiplexed at once on HTTP/2 are one; an answer streamed with a pause longer than `BURST_QUIET` is two records, the second opened by the server. A burst still unanswered at the end of a run is written as far as it had gone.
-- **Every read of the agent's memory is an event in the log.** An agent that polls its memory (a worker reading its queue every 50 ms) fills the log with reads, and a read made between two wakes counts in the wake before it (`memory_reads`). The ids a provider derives from the log's seq move when memory events are added. Reads are not aggregated.
+- **A read of the agent's memory is kept in the log only when it finds something new.** Every read is counted in its wake (`memory_reads`); one made between two wakes is counted in the wake before it after that wake's record was written, so no `WakeRecord` holds it. The log keeps the first read of each key or prefix in a wake and each later one that finds another value: a key that changes and changes back between two polls reads as unchanged. Whether a poll falls between two writes still decides whether a read is kept, so the ids a provider derives from the log's seq can still move by one from run to run.
 - **A checkpoint is taken when the agent's driver says the wake is over.** Work the agent goes on doing after it reported IDLE belongs to the next moment; only its late writes to its memory are seen (the checkpoint is then not restorable). On a tunnel, server bytes are read as an answer by their TLS record headers alone, record by record: after a TLS 1.3 client's `Finished`, the server's ticket flight is its leading run of `application_data` records of one length (35 to 2048 bytes, at most four), and the first record that breaks it answers, in the same read or a later one. A server that sends no tickets and answers the first request on a new connection with one record that alone fits the flight looks like one that sends one ticket alone (as AWS does): the request is held as awaiting until the client sends again or closes the connection, so a checkpoint in that wake is not restorable and the burst is written then, or at the run's end, rather than when it falls quiet. An HTTP/2 server's preface and its acknowledgement of the client's still read as answering the first request on a new connection (`adapters/proxy/tunnel.py`); a sandbox whose clock Minutehand owns waits on that before it is released.
 - **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
@@ -1868,6 +1990,7 @@ What it took beyond the patch: the release's own sidecar binaries do not match a
 ## References
 
 - `docs/lints.md`: the lints of this repo, each with its five tests.
+- `docs/querying.md`: reading a run with SQL: the read model's views, how bodies are decoded, the stability guarantee, ready-made queries.
 - `docs/capture.md`: hosts no provider claims, captured by declaration: the three modes, discovery, replay, forks.
 - `docs/patterns/`: one page per pattern.
 - `docs/ci.md`: the branches, the gate, and what CI runs.

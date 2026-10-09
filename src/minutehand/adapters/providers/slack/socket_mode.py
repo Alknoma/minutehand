@@ -22,11 +22,14 @@ state. The tickets handed out and spent are the state, in the world's log.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 import weakref
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Protocol
 
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from minutehand.adapters.providers.slack import wire
@@ -77,8 +80,23 @@ def open_connection(slack: SlackWorld) -> wire.ConnectionsOpen:
     return wire.ConnectionsOpen(url=f"wss://{HOST}{PATH}?ticket={ticket}&app_id={slack.team.app_id}")
 
 
+class Recorder(Protocol):
+    """Where each send of an event is told as it ends (`inbound.sent`)."""
+
+    def __call__(
+        self, *, url: str, attempt: int, reason: str | None, status: int | None, failure: str | None, seconds: float
+    ) -> object: ...
+
+
 class SocketNotAcknowledged(AgentFailed):
     """The agent took no event over Socket Mode: it had no connection open, or never acknowledged the envelope."""
+
+
+@dataclass(frozen=True)
+class Acknowledged:
+    """The app took an envelope; `answer` is the `payload` its acknowledgement carried, None for none."""
+
+    answer: JsonValue
 
 
 class Hub:
@@ -87,7 +105,7 @@ class Hub:
     def __init__(self) -> None:
         self._open: list[WebSocket] = []
         self._changed = asyncio.Condition()
-        self._acks: dict[str, asyncio.Future[None]] = {}
+        self._acks: dict[str, asyncio.Future[JsonValue]] = {}
 
     async def opened(self, socket: WebSocket) -> None:
         async with self._changed:
@@ -109,32 +127,59 @@ class Hub:
             return
         waiting = self._acks.pop(ack.envelope_id, None)
         if waiting is not None and not waiting.done():
-            waiting.set_result(None)
+            waiting.set_result(ack.payload)
 
-    async def push(self, callback: wire.EventCallback) -> None:
-        """Send `callback` as an `events_api` envelope on the newest connection, again until it is acknowledged."""
+    async def push(self, callback: wire.EventCallback, *, record: Recorder | None = None) -> None:
+        """Send `callback` as an `events_api` envelope on the newest connection, again until it is acknowledged;
+        each send told to `record` as it ends."""
         for attempt in range(PUSH_ATTEMPTS):
             envelope_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{HOST}/{callback.event_id}/{attempt}"))
-            socket = await self._newest()
-            acked = asyncio.get_running_loop().create_future()
-            self._acks[envelope_id] = acked
-            envelope = wire.SocketEnvelope(
-                envelope_id=envelope_id,
-                payload=callback,
-                retry_attempt=attempt,
-            )
-            try:
-                await socket.send_text(wire.envelope_body(envelope))
-                await asyncio.wait_for(asyncio.shield(acked), timeout=ACK_WITHIN)
+            envelope = wire.SocketEnvelope(envelope_id=envelope_id, payload=callback, retry_attempt=attempt)
+            began = time.monotonic()
+            acked = await self._send(envelope_id, wire.envelope_body(envelope))
+            if record is not None:
+                record(
+                    url=f"wss://{HOST}{PATH}",
+                    attempt=attempt,
+                    reason=None,  # Socket Mode gives an envelope's retry no reason
+                    status=None,
+                    failure=None if acked is not None else f"not acknowledged within {ACK_WITHIN:g}s",
+                    seconds=time.monotonic() - began,
+                )
+            if acked is not None:
                 return
-            except (TimeoutError, WebSocketDisconnect, RuntimeError):
-                continue
-            finally:
-                self._acks.pop(envelope_id, None)
         raise SocketNotAcknowledged(
             f"the agent did not acknowledge Socket Mode event {callback.event_id} ({callback.event.type}) in "
             f"{PUSH_ATTEMPTS} sends {ACK_WITHIN:g} seconds apart"
         )
+
+    async def interact(self, payload: wire.BlockActions | wire.ViewSubmission) -> JsonValue:
+        """Send an interaction as an `interactive` envelope on the newest connection and wait for the app's
+        acknowledgement, whose `payload` is its answer (a `view_submission`'s `response_action`), None when it holds
+        none. An interaction is sent once, as it is at a request URL, and the app that does not acknowledge it in
+        time fails."""
+        envelope_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{HOST}/{payload.trigger_id}"))
+        envelope = wire.InteractiveEnvelope(envelope_id=envelope_id, payload=payload)
+        acked = await self._send(envelope_id, wire.envelope_body(envelope))
+        if acked is None:
+            raise SocketNotAcknowledged(
+                f"the agent did not acknowledge the Socket Mode {payload.type} {payload.trigger_id} in "
+                f"{ACK_WITHIN:g} seconds"
+            )
+        return acked.answer
+
+    async def _send(self, envelope_id: str, text: str) -> Acknowledged | None:
+        """One envelope on the newest connection, and the app's acknowledgement; None when it came in no time."""
+        socket = await self._newest()
+        waiting: asyncio.Future[JsonValue] = asyncio.get_running_loop().create_future()
+        self._acks[envelope_id] = waiting
+        try:
+            await socket.send_text(text)
+            return Acknowledged(answer=await asyncio.wait_for(asyncio.shield(waiting), timeout=ACK_WITHIN))
+        except (TimeoutError, WebSocketDisconnect, RuntimeError):
+            return None
+        finally:
+            self._acks.pop(envelope_id, None)
 
     async def _newest(self) -> WebSocket:
         async with self._changed:

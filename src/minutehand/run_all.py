@@ -32,25 +32,38 @@ from pydantic import Field, ValidationError
 
 from minutehand import session
 from minutehand.adapters.proxy.trust import authority
-from minutehand.application.files import FileKind, FileRefused, kind_of, load_scenario, read_yaml
+from minutehand.application.files import (
+    FileKind,
+    FileRefused,
+    filled_as_run,
+    kind_of,
+    load_agent,
+    load_scenario,
+    read_yaml,
+)
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
+from minutehand.domain.templates import RUN_DIR, RUN_PORT
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
-PORT = "{run.port}"
-DIR = "{run.dir}"
+PORT = RUN_PORT
+DIR = RUN_DIR
 PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
 CA = "ca"
 """The proxy's CA folder under the state directory, as `session` names it."""
 BATCHES = "run-all"
 """The folder under the state directory that holds each batch's per-scenario folders and logs."""
+KEPT = "batch.json"
+"""In a batch's folder: the `Batch` it came to, written once every run of it is over."""
 
 _EXPECTED = {
     ExpectedOutcome.PASSED: VerdictKind.PASSED,
     ExpectedOutcome.FAILED: VerdictKind.FAILED,
     ExpectedOutcome.UNFINISHED: VerdictKind.UNFINISHED,
     ExpectedOutcome.NOT_JUDGED: VerdictKind.NOT_JUDGED,
+    ExpectedOutcome.SIMULATION_INCOMPLETE: VerdictKind.SIMULATION_INCOMPLETE,
 }
 
 
@@ -94,9 +107,12 @@ class ScenarioPlayed(Model):
 
 
 class Batch(Model):
-    """What `run-all --json` prints."""
+    """What `run-all --json` prints, and what it keeps as `batch.json` in the batch's folder under the state
+    directory, for the viewer's samples."""
 
+    batch_id: str = Field(description="The batch's folder under the state directory's `run-all/`")
     folder: str
+    samples: int = Field(ge=1, description="Runs of each scenario asked for")
     played: list[ScenarioPlayed]
 
     @property
@@ -161,6 +177,49 @@ def _filled(text: str, port: int, folder: Path) -> str:
     return text.replace(PORT, str(port)).replace(DIR, str(folder))
 
 
+def checked_agent(agent: Path) -> None:
+    """The agent file refused here, once, rather than once per scenario: read as a run reads it, with each
+    placeholder filled, since a field that checks what it holds (an inbox's URL) would refuse the placeholder."""
+    try:
+        text = agent.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
+    load_agent(agent, text=filled_as_run(text, agent))
+
+
+ONE_RUN = "run"
+"""The folder under the state directory's `run-all/` that holds the folders `{run.dir}` names for `minutehand run`."""
+
+
+class FilledRun(Model):
+    """An agent file and command as `minutehand run` starts them, each placeholder filled once for the invocation."""
+
+    agent: AgentUnderTest
+    command: list[str] | None
+    environment: dict[str, str] = Field(description="Handed to the agent's command: empty when nothing was filled")
+
+
+def filled_for_run(agent: Path, command: list[str] | None, *, state: Path) -> FilledRun:
+    """`{run.port}` and `{run.dir}` in the agent file and the command, filled as `run-all` fills them for one
+    scenario: a free port and a folder of the invocation's own under the state directory. A file that holds one with
+    no command to start is refused (`load_agent`): nobody would listen on a port picked here."""
+    try:
+        text = agent.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
+    uses = any(p in text or any(p in word for word in command or []) for p in (PORT, DIR))
+    if not uses or not command:
+        return FilledRun(agent=load_agent(agent), command=command, environment={})
+    port = free_port()
+    folder = state / BATCHES / ONE_RUN / secrets.token_hex(4)
+    folder.mkdir(parents=True, exist_ok=True)
+    return FilledRun(
+        agent=load_agent(agent, text=_filled(text, port, folder)),
+        command=[_filled(word, port, folder) for word in command],
+        environment={PORT_VARIABLE: str(port), DIR_VARIABLE: str(folder)},
+    )
+
+
 async def play_all(
     folder: Path,
     agent: Path,
@@ -171,22 +230,32 @@ async def play_all(
     judge: bool = False,
     samples: int = 1,
     seed: int | None = None,
+    passed_on: list[str] | None = None,
 ) -> Batch:
     """Every scenario in `folder`, `samples` times each under seeds counted up from `seed`, at most `jobs` runs at
-    a time."""
+    a time; `passed_on`, flags each `minutehand run` takes as they are (`--record-model-calls`, the proxy's host)."""
     if samples < 1:
         raise FileRefused(f"run-all needs at least one sample of each scenario, not {samples}")
     found = scenarios_in(folder)
     if not found:
         raise FileRefused(f"{folder}: holds no scenario file")
     authority(state / CA)  # made once here: runs started together would each make one, and trust another's
-    batch = state / BATCHES / secrets.token_hex(4)
+    batch_id = secrets.token_hex(4)
+    batch = state / BATCHES / batch_id
     gate = asyncio.Semaphore(max(1, jobs))
 
     async def one(path: Path, sample_seed: int | None, n: int) -> SamplePlayed:
         async with gate:
             return await _play(
-                path, agent, state=state, batch=batch, command=command, judge=judge, seed=sample_seed, n=n
+                path,
+                agent,
+                state=state,
+                batch=batch,
+                command=command,
+                judge=judge,
+                seed=sample_seed,
+                n=n,
+                passed_on=passed_on or [],
             )
 
     played: list[ScenarioPlayed] = []
@@ -211,7 +280,17 @@ async def play_all(
                 matched=matched,
             )
         )
-    return Batch(folder=str(folder), played=played)
+    done = Batch(batch_id=batch_id, folder=str(folder), samples=samples, played=played)
+    batch.mkdir(parents=True, exist_ok=True)
+    (batch / KEPT).write_text(done.model_dump_json(indent=2), encoding="utf-8")
+    return done
+
+
+def batches(state: Path) -> list[Batch]:
+    """Every batch `run-all` finished under `state`, oldest first by the time its file was written."""
+    base = state / BATCHES
+    found = sorted(base.glob(f"*/{KEPT}"), key=lambda p: p.stat().st_mtime) if base.is_dir() else []
+    return [Batch.model_validate_json(p.read_text(encoding="utf-8")) for p in found]
 
 
 async def _play(
@@ -224,6 +303,7 @@ async def _play(
     judge: bool,
     seed: int | None,
     n: int,
+    passed_on: list[str],
 ) -> SamplePlayed:
     written = load_scenario(path)
     played_seed = (
@@ -237,11 +317,15 @@ async def _play(
     uses = PORT in text or DIR in text
     if uses:
         copy.write_text(_filled(text, port, own), encoding="utf-8")
-    argv = [sys.executable, "-m", "minutehand", "run", str(path), "--agent", str(copy if uses else agent)]
-    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
-    argv += ["--seed", str(seed)] if seed is not None else []
-    if command:
-        argv += ["--", *(_filled(word, port, own) for word in command)]
+    argv = run_argv(
+        path,
+        copy if uses else agent,
+        state=state,
+        judge=judge,
+        seed=seed,
+        passed_on=passed_on,
+        command=[_filled(word, port, own) for word in command] if command else None,
+    )
     log = own / "run.log"
     env = {**os.environ, PORT_VARIABLE: str(port), DIR_VARIABLE: str(own)}
     try:
@@ -269,6 +353,24 @@ async def _play(
         timeline=timeline(state, outcome.record.run_id),
         log=str(log),
     )
+
+
+def run_argv(
+    scenario: Path,
+    agent: Path,
+    *,
+    state: Path,
+    judge: bool,
+    seed: int | None,
+    passed_on: list[str],
+    command: list[str] | None,
+) -> list[str]:
+    """The `minutehand run` one scenario's sample is played by."""
+    argv = [sys.executable, "-m", "minutehand", "run", str(scenario), "--agent", str(agent)]
+    argv += ["--state", str(state), "--json", *(["--judge"] if judge else [])]
+    argv += ["--seed", str(seed)] if seed is not None else []
+    argv += passed_on
+    return argv + (["--", *command] if command else [])
 
 
 def timeline(state: Path, run_id: str) -> list[Timeline]:

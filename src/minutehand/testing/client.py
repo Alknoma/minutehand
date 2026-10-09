@@ -47,6 +47,7 @@ from minutehand.adapters.control.wire import (
     Seeded,
     SpansPage,
     StepView,
+    TransitionsView,
     Unmatched,
     WorldList,
     WorldView,
@@ -327,6 +328,11 @@ class MinutehandClient:
         each falls due (the earliest `due` is the next moment a harness with its own clock jumps to)."""
         return self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
 
+    def transitions(self, world_id: str) -> TransitionsView:
+        """What waits on the world's people where its people engine plays them (each item with when they act), and
+        every move of any item's state, by anyone (docs/design-transitions.md)."""
+        return self._get(f"/worlds/{world_id}/transitions", TransitionsView)
+
     def perform_due_decisions(self, world_id: str) -> DecisionsDone:
         """Have every decision due at the world's clock made, as its person; the clock does not move."""
         return self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)
@@ -502,6 +508,9 @@ class AsyncMinutehandClient:
 
     async def read_inboxes(self, world_id: str) -> InboxesView:
         return await self._post(f"/worlds/{world_id}/inboxes/read", "{}", InboxesView)
+
+    async def transitions(self, world_id: str) -> TransitionsView:
+        return await self._get(f"/worlds/{world_id}/transitions", TransitionsView)
 
     async def perform_due_decisions(self, world_id: str) -> DecisionsDone:
         return await self._post(f"/worlds/{world_id}/inboxes/due", "{}", DecisionsDone)

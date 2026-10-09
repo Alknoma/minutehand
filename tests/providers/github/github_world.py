@@ -18,10 +18,18 @@ from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.provider import GitHubProvider, build
 from minutehand.adapters.providers.github.seed import (
     GitHubSeed,
+    SeedBranch,
+    SeedChange,
+    SeedComment,
     SeedCommit,
     SeedFile,
+    SeedIssue,
+    SeedLabel,
+    SeedLineCommit,
     SeedOrganization,
+    SeedPull,
     SeedRepository,
+    SeedReview,
     SeedToken,
     SeedUser,
 )
@@ -165,6 +173,199 @@ def github_seed(**changes: object) -> GitHubSeed:
         ],
     )
     return base.model_copy(update=changes)
+
+
+TIMEOUT = "PAYMENT_TIMEOUT = 60\nRETRY_LIMIT = 5\n"
+"""`CONFIG` with the timeout raised: what the seeded pull request changes."""
+TIMEOUT_NOTES = "# Timeouts\n\nThe payment timeout is 60 seconds.\n"
+
+
+def tracker_ledger() -> SeedRepository:
+    """The ledger with a tracker: labels, issues (one assigned to each person, one closed), a branch with commits of its
+    own and the pull request opened from it, reviewed once and with a reviewer still asked for."""
+    return ledger(
+        labels=[
+            SeedLabel(name="bug", color="d73a4a", description="Something isn't working"),
+            SeedLabel(name="docs", color="0075ca"),
+            SeedLabel(name="Needs triage", color="ededed"),
+            SeedLabel(name="alpha", color="cfd3d7", default=True),
+        ],
+        issues=[
+            SeedIssue(
+                number=1,
+                title="Retries wait too long",
+                body="The doubling wait reaches a minute.\n\n- seen in `retry_with_backoff`",
+                author="tomas-b",
+                labels=["bug"],
+                assignees=["iris-calder"],
+                before=timedelta(days=4),
+                comments=[
+                    SeedComment(author="iris-calder", body="Looking at it.", before=timedelta(days=3)),
+                    SeedComment(author="tomas-b", body="Thanks!", before=timedelta(days=2)),
+                ],
+            ),
+            SeedIssue(
+                number=2,
+                title="Document the retry helper",
+                author="iris-calder",
+                labels=["docs"],
+                state=wire.IssueState.CLOSED,
+                state_reason=wire.StateReason.COMPLETED,
+                before=timedelta(days=5),
+                closed_before=timedelta(days=1),
+                closed_by="tomas-b",
+            ),
+            SeedIssue(
+                number=3,
+                title="Checkout button label",
+                author="iris-calder",
+                assignees=["tomas-b"],
+                before=timedelta(days=1),
+            ),
+        ],
+        diverged_branches=[
+            SeedBranch(
+                name="notes",
+                commits=[
+                    SeedLineCommit(
+                        message="Describe the notes",
+                        author="iris-calder",
+                        before=timedelta(hours=4, minutes=30),
+                        changes=[SeedChange(path="docs/notes.md", text="# Notes\n\nA note.\n")],
+                    )
+                ],
+            ),
+            SeedBranch(
+                name="timeout",
+                commits=[
+                    SeedLineCommit(
+                        message="Raise the payment timeout",
+                        author="tomas-b",
+                        before=timedelta(hours=4),
+                        changes=[
+                            SeedChange(path="services/billing/config.py", text=TIMEOUT),
+                            SeedChange(path="docs/timeouts.md", text=TIMEOUT_NOTES),
+                        ],
+                    )
+                ],
+            ),
+        ],
+        pulls=[
+            SeedPull(
+                number=4,
+                title="Raise the payment timeout",
+                body="Sixty seconds is what the processor allows.",
+                author="tomas-b",
+                head="timeout",
+                assignees=["iris-calder"],
+                requested_reviewers=["iris-calder"],
+                before=timedelta(hours=3),
+                comments=[SeedComment(author="iris-calder", body="On it.", before=timedelta(hours=2))],
+                reviews=[
+                    SeedReview(
+                        author="outsider",
+                        state=wire.ReviewState.COMMENTED,
+                        body="Why sixty?",
+                        before=timedelta(hours=1),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def tracker_seed() -> GitHubSeed:
+    """The shared GitHub with the tracker in the ledger."""
+    base = github_seed()
+    return validated(base.model_copy(update={"repositories": [tracker_ledger(), *base.repositories[1:]]}))
+
+
+def validated(seed: GitHubSeed) -> GitHubSeed:
+    """A seed built by copying, which checks nothing, read through the seed's own validation."""
+    return GitHubSeed.model_validate(seed.model_dump())
+
+
+RETRY_TWICE = RETRY.replace("TIMEOUT_SECONDS = 30", "TIMEOUT_SECONDS = 60").replace("attempts=5", "attempts=7")
+"""`RETRY` changed in two places, between which it keeps lines: a change git may align more than one way."""
+
+
+def branch(name: str, *commits: tuple[str, str, timedelta, list[SeedChange]]) -> SeedBranch:
+    return SeedBranch(
+        name=name,
+        commits=[
+            SeedLineCommit(message=message, author=author, before=before, changes=changes)
+            for message, author, before, changes in commits
+        ],
+    )
+
+
+def pulls_seed() -> GitHubSeed:
+    """The tracker's GitHub with more branches to make pull requests from: two commits that delete a file and add
+    another, a change to a file the first pull request also changes, a change to a binary file, a change in two
+    places, and, in the public notes, a branch to ask a merge of from a repository its author does not push to."""
+    base = tracker_seed()
+    ledger_repo = tracker_ledger()
+    extra = [
+        branch(
+            "cleanup",
+            ("Drop the guide", "iris-calder", timedelta(hours=3), [SeedChange(path="docs/guide.md", delete=True)]),
+            (
+                "Say where the guide went",
+                "iris-calder",
+                timedelta(hours=2),
+                [SeedChange(path="docs/moved.md", text="Moved.\n")],
+            ),
+        ),
+        branch(
+            "retry-config",
+            (
+                "Allow more retries",
+                "tomas-b",
+                timedelta(hours=3),
+                [SeedChange(path="services/billing/config.py", text="PAYMENT_TIMEOUT = 45\nRETRY_LIMIT = 7\n")],
+            ),
+        ),
+        branch(
+            "logo",
+            (
+                "New logo",
+                "iris-calder",
+                timedelta(hours=3),
+                [SeedChange(path="assets/logo.png", base64_bytes=base64.b64encode(bytes(range(255, -1, -1))).decode())],
+            ),
+        ),
+        branch(
+            "edgy",
+            (
+                "Tune the retries",
+                "tomas-b",
+                timedelta(hours=3),
+                [SeedChange(path="services/billing/retry.py", text=RETRY_TWICE)],
+            ),
+        ),
+    ]
+    ledger_repo = ledger_repo.model_copy(update={"diverged_branches": [*ledger_repo.diverged_branches, *extra]})
+    notes = base.repositories[1].model_copy(
+        update={
+            "commits": [
+                SeedCommit(
+                    message="Start the notes", author="iris-calder", before=timedelta(hours=1), paths=["README.md"]
+                )
+            ],
+            "diverged_branches": [
+                branch(
+                    "fix",
+                    (
+                        "Fix the notes",
+                        "iris-calder",
+                        timedelta(minutes=30),
+                        [SeedChange(path="README.md", text="# Notes\n\nFixed.\n")],
+                    ),
+                )
+            ],
+        }
+    )
+    return validated(base.model_copy(update={"repositories": [ledger_repo, notes, *base.repositories[2:]]}))
 
 
 @dataclass

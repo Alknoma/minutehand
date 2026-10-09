@@ -5,11 +5,14 @@ is Notion's, documented or reported of the real service; a case whose answer no 
 gives is refused by name (501) instead of answered in made-up words. `CLAIMS.md` gives the source of each
 behaviour, and `tests/data/notion_api/` the surface it is held to.
 
-**API version:** `2022-06-28`, what `notion-client` 2.2.1 sends. A call carrying any other
-`Notion-Version` is refused 501 `invalid_request`, naming it. A call with no version is
-refused with `missing_version`. `notion-client` 3.x sends `2025-09-03` by default and calls
-`/v1/data_sources/...` instead of `/v1/databases/{id}/query`: both are refused by name
-here, so a client on 3.x must pin `notion_version="2022-06-28"`.
+**API version:** `2022-06-28`. A call carrying any other `Notion-Version` is refused 501
+`invalid_request`, naming it. A call with no version is refused with `missing_version`.
+`notion-client` 3.x sends `2025-09-03` by default and calls `/v1/data_sources/...` instead
+of `/v1/databases/{id}/query`: both are refused by name here, so a client on 3.x pins
+`notion_version="2022-06-28"`, and sends `databases/{id}/query`, and a database's
+`properties` on create and update, through its own `request` (3.x keeps no helper for
+them). The tests drive the fake with `notion-client` 3.1.0 so pinned
+(`tests/providers/notion/notion_world.py`).
 
 **Credentials are not enforced.** Any token, or none, is answered: a token the seed holds
 or `/v1/oauth/token` minted acts as its integration, any other as the agent's (the first
@@ -58,7 +61,8 @@ notes, agents and the rest) raises the shared not-served refusal, answered 501
 
 **Faults:** declared in the seed (`NotionSeed.faults`), or on an open standing world through
 `DeclaresFaults` (the same `faults` fragment, an integration named by its seed key):
-- `rate_limited`: 429 with `Retry-After`. `notion-client` 2.2.1 does not retry; it raises `APIResponseError`.
+- `rate_limited`: 429 with `Retry-After`. `notion-client` 3.x retries it by default; built with `retry=False`
+  (as the tests build it) it raises `APIResponseError`.
 - `conflict`: 409 `conflict_error` on block edits.
 
 A bad property is refused with `validation_error` without any fault being declared.

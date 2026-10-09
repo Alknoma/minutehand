@@ -21,7 +21,7 @@ from typing import ClassVar, Self
 
 from pydantic import Field, JsonValue, model_validator
 
-from minutehand.adapters.providers.jira import wire
+from minutehand.adapters.providers.jira import webhooks, wire
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.state import (
@@ -208,6 +208,27 @@ class SeededIssue(Model, Keyed):
     links: list[SeededLink] = []
 
 
+class SeededWebhook(Model):
+    """A webhook set up in Jira's administration: where Jira posts the events it names (`webhooks.py`)."""
+
+    url: str = Field(description="Where Jira posts each event")
+    events: list[str] = Field(
+        default=["jira:issue_created", "jira:issue_updated", "comment_created"],
+        description="The events sent, by Jira's names: jira:issue_created, jira:issue_updated, comment_created",
+    )
+    jql: str | None = Field(
+        default=None, description="Only issues this JQL matches, with the clauses the reference allows"
+    )
+    secret: str | None = Field(default=None, description="Signs each body in X-Hub-Signature; none: unsigned")
+
+    @model_validator(mode="after")
+    def _as_jira_allows(self) -> SeededWebhook:
+        webhooks.check_events(self.events)
+        if self.jql is not None:
+            webhooks.check_filter(self.jql)
+        return self
+
+
 class JiraSeed(Model):
     site: str = Field(default="minutehand", pattern=r"^[a-z0-9][a-z0-9-]*$", description="<site>.atlassian.net")
     cloud_id: str | None = Field(default=None, description="By default derived from the site's name")
@@ -219,6 +240,7 @@ class JiraSeed(Model):
     fields: list[SeededField] = []
     issues: list[SeededIssue] = []
     rate_limits: list[wire.StoredRateLimit] = []
+    webhooks: list[SeededWebhook] = []
 
 
 def jira_seed(scenario: Scenario) -> JiraSeed:
@@ -336,6 +358,10 @@ def build_site(seed: JiraSeed) -> wire.StoredSite:
         roles=ROLES,
         sprintField=sprint_field,
         rateLimits=seed.rate_limits,
+        hooks=[
+            wire.StoredHook(id=str(n + 1), url=h.url, events=h.events, jql=h.jql, secret=h.secret)
+            for n, h in enumerate(seed.webhooks)
+        ],
     )
 
 

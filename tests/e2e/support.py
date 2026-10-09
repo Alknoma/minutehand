@@ -19,11 +19,11 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.memory import memory_of
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import AgentUnderTest, GoalByMessage, GoalByWake, Reported
+from minutehand.domain.common import GeneratedSecret
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import (
     AfterScript,
     DelayRange,
-    GeneratedSecret,
     Person,
     PersonAsked,
     ReplyBehaviour,

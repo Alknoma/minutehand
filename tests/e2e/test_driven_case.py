@@ -27,7 +27,7 @@ from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import MessageChange, MessagesResponse, ModelTrafficResponse
 from minutehand.application.forks import scorecard_lines
 from minutehand.application.model_calls import JoinedBy
-from minutehand.checks.runner import NOTHING_ASSESSED, RunResult
+from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import Seed
@@ -236,13 +236,13 @@ def test_a_case_driven_from_outside_is_one_run_judged_on_what_it_did(served: Ser
     assert sorted(len(c.wrote) for c in traffic.calls) == [1, 1, 1]
 
 
-def test_the_same_run_with_no_step_and_nothing_declared_is_not_judged(served: Served, state: Path) -> None:
+def test_the_same_run_with_no_step_and_nothing_declared_is_still_assessed(served: Served, state: Path) -> None:
     with event_receiver() as inbound:
         case = open_case(served.client, "timed dm, unmarked", _specs(inbound.url, "two", expect=[]))
         _play(served, case, steps=False)
         closed = case.close()
 
     verdict = closed.result.verdict
-    assert verdict.kind is VerdictKind.NOT_JUDGED and closed.result.exit_code == 5, verdict.words
-    assert verdict.unjudged == [NOTHING_ASSESSED] and verdict.words.startswith("Not assessed:")
+    assert verdict.kind is not VerdictKind.NOT_JUDGED, verdict.words
+    assert closed.result.assessed_by[0] == "items", "the agent's effects are assessed with no rule written"
     assert closed.result.effectiveness.waits_opened == 1, "the ask Dani answered is still in the ledger"

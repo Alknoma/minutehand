@@ -1,10 +1,7 @@
 """`ports.model.Model` over an OpenAI-compatible chat-completions API, with JSON-schema structured output.
 
-Configured from the environment:
-
-    MINUTEHAND_MODEL_BASE_URL   default https://api.openai.com/v1
-    MINUTEHAND_MODEL_API_KEY    sent as a bearer token; never logged, stored or put in an exception
-    MINUTEHAND_MODEL            the model a request names unless the caller names another
+Configured from the environment (`adapters.model.environment`): the key is sent as a bearer token and never logged,
+stored or put in an exception; the base URL defaults to https://api.openai.com/v1.
 
 The client ignores every proxy variable in the environment (`trust_env=False`): Minutehand's own proxy stands
 between the agent and the world, and Minutehand's model calls are not the agent's traffic.
@@ -15,8 +12,7 @@ invalid answer raises `ModelFailed`.
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Literal
 
 import httpx
@@ -27,10 +23,6 @@ from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import Answered, AnswerT, ModelFailed
 
-BASE_URL_VARIABLE = "MINUTEHAND_MODEL_BASE_URL"
-API_KEY_VARIABLE = "MINUTEHAND_MODEL_API_KEY"
-MODEL_VARIABLE = "MINUTEHAND_MODEL"
-VARIABLES = (BASE_URL_VARIABLE, API_KEY_VARIABLE, MODEL_VARIABLE)
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 TIMEOUT_SECONDS = 120.0
@@ -79,9 +71,14 @@ class _Choice(_Answered):
     finish_reason: str | None = None
 
 
+class _PromptDetails(_Answered):
+    cached_tokens: int | None = None
+
+
 class _Usage(_Answered):
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    prompt_tokens_details: _PromptDetails | None = None
 
 
 class _Completion(_Answered):
@@ -127,17 +124,28 @@ class _Spent:
     def __init__(self) -> None:
         self.input: int | None = None
         self.output: int | None = None
+        self.cached: int | None = None
 
     def add(self, usage: _Usage | None) -> None:
+        """`prompt_tokens` counts every input token, the cached ones `prompt_tokens_details.cached_tokens` names
+        among them (https://platform.openai.com/docs/guides/prompt-caching)."""
         if usage is None:
             return
         if usage.prompt_tokens is not None:
             self.input = (self.input or 0) + usage.prompt_tokens
         if usage.completion_tokens is not None:
             self.output = (self.output or 0) + usage.completion_tokens
+        if usage.prompt_tokens_details is not None and usage.prompt_tokens_details.cached_tokens is not None:
+            self.cached = (self.cached or 0) + usage.prompt_tokens_details.cached_tokens
 
     def answered(self, answer: AnswerT, model: str) -> Answered[AnswerT]:
-        return Answered(answer=answer, model=model, input_tokens=self.input, output_tokens=self.output)
+        return Answered(
+            answer=answer,
+            model=model,
+            input_tokens=self.input,
+            output_tokens=self.output,
+            cache_read_tokens=self.cached,
+        )
 
 
 # -- the client ---------------------------------------------------------------------------------------------
@@ -146,7 +154,7 @@ class _Spent:
 class OpenAICompatible:
     def __init__(self, *, base_url: str, api_key: str, model_id: str, timeout: float = TIMEOUT_SECONDS) -> None:
         if not api_key:
-            raise RunRefused(f"{API_KEY_VARIABLE} is empty")
+            raise RunRefused("the model's API key is empty")
         self.model_id = model_id
         self._url = base_url.rstrip("/") + "/chat/completions"
         self.__key = api_key
@@ -231,19 +239,3 @@ class OpenAICompatible:
 def _errors(error: ValidationError) -> str:
     """The validation errors without the input they were raised on, which is the model's own text."""
     return "\n".join(f"- {'.'.join(str(p) for p in e['loc']) or '(the answer)'}: {e['msg']}" for e in error.errors())
-
-
-def from_environment(environ: Mapping[str, str] = os.environ) -> OpenAICompatible | None:
-    """The model the environment configures; None when neither the key nor the model is set.
-
-    Half a configuration is refused, naming what is missing, rather than read as none.
-    """
-    key = environ[API_KEY_VARIABLE] if API_KEY_VARIABLE in environ else ""
-    model = environ[MODEL_VARIABLE] if MODEL_VARIABLE in environ else ""
-    if not key and not model:
-        return None
-    if not key or not model:
-        missing = API_KEY_VARIABLE if not key else MODEL_VARIABLE
-        raise RunRefused(f"a model is half configured: {missing} is not set")
-    base_url = environ[BASE_URL_VARIABLE] if BASE_URL_VARIABLE in environ else DEFAULT_BASE_URL
-    return OpenAICompatible(base_url=base_url or DEFAULT_BASE_URL, api_key=key, model_id=model)

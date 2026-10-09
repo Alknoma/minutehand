@@ -266,7 +266,13 @@
           "tool_call",
           "memory",
           "next_wake",
-          "stored"
+          "stored",
+          "transition",
+          "pending",
+          "service_record",
+          "service_item",
+          "service_event",
+          "push"
         ],
         "title": "EntityKind",
         "type": "string"
@@ -326,19 +332,6 @@
             "default": null,
             "description": "The decisions allowed on it; None: every one",
             "title": "Decisions"
-          },
-          "gates": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "The id of the operation it holds back",
-            "title": "Gates"
           },
           "id": {
             "title": "Id",

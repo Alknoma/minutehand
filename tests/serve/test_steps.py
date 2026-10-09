@@ -15,7 +15,6 @@ import pytest
 
 from minutehand import session
 from minutehand.application.steps import STEP
-from minutehand.checks.runner import NOTHING_ASSESSED
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.run import VerdictKind
 from minutehand.testing.background import serve_in_background
@@ -80,16 +79,15 @@ def test_moving_the_clock_forward_infers_steps_and_a_mark_replaces_them(served: 
     assert closed.result.effectiveness.wakes == 1
 
 
-def test_a_world_with_no_step_and_nothing_declared_is_not_judged_and_says_why(served: Served) -> None:
+def test_a_world_with_no_step_and_nothing_declared_is_still_assessed_against_what_it_declares(served: Served) -> None:
     world = OpenWorld(served.client, served.client.create_world(spec("xoxb-steps-none")))
     _ask(served, "xoxb-steps-none", "Could you send the slides?")
     closed = world.close()
 
     verdict = closed.result.verdict
-    assert verdict.kind is VerdictKind.NOT_JUDGED and closed.result.exit_code == 5
-    assert verdict.unjudged == [NOTHING_ASSESSED]
+    assert closed.result.assessed_by == ["items"], "the agent's effects are assessed whether or not a rule was written"
+    assert verdict.kind is VerdictKind.UNFINISHED and closed.result.exit_code == 3
     assert closed.result.effectiveness.waits_opened == 1, "the wait on the silent person is still a fact"
-    assert verdict.words.startswith("Not assessed:")
 
 
 def test_ending_a_step_that_never_began_is_refused(served: Served) -> None:

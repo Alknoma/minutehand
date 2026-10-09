@@ -24,6 +24,7 @@ from pydantic import JsonValue, ValidationError
 
 from minutehand.adapters.providers.microsoft import cards, tokens, wire
 from minutehand.adapters.providers.microsoft.connector import snapshot
+from minutehand.adapters.providers.microsoft.graph_teams import message_resource
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
     POSTS,
@@ -102,7 +103,7 @@ async def push(
         raise ValueError(f"a {target.provider} target is not Microsoft's to deliver to")
     where = url or target.request_url()
     try:
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=target.push_timeout.total_seconds(), trust_env=False) as client:
             answered = await client.post(
                 where,
                 content=wire.dump(activity),
@@ -273,7 +274,7 @@ class People:
             conversation_watch(conversation.id),
             change="created",
             odata_type="#Microsoft.Graph.chatMessage",
-            resource=f"chats('{conversation.graph_id}')/messages('{activity.id}')",
+            resource=message_resource(self.world, conversation, activity.id),
             item=activity.id,
         )
         reaches = conversation.type is wire.ConversationType.PERSONAL or mention

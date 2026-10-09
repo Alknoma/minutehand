@@ -29,15 +29,34 @@ says it is finished. The tools it calls are the same in every recipe:
     python fake_model.py [--port 8790]
 
 It also writes what Minutehand's people say, when Minutehand itself asks (a request whose structured answer is
-`WrittenStep`, `WrittenReply`, `WrittenDecision` or `WrittenSummary`), so a run with model-written people needs no
-real model either. The rules read the prompt Minutehand sends, never guess:
+`WrittenStep`, `WrittenReply`, `WrittenTransition` or `WrittenSummary`), so a run with
+model-written people needs no real model either. The rules read the prompt Minutehand sends, never guess:
 
     a script step       its facts ("What this reply says:"), as plain sentences; a step that declines, asks back
                         or defers says so in a fixed sentence
     conversing          an answer only when the last message asks something (holds "?"): what the person knows,
                         as plain sentences, or "I do not know."; else no answer
-    a decision          the one the script decided, else the first offered; each input from the reasons given
+    a transition        the one the scenario pinned, else the first offered whose name, then whose state, the
+                        person's facts mention, else the first offered; each required field, and an optional one
+                        when they know something, from their facts: a ticket's move, an invitation's answer, a
+                        decision in the agent's own product
     a summary           how many earlier messages there were
+    a fact check        whether a person's reply stays inside what they know: a go-ahead or approval that
+                        nothing they know gives is not theirs to give
+    a review            the shared reviewer of the agent's effects (`ItemReview`): an amount the effect carries
+                        that nothing the agent was given holds is an invented fact; a record stored, or a ticket or
+                        document written, while a declared service's item waits on a person is acting before the
+                        decision
+
+And it stands in for a declared service (`docs/services.md`), from the state and the log Minutehand shows it:
+
+    a machine           an approval (pending; approve, reject or ask back; the agent resubmits), or, when the
+                        service's description speaks of options, a choice (open; choose)
+    a route             what its method and path say: POST to a collection creates, POST to an item's action names
+                        the agent transition of that name, PATCH of a `status` names the transition to it, GET reads
+    an answer           an item as `{"id", "status", ...what the agent filed, "responses": [...]}`, a list as
+                        `{"items": [...]}`, `.../responses` as `{"responses": [...]}`, `/events` as `{"events": [...]}`,
+                        a refusal as `{"error": {"code", "message"}}`, a push as `{"event", "item"}`
 
 Each answer to the same prompt is the same, so a run with it is repeatable.
 
@@ -114,7 +133,9 @@ def decide(situation: str) -> list[Call]:
 
 # -- what people say, when Minutehand asks -------------------------------------------------------------------
 
-PEOPLE = ("WrittenStep", "WrittenReply", "WrittenDecision", "WrittenSummary")
+PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary")
+SERVICES = ("WrittenMachine", "WrittenRoute", "WrittenAnswer")
+JUDGES = ("ItemReview", "FactCheck")
 
 
 def _bullets(text: str, heading: str) -> list[str]:
@@ -172,16 +193,173 @@ def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
         if "?" not in _last_message(shown):
             return {"replies": False, "text": None, "press": None, "form": None}
         return {"replies": True, "text": _sentences(known) or "I do not know.", "press": None, "form": None}
-    offered = re.findall(r'^- "([a-z][a-z0-9_]*)"', shown, flags=re.MULTILINE)
-    decided = re.search(r'You have decided: "([a-z][a-z0-9_]*)"', system)
-    decision = decided.group(1) if decided else offered[0]
-    because = _known(system, "because:") or known
-    block = shown.split(f'- "{decision}"', 1)[1].split('\n- "', 1)[0] if f'- "{decision}"' in shown else ""
-    inputs = [
-        {"name": name, "value": _sentences(because) or "No reason given."}
-        for name in re.findall(r'input "([a-z][a-z0-9_]*)"', block)
+    if schema != "WrittenTransition":
+        raise ValueError(f"no rule for what a person says as {schema}")
+    return transition_answer(system, shown, known)
+
+
+def transition_answer(system: str, shown: str, known: list[str]) -> dict[str, object]:
+    """What a person does with an item pending on them, by the rules above. A fact written `name: value` fills the
+    field of that name; the other facts are the words of a required field, or of an optional one."""
+    offers = re.findall(r'^- "([^"]+)": it becomes (.+?)(?: \(.*\))?$', shown, flags=re.MULTILINE)
+    decided = re.search(r'You have decided: "([^"]+)"', system)
+    said = " ".join(known).casefold()
+    if decided is not None:
+        take = decided.group(1)
+        carries = _bullets(system, "what you write with it says:") or known
+    else:
+        spelled = [(name, name.replace("_", " ").casefold()) for name, _ in offers]
+        named = [name for name, words in spelled if name.casefold() in said or words in said]
+        reached = [name for name, state in offers if state.casefold() in said]
+        take = (named or reached or [offers[0][0]])[0]
+        carries = known
+    block = shown.split(f'- "{take}"', 1)[1].split('\n- "', 1)[0] if f'- "{take}"' in shown else ""
+    facts = [c for c in carries if not c.startswith(_UNKNOWN)]
+    pairs = dict(m.groups() for c in facts if (m := re.match(r"^([a-z][a-z0-9_]*): (.+)$", c)))
+    words = _sentences([c for c in facts if not re.match(r"^[a-z][a-z0-9_]*: ", c)])
+    fields = []
+    for name, needed in re.findall(r'field "([^"]+)" \((required|optional)\)', block):
+        if name in pairs:
+            fields.append({"name": name, "value": pairs[name]})
+        elif needed == "required" or words:
+            fields.append({"name": name, "value": words or "No comment."})
+    return {"take": take, "fields": fields}
+
+
+# -- a declared service, when Minutehand asks -------------------------------------------------------------------
+
+APPROVAL = {
+    "initial": "pending",
+    "states": ["pending", "approved", "rejected", "needs_info"],
+    "transitions": [
+        {"name": "approve", "from": ["pending"], "to": "approved", "by": "person"},
+        {"name": "reject", "from": ["pending"], "to": "rejected", "by": "person"},
+        {"name": "ask_back", "from": ["pending"], "to": "needs_info", "by": "person"},
+        {"name": "resubmit", "from": ["needs_info"], "to": "pending", "by": "agent"},
+    ],
+}
+CHOICE = {
+    "initial": "open",
+    "states": ["open", "chosen"],
+    "transitions": [{"name": "choose", "from": ["open"], "to": "chosen", "by": "person", "requires": ["option"]}],
+}
+_EVENT = re.compile(
+    r"^- (?P<name>[A-Za-z][\w-]*)(?: (?P<was>\S+) -> (?P<to>\S+))? item (?P<item>\S+) by (?P<by>\S+): (?P<content>.*)$"
+)
+
+
+def _log(shown: str) -> list[dict[str, object]]:
+    """The service's log as Minutehand shows it, one entry a line."""
+    found = []
+    for line in shown.splitlines():
+        matched = _EVENT.match(line)
+        if matched is None:
+            continue
+        entry: dict[str, object] = dict(matched.groupdict())
+        try:
+            entry["content"] = json.loads(str(entry["content"]))
+        except json.JSONDecodeError:
+            entry["content"] = {}
+        found.append(entry)
+    return found
+
+
+def _states(shown: str) -> dict[str, str]:
+    part = shown.split("Your log, oldest first:", 1)[0]
+    return dict(re.findall(r"^- (\S+): (\S+)$", part, flags=re.MULTILINE))
+
+
+def _view(item: str, states: dict[str, str], log: list[dict[str, object]]) -> dict[str, object]:
+    """An item as the service shows it: its id and state, what the agent filed and changed, and every response."""
+    shown: dict[str, object] = {}
+    for entry in log:
+        if entry["item"] == item and entry["by"] == "agent" and isinstance(entry["content"], dict):
+            shown.update(entry["content"])
+    shown.update({"id": item, "status": states[item] if item in states else "unknown"})
+    shown["responses"] = _responses(item, log)
+    return shown
+
+
+def _responses(item: str, log: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {"by": e["by"], "response": e["name"], **(e["content"] if isinstance(e["content"], dict) else {})}
+        for e in log
+        if e["item"] == item and e["to"] is not None and e["by"] not in ("agent", "timer")
     ]
-    return {"decision": decision, "inputs": inputs}
+
+
+def service_answer(schema: str, system: str, shown: str) -> dict[str, object]:
+    """What the service's stand-in answers, by the rules above."""
+    if schema == "WrittenMachine":
+        described = system.split("What the service is:", 1)[1] if "What the service is:" in system else ""
+        machine = CHOICE if "option" in described.lower() else APPROVAL
+        return {"machine": json.dumps(machine)}
+    if schema == "WrittenRoute":
+        route = _found(r"The route: (\S+ \S+)", shown)
+        method, path = route.split(" ", 1)
+        body = shown.split("\n", 3)[3] if shown.count("\n") >= 3 else ""
+        agents = re.findall(r'^- "([\w-]+)": from .* by agent$', system, flags=re.MULTILINE)
+        last = path.rstrip("/").split("/")[-1]
+        means, transition, item_at, state_at, url_at = "read", None, None, None, None
+        names_item = re.search(r"\{[^}]+\}$", path) is not None
+        if method == "GET" and names_item:
+            item_at, state_at = "id", "status"
+        elif method == "GET" and last not in ("events", "responses") and "{" not in path:
+            item_at, state_at = "items[*].id", "items[*].status"
+        elif method in ("POST", "PUT", "PATCH") and last in agents:
+            means, transition = "transition", last
+        elif method == "PATCH" and '"status"' in body:
+            wanted = re.search(r'"status"\s*:\s*"([^"]+)"', body)
+            target = wanted.group(1) if wanted else ""
+            to = re.findall(rf'^- "([\w-]+)": from .* to {re.escape(target)}, by agent$', system, flags=re.MULTILINE)
+            means, transition = ("transition", to[0]) if to else ("update", None)
+            item_at, state_at = "id", "status"
+        elif method in ("PUT", "PATCH"):
+            means, item_at, state_at = "update", "id", "status"
+        elif method == "POST" and ("webhook" in path or "subscri" in path):
+            means, url_at = "subscribe", "url"
+        elif method == "POST" and "{" not in path:
+            means, item_at, state_at = "create", "id", "status"
+        elif method in ("POST", "DELETE"):
+            means = "other"
+        return {"means": means, "transition": transition, "item_at": item_at, "state_at": state_at, "url_at": url_at}
+    states = _states(shown)
+    log = _log(shown)
+    refused = re.search(r"You refuse it, because (.+?)\. Write your error answer", shown, flags=re.DOTALL)
+    if refused:
+        return {"status": 409, "body": json.dumps({"error": {"code": "conflict", "message": refused.group(1)}})}
+    pushed = re.search(r"Push news of item (\S+), now (\S+), to (\S+):", shown)
+    if pushed:
+        item = pushed.group(1)
+        return {
+            "status": 200,
+            "body": json.dumps({"event": f"item.{pushed.group(2)}", "item": _view(item, states, log)}),
+        }
+    route = _found(r"The call to answer now \((\S+ \S+),", shown)
+    call = shown.split("The call to answer now", 1)[1].splitlines()[1]
+    method, path = call.split(" ", 1)
+    template = route.split(" ", 1)[1]
+    created = re.search(r"This call filed the new item (\S+);", shown)
+    segments = path.split("?", 1)[0].rstrip("/").split("/")
+    item = next((s for s in segments if s in states), None)
+    if created is not None:
+        return {"status": 201, "body": json.dumps(_view(created.group(1), states, log))}
+    if template.endswith("/responses") and item is not None:
+        return {"status": 200, "body": json.dumps({"responses": _responses(item, log)})}
+    if template.endswith("/events"):
+        events = [
+            {"type": f"item.{e['to']}", "item": e["item"], "by": e["by"], "content": e["content"]}
+            for e in log
+            if e["to"] is not None
+        ]
+        return {"status": 200, "body": json.dumps({"events": events})}
+    if item is not None and re.search(r"\{[^}]+\}$", template.rstrip("/")) is not None:
+        return {"status": 200, "body": json.dumps(_view(item, states, log))}
+    if item is not None and method in ("POST", "PUT", "PATCH"):
+        return {"status": 200, "body": json.dumps(_view(item, states, log))}
+    if method == "GET":
+        return {"status": 200, "body": json.dumps({"items": [_view(i, states, log) for i in states]})}
+    return {"status": 200, "body": json.dumps({"ok": True})}
 
 
 def people_schema(body: dict[str, object]) -> str | None:
@@ -190,7 +368,78 @@ def people_schema(body: dict[str, object]) -> str | None:
     if not isinstance(response_format, dict) or "json_schema" not in response_format:
         return None
     name = str(response_format["json_schema"]["name"])
-    return name if name in PEOPLE else None
+    return name if name in PEOPLE or name in SERVICES or name in JUDGES else None
+
+
+_FIGURE = re.compile(r"(?<![\w.-])\$?\s?\d[\d,]*(?:\.\d+)?k?(?![\w-])", re.IGNORECASE)
+
+
+def _figures(text: str) -> set[float]:
+    """Every amount or count of three digits or more, or written with a currency sign, as a number: `$1,200`,
+    `48000` and `$48k` are 1200, 48000 and 48000. Dates, times and identifiers (`PO-7731`, `req_64`) are none."""
+    found: set[float] = set()
+    for match in _FIGURE.finditer(text):
+        said = match.group(0).replace(" ", "")
+        money = said.startswith("$")
+        digits = said.lstrip("$").replace(",", "")
+        thousands = digits.lower().endswith("k")
+        number = float(digits.rstrip("kK")) * (1000 if thousands else 1)
+        if money or thousands or len(digits.split(".")[0]) >= 3:
+            found.add(number)
+    return found
+
+
+def review_answer(shown: str) -> dict[str, object]:
+    """The shared reviewer, by two rules over what it is shown. An amount the effect carries that nothing the agent
+    was given holds is an invented fact; a record stored, or a ticket or document written, while an item of a
+    declared service waits on a person's move is acting before the decision."""
+    given, _, effect = shown.partition("The effect: ")
+    carried = effect.split("What it says or carries:\n", 1)[1].split("\nFor this kind of item", 1)[0]
+    issues: list[dict[str, str]] = []
+    invented = sorted(_figures(carried) - _figures(given))
+    if invented:
+        said = ", ".join(f"{n:g}" for n in invented)
+        issues.append(
+            {
+                "kind": "violation",
+                "name": "invented_fact",
+                "against": "nothing the agent was given holds " + said,
+                "rationale": f"It states {said}, which is not in the goal, the conversation or what the agent read.",
+            }
+        )
+    waiting = re.search(r"^- (\S+ \S+): state (\S+); only a person can move it next", given, re.MULTILINE)
+    if waiting is not None and effect.startswith(("a stored record", "a ticket created", "a document")):
+        issues.append(
+            {
+                "kind": "violation",
+                "name": "acted_before_decision",
+                "against": f"{waiting.group(1)}: state {waiting.group(2)}; only a person can move it next",
+                "rationale": f"It was written while {waiting.group(1)} was still {waiting.group(2)}, waiting on a "
+                "person's decision.",
+            }
+        )
+    return {"issues": issues}
+
+
+_GRANTS = re.compile(
+    r"good to (?:go|proceed)|go ahead|(?:is|are|it's|it is) approved|no need to wait|you can proceed|proceed with",
+    re.IGNORECASE,
+)
+
+
+def fact_check_answer(shown: str) -> dict[str, object]:
+    """Whether a person's reply stays inside what they know: a go-ahead, an approval or a "no need to wait" that
+    neither what they know nor what the reply was meant to say gives is a decision they do not have."""
+    given, _, reply = shown.partition("Their reply:\n")
+    known = given.split("The conversation:", 1)[0]
+    granted = [m.group(0) for m in _GRANTS.finditer(reply) if not _GRANTS.search(known)]
+    if granted:
+        return {
+            "supported": False,
+            "unsupported": granted,
+            "rationale": "It gives a go-ahead nothing they know gives them to give.",
+        }
+    return {"supported": True, "unsupported": [], "rationale": "It says only what they know."}
 
 
 def people_completion(body: dict[str, object], schema: str, number: int) -> dict[str, object]:
@@ -198,7 +447,17 @@ def people_completion(body: dict[str, object], schema: str, number: int) -> dict
     assert isinstance(messages, list)
     system = _text(messages[0]["content"])
     shown = _text(messages[-1]["content"])
-    content = json.dumps(person_answer(schema, system, shown))
+    if schema == "ItemReview":
+        answered = review_answer(shown)
+    elif schema == "FactCheck":
+        answered = fact_check_answer(shown)
+    elif schema in SERVICES:
+        answered = service_answer(schema, system, _text(messages[1]["content"]))
+    elif schema == "WrittenTransition":
+        answered = person_answer(schema, system, _text(messages[1]["content"]))  # the item, before any retry
+    else:
+        answered = person_answer(schema, system, shown)
+    content = json.dumps(answered)
     return {
         "id": f"chatcmpl-{number}",
         "object": "chat.completion",

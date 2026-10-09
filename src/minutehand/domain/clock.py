@@ -14,9 +14,11 @@ class DueKind(StrEnum):
     AGENT_WAKE = "agent_wake"
     PERSON_REPLY = "person_reply"
     DIRECTION = "direction"
-    TICKET_FATE = "ticket_fate"
     HAPPENING = "happening"
     MACHINE = "machine"
+    TRANSITION = "transition"
+    SERVICE = "service"
+    CALL = "call"
 
 
 class Due(Model):
@@ -31,7 +33,7 @@ class DrawnFrom(StrEnum):
     DELAY = "delay"  # their reply's delay range, in calendar time, then pushed to when they are available
     WINDOW = "window"  # their `reply_within`, or a step's `within`, in their available time
     REMINDED = "reminded"  # their `reminded.sooner_within`, drawn again on a follow-up, in their available time
-    PINNED = "pinned"  # a fork's `reply_at`: no draw
+    PINNED = "pinned"  # a fork's `reply_at`, or a scenario's `takes` with `after`: no draw
     AUTOMATIC = "automatic"  # their automatic reply while away with a delegate: at once
 
 
@@ -57,11 +59,13 @@ class DueSource(StrEnum):
     BOOKED = "booked"  # the agent's booking with a scheduler provider
     POLLED = "polled"  # the declared rhythm of a `Polled` agent
     REPLY = "reply"  # a person's reply, decided and on its way
-    FATE = "fate"  # what becomes of a ticket assigned to a person
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
     MACHINE = "machine"  # something the scenario does to the agent's own machine
     TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
+    TRANSITION = "transition"  # a person's move on an item pending on them (`application.people`)
+    SERVICE = "service"  # a declared service's own move on an item: a timer's, or a system actor's
+    CALL = "call"  # a call of the agent's held until the world can answer it: a long poll, at its end or sooner
 
 
 PLANNED_BY = {
@@ -80,7 +84,7 @@ class DueClosed(StrEnum):
 
     FIRED = "fired"  # the clock reached it and the run loop dispatched it
     REPLACED = "replaced"  # its source named another moment in its place: a new next wake, a booking changed
-    CANCELLED = "cancelled"  # taken out undispatched: a booking deleted, a reply withdrawn, a fork that drops it
+    CANCELLED = "cancelled"  # taken out undispatched: a booking deleted, a reply planned again, a fork that drops it
     DELAYED = "delayed"  # its moment came and a dispatch rule held it back: a late delivery entered in its place
     DROPPED = "dropped"  # its moment came and a dispatch rule dropped it: never delivered
 

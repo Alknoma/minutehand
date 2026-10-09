@@ -9,11 +9,24 @@ and a note says how many were left unread, so a rule can never pass by being ski
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
 
-from minutehand.checks.facts import Ask, Fact, asks, ended_at, gates_declared, messages, planned_wakes, reported, writes
+from minutehand.checks.facts import (
+    Ask,
+    Fact,
+    Moved,
+    asks,
+    calls,
+    ended_at,
+    messages,
+    planned_wakes,
+    reported,
+    transitions,
+    writes,
+)
 from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.assessments import (
     OWNER,
@@ -23,14 +36,32 @@ from minutehand.domain.assessments import (
     Each,
     Judged,
     Moment,
+    Mover,
     Rule,
     Thing,
     Write,
 )
-from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, ObligationKind, RunView, Severity
+from minutehand.domain.checks import (
+    CheckReport,
+    Finding,
+    FindingKind,
+    Needs,
+    ObligationKind,
+    RuleRead,
+    RunView,
+    Severity,
+)
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
-from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    MemorySnapshot,
+    Operation,
+    RecordedCall,
+    StoredSnapshot,
+    WorldEvent,
+)
 
 _KIND = {Judged.FAIL: FindingKind.FAIL, Judged.REVIEW: FindingKind.REVIEW}
 _SEVERITY = {Judged.FAIL: Severity.ERROR, Judged.REVIEW: Severity.WARNING}
@@ -46,6 +77,12 @@ _THING = {
     EntityKind.STORED: Thing.STORED,
 }
 
+_MOVER = {
+    Actor.AGENT: Mover.AGENT,
+    Actor.PERSON: Mover.PERSON,
+    Actor.SYSTEM: Mover.SYSTEM,
+    Actor.TIMER: Mover.TIMER,
+}
 _OPERATION = {Write.CREATE: Operation.CREATE, Write.UPDATE: Operation.UPDATE, Write.DELETE: Operation.DELETE}
 _STATUS = {
     CommitmentState.OPEN: CommitmentStatus.OPEN,
@@ -64,8 +101,17 @@ class _Subject:
 
     person: Person | None = None
     ask: Ask | None = None
+    moved: Moved | None = None
+    never_moved: bool = False
+    """For a rule read for the first transition of a kind (`where.first`) when there was none: its moment is the
+    run's end."""
 
     def label(self) -> str:
+        if self.never_moved:
+            return "no such transition by the end of the run"
+        if self.moved is not None:
+            t = self.moved.transition
+            return f"the transition {t.name!r} of {t.provider} {t.item.external_id} at {t.at:%Y-%m-%d %H:%M} UTC"
         if self.ask is not None:
             whom = self.ask.person or "someone"
             return f"the ask of {whom} at {self.ask.at:%Y-%m-%d %H:%M} UTC"
@@ -85,20 +131,24 @@ class Assessments:
     needs = frozenset({Needs.WORLD})
 
     def run(self, view: RunView) -> CheckReport:
+        """Every rule read over the facts."""
         if not view.rules:
             return CheckReport()
         reader = _Reader(view)
         findings: list[Finding] = []
         notes: list[str] = []
+        tallies: list[RuleRead] = []
         for rule in view.rules:
-            found, unread = reader.read(rule)
+            found, read, unread = reader.read(rule)
             findings += found
+            tallies.append(RuleRead(rule=rule.id, read=read, unread=unread))
             if unread:
                 notes.append(
                     f"rule {rule.id} was not read {unread} time{'s' if unread != 1 else ''}: it names a moment the run "
-                    "never reached, or one that was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
+                    "never reached, or one that was not there (an answer never given, a deadline never set), or counts "
+                    "what the run did not record (the agent's planned wakes, its calls, what an item holds back)"
                 )
-        return CheckReport(findings=findings, notes=notes)
+        return CheckReport(findings=findings, notes=notes, rules_read=tallies)
 
 
 class _Reader:
@@ -112,36 +162,71 @@ class _Reader:
         self.written = writes(view)
         self.planned = planned_wakes(view, self.end)
         self.said = reported(view)
+        self.moves = transitions(view)
+        self.called = calls(view)
         answered = [a.answered_at for a in self.asks]
         self.all_answered = (
             max(t for t in answered if t is not None) if answered and all(t is not None for t in answered) else None
         )
 
-    def read(self, rule: Rule) -> tuple[list[Finding], int]:
+    def read(self, rule: Rule) -> tuple[list[Finding], int, int]:
+        """The rule's findings, the times it applied and was read, and the times it could not be read."""
         findings: list[Finding] = []
-        unread = 0
+        read = unread = 0
         for subject in self._subjects(rule):
             for at in rule.at or [None]:
                 try:
-                    finding = self._one(rule, subject, at)
+                    applied, finding = self._one(rule, subject, at)
                 except _Unread:
                     unread += 1
                     continue
+                read += applied
                 if finding is not None:
                     findings.append(finding)
-        return findings, unread
+        return findings, read, unread
 
     def _subjects(self, rule: Rule) -> list[_Subject]:
         if rule.each is Each.RUN:
             return [_Subject()]
         if rule.each is Each.PERSON:
             return [_Subject(person=p) for p in self.view.scenario.people if self._picked(rule, p.key)]
+        if rule.each is Each.TRANSITION:
+            w = rule.where
+            read = [
+                _Subject(person=self.people[m.transition.who] if m.transition.who in self.people else None, moved=m)
+                for m in self.moves
+                if _among(m.transition.provider, w.provider)
+                and _among(m.transition.name, w.name)
+                and _among(m.transition.to_state, w.to)
+                and (not w.by or _mover(m) in w.by)
+                and (
+                    not (w.person or w.person_not)
+                    or (m.transition.who is not None and self._picked(rule, m.transition.who))
+                )
+            ]
+            if w.first:
+                return read[:1] or [_Subject(never_moved=True)]
+            return read
         found = self.asks if rule.each is Each.ASK else self.handoffs
         return [
             _Subject(person=self.people[a.person] if a.person in self.people else None, ask=a)
             for a in found
             if a.person is not None and self._picked(rule, a.person)
         ]
+
+    def _phrases(self, said: list[str], subject: _Subject, known: dict[str, str]) -> list[str]:
+        """The phrases a rule names, filled for `subject`: `{ask.facts}` alone is each fact the answer carried."""
+        phrases: list[str] = []
+        for p in said:
+            if p.strip() == "{ask.facts}":
+                if subject.ask is None or subject.ask.answer is None:
+                    raise _Unread
+                phrases += subject.ask.answer_facts or [subject.ask.answer]
+            else:
+                if "{ask.answer}" in p and (subject.ask is None or subject.ask.answer is None):
+                    raise _Unread
+                phrases.append(str(fill(p, known)))
+        return phrases
 
     def _picked(self, rule: Rule, key: str) -> bool:
         keys = [self._key(w, None) for w in rule.where.person]
@@ -171,6 +256,11 @@ class _Reader:
             base = self._when(at, subject, None)
         elif moment.anchor is Anchor.ALL_ANSWERED:
             base = self.all_answered
+        elif moment.anchor is Anchor.TRANSITION:
+            if subject.moved is None:
+                assert subject.never_moved
+                return self.end  # never made: the whole run, whatever the offset
+            base = subject.moved.at
         else:
             ask = subject.ask
             assert ask is not None
@@ -189,10 +279,11 @@ class _Reader:
             raise _Unread
         return found
 
-    def _one(self, rule: Rule, subject: _Subject, at: str | None) -> Finding | None:
+    def _one(self, rule: Rule, subject: _Subject, at: str | None) -> tuple[bool, Finding | None]:
+        """Whether the rule applied (its `when` held), and its finding when its count broke a bound."""
         moment = self._when(at, subject, None) if at is not None else None
         if not self._holds(rule, subject, at):
-            return None
+            return False, None
         since = self._when(rule.count.since, subject, at) if rule.count.since is not None else None
         until = self._when(rule.count.until, subject, at, past_end=True) if rule.count.until is not None else None
         counted = [
@@ -205,10 +296,14 @@ class _Reader:
             # The window runs past the end: only what more facts could not undo is said; the rest is unread.
             raise _Unread
         if broke is None:
-            return None
+            return True, None
+        cited = sorted({c for f in counted for c in f.calls})
         evidence = sorted(
-            {s for f in counted for s in f.seqs} | ({subject.ask.obligation.opened_by} if subject.ask else set())
+            {s for f in counted for s in f.seqs}
+            | ({subject.ask.obligation.opened_by} if subject.ask else set())
+            | ({subject.moved.event.seq} if subject.moved else set())
         )
+        moved = subject.moved.transition if subject.moved is not None else None
         values = {
             "person.key": subject.person.key if subject.person is not None else "",
             "person.name": subject.person.name if subject.person is not None else "",
@@ -217,10 +312,17 @@ class _Reader:
             "rule.id": rule.id,
             "rule.count": str(len(counted)),
             "rule.moment": f"{at} ({moment:%Y-%m-%d %H:%M} UTC)" if at is not None and moment is not None else "",
+            "transition.provider": moved.provider if moved is not None else "",
+            "transition.item": moved.item.external_id if moved is not None else "",
+            "transition.name": moved.name if moved is not None else "",
+            "transition.from": (moved.from_state or "") if moved is not None else "",
+            "transition.to": moved.to_state if moved is not None else "",
+            "transition.by": moved.by.value if moved is not None else "",
+            "transition.who": (moved.who or "") if moved is not None else "",
         }
         said = fill(rule.message, values) if rule.message is not None else None
         window = _window(rule, since, until)
-        return Finding(
+        return True, Finding(
             check=rule.id,
             severity=_SEVERITY[rule.severity],
             kind=_KIND[rule.severity],
@@ -229,6 +331,7 @@ class _Reader:
             else f"{subject.label()}: {len(counted)} {rule.count.counted.replace('_', '-')}{window}; {broke}",
             at=until or moment or (counted[-1].at if counted else None),
             evidence=evidence,
+            calls=cited,
             pattern=rule.pattern,
         )
 
@@ -264,16 +367,7 @@ class _Reader:
                 "person.key": subject.person.key if subject.person is not None else "",
                 "person.name": subject.person.name if subject.person is not None else "",
             }
-            phrases: list[str] = []
-            for p in m.holding:
-                if p.strip() == "{ask.facts}":
-                    if subject.ask is None or subject.ask.answer is None:
-                        raise _Unread
-                    phrases += subject.ask.answer_facts or [subject.ask.answer]
-                else:
-                    phrases.append(str(fill(p, known)))
-            if subject.ask is not None and "{ask.answer}" in " ".join(m.holding) and subject.ask.answer is None:
-                raise _Unread
+            phrases = self._phrases(m.holding, subject, known)
             thread = (
                 subject.ask.obligation.entity.external_id if subject.ask and subject.ask.obligation.entity else None
             )
@@ -288,8 +382,6 @@ class _Reader:
             ]
         if count.writes is not None:
             w = count.writes
-            if w.gated is not None and not gates_declared(self.view):
-                raise _Unread  # items were asked of people and none says what it holds back
             return [
                 Fact(at=x.event.sim_time, seqs=[x.event.seq])
                 for x in self.written
@@ -298,7 +390,6 @@ class _Reader:
                 and (not w.operations or x.event.operation in {_OPERATION[o] for o in w.operations})
                 and (w.repeats_open_ticket is None or x.repeats_open_ticket == w.repeats_open_ticket)
                 and (w.in_repeated_wake is None or x.in_repeated_wake == w.in_repeated_wake)
-                and (w.gated is None or x.gated == w.gated)
             ]
         if count.wakes is not None:
             k = count.wakes
@@ -327,6 +418,38 @@ class _Reader:
             return self._memory(rule, subject, at)
         if count.stored is not None:
             return self._stored(rule, subject, at)
+        if count.transitions is not None:
+            t = count.transitions
+            who = {self._key(w, subject) for w in t.who}
+            item = subject.moved.transition.item if subject.moved is not None else None
+            return [
+                Fact(at=m.at, seqs=[m.event.seq])
+                for m in self.moves
+                if _among(m.transition.provider, t.provider)
+                and _among(m.transition.name, t.name)
+                and _among(m.transition.to_state, t.to)
+                and (not t.from_ or (m.transition.from_state is not None and _among(m.transition.from_state, t.from_)))
+                and (not t.by or _mover(m) in t.by)
+                and (not who or m.transition.who in who)
+                and (not t.reached or any(_among(r, t.reached) for r in m.reached))
+                and not any(_among(r, t.not_reached) for r in m.reached if t.not_reached)
+                and (t.same_item is None or (m.transition.item == item) == t.same_item)
+            ]
+        if count.calls is not None:
+            if self.view.calls is None:
+                raise _Unread  # nobody recorded the run's calls
+            k = count.calls
+            routes = [_route(r) for r in k.route]
+            return [
+                Fact(at=c.at, seqs=_seqs(c.call), calls=[c.position])
+                for c in self.called
+                if _among(c.call.exchange.host, k.host)
+                and _among(c.call.exchange.method, k.method)
+                and (not routes or any(r.fullmatch(c.route) for r in routes))
+                and (not k.status or any(_status(c.call.exchange.status, s) for s in k.status))
+                and (k.refused is None or (c.call.exchange.status >= 400) == k.refused)
+                and (k.answer_changed is None or c.answer_changed == k.answer_changed)
+            ]
         if count.replies is not None:
             r = count.replies
             by = {self._key(w, subject) for w in r.by}
@@ -402,6 +525,30 @@ class _Reader:
         return [
             Fact(at=event.sim_time, seqs=[event.seq]) for _, event in sorted(held.items()) if _matches(event, s.values)
         ]
+
+
+def _route(said: str) -> re.Pattern[str]:
+    """A route as written (`/v1/requests/{id}`) as a pattern of paths: each `{name}` one segment."""
+    parts = re.split(r"(\{[^/{}]+\})", said.split("?", 1)[0])
+    return re.compile("".join("[^/]+" if p.startswith("{") and p.endswith("}") else re.escape(p) for p in parts))
+
+
+def _status(status: int, said: str) -> bool:
+    return said[0] == str(status)[0] if said.endswith("xx") else str(status) == said
+
+
+def _seqs(call: RecordedCall) -> list[int]:
+    return list(range(call.first_seq, call.last_seq + 1)) if call.first_seq <= call.last_seq else []
+
+
+def _among(said: str, wanted: list[str]) -> bool:
+    """Whether `said` is one of `wanted`, in any case; any is when none is wanted."""
+    return not wanted or said.casefold() in {w.casefold() for w in wanted}
+
+
+def _mover(moved: Moved) -> Mover | None:
+    by = moved.transition.by
+    return _MOVER[by] if by in _MOVER else None
 
 
 def _matches(event: WorldEvent, wanted: dict[str, str | int | float | bool | None]) -> bool:

@@ -59,6 +59,7 @@ from minutehand.domain.world import (
     InteractionSnapshot,
     MessageSnapshot,
     Operation,
+    PushSnapshot,
     RecordedCall,
     RecordSnapshot,
     TicketSnapshot,
@@ -205,8 +206,6 @@ def behaviour(reply: ReplyBehaviour) -> str:
     if isinstance(reply, Scripted):
         steps = len(reply.replies)
         said = f"follows a script of {steps} step{'' if steps == 1 else 's'} {delay}"
-        if reply.presses_every is not None:
-            said += f", and presses {_quoted(reply.presses_every.label)} on every message that offers it"
         then = "goes on conversing" if reply.then is AfterScript.ANSWERS else "says nothing more"
         return f"{said}; once it is used, {then}"
     assert isinstance(reply, Answers)
@@ -392,7 +391,7 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
             3,
             ScoreLine(
                 label="slowest reaction",
-                value=f"{_lost(card.slowest_reaction)} from a wait settling to the agent's next write on it",
+                value=f"{_lost(card.slowest_reaction)} from a wait settling to the agent's next write",
             ),
         )
     return lines
@@ -500,9 +499,15 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
     for e in record.events:
         if e.seq <= at_seq or e.operation in (Operation.READ, Operation.SEARCH):
             continue
-        if e.entity == CHECKPOINT or e.entity.kind in (EntityKind.DUE, EntityKind.MEMORY, EntityKind.NEXT_WAKE):
+        if e.entity == CHECKPOINT or e.entity.kind in (
+            EntityKind.DUE,
+            EntityKind.PENDING,
+            EntityKind.MEMORY,
+            EntityKind.NEXT_WAKE,
+        ):
             continue  # the run's own rows: the agent's plan is compared through its report, below
-        key = (e.actor, e.operation, e.entity, e.after, e.sim_time)
+        after = e.after.model_copy(update={"seconds": None}) if isinstance(e.after, PushSnapshot) else e.after
+        key = (e.actor, e.operation, e.entity, after, e.sim_time)  # how long a push took is real time, not the world
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
     for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
         report = checkpoint.agent.report

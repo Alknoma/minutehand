@@ -3,7 +3,8 @@ the world changed.
 
 The run did not test what the agent would have done with that service, so its
 other findings are about a different run from the real one. Whether the service
-should be faked or the call should not have been made is a judgement: `review`.
+should be faked or the call should not have been made is a judgement: `review`, unless the agent file or the
+scenario names `unmatched_call` in `fail_on_integrity`.
 
 The calls come from `RunView.unmatched_calls`, filled by whoever knows which hosts
 were claimed. `Store.events()` cannot supply them: it returns an exchange only
@@ -13,7 +14,8 @@ through the event it produced, and these produced none.
 from __future__ import annotations
 
 from minutehand.checks.facts import blocked
-from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
+from minutehand.domain.assessments import IntegrityCheck
+from minutehand.domain.checks import CheckReport, Finding, Needs, RunView
 
 
 class UnmatchedCall:
@@ -25,12 +27,13 @@ class UnmatchedCall:
         missing = blocked(view, self.needs, self.id)
         if missing or view.unmatched_calls is None:
             return CheckReport(blocked=missing)
+        kind, severity = view.integrity(IntegrityCheck.UNMATCHED_CALL)
         return CheckReport(
             findings=[
                 Finding(
                     check=self.id,
-                    severity=Severity.WARNING,
-                    kind=FindingKind.REVIEW,
+                    severity=severity,
+                    kind=kind,
                     message=f"{call.method} {call.host}{call.path} reached no provider and was answered "
                     f"{call.status}. If {call.host} is not a place the agent keeps state (an email or SMS API, a "
                     "webhook, a search, a page), declare it under `outbound` in the agent file: `acknowledge` to "

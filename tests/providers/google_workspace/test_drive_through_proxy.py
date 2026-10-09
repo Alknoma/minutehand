@@ -314,7 +314,10 @@ say(answer=answer, same=back == payload, md5=hashlib.md5(payload).hexdigest())
     ]
 
 
-async def test_an_expired_token_is_refused_401_and_the_client_signs_in_again_mid_sequence(google: Google) -> None:
+async def test_an_expired_token_still_acts_as_its_user_and_the_client_goes_on_without_signing_in_again(
+    google: Google,
+) -> None:
+    """Minutehand enforces no credential: an hour of simulated time later the same token is still answered."""
     client = await google.client(
         """
 first = drive.files().list(q="name='notes.txt'", fields="files(name)").execute()
@@ -330,47 +333,37 @@ say(second=second, token=creds.token)
     second = await client.heard()
     await client.finished()
     assert first["first"] == second["second"] == {"files": [{"name": "notes.txt"}]}
-    assert first["token"] != second["token"]
+    assert first["token"] == second["token"]
     sequence = [(e.method, e.host, e.status) for _, e in google.exchanges()]
     assert sequence == [
         ("POST", "oauth2.googleapis.com", 200),
         ("GET", "www.googleapis.com", 200),
-        ("GET", "www.googleapis.com", 401),
-        ("POST", "oauth2.googleapis.com", 200),
         ("GET", "www.googleapis.com", 200),
     ]
 
 
-async def test_a_revoked_refresh_token_is_refused_the_way_googles_refresh_path_reads_it(google: Google) -> None:
+async def test_a_revoked_refresh_token_and_its_access_token_go_on_acting_through_googles_client(
+    google: Google,
+) -> None:
     client = await google.client(
         f"""
-import httpx, google.auth.exceptions
+import httpx
 from google.auth.transport.requests import Request
 creds.refresh(Request())
 before = drive.files().list(q="name='notes.txt'", fields="files(name)").execute()
 revoked = httpx.post("https://oauth2.googleapis.com/revoke", params={{"token": {REFRESH!r}}},
                      headers={{"content-type": "application/x-www-form-urlencoded"}})
-try:
-    drive.files().list(fields="files(name)").execute()
-    after = None
-except google.auth.exceptions.RefreshError as failed:
-    after = str(failed)
+after = drive.files().list(q="name='notes.txt'", fields="files(name)").execute()
 again = credentials()
-try:
-    again.refresh(Request())
-    error = None
-except google.auth.exceptions.RefreshError as failed:
-    error = str(failed)
-say(before=before, revoked=revoked.status_code, after=after, error=error)
+again.refresh(Request())
+say(before=before, revoked=revoked.status_code, after=after, again=bool(again.token))
 """
     )
     seen = await client.heard()
     await client.finished()
-    assert seen["before"] == {"files": [{"name": "notes.txt"}]} and seen["revoked"] == 200
-    assert "invalid_grant" in str(seen["after"]), "the access token went with the grant: a 401, then a refused refresh"
-    statuses = [(e.host, e.status) for _, e in google.exchanges()]
-    assert ("www.googleapis.com", 401) in statuses and statuses.count(("oauth2.googleapis.com", 400)) == 2
-    assert "invalid_grant" in str(seen["error"]) and "Token has been expired or revoked." in str(seen["error"])
+    assert seen["before"] == seen["after"] == {"files": [{"name": "notes.txt"}]}
+    assert seen["revoked"] == 200 and seen["again"] is True
+    assert all(e.status == 200 for _, e in google.exchanges())
 
 
 @dataclass

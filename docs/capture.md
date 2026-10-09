@@ -105,9 +105,10 @@ An id is made from the event that creates the item: `integer` is its sequence nu
 that number, `uuid` a UUID derived from the host, the collection's path and that number; so a fork, or a rerun,
 hands out the same ids. `sent` keeps the id the agent sent at `id.at`.
 
-**Secrets still never reach the store:** a field named as a credential (`redact.CREDENTIAL_KEYS`: `token`,
-`password`, `api_key`, ...) or listed in `redact` is stored, and read back, as `[redacted]`; this is the one way
-an item differs from what was sent.
+**Nothing is redacted from an item.** A field named like a credential (`token`, `password`, `api_key`,
+`secret`, ...) is stored and read back as sent, like any other field. A `store` takes no `redact` list; a
+declaration that names one is refused, saying the key was removed. (The call's own record, below, still keeps
+credential-named fields as `[redacted]`, as for every captured call; the item in the world does not.)
 
 Each item is a world event: a `STORED` entity under the declaration's `name` (`StoredSnapshot`: the host, the
 collection, the path it is under, its id, and the item as stored), created, updated and deleted by the agent. So
@@ -153,6 +154,13 @@ emulator is refused, since what it holds is outside the record (`docs/external-e
 
 ## Discovery: `--capture-unknown`
 
+**Answered as a service: `--capture-unknown model`.** A write to an undeclared host, and every call to it after, is
+answered as a service nobody declared (`docs/services.md`): its machine proposed by the model from the first write,
+each item the agent creates there held in the run's log, every answer rendered from that state under a shape fixed
+by the route's first answer, and nothing sent anywhere. A read before any write is passed through and kept, as
+`--capture-unknown reads` does. Each such call is kept `service` with no declaration (`declared_as` empty), and the
+run's suggestions list the host. A run with no model configured is refused before it starts.
+
 **Only reads: `--capture-unknown reads`.** A GET, HEAD or OPTIONS to an undeclared host is passed through and kept, as below; any other method is refused with 502 and recorded, as without the flag, so nothing is written anywhere real. A read an API sends as a POST (GraphQL, an RPC) is refused: declare its host. `UnknownHosts.READS`, `tests/capture/test_modes.py`.
 
 For an agent's first run, when nobody knows yet what it calls: `minutehand run … --capture-unknown` (and `fork`,
@@ -192,8 +200,9 @@ neither text, JSON, XML nor a form is kept as its length and type only (`binary`
 **Secrets never reach the store.** No header is kept, so `Authorization`, `Cookie` and API-key headers never
 are. Query parameters named as credentials (`redact.CREDENTIAL_KEYS`, plus `key`, `api_key`, `signature`,
 `sig`, `x-amz-*` credentials and the rest of `redact.CAPTURED_QUERY_KEYS` on a captured host) and body fields
-so named are `[redacted]`, and so is every body field the declaration lists in `redact` (and, when it is a
-plain name, the query parameter of that name). Redaction happens before the store sees a body, so before it is
+so named are `[redacted]`, and so is every body field an `acknowledge`, `pass_through`, `replay` or `forward`
+declaration lists in `redact` (and, when it is a plain name, the query parameter of that name); a `store` item is
+not redacted. Redaction happens before the store sees a body, so before it is
 hashed and kept once (`docs/design.md`, "Bytes kept once"). `test_no_secret_reaches_the_store_from_headers_query_or_bodies`
 searches the bytes of the world file, its write-ahead log, `captured.jsonl`, and every stored body and snapshot
 file decompressed, for each.

@@ -2,8 +2,8 @@
 
 Every call is checked in GitHub's order: an `X-GitHub-Api-Version` it does not serve (400), then the credential,
 then the faults the scenario armed, then the route. Minutehand deliberately does not enforce credentials: every
-`Authorization` is accepted, a token the world holds acting as its user and any other (an unseeded token, a JWT,
-an installation token) as the world's stand-in user. What a user may see is world data: a repository the user
+`Authorization`, or none, is accepted, a token the world holds acting as its user and any other (an unseeded or
+empty token, a JWT, an installation token, no header at all) as the world's stand-in user. What a user may see is world data: a repository the user
 neither owns, collaborates on nor reaches through an organization, and that is private, is a 404, exactly as one
 that does not exist. Lists are paged by `per_page` and `page` and say where the next page is in a `Link` header.
 A GET answered 200 carries an `ETag`; the same GET sent with it in `If-None-Match` is a 304, which an
@@ -18,9 +18,7 @@ import hashlib
 import json
 import math
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from datetime import timedelta
-from urllib.parse import urlencode
 
 from pydantic import ValidationError
 from starlette.applications import Starlette
@@ -29,15 +27,29 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.github import content, graphql, search, state, wire
+from minutehand.adapters.providers.github import content, graphql, history, search, state, wire
+from minutehand.adapters.providers.github.answers import (
+    PAGE_DEFAULT,
+    PAGE_MAX,
+    Answered,
+    Caller,
+    Handler,
+    as_json,
+    header,
+    number,
+    paged,
+    param,
+)
+from minutehand.adapters.providers.github.commits import Commits
+from minutehand.adapters.providers.github.hooks import Background, Hooks, Pusher
+from minutehand.adapters.providers.github.pulls import Pulls
 from minutehand.adapters.providers.github.state import GitHubWorld
+from minutehand.adapters.providers.github.tracker import Tracker
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
-PAGE_DEFAULT = 30
-PAGE_MAX = 100
 SEARCH_CEILING = 1000
 """Search serves the first thousand results and no more."""
 TEXT_MATCH = "application/vnd.github.text-match+json"
@@ -47,40 +59,6 @@ INSTALLATION_TOKEN_LIFETIME = timedelta(hours=1)
 https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app"""
 INSTALLATION_TOKEN_PREFIX = "ghs_"
 """The prefix GitHub writes on an installation access token (https://github.blog/2021-04-05-behind-githubs-new-authentication-token-formats/)."""
-
-
-@dataclass(frozen=True)
-class Caller:
-    """Who a call acts as: nobody, or a user through one of their tokens."""
-
-    account: wire.StoredAccount | None
-    token: wire.StoredToken | None
-
-
-@dataclass
-class Answered:
-    status: int
-    body: bytes
-    headers: dict[str, str] = field(default_factory=dict)
-
-
-Handler = Callable[[Request, Caller], Awaitable[Answered]]
-
-
-def _param(request: Request, name: str) -> str | None:
-    return request.query_params[name] if name in request.query_params else None
-
-
-def _header(request: Request, name: str) -> str | None:
-    return request.headers[name] if name in request.headers else None
-
-
-def _json(entity: wire.Wire | list[wire.Wire], status: int = 200, headers: dict[str, str] | None = None) -> Answered:
-    if isinstance(entity, list):
-        body = ("[" + ",".join(e.model_dump_json(by_alias=True) for e in entity) + "]").encode()
-    else:
-        body = entity.model_dump_json(by_alias=True).encode()
-    return Answered(status, body, headers or {})
 
 
 class _Exhausted(Exception):
@@ -127,21 +105,29 @@ def _raw(file: wire.StoredFile) -> bytes:
 
 
 class GitHubApi:
-    def __init__(self, store: Store, clock: Clock) -> None:
-        self._world = GitHubWorld(store)
-        self._clock = clock
+    def __init__(
+        self, store: Store, clock: Clock, pusher: Pusher | None = None, background: Background | None = None
+    ) -> None:
+        """`pusher` sends a person's move to the agent at once; `background`, what the agent's own calls set off,
+        after each is answered."""
+        self.world = GitHubWorld(store)
+        self.clock = clock
+        self.tracker = Tracker(self)
+        self.pulls = Pulls(self)
+        self.commits_made = Commits(self)
+        self.hooks = Hooks(self, pusher, background)
 
     # ------------------------------------------------------------------ the gate
 
     def endpoint(self, handler: Handler, *, spends: bool = True) -> Callable[[Request], Awaitable[Response]]:
         async def answer(request: Request) -> Response:
-            version = _header(request, "x-github-api-version")
+            version = header(request, "x-github-api-version")
             resource = resource_of(request.url.path)
             caller: Caller | None = None
             budget: wire.StoredBudget | None = None
-            # A conditional call made with a credential spends only if it is not answered 304, so it is counted
+            # A conditional call acting as a user spends only if it is not answered 304, so it is counted
             # once its answer is known; every other call is counted before it is answered.
-            deferred = _header(request, "if-none-match") is not None and _header(request, "authorization") is not None
+            conditional = header(request, "if-none-match") is not None
             owed = False
             try:
                 if version in wire.UNSERVED_API_VERSIONS:
@@ -149,6 +135,7 @@ class GitHubApi:
                 if version is not None and version not in wire.API_VERSIONS:
                     raise wire.unsupported_version(version)
                 caller = self._authenticate(request)
+                deferred = conditional and caller.account is not None
                 budget = self._window(caller, resource)
                 if spends and budget.limit > 0:
                     if budget.remaining == 0:
@@ -185,7 +172,7 @@ class GitHubApi:
 
     def _spend(self, caller: Caller | None, resource: wire.Resource, budget: wire.StoredBudget) -> wire.StoredBudget:
         spent = budget.model_copy(update={"used": budget.used + 1})
-        self._world.write_budget(_login(caller), resource, spent)
+        self.world.write_budget(_login(caller), resource, spent)
         return spent
 
     def _window(self, caller: Caller | None, resource: wire.Resource) -> wire.StoredBudget:
@@ -195,8 +182,8 @@ class GitHubApi:
         budget spent there stays spent until the clock passes its reset."""
         login = _login(caller)
         limit = wire.limit_for(resource, authenticated=login is not None)
-        now = self._clock.now().timestamp()
-        stored = self._world.budget(login, resource)
+        now = self.clock.now().timestamp()
+        stored = self.world.budget(login, resource)
         if stored is not None and now < stored.reset:
             return stored
         return wire.StoredBudget(limit=limit, used=0, reset=math.ceil(now) + wire.WINDOW_SECONDS[resource])
@@ -209,33 +196,31 @@ class GitHubApi:
         """`GET /rate_limit`: every budget of the caller as it stands, `rate` being the core one. Reading it
         spends nothing."""
         budgets = {resource: _budget_out(self._window(caller, resource), resource) for resource in wire.Resource}
-        return _json(wire.RateLimitOut(resources=budgets, rate=budgets[wire.Resource.CORE]))
+        return as_json(wire.RateLimitOut(resources=budgets, rate=budgets[wire.Resource.CORE]))
 
     def _authenticate(self, request: Request) -> Caller:
-        """Who the call acts as. No `Authorization` is nobody, as on GitHub. Any `Authorization` at all is accepted:
-        a token the world holds acts as its user, and anything else as the world's stand-in (a world with no user
-        has nobody to stand in, and the call reads as nobody's). Minutehand deliberately does not enforce
-        credentials, so nothing here refuses."""
-        authorization = (_header(request, "authorization") or "").strip()
-        if not authorization:
-            return Caller(account=None, token=None)
-        token = self._world.token(_presented(authorization))
-        stand_in = self._world.stand_in() if token is None else None
+        """Who the call acts as. Minutehand does not authenticate: a token the world holds acts as its user, and
+        anything else, an empty token or no `Authorization` at all included, as the world's stand-in
+        (`unknown_credentials_act_as`). Only a world with no user has nobody to stand in, and there the call reads
+        as nobody's. Nothing here refuses."""
+        authorization = (header(request, "authorization") or "").strip()
+        token = self.world.token(_presented(authorization)) if authorization else None
+        stand_in = self.world.stand_in() if token is None else None
         login = token.login if token is not None else stand_in.login if stand_in is not None else None
         if login is None:
             return Caller(account=None, token=None)
-        account = self._world.account(login)
+        account = self.world.account(login)
         if account is None:
             raise LookupError(f"a credential acts as {login}, who is not in this GitHub")
         return Caller(account=account, token=token)
 
     def _fault(self, request: Request, caller: Caller) -> Answered | None:
         resource = resource_of(request.url.path)
-        for ref, armed in self._world.faults():
+        for ref, armed in self.world.faults():
             fault = armed.fault
             if armed.answered >= fault.times or (fault.resource is not None and fault.resource is not resource):
                 continue
-            self._world.spend(ref, armed)
+            self.world.spend(ref, armed)
             answering.injected()
             return self._faulted(fault, resource, caller)
         return None
@@ -250,7 +235,7 @@ class GitHubApi:
                 section="/using-the-rest-api/rate-limits-for-the-rest-api",
             )
             return Answered(fault.status, wire.error_body(refusal), {"Retry-After": str(fault.retry_after)})
-        reset = math.ceil(self._clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
+        reset = math.ceil(self.clock.now().timestamp()) + wire.WINDOW_SECONDS[resource]
         limit = wire.LIMITS[resource]
         spent = wire.StoredBudget(limit=limit, used=limit, reset=reset)
         return self._rate_limited(fault.status, resource, caller, _budget_headers(spent, resource))
@@ -273,35 +258,24 @@ class GitHubApi:
         public = None if repository.private else wire.Permission.PULL
         if caller.account is None:
             return public
-        return self._role(caller.account, repository) or public
+        return self.world.role(caller.account, repository) or public
 
-    def _role(self, account: wire.StoredAccount, repository: wire.StoredRepository) -> wire.Permission | None:
-        """The role the account holds by owning, collaborating or belonging, apart from the repository being public."""
-        login = account.login.lower()
-        if repository.owner.lower() == login:
-            return wire.Permission.ADMIN
-        roles = [c.permission for c in repository.collaborators if c.login.lower() == login]
-        owner = self._world.account(repository.owner)
-        if owner is not None and login in {m.lower() for m in owner.members}:
-            roles.append(wire.Permission.PULL)
-        return max(roles, key=wire.PERMISSION_ORDER.index) if roles else None
-
-    def _visible(self, caller: Caller, owner: str, name: str, section: str) -> wire.StoredRepository:
-        repository = self._world.repository(owner, name)
+    def visible(self, caller: Caller, owner: str, name: str, section: str) -> wire.StoredRepository:
+        repository = self.world.repository(owner, name)
         if repository is None or self.permission(caller, repository) is None:
             raise wire.not_found(section)
         return repository
 
     # ------------------------------------------------------------------ presenting
 
-    def _account_out(self, login: str) -> wire.AccountOut:
-        account = self._world.account(login)
+    def account_out(self, login: str) -> wire.AccountOut:
+        account = self.world.account(login)
         if account is None:
             raise LookupError(f"{login} is named by a record and is not in this GitHub")
         return wire.AccountOut.of(account)
 
-    def _repository_out(self, caller: Caller, repository: wire.StoredRepository) -> wire.RepositoryOut:
-        files = self._world.files(repository)
+    def repository_out(self, caller: Caller, repository: wire.StoredRepository) -> wire.RepositoryOut:
+        files = self.world.files(repository)
         languages = content.breakdown(files)
         full = repository.full_name
         pushed = repository.commits[0].date if repository.commits else repository.created_at
@@ -320,7 +294,7 @@ class GitHubApi:
             name=repository.name,
             full_name=full,
             private=repository.private,
-            owner=self._account_out(repository.owner),
+            owner=self.account_out(repository.owner),
             description=repository.description,
             git_url=f"git://github.com/{full}.git",
             ssh_url=f"git@github.com:{full}.git",
@@ -399,12 +373,12 @@ class GitHubApi:
         encoded = wire.wrapped_base64(_raw(file)) if fits else ""
         return wire.FileOut.model_validate({**shape, "encoding": "base64" if fits else "none", "content": encoded})
 
-    def _commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
+    def commit_out(self, repository: wire.StoredRepository, commit: wire.StoredCommit) -> wire.CommitOut:
         full = repository.full_name
         person = wire.PersonOut(name=commit.author_name, email=commit.author_email, date=commit.date)
         committed = wire.PersonOut(name=commit.committer_name, email=commit.committer_email, date=commit.committer_date)
-        author = self._account_out(commit.author_login) if commit.author_login is not None else None
-        committer = self._account_out(commit.committer_login) if commit.committer_login is not None else None
+        author = self.account_out(commit.author_login) if commit.author_login is not None else None
+        committer = self.account_out(commit.committer_login) if commit.committer_login is not None else None
         tree = content.tree_sha(repository, "")
         return wire.CommitOut(
             sha=commit.sha,
@@ -421,46 +395,16 @@ class GitHubApi:
             comments_url=f"{wire.API}/repos/{full}/commits/{commit.sha}/comments",
             author=author,
             committer=committer,
-            parents=[]
-            if commit.parent is None
-            else [
+            parents=[
                 wire.ParentOut(
-                    sha=commit.parent,
-                    url=f"{wire.API}/repos/{full}/commits/{commit.parent}",
-                    html_url=f"{wire.WEB}/{full}/commit/{commit.parent}",
+                    sha=parent,
+                    url=f"{wire.API}/repos/{full}/commits/{parent}",
+                    html_url=f"{wire.WEB}/{full}/commit/{parent}",
                 )
+                for parent in (commit.parent, commit.merged)
+                if parent is not None
             ],
         )
-
-    # ------------------------------------------------------------------ paging
-
-    def _page(
-        self, request: Request, total: int, *, ceiling: int | None = None, path: str | None = None
-    ) -> tuple[int, int, dict[str, str]]:
-        """The window `per_page` and `page` ask for, and the `Link` header pointing at the others, at `path` (the
-        call's own path when None)."""
-        at_path = request.url.path if path is None else path
-        per_page = _number(_param(request, "per_page"), PAGE_DEFAULT)
-        per_page = min(max(per_page, 1), PAGE_MAX)
-        page = max(_number(_param(request, "page"), 1), 1)
-        reachable = min(total, ceiling) if ceiling is not None else total
-        last = max(math.ceil(reachable / per_page), 1)
-        links: list[str] = []
-
-        def at(number: int, rel: str) -> str:
-            query = {k: v for k, v in request.query_params.items() if k != "page"}
-            query["page"] = str(number)
-            return f'<{wire.API}{at_path}?{urlencode(query)}>; rel="{rel}"'
-
-        if page > 1:
-            links.append(at(min(page - 1, last), "prev"))
-        if page < last:
-            links.append(at(page + 1, "next"))
-            links.append(at(last, "last"))
-        if page > 1:
-            links.append(at(1, "first"))
-        start = (page - 1) * per_page
-        return start, start + per_page, {"Link": ", ".join(links)} if links else {}
 
     # ------------------------------------------------------------------ routes
 
@@ -468,24 +412,24 @@ class GitHubApi:
         account = caller.account
         if account is None:
             raise wire.requires_authentication()
-        self._world.saw(state.account_ref(account.login), Operation.READ)
-        owned = [r for r in self._world.repositories() if r.owner.lower() == account.login.lower() and not r.private]
+        self.world.saw(state.account_ref(account.login), Operation.READ)
+        owned = [r for r in self.world.repositories() if r.owner.lower() == account.login.lower() and not r.private]
         out = wire.UserOut(
-            **self._account_out(account.login).model_dump(),
+            **self.account_out(account.login).model_dump(),
             name=account.name,
             email=account.email,
             public_repos=len(owned),
             created_at=account.created_at,
             updated_at=account.created_at,
         )
-        return _json(out)
+        return as_json(out)
 
     async def user_repos(self, request: Request, caller: Caller) -> Answered:
         account = caller.account
         if account is None:
             raise wire.requires_authentication()
-        mine = [r for r in self._world.repositories() if self._listed(account, r)]
-        sort = _param(request, "sort") or "full_name"
+        mine = [r for r in self.world.repositories() if self._listed(account, r)]
+        sort = param(request, "sort") or "full_name"
         if sort == "full_name":
             mine.sort(key=lambda r: r.full_name.lower())
         else:
@@ -494,55 +438,66 @@ class GitHubApi:
             by_creation = sort == "created"  # enum-lint: exempt GitHub's `sort` query value, its wire vocabulary
             moment = created if by_creation else pushed
             mine.sort(key=lambda r: (moment[r.full_name], r.full_name.lower()), reverse=True)
-        start, end, links = self._page(request, len(mine))
-        self._world.saw(state.account_ref(account.login), Operation.SEARCH)
-        return _json([self._repository_out(caller, r) for r in mine[start:end]], headers=links)
+        start, end, links = paged(request, len(mine))
+        self.world.saw(state.account_ref(account.login), Operation.SEARCH)
+        return as_json([self.repository_out(caller, r) for r in mine[start:end]], headers=links)
 
     def _listed(self, account: wire.StoredAccount, repository: wire.StoredRepository) -> bool:
         """`/user/repos` lists what the user owns, collaborates on or reaches through an organization."""
-        return self._role(account, repository) is not None
+        return self.world.role(account, repository) is not None
 
     async def repository(self, request: Request, caller: Caller) -> Answered:
         owner, name = request.path_params["owner"], request.path_params["repo"]
-        repository = self._visible(caller, owner, name, "/repos/repos#get-a-repository")
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
-        return _json(self._repository_out(caller, repository))
+        repository = self.visible(caller, owner, name, "/repos/repos#get-a-repository")
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
+        return as_json(self.repository_out(caller, repository))
 
     async def languages(self, request: Request, caller: Caller) -> Answered:
         owner, name = request.path_params["owner"], request.path_params["repo"]
-        repository = self._visible(caller, owner, name, "/repos/repos#list-repository-languages")
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
-        counted = dict(content.breakdown(self._world.files(repository)))
+        repository = self.visible(caller, owner, name, "/repos/repos#list-repository-languages")
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
+        counted = dict(content.breakdown(self.world.files(repository)))
         return Answered(200, json.dumps(counted).encode())
 
     async def branches(self, request: Request, caller: Caller) -> Answered:
         owner, name = request.path_params["owner"], request.path_params["repo"]
-        repository = self._visible(caller, owner, name, "/branches/branches#list-branches")
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        repository = self.visible(caller, owner, name, "/branches/branches#list-branches")
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
         if not repository.commits:
-            return _json([])
+            return as_json([])
         head = repository.commits[0].sha
-        names = sorted({repository.default_branch, *repository.branches})
-        start, end, links = self._page(request, len(names), path=_by_id(request, repository))
+        tips = {name: head for name in (repository.default_branch, *repository.branches)}
+        tips |= {line.name: line.commits[0].sha if line.commits else line.fork for line in repository.lines}
+        names = sorted(tips)
+        start, end, links = paged(request, len(names), path=_by_id(request, repository))
         out: list[wire.Wire] = [
             wire.BranchOut(
                 name=branch,
-                commit=wire.ShaRefOut(sha=head, url=f"{wire.API}/repos/{repository.full_name}/commits/{head}"),
+                commit=wire.ShaRefOut(
+                    sha=tips[branch], url=f"{wire.API}/repos/{repository.full_name}/commits/{tips[branch]}"
+                ),
                 protected=False,
             )
             for branch in names[start:end]
         ]
-        return _json(out, headers=links)
+        return as_json(out, headers=links)
+
+    def files_at(self, repository: wire.StoredRepository, located: content.Located) -> list[wire.StoredFile]:
+        """The files a ref shows: the default branch's, or a branch of its own at the commit named."""
+        if located.line is None:
+            return self.world.files(repository)
+        return history.materialize(self.world, repository, history.line_tree(located.line, upto=located.commit.sha))
 
     async def contents(self, request: Request, caller: Caller) -> Answered:
         section = "/repos/contents#get-repository-content"
         owner, name = request.path_params["owner"], request.path_params["repo"]
         path = (request.path_params["path"] if "path" in request.path_params else "").strip("/")
-        repository = self._visible(caller, owner, name, section)
+        repository = self.visible(caller, owner, name, section)
         if not repository.commits:
             raise wire.Refusal(404, "This repository is empty.", section=section)
-        ref = _param(request, "ref")
-        if content.resolve(repository, ref) is None:
+        ref = param(request, "ref")
+        located = content.locate(repository, ref)
+        if located is None:
             # Observed 2026-10-08: this refusal points at the reference's old address.
             raise wire.Refusal(
                 404,
@@ -550,29 +505,34 @@ class GitHubApi:
                 documentation_url="https://docs.github.com/v3/repos/contents/",
             )
         shown = ref or repository.default_branch
-        files = self._world.files(repository)
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        files = self.files_at(repository, located)
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
         found = next((f for f in files if f.path == path), None) if path else None
         if found is not None:
             entry = content.Entry(name=found.path.rsplit("/", 1)[-1], path=found.path, file=found)
-            return _json(self._content_out(repository, entry, shown, inline=True))
+            return as_json(self._content_out(repository, entry, shown, inline=True))
         if path and path not in content.directories(files):
             raise wire.not_found(section)
         entries = content.children(files, path)[: repository.directory_entry_limit]
-        return _json([self._content_out(repository, e, shown, inline=False) for e in entries])
+        return as_json([self._content_out(repository, e, shown, inline=False) for e in entries])
 
     async def blob(self, request: Request, caller: Caller) -> Answered:
         section = "/git/blobs#get-a-blob"
         owner, name, sha = request.path_params["owner"], request.path_params["repo"], request.path_params["sha"]
-        repository = self._visible(caller, owner, name, section)
+        repository = self.visible(caller, owner, name, section)
         if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
             raise wire.Refusal(
                 422, "The sha parameter must be exactly 40 characters and contain only [0-9a-f].", section=section
             )
-        found = next((f for f in self._world.files(repository) if f.sha == sha), None)
+        found = next((f for f in self.world.files(repository) if f.sha == sha), None)
+        if found is None:
+            kept = self.world.blob(repository, sha)
+            found = (
+                None if kept is None else wire.StoredFile(path="", content=kept.content, size=kept.size, sha=kept.sha)
+            )
         if found is None:
             raise wire.not_found(section)
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
         out = wire.BlobOut(
             sha=found.sha,
             node_id=wire.node_id("B", int(found.sha[:8], 16)),
@@ -580,14 +540,15 @@ class GitHubApi:
             url=f"{wire.API}/repos/{repository.full_name}/git/blobs/{found.sha}",
             content=wire.wrapped_base64(_raw(found)),
         )
-        return _json(out)
+        return as_json(out)
 
     async def tree(self, request: Request, caller: Caller) -> Answered:
         section = "/git/trees#get-a-tree"
         owner, name, wanted = request.path_params["owner"], request.path_params["repo"], request.path_params["tree"]
-        repository = self._visible(caller, owner, name, section)
-        files = self._world.files(repository)
-        directory: str | None = "" if content.resolve(repository, wanted) is not None else None
+        repository = self.visible(caller, owner, name, section)
+        located = content.locate(repository, wanted)
+        files = self.world.files(repository) if located is None else self.files_at(repository, located)
+        directory: str | None = "" if located is not None else None
         if directory is None:
             directory = next(
                 (d for d in ["", *content.directories(files)] if content.tree_sha(repository, d) == wanted.lower()),
@@ -595,7 +556,7 @@ class GitHubApi:
             )
         if directory is None or not repository.commits:
             raise wire.not_found(section)
-        recursive = _param(request, "recursive") is not None
+        recursive = param(request, "recursive") is not None
         prefix = f"{directory}/" if directory else ""
         entries = content.under(files, directory) if recursive else content.children(files, directory)
         out: list[wire.TreeEntryOut] = []
@@ -625,8 +586,8 @@ class GitHubApi:
                 )
         truncated = len(out) > repository.tree_entry_limit
         sha = content.tree_sha(repository, directory)
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
-        return _json(
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
+        return as_json(
             wire.TreeOut(
                 sha=sha,
                 url=f"{wire.API}/repos/{repository.full_name}/git/trees/{sha}",
@@ -638,28 +599,28 @@ class GitHubApi:
     async def commits(self, request: Request, caller: Caller) -> Answered:
         section = "/commits/commits#list-commits"
         owner, name = request.path_params["owner"], request.path_params["repo"]
-        repository = self._visible(caller, owner, name, section)
+        repository = self.visible(caller, owner, name, section)
         if not repository.commits:
             raise wire.Refusal(409, "Git Repository is empty.", section=section)
-        sha = _param(request, "sha")
-        start = content.resolve(repository, sha)
+        sha = param(request, "sha")
+        start = content.locate(repository, sha)
         if start is None:
             raise wire.not_found(section)
-        history = repository.commits[repository.commits.index(start) :]
-        path = (_param(request, "path") or "").strip("/")
+        listed = history.log(repository, start.commit)
+        path = (param(request, "path") or "").strip("/")
         if path:
-            history = [c for c in history if any(p == path or p.startswith(path + "/") for p in c.paths)]
-        first, end, links = self._page(request, len(history), path=_by_id(request, repository))
-        self._world.saw(state.repository_ref(owner, name), Operation.READ)
-        return _json([self._commit_out(repository, c) for c in history[first:end]], headers=links)
+            listed = [c for c in listed if any(p == path or p.startswith(path + "/") for p in c.paths)]
+        first, end, links = paged(request, len(listed), path=_by_id(request, repository))
+        self.world.saw(state.repository_ref(owner, name), Operation.READ)
+        return as_json([self.commit_out(repository, c) for c in listed[first:end]], headers=links)
 
     async def search_code(self, request: Request, caller: Caller) -> Answered:
         if caller.account is None:
             raise wire.requires_authentication()
-        query = search.parse(_param(request, "q") or "")
-        visible = [r for r in self._world.repositories() if self.permission(caller, r) is not None]
+        query = search.parse(param(request, "q") or "")
+        visible = [r for r in self.world.repositories() if self.permission(caller, r) is not None]
         names = {r.full_name.lower(): r for r in visible}
-        logins = {a.login.lower() for a in self._world.accounts()}
+        logins = {a.login.lower() for a in self.world.accounts()}
         hidden = [n for n in query.repos if n not in names] + [o for o in query.owners if o not in logins]
         if hidden:
             raise wire.validation_failed(
@@ -675,8 +636,8 @@ class GitHubApi:
         scope = [names[n] for n in dict.fromkeys(query.repos)] if query.repos else visible
         if query.owners:
             scope = [r for r in scope if r.owner.lower() in query.owners]
-        per_page = min(max(_number(_param(request, "per_page"), PAGE_DEFAULT), 1), PAGE_MAX)
-        page = max(_number(_param(request, "page"), 1), 1)
+        per_page = min(max(number(param(request, "per_page"), PAGE_DEFAULT), 1), PAGE_MAX)
+        page = max(number(param(request, "page"), 1), 1)
         if (page - 1) * per_page >= SEARCH_CEILING:
             raise wire.validation_failed(
                 search.SECTION,
@@ -689,18 +650,18 @@ class GitHubApi:
             )
         hits: list[tuple[wire.StoredRepository, wire.StoredFile]] = []
         for repository in sorted(scope, key=lambda r: r.full_name.lower()):
-            self._world.saw(state.repository_ref(repository.owner, repository.name), Operation.SEARCH)
-            for file in self._world.files(repository):
+            self.world.saw(state.repository_ref(repository.owner, repository.name), Operation.SEARCH)
+            for file in self.world.files(repository):
                 raw = _raw(file)
                 if file.size > content.SEARCH_INDEX_LIMIT or content.is_binary(raw):
                     continue
                 if query.matches(file, raw.decode("utf-8")):
                     hits.append((repository, file))
-        start, end, links = self._page(request, len(hits), ceiling=SEARCH_CEILING)
+        start, end, links = paged(request, len(hits), ceiling=SEARCH_CEILING)
         window = hits[start:end]
-        if TEXT_MATCH not in (_header(request, "accept") or ""):
+        if TEXT_MATCH not in (header(request, "accept") or ""):
             items = [self._code_item(r, f) for r, f in window]
-            return _json(
+            return as_json(
                 wire.CodeSearchOut(total_count=len(hits), incomplete_results=False, items=items), headers=links
             )
         matched = [
@@ -711,7 +672,7 @@ class GitHubApi:
             for r, f in window
         ]
         out = wire.MatchedCodeSearchOut(total_count=len(hits), incomplete_results=False, items=matched)
-        return _json(out, headers=links)
+        return as_json(out, headers=links)
 
     def _text_match(
         self, repository: wire.StoredRepository, file: wire.StoredFile, query: search.CodeQuery
@@ -740,7 +701,7 @@ class GitHubApi:
                 node_id=wire.node_id("R", repository.id),
                 name=repository.name,
                 full_name=full,
-                owner=self._account_out(repository.owner),
+                owner=self.account_out(repository.owner),
                 private=repository.private,
                 description=repository.description,
             ),
@@ -753,7 +714,7 @@ class GitHubApi:
 
         async def answer(request: Request, caller: Caller) -> Answered:
             wanted = request.path_params["repository_id"]
-            found = next((r for r in self._world.repositories() if r.id == wanted), None)
+            found = next((r for r in self.world.repositories() if r.id == wanted), None)
             if found is None:
                 raise wire.not_found()
             request.scope["path_params"] = {**request.path_params, "owner": found.owner, "repo": found.name}
@@ -773,11 +734,11 @@ class GitHubApi:
             asked = wire.InstallationTokenIn.model_validate_json(sent) if sent.strip() else wire.InstallationTokenIn()
         except ValidationError as error:
             raise wire.Refusal(400, "Problems parsing JSON", section=section) from error
-        expires_at = wire.timestamp(self._clock.now() + INSTALLATION_TOKEN_LIFETIME)
+        expires_at = wire.timestamp(self.clock.now() + INSTALLATION_TOKEN_LIFETIME)
         issued = wire.StoredInstallationToken(
             installation_id=installation, expires_at=expires_at, permissions=asked.permissions
         )
-        number = self._world.issue_installation_token(issued)
+        number = self.world.issue_installation_token(issued)
         token = INSTALLATION_TOKEN_PREFIX + hashlib.sha256(f"{installation}\0{number}".encode()).hexdigest()[:36]
         answer = wire.InstallationTokenOut(token=token, expires_at=expires_at, permissions=asked.permissions)
         return Answered(201, answer.model_dump_json(exclude_none=True).encode())
@@ -796,14 +757,14 @@ class GitHubApi:
             raise wire.Refusal(400, "Problems parsing JSON", section="/graphql") from error
 
         def find(owner: str, name: str) -> graphql.Visible | None:
-            repository = self._world.repository(owner, name)
+            repository = self.world.repository(owner, name)
             if repository is None or self.permission(caller, repository) is None:
                 return None
-            return graphql.Visible(repository=repository, files=lambda: self._world.files(repository))
+            return graphql.Visible(repository=repository, files=lambda: self.world.files(repository))
 
         answer = graphql.execute(body, find, viewer)
         for repository in answer.seen:
-            self._world.saw(state.repository_ref(repository.owner, repository.name), Operation.READ)
+            self.world.saw(state.repository_ref(repository.owner, repository.name), Operation.READ)
         return Answered(200, answer.body)
 
 
@@ -839,7 +800,7 @@ def _conditional(request: Request, answered: Answered) -> Answered:
     weakly, as If-None-Match is). https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate"""
     tag = _etag(answered.body)
     headers = {**answered.headers, "ETag": tag}
-    wanted = _header(request, "if-none-match")
+    wanted = header(request, "if-none-match")
     if wanted is not None:
         named = {t.strip().removeprefix("W/") for t in wanted.split(",")}
         if "*" in named or tag.removeprefix("W/") in named:
@@ -847,17 +808,28 @@ def _conditional(request: Request, answered: Answered) -> Answered:
     return Answered(answered.status, answered.body, headers)
 
 
-def _number(text: str | None, default: int) -> int:
-    if text is None:
-        return default
-    try:
-        return int(text)
-    except ValueError:
-        return default
+class GitHubApp(Starlette):
+    """The GitHub app: Starlette, and `DeliversInBackground` for the webhooks the agent's own calls set off."""
+
+    def __init__(self, background: Background, routes: list[Route]) -> None:
+        super().__init__(routes=routes)
+        self.background = background
+
+    def delivering(self) -> int:
+        return self.background.delivering()
+
+    async def settled(self) -> None:
+        await self.background.settled()
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
-    api = GitHubApi(store, clock)
+def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None] | None = None) -> GitHubApp:
+    """`listening` says where the agent takes GitHub's webhooks, when it does (`ListensForAgent`): what its own calls
+    set off is pushed there."""
+    background = Background(listening if listening is not None else lambda: None)
+    api = GitHubApi(store, clock, background=background)
+    tracker = api.tracker
+    pulls = api.pulls
+    made = api.commits_made
     table: list[tuple[str, str, Handler]] = [
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
@@ -867,9 +839,49 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         ("/repos/{owner}/{repo}/contents", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/{path:path}", "GET", api.contents),
+        ("/repos/{owner}/{repo}/contents/{path:path}", "PUT", made.put),
+        ("/repos/{owner}/{repo}/contents/{path:path}", "DELETE", made.delete),
         ("/repos/{owner}/{repo}/git/blobs/{sha}", "GET", api.blob),
         ("/repos/{owner}/{repo}/git/trees/{tree:path}", "GET", api.tree),
         ("/repos/{owner}/{repo}/commits", "GET", api.commits),
+        ("/repos/{owner}/{repo}/issues", "GET", tracker.list_issues),
+        ("/repos/{owner}/{repo}/issues", "POST", tracker.create_issue),
+        ("/repos/{owner}/{repo}/issues/comments", "GET", tracker.list_repository_comments),
+        ("/repos/{owner}/{repo}/issues/comments/{comment_id:int}", "GET", tracker.get_comment),
+        ("/repos/{owner}/{repo}/issues/comments/{comment_id:int}", "PATCH", tracker.update_comment),
+        ("/repos/{owner}/{repo}/issues/comments/{comment_id:int}", "DELETE", tracker.delete_comment),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}", "GET", tracker.get_issue),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}", "PATCH", tracker.update_issue),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/comments", "GET", tracker.list_comments),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/comments", "POST", tracker.create_comment),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/lock", "PUT", tracker.lock_issue),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/lock", "DELETE", tracker.unlock_issue),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/labels", "GET", tracker.list_issue_labels),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/labels", "POST", tracker.add_labels),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/labels", "PUT", tracker.set_labels),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/labels", "DELETE", tracker.clear_labels),
+        ("/repos/{owner}/{repo}/issues/{issue_number:int}/labels/{name:path}", "DELETE", tracker.remove_label),
+        ("/repos/{owner}/{repo}/labels", "GET", tracker.list_labels),
+        ("/repos/{owner}/{repo}/labels", "POST", tracker.create_label),
+        ("/repos/{owner}/{repo}/labels/{name:path}", "GET", tracker.get_label),
+        ("/repos/{owner}/{repo}/pulls", "GET", pulls.list_pulls),
+        ("/repos/{owner}/{repo}/pulls", "POST", pulls.create_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}", "GET", pulls.get_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}", "PATCH", pulls.update_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/files", "GET", pulls.list_files),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/commits", "GET", pulls.list_commits),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/merge", "GET", pulls.check_merged),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/merge", "PUT", pulls.merge_pull),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews", "GET", pulls.list_reviews),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews", "POST", pulls.create_review),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews/{review_id:int}", "GET", pulls.get_review),
+        (
+            "/repos/{owner}/{repo}/pulls/{pull_number:int}/reviews/{review_id:int}/comments",
+            "GET",
+            pulls.list_review_comments_of_review,
+        ),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "GET", pulls.list_review_comments),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "POST", pulls.create_review_comment),
         ("/search/code", "GET", api.search_code),
         ("/app/installations/{installation_id:int}/access_tokens", "POST", api.installation_token),
         ("/graphql", "POST", api.graph),
@@ -888,7 +900,7 @@ def build_app(store: Store, clock: Clock) -> Starlette:
         raise NotServed("it is not among the calls this provider serves (its README's table)")
 
     routes.append(Route("/{anything:path}", unserved, methods=list(EVERY_METHOD)))
-    return Starlette(routes=routes)
+    return GitHubApp(background, routes)
 
 
 REPOSITORY = "/repos/{owner}/{repo}"

@@ -124,6 +124,7 @@ the client raises `ServerFailed`, not `Refused`. Each status comes from one conv
 | `GET /v1/worlds/{id}/checks` | → `Checked` | Every deterministic check and the scorecard over the world now; for a world of a case, the case's |
 | `POST /v1/worlds/{id}/steps` | `MarkStep` → `StepView` | A step begins (`edge: began`, `at`, `reason`) or ends (`edge: ended`); a world of a case steps its case |
 | `POST /v1/worlds/{id}/report` | `AgentReport` → `Checked` | The agent's own report of its work, relayed by whoever drives it: `status` (`done` is how the run stopped) and the `commitments` it still holds open, which keep the run from passing. The latest stands; a world of a case reports for its case |
+| `GET /v1/worlds/{id}/transitions` | → `TransitionsView` | What waits on the world's people where its people engine plays them (each item with when they act, `docs/design-transitions.md`), and every move of any item's state, by anyone, in order |
 | `POST /v1/worlds/{id}/inboxes/read` | → `InboxesView` | Read the world's inboxes as each person now: what waits on people, and the decisions owed with when each falls due |
 | `POST /v1/worlds/{id}/inboxes/due` | → `DecisionsDone` | Make every decision due by the world's clock, its case's, or its latest step's moment, as its person |
 | `POST /v1/worlds/{id}/inboxes/decide` | `DecideNow` → `DecisionView` | A person decides an item now, with a decision and its inputs |
@@ -198,27 +199,30 @@ The clock of a world stands still. Nothing fires on its own.
   `reply` answers a message (in its thread in a channel, a new message in a DM); both are recorded as actor
   `PERSON` and pushed to the world's inbound target, signed with its secret, exactly as the run loop pushes them.
   `move_ticket` is the assignee completing, cancelling or reopening a ticket (actor `PERSON`); `edit_ticket`
-  reassigns it or sets its state from outside (actor `SCENARIO`). A world with scripted people off ignores the
-  seed's scripts, fates and directions however far the clock moves.
+  reassigns it or sets its state from outside (actor `SCENARIO`); each is a transition through the provider's own
+  code path. A world with scripted people off ignores the seed's scripts, takes and directions however far the
+  clock moves.
 - **`scripted_people: true`**: the world's people are as complete as a run's. Each message the agent sends a
   person is answered as in a run (`docs/design.md`, "People"): a step of their script, its words written by a model
   from the step's facts and intent; once the script is used, or with no script (`Answers`), the model converses from
   their facts, voice and helpfulness; `verbatim` steps and controls need no model; `then: silent` and `Silent` say
   nothing. The moment is drawn as a run draws it, from the seed, the person and the ask, inside their working hours
   and outside their absences; a person away while a delegate covers sends their automatic reply at once. Each ticket
-  handed to a person with a `TicketFate` meets it and the owner's directions are said. Nothing is written or said
-  until the clock passes its moment on `advance` (or `inboxes/due` for a decision): the words are written then,
-  through the same model port and prompt versions as a run, delivered as the provider delivers (for Slack, the
-  signed event to the world's inbound target) and recorded as actor `PERSON`. A message is answered as it read when
-  it was first seen; an edit is not put to the person again.
+  handed to a person is moved as their take on it says (`Person.takes`), or as a model picks where the seed plays
+  that tracker (`transitions_on`), and the owner's directions are said. It is all the people
+  engine's, as in a run (`docs/design-transitions.md`): an answer is planned and its words written when the world
+  first sees the ask, through the same model port and prompt versions as a run, and nothing is said until the clock
+  passes its moment on `advance` (or `inboxes/due` for a decision); then it is delivered as the provider delivers
+  (for Slack, the signed event to the world's inbound target), recorded as actor `PERSON` and as the transition it
+  is. An edit that changes what an ask says, before its answer, is put to the person again.
 - **The model** is the server's own, from its environment exactly as `run` reads it (`MINUTEHAND_MODEL`,
-  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`; a person's `model` names another), never from a request.
+  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, `MINUTEHAND_MODEL_API`: `openai` or `anthropic`; a person's `model` names another), never from a request.
   A world created with `scripted_people: true` whose people a model speaks for, on a server with no model, is
   refused 409 naming each person and what to set; `minutehand doctor` says whether one is configured.
 - **Owed, and kept.** `GET /v1/worlds/{id}` lists each answer and decision people owe with its moment and how its
   words are written (`people_owe`), and every call made to the model for them (`person_calls`: the model, the
   prompt version, the tokens, a failure). A call that fails leaves the answer owed, its reason in `people_owe`,
-  and the next `advance` tries again. Each answer is kept with the world the first time it is written; a reset, or
+  and the world's next look, or the answer's moment, tries again. Each answer is kept with the world the first time it is written; a reset, or
   any later ask with exactly the same context, replays it with no model call.
 - **`happen`** lands one happening of any family now, as the clock lands a scheduled one: checked first as a
   scenario's would be (its person, its ticket, document, channel or post, the port its provider has, and the
@@ -226,6 +230,13 @@ The clock of a world stands still. Nothing fires on its own.
   a control on a message (a button, a person picked, a form filled from `press.form`), pushed to the world's
   inbound target as an interactivity payload. `MinutehandClient.act`, and `OpenWorld.happen` / `.press` on the
   plugin's `minutehand_world`, send them.
+- **The people engine.** A seed that names providers in `transitions_on` (`docs/design-transitions.md`) has its
+  people act there through the engine, with `scripted_people: true`: what waits on a person (a Jira issue assigned
+  to them, an invitation they have not answered) is pending on them, at a moment pinned (`takes` with `after`) or
+  drawn as their answers are, and when `advance` passes it they take the pinned transition or the one a model picks
+  among those the provider offers. `GET /v1/worlds/{id}/transitions` (`OpenWorld.transitions()`) lists each item
+  with its moment and every move of any item's state; a harness that keeps its own clock jumps to the earliest
+  `due_at` still pending.
 - **Booked wakes** (a scheduler provider such as AWS) are recorded in the log and never fired: a booking
   becomes a wake only in the run loop.
 
@@ -235,9 +246,9 @@ The clock of a world stands still. Nothing fires on its own.
 its own page), as an agent file does (`docs/inboxes.md`); a person's `credential` is read from the server's own
 environment. The inboxes are read as each person at a step's end, on `advance` and on `checks`: a new item is the
 agent asking that person, recorded in the world. With scripted people on, each person's decision is owed like a
-reply and made when the clock passes it: a script's decision as it says, what it gives (a reason) written by the
-model from its facts unless `inputs` fixes the words, and, with no script or once it is used, the decision the model
-makes from the person's facts (`person-decision/2`). `inboxes/read` lists each with its moment; its `decision` is
+reply and made when the clock passes it: a take's decision as it says, what it gives (a reason) written by the
+model from its facts unless `fields` fixes the words, and, with no take, the decision the model picks from the
+person's facts (`person-transition/1`). `inboxes/read` lists each with its moment; its `decision` is
 null until a model makes it. A harness that keeps its own clock asks `inboxes/read` for the
 earliest decision due, marks its next step there, and has it made with `inboxes/due`; one that keeps its own timing
 has a person decide now with `inboxes/decide`. `OpenWorld.inboxes()`, `.perform_due()`, `.decide()` (and the same on
@@ -298,7 +309,7 @@ says what the test did and when.
   or withheld for a person on a project, after which the next call that needs it is answered accordingly.
 - **A ticket deleted** (`act` `delete_ticket`; `OpenWorld.delete_ticket()`): by its assignee, or the owner when
   unassigned, one the agent filed or one seeded; afterwards the service answers for it as for one that never
-  was. A `TicketFate` with `deleted: true` does the same when the clock passes it, in a run and in a world.
+  was. A take of `delete` on the assignee does the same when the clock passes it, in a run and in a world.
 - **Switches** the emulators exposed (a page size, a tree cut short, a send answered without an id) are typed
   faults and settings of the provider's own seed, declared through `provider-faults` like any fault.
 - **Reset** (`POST /reset`; `OpenWorld.reset()`): back to the seed the world was opened with, in place: the same
@@ -362,10 +373,10 @@ Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps
   moves the clock gets steps inferred, each marked `inferred`: the stretch from opening to the first forward move is
   the first, each forward move begins the next; a move to the moment the clock already shows begins nothing. The
   first step marked by hand stops inference, and the inferred steps before it are no longer counted.
-- **Not judged.** A world whose scenario declares nothing to judge it by (no `expect`, no `assess` rule, no
-  protected name) is `not_judged`, exit 5, never `passed`: its verdict says `Not assessed` and its scorecard still
-  counts what happened. A standing world is opened without an agent file, so only the scenario's own rules judge
-  it. A check that needs the agent's wakes, over a world with no step, is a reason too, listed in the verdict.
+- **Always assessed.** A world's effects are assessed against what its scenario declares (`docs/assessments.md`,
+  "What every run is assessed on") whether or not it declares a rule. A standing world is opened without an agent
+  file, so only the scenario's own rules add to that, and no rhythm is declared to time reactions against. A check
+  that needs the agent's wakes, over a world with no step, makes it `not_judged`, exit 5, listed in the verdict.
 - **Probes.** A standing world no call reached is not listed by `minutehand runs`, `list_runs` or the viewer.
 
 ## Each world is a run

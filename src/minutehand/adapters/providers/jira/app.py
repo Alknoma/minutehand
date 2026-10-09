@@ -22,14 +22,20 @@ OAuth's own `{"error": ..., "error_description": ...}`.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
+import json
+import mimetypes
 import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from email import policy
+from email.parser import BytesParser
+from typing import Literal, TypeVar
 from urllib.parse import parse_qs
 
 from pydantic import JsonValue
@@ -37,10 +43,11 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from minutehand.adapters import answering
-from minutehand.adapters.providers.jira import jql, search, state, wire
-from minutehand.adapters.providers.jira.moves import Desk
+from minutehand.adapters.providers.jira import jql, search, state, webhooks, wire
+from minutehand.adapters.providers.jira.moves import Adjust, Desk, Estimate, Event, Happened, remaining
 from minutehand.adapters.providers.jira.surface import UNSERVED
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation
@@ -76,7 +83,7 @@ _PERMISSION_IDS = {key: str(n) for n, key in enumerate(_GLOBAL)} | {key: str(100
 _CLAIMED = {
     "/rest/api/3": {"issue", "comment", "search", "jql", "user", "users", "myself", "mypermissions", "project",
                     "worklog", "attachment", "issueLink", "issueLinkType", "field", "status", "statuscategory",
-                    "priority", "issuetype", "resolution", "serverInfo"},
+                    "priority", "issuetype", "resolution", "serverInfo", "component", "version"},
     "/rest/agile/1.0": {"board", "sprint"},
 }  # fmt: skip
 """The first path segment of each resource this fake claims, under each API's root: a path there that no
@@ -93,6 +100,21 @@ class Call:
     params: dict[str, str]
     account: str
     base: str
+
+
+_FIXED_FIELDS = ("project", "issuetype")  # enum-lint: exempt Jira's own field ids, which an edit cannot set
+_FILE_PARAMETER = "file"  # enum-lint: exempt the name of the multipart parameter in Jira's attachment reference
+REMOTE_LINK_404 = "the issue or remote issue link is not found or the user does not have permission to view the issue."
+"""The remote link operations' 404, in the reference's words."""
+
+
+@dataclass(frozen=True)
+class Raw:
+    """An answer that is not JSON: an attachment's bytes, or a redirect."""
+
+    body: bytes
+    content_type: str | None
+    headers: dict[str, str]
 
 
 Answer = tuple[int, object]
@@ -161,6 +183,9 @@ def _page(request: Request, default: int, *, most: int | None = None) -> tuple[i
     return start, size if most is None else min(size, most)
 
 
+_Item = TypeVar("_Item")
+
+
 class JiraApi:
     def __init__(self, store: Store, clock: Clock) -> None:
         self._desk = Desk(store)
@@ -169,6 +194,15 @@ class JiraApi:
         self._templates: dict[str, _Template] = {}
         self._served: dict[tuple[str, str], Served] = {}
         self._unserved: set[tuple[str, str]] = set()
+        self._sending: set[asyncio.Task[None]] = set()
+
+    @property
+    def desk(self) -> Desk:
+        return self._desk
+
+    def delivering(self) -> int:
+        """Webhook deliveries started and not yet answered (`DeliversInBackground`)."""
+        return len(self._sending)
 
     # ------------------------------------------------------------------ routing
 
@@ -226,7 +260,14 @@ class JiraApi:
                 raise NotServed(f"the '{refused[0]}' parameter of {served.method} {served.path}")
             self._throttle(request.method, path)
             call = Call(request, await request.body(), path, params, self._caller(request), base)
+            self._desk.outbox.clear()
             status, tree = served.handler(call)
+            for outgoing in self.dispatch():
+                task = asyncio.create_task(webhooks.send(outgoing))
+                self._sending.add(task)
+                task.add_done_callback(self._sending.discard)
+            if isinstance(tree, Raw):
+                return Response(tree.body, status_code=status, media_type=tree.content_type, headers=tree.headers)
             if status == 204 or tree is None:
                 return Response(status_code=status)
             return Response(wire.render(tree), status_code=status, media_type=_JSON)
@@ -428,19 +469,20 @@ class JiraApi:
             )
         parent = self._world.issue(issue.parent) if issue.parent is not None else None
         timetracking: wire.Json = {}
+        left = remaining(issue)
         if issue.originalEstimateSeconds is not None:
-            remaining = max(0, issue.originalEstimateSeconds - (issue.timeSpentSeconds or 0))
             timetracking |= {
                 "originalEstimate": wire.duration(issue.originalEstimateSeconds),
-                "remainingEstimate": wire.duration(remaining),
                 "originalEstimateSeconds": issue.originalEstimateSeconds,
-                "remainingEstimateSeconds": remaining,
             }
+        if left is not None:
+            timetracking |= {"remainingEstimate": wire.duration(left), "remainingEstimateSeconds": left}
         if issue.timeSpentSeconds is not None:
             timetracking |= {
                 "timeSpent": wire.duration(issue.timeSpentSeconds),
                 "timeSpentSeconds": issue.timeSpentSeconds,
             }
+        watching = self._world.watchers(issue.id)
         comments = self._world.comments(issue.id)
         fields: wire.Json = {
             "summary": issue.summary,
@@ -470,9 +512,10 @@ class JiraApi:
             "timetracking": timetracking,
             "watches": {
                 "self": f"{call.base}/rest/api/3/issue/{issue.key}/watchers",
-                "watchCount": 0,
-                "isWatching": False,
+                "watchCount": len(watching),
+                "isWatching": call.account in watching,
             },
+            "attachment": [self.attachment_out(call, a) for a in self._world.attachments(issue.id)],
             "comment": {
                 "comments": [self.comment(call, c) for c in comments],
                 "self": f"{call.base}/rest/api/3/issue/{issue.id}/comment",
@@ -578,10 +621,10 @@ class JiraApi:
             **wire.project_ref_out(call.base, project),
             "description": project.description,
             "lead": self.user(call, project.lead),
-            "components": [],
+            "components": [self.component_out(call, c) for c in self._world.components(project.id)],
             "issueTypes": [wire.issue_type_out(call.base, site.issue_type(s.issueType)) for s in project.screens],
             "assigneeType": project.assigneeType,
-            "versions": [],
+            "versions": [self.version_out(call, v) for v in self._world.versions(project.id)],
             "roles": self.roles(call, project),
             "style": "next-gen" if project.simplified else "classic",
             "isPrivate": False,
@@ -966,11 +1009,7 @@ class JiraApi:
         return query
 
     def _found(self, call: Call, text: str) -> list[wire.StoredIssue]:
-        try:
-            query = self._query(text)
-        except jql.Unmatched:
-            self._world.saw(state.site_ref(), Operation.SEARCH)
-            return []
+        query = self._query(text)
         context = search.Context(self._desk, call.account, self._now())
         visible = [
             i
@@ -1078,6 +1117,7 @@ class JiraApi:
         issue = self._desk.apply_fields(skeleton, project, body.fields, creating=True)
         issue = self._update_ops(issue, project, body.update)
         self._world.create_issue(issue, actor=Actor.AGENT)
+        self._desk.created(issue, at=now, actor=Actor.AGENT, who=None)
         return 201, {"id": issue.id, "key": issue.key, "self": f"{call.base}/rest/api/3/issue/{issue.id}"}
 
     def _update_ops(self, issue: wire.StoredIssue, project: wire.StoredProject, update: wire.Json) -> wire.StoredIssue:
@@ -1179,55 +1219,17 @@ class JiraApi:
         transition = next((t for t in self._desk.transitions(issue, project) if t.id == str(wanted)), None)
         if transition is None:
             raise wire.bad("Returned if the request is invalid for any other reason.")
-        site = self._world.site()
-        errors: dict[str, str] = {}
-        resolution: str | None = None
-        changed = issue
-        for name, raw in body.fields.items():
-            if name not in transition.screen:
-                errors[name] = wire.not_on_screen(name)
-            elif name == "resolution":
-                ref = wire.read_ref(raw)
-                found = None
-                if ref is not None:
-                    found = next(
-                        (r for r in site.resolutions if str(ref.id) == r.id or (ref.name or "") == r.name), None
-                    )
-                if found is None:
-                    errors[name] = wire.INVALID_VALUE
-                else:
-                    resolution = found.id
-            else:
-                try:
-                    changed = self._desk.apply_fields(
-                        changed, project.model_copy(update={"screens": _with(project, issue, name)}), {name: raw},
-                        creating=False,
-                    )  # fmt: skip
-                except wire.Refusal as refusal:
-                    errors |= refusal.fields
-        for name in transition.required:
-            if name not in body.fields and name not in errors:
-                errors[name] = wire.REQUIRED
-        comment_body: JsonValue = None
-        for name, operations in body.update.items():
-            commenting = name == "comment"  # enum-lint: exempt Jira's own field id in a transition body
-            if not commenting or not isinstance(operations, list):
-                errors[name] = wire.not_on_screen(name)
-                continue
-            for operation in operations:
-                add = operation["add"] if isinstance(operation, dict) and "add" in operation else None
-                text = add["body"] if isinstance(add, dict) and "body" in add else None
-                if not wire.is_document(text):
-                    errors["comment"] = wire.COMMENT_NOT_VALID
-                else:
-                    comment_body = text
-        if errors:
-            raise wire.Refusal(400, [], errors)
-        now = self._now()
-        moved = self._desk.moved(changed, site.status(transition.to), resolution=resolution)
-        self._desk.write(issue, moved, by=call.account, at=now, actor=Actor.AGENT)
-        if comment_body is not None:
-            self._desk.comment(moved, comment_body, by=call.account, at=now, actor=Actor.AGENT)
+        self._desk.transition(
+            issue,
+            project,
+            transition,
+            fields=body.fields,
+            update=body.update,
+            by=call.account,
+            at=self._now(),
+            actor=Actor.AGENT,
+            who=None,
+        )
         return 204, None
 
     def field_meta(self, call: Call, project: wire.StoredProject, field_id: str, required: bool) -> wire.Json:
@@ -1391,6 +1393,764 @@ class JiraApi:
         self._world.delete_link(link, actor=Actor.AGENT)
         return 204, None
 
+    # ------------------------------------------------------------------ comments: read, update, delete
+
+    def _comment(self, call: Call) -> tuple[wire.StoredIssue, wire.StoredComment]:
+        issue, _ = self._issue(call)
+        found = next((c for c in self._world.comments(issue.id) if c.id == call.params["id"]), None)
+        if found is None:
+            raise wire.Refusal(
+                404,
+                ["Returned if the issue or comment is not found or the user does not have permission to view the "
+                 "issue or comment."],
+            )  # fmt: skip
+        return issue, found
+
+    def comment_get(self, call: Call) -> Answer:
+        issue, found = self._comment(call)
+        self._world.saw(state.issue_ref(issue.id), Operation.READ)
+        return 200, self.comment(call, found)
+
+    def comment_update(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/#api-rest-api-3-issue-issueidorkey-comment-id-put
+        — the comment's body is replaced; its author and creation stay, `updated` and `updateAuthor` are now."""
+        issue, found = self._comment(call)
+        body = wire.read_body(wire.CommentIn, call.raw)
+        if _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideEditableFlag=true on PUT /rest/api/3/issue/{issueIdOrKey}/comment/{id}")
+        if "body" not in body.model_fields_set:
+            raise NotServed("a comment update with no body: what Jira keeps is not documented")
+        if not wire.is_document(body.body):
+            raise wire.bad_field("comment", wire.COMMENT_NOT_VALID)
+        if not wire.adf_text(body.body).strip():
+            raise wire.bad(wire.INVALID)
+        changed = self._desk.edit_comment(issue, found, body.body, by=call.account, at=self._now(), actor=Actor.AGENT)
+        return 200, self.comment(call, changed)
+
+    def comment_delete(self, call: Call) -> Answer:
+        _, found = self._comment(call)
+        self._world.delete_comment(found, actor=Actor.AGENT)
+        return 204, None
+
+    # ------------------------------------------------------------------ worklogs
+
+    def worklog(self, call: Call, worklog: wire.StoredWorklog) -> wire.Json:
+        out: wire.Json = {
+            "self": f"{call.base}/rest/api/3/issue/{worklog.issue}/worklog/{worklog.id}",
+            "author": self.user(call, worklog.author),
+            "updateAuthor": self.user(call, worklog.updateAuthor),
+        }
+        if worklog.comment is not None:
+            out["comment"] = worklog.comment
+        out |= {
+            "created": wire.jira_time(worklog.created),
+            "updated": wire.jira_time(worklog.updated),
+            "started": wire.jira_time(worklog.started),
+            "timeSpent": wire.worked(worklog.timeSpentSeconds),
+            "timeSpentSeconds": worklog.timeSpentSeconds,
+            "id": worklog.id,
+            "issueId": worklog.issue,
+        }
+        return out
+
+    def _seconds(self, body: wire.WorklogIn, *, required: bool) -> int | None:
+        """`timeSpent` or `timeSpentSeconds`: at most one, and one when creating."""
+        if body.timeSpent is not None and body.timeSpentSeconds is not None:
+            raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
+        if body.timeSpentSeconds is not None:
+            if body.timeSpentSeconds <= 0:
+                raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
+            return body.timeSpentSeconds
+        if body.timeSpent is not None:
+            seconds = wire.parse_duration(body.timeSpent)
+            if seconds is None:
+                raise NotServed(f"timeSpent {body.timeSpent!r}: only days (#d), hours (#h) and minutes (#m or #) "
+                                "are documented")  # fmt: skip
+            if seconds <= 0:
+                raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
+            return seconds
+        if required:
+            raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
+        return None
+
+    def _started(self, text: str | None, *, required: bool) -> datetime | None:
+        if text is None:
+            if required:
+                raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True)
+            return None
+        try:
+            at = datetime.fromisoformat(text)
+        except ValueError as error:
+            raise wire.Refusal(400, [wire.INVALID_PAYLOAD], bare=True) from error
+        if at.tzinfo is None:
+            raise NotServed("a worklog `started` with no UTC offset: what Jira answers is not documented")
+        return at
+
+    def _adjust(self, call: Call, *, allowed: tuple[Estimate, ...], amount: str) -> Adjust:
+        """`adjustEstimate` (`auto` unless given) with the `newEstimate` it needs, or the `amount` parameter
+        (`reduceBy`, `increaseBy`) that `manual` needs."""
+        text = _param(call.request, "adjustEstimate")
+        if text is None:
+            mode = Estimate.AUTO
+        else:
+            mode = next((m for m in Estimate if m.value == text), None)
+            if mode is None:
+                raise NotServed(f"adjustEstimate={text}: only new, leave, manual and auto are documented")
+            if mode not in allowed:
+                raise NotServed(f"adjustEstimate={text} on this operation: its reference does not document it")
+        if mode is Estimate.NEW:
+            return Adjust(mode, self._estimate_text(call, "newEstimate", mode))
+        if mode is Estimate.MANUAL:
+            return Adjust(mode, self._estimate_text(call, amount, mode))
+        return Adjust(mode)
+
+    def _estimate_text(self, call: Call, name: str, mode: Estimate) -> int:
+        text = _param(call.request, name)
+        seconds = wire.parse_duration(text) if text else None
+        if seconds is None:
+            raise wire.bad(f"`adjustEstimate` is set to `{mode.value}` but `{name}` is not provided or is invalid.")
+        return seconds
+
+    def _work(self, call: Call) -> tuple[wire.StoredIssue, wire.StoredWorklog]:
+        issue, _ = self._issue(call)
+        found = self._world.worklog(call.params["id"])
+        if found is None or found.issue != issue.id:
+            raise wire.Refusal(404, ["the worklog is not found or the user does not have permission to view it."])
+        return issue, found
+
+    def worklog_add(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/#api-rest-api-3-issue-issueidorkey-worklog-post
+        — `started` and one of `timeSpent` and `timeSpentSeconds` are required; the remaining estimate moves as
+        `adjustEstimate` says (`auto` unless given)."""
+        issue, _ = self._issue(call)
+        body = wire.read_body(wire.WorklogIn, call.raw)
+        if _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideEditableFlag=true on POST /rest/api/3/issue/{issueIdOrKey}/worklog")
+        if body.comment is not None and not wire.is_document(body.comment):
+            raise wire.bad_field("comment", wire.COMMENT_NOT_VALID)
+        started = self._started(body.started, required=True)
+        seconds = self._seconds(body, required=True)
+        adjust = self._adjust(call, allowed=tuple(Estimate), amount="reduceBy")
+        assert started is not None and seconds is not None
+        made = self._desk.log_work(
+            issue, started=started, seconds=seconds, comment=body.comment, adjust=adjust, by=call.account,
+            at=self._now(), actor=Actor.AGENT,
+        )  # fmt: skip
+        return 201, self.worklog(call, made)
+
+    def worklogs_get(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/#api-rest-api-3-issue-issueidorkey-worklog-get
+        — oldest first, from the worklog started on or after `startedAfter`, or before `startedBefore`
+        (milliseconds since the epoch)."""
+        issue, _ = self._issue(call)
+        if _param(call.request, "maxResults") is None:
+            raise NotServed("GET /rest/api/3/issue/{issueIdOrKey}/worklog without maxResults: its default page size "
+                            "is not documented")  # fmt: skip
+        found = self._world.worklogs(issue.id)
+        after = _int(call.request, "startedAfter", -1)
+        before = _int(call.request, "startedBefore", -1)
+        if _param(call.request, "startedAfter") is not None:
+            found = [w for w in found if int(w.started.timestamp() * 1000) >= after]
+        if _param(call.request, "startedBefore") is not None:
+            found = [w for w in found if int(w.started.timestamp() * 1000) < before]
+        start, most = _page(call.request, 0)
+        page = found[start : start + most]
+        self._world.saw(state.issue_ref(issue.id), Operation.READ)
+        return 200, {
+            "startAt": start,
+            "maxResults": most,
+            "total": len(page),
+            "worklogs": [self.worklog(call, w) for w in page],
+        }
+
+    def worklog_get(self, call: Call) -> Answer:
+        issue, found = self._work(call)
+        self._world.saw(state.issue_ref(issue.id), Operation.READ)
+        return 200, self.worklog(call, found)
+
+    def worklog_update(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/#api-rest-api-3-issue-issueidorkey-worklog-id-put
+        — what is sent changes; `auto` moves the remaining estimate by the difference in time spent."""
+        issue, found = self._work(call)
+        body = wire.read_body(wire.WorklogIn, call.raw)
+        if _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideEditableFlag=true on PUT /rest/api/3/issue/{issueIdOrKey}/worklog/{id}")
+        if body.comment is not None and not wire.is_document(body.comment):
+            raise wire.bad_field("comment", wire.COMMENT_NOT_VALID)
+        started = self._started(body.started, required=False)
+        seconds = self._seconds(body, required=False)
+        adjust = self._adjust(call, allowed=(Estimate.NEW, Estimate.LEAVE, Estimate.AUTO), amount="")
+        changed = self._desk.change_work(
+            issue, found, started=started, seconds=seconds, comment=body.comment,
+            set_comment=body.comment is not None, adjust=adjust, by=call.account, at=self._now(), actor=Actor.AGENT,
+        )  # fmt: skip
+        return 200, self.worklog(call, changed)
+
+    def worklog_delete(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/#api-rest-api-3-issue-issueidorkey-worklog-id-delete"""
+        issue, found = self._work(call)
+        if _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideEditableFlag=true on DELETE /rest/api/3/issue/{issueIdOrKey}/worklog/{id}")
+        adjust = self._adjust(call, allowed=tuple(Estimate), amount="increaseBy")
+        self._desk.remove_work(issue, [found], adjust=adjust, actor=Actor.AGENT)
+        return 204, None
+
+    def worklogs_delete(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/#api-rest-api-3-issue-issueidorkey-worklog-delete
+        — at most 5000 worklogs, every one of them the issue's."""
+        issue, _ = self._issue(call)
+        body = wire.read_body(wire.WorklogIdsIn, call.raw, missing=wire.bad(wire.INVALID))
+        if _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideEditableFlag=true on DELETE /rest/api/3/issue/{issueIdOrKey}/worklog")
+        if len(body.ids) > 5000:
+            raise wire.bad("the number of worklogs being deleted exceeds the limit")
+        adjust = self._adjust(call, allowed=(Estimate.LEAVE, Estimate.AUTO), amount="")
+        found: list[wire.StoredWorklog] = []
+        for number in body.ids:
+            worklog = self._world.worklog(str(number))
+            if worklog is None or worklog.issue != issue.id:
+                raise wire.Refusal(404, ["at least one of the worklogs is not associated with the provided issue"])
+            found.append(worklog)
+        self._desk.remove_work(issue, found, adjust=adjust, actor=Actor.AGENT)
+        return 204, None
+
+    # ------------------------------------------------------------------ attachments
+
+    def attachment_out(self, call: Call, attachment: wire.StoredAttachment) -> wire.Json:
+        return {
+            "self": f"{call.base}/rest/api/3/attachment/{attachment.id}",
+            "id": attachment.id,
+            "filename": attachment.filename,
+            "author": self.user(call, attachment.author),
+            "created": wire.jira_time(attachment.created),
+            "size": attachment.size,
+            "mimeType": attachment.mimeType,
+            "content": f"{call.base}/rest/api/3/attachment/content/{attachment.id}",
+        }
+
+    def attachment_add(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-attachments/#api-rest-api-3-issue-issueidorkey-attachments-post
+        — multipart/form-data whose parameter is named `file`, with the header `X-Atlassian-Token: no-check`; at
+        most 60 files; the answer lists the attachments made."""
+        issue, _ = self._issue(call)
+        if call.request.headers.get("x-atlassian-token", "").lower() != "no-check":
+            raise NotServed("an attachment upload without the header X-Atlassian-Token: no-check: the reference says "
+                            "it is blocked, and not how")  # fmt: skip
+        files = _files(call.request.headers.get("content-type", ""), call.raw)
+        if not files:
+            raise NotServed("an attachment upload with no file part: what Jira answers is not documented")
+        if len(files) > 60:
+            raise wire.Refusal(413, ["more than 60 files are requested to be uploaded."])
+        now = self._now()
+        made: list[JsonValue] = []
+        for filename, mime, content in files:
+            attachment = wire.StoredAttachment(
+                id=self._world.next_id(), issue=issue.id, filename=filename, author=call.account, created=now,
+                mimeType=mime, size=len(content),
+            )  # fmt: skip
+            self._world.write_attachment(attachment, content, actor=Actor.AGENT)
+            made.append(self.attachment_out(call, attachment))
+        return 200, made
+
+    def _attachment(self, call: Call) -> wire.StoredAttachment:
+        found = self._world.attachment(call.params["id"])
+        if found is None:
+            raise wire.Refusal(404, ["the attachment is not found."])
+        self._issue(call, found.issue)
+        return found
+
+    def attachment_get(self, call: Call) -> Answer:
+        found = self._attachment(call)
+        self._world.saw(state.issue_ref(found.issue), Operation.READ)
+        return 200, self.attachment_out(call, found)
+
+    def attachment_delete(self, call: Call) -> Answer:
+        found = self._attachment(call)
+        self._world.delete_attachment(found, actor=Actor.AGENT)
+        return 204, None
+
+    def attachment_content(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-attachments/#api-rest-api-3-attachment-content-id-get
+        — a redirect to the download unless `redirect` is false, which answers the bytes, or the part a `Range`
+        header asks for (206), or 416 when it cannot be satisfied, or 400 when it is malformed."""
+        found = self._attachment(call)
+        content = self._world.blob(found.id)
+        assert content is not None
+        redirect = (_param(call.request, "redirect") or "true").lower()
+        if redirect not in ("true", "false"):
+            raise wire.Problem(
+                400, "Bad Request", f"Failed to convert 'redirect' with value: '{redirect}'", call.request.url.path
+            )
+        if redirect == "true":
+            where = f"{call.base}/rest/api/3/attachment/content/{found.id}?redirect=false"
+            return 303, Raw(b"", None, {"Location": where})
+        wanted = call.request.headers.get("range")
+        if wanted is None:
+            return 200, Raw(content, found.mimeType, {})
+        span = _span(wanted, len(content))
+        if span is None:
+            raise wire.Refusal(400, ["the range supplied in the Range header is malformed."])
+        first, last = span
+        if first >= len(content) or first > last:
+            return 416, Raw(b"", None, {"Content-Range": f"bytes */{len(content)}"})
+        last = min(last, len(content) - 1)
+        return 206, Raw(
+            content[first : last + 1], found.mimeType, {"Content-Range": f"bytes {first}-{last}/{len(content)}"}
+        )
+
+    # ------------------------------------------------------------------ watchers
+
+    def watchers_get(self, call: Call) -> Answer:
+        issue, _ = self._issue(call)
+        accounts = self._world.watchers(issue.id)
+        self._world.saw(state.issue_ref(issue.id), Operation.READ)
+        return 200, {
+            "self": f"{call.base}/rest/api/3/issue/{issue.key}/watchers",
+            "isWatching": call.account in accounts,
+            "watchCount": len(accounts),
+            "watchers": [self.user(call, a) for a in accounts],
+        }
+
+    def watcher_add(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-watchers/#api-rest-api-3-issue-issueidorkey-watchers-post
+        — the body is the account's id as a JSON string; with none, the caller is added."""
+        issue, _ = self._issue(call)
+        account = call.account
+        if call.raw.strip():
+            try:
+                given = json.loads(call.raw)
+            except json.JSONDecodeError as error:
+                raise wire.bad(wire.INVALID) from error
+            if not isinstance(given, str):
+                raise wire.bad(wire.INVALID)
+            account = given
+        if self._world.user(account) is None:
+            raise wire.Refusal(
+                404, ["Returned if the issue or the user is not found or the user does not have permission to view "
+                      "the issue."]
+            )  # fmt: skip
+        held = self._world.watchers(issue.id)
+        if account in held:
+            raise NotServed("adding a watcher who already watches the issue: what Jira answers is not documented")
+        self._world.write_watchers(issue.id, [*held, account], actor=Actor.AGENT)
+        return 204, None
+
+    def watcher_remove(self, call: Call) -> Answer:
+        issue, _ = self._issue(call)
+        account = _param(call.request, "accountId")
+        if not account:
+            raise wire.bad("Returned if `accountId` is not supplied.")
+        if self._world.user(account) is None:
+            raise wire.Refusal(
+                404, ["Returned if the issue or the user is not found or the user does not have permission to view "
+                      "the issue."]
+            )  # fmt: skip
+        held = self._world.watchers(issue.id)
+        if account not in held:
+            raise NotServed("removing an account that does not watch the issue: what Jira answers is not documented")
+        self._world.write_watchers(issue.id, [a for a in held if a != account], actor=Actor.AGENT)
+        return 204, None
+
+    # ------------------------------------------------------------------ remote links
+
+    def remote_link_out(self, call: Call, link: wire.StoredRemoteLink) -> wire.Json:
+        out: wire.Json = {"id": int(link.id), "self": f"{call.base}/rest/api/3/issue/{link.issue}/remotelink/{link.id}"}
+        if link.globalId is not None:
+            out["globalId"] = link.globalId
+        if link.application is not None:
+            out["application"] = link.application
+        if link.relationship is not None:
+            out["relationship"] = link.relationship
+        out["object"] = link.object
+        return out
+
+    def _remote_body(self, call: Call) -> wire.RemoteLinkIn:
+        body = wire.read_body(wire.RemoteLinkIn, call.raw, missing=wire.bad(wire.INVALID))
+        linked = body.object
+        if (
+            not isinstance(linked, dict)
+            or not isinstance(linked.get("title"), str)
+            or not isinstance(linked.get("url"), str)
+            or (body.globalId is not None and len(body.globalId) > 255)
+        ):
+            raise wire.bad(wire.INVALID)
+        return body
+
+    def remote_link_post(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-remote-links/#api-rest-api-3-issue-issueidorkey-remotelink-post
+        — with a `globalId` that a link of the issue has, that link is replaced (what the request leaves out is
+        null), else one is created."""
+        issue, _ = self._issue(call)
+        body = self._remote_body(call)
+        held = next(
+            (
+                link
+                for link in self._world.remote_links(issue.id)
+                if body.globalId is not None and link.globalId == body.globalId
+            ),
+            None,
+        )
+        link = wire.StoredRemoteLink(
+            id=held.id if held is not None else self._world.next_id(), issue=issue.id, globalId=body.globalId,
+            application=body.application, object=body.object, relationship=body.relationship,
+        )  # fmt: skip
+        self._world.write_remote_link(link, actor=Actor.AGENT, create=held is None)
+        return (200 if held is not None else 201), {
+            "id": int(link.id),
+            "self": f"{call.base}/rest/api/3/issue/{issue.id}/remotelink/{link.id}",
+        }
+
+    def remote_links_get(self, call: Call) -> Answer:
+        issue, _ = self._issue(call)
+        found = self._world.remote_links(issue.id)
+        wanted = _param(call.request, "globalId")
+        self._world.saw(state.issue_ref(issue.id), Operation.READ)
+        if wanted is None:
+            return 200, [self.remote_link_out(call, link) for link in found]
+        one = next((link for link in found if link.globalId == wanted), None)
+        if one is None:
+            raise wire.Refusal(404, [REMOTE_LINK_404])
+        return 200, self.remote_link_out(call, one)
+
+    def _remote_link(self, call: Call) -> tuple[wire.StoredIssue, wire.StoredRemoteLink]:
+        issue, _ = self._issue(call)
+        number = call.params["linkId"]
+        if not number.isdigit():
+            raise wire.bad("the link ID is invalid.")
+        link = self._world.remote_link(number)
+        if link is None:
+            raise wire.Refusal(404, [REMOTE_LINK_404])
+        if link.issue != issue.id:
+            raise wire.bad("the remote issue link does not belong to the issue.")
+        return issue, link
+
+    def remote_link_get(self, call: Call) -> Answer:
+        _, link = self._remote_link(call)
+        return 200, self.remote_link_out(call, link)
+
+    def remote_link_put(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-remote-links/#api-rest-api-3-issue-issueidorkey-remotelink-linkid-put
+        — what the request leaves out is set to null."""
+        issue, link = self._remote_link(call)
+        body = self._remote_body(call)
+        changed = wire.StoredRemoteLink(
+            id=link.id, issue=issue.id, globalId=body.globalId, application=body.application, object=body.object,
+            relationship=body.relationship,
+        )  # fmt: skip
+        self._world.write_remote_link(changed, actor=Actor.AGENT, create=False)
+        return 204, None
+
+    def remote_link_delete(self, call: Call) -> Answer:
+        _, link = self._remote_link(call)
+        self._world.delete_remote_link(link, actor=Actor.AGENT)
+        return 204, None
+
+    def remote_link_delete_global(self, call: Call) -> Answer:
+        issue, _ = self._issue(call)
+        wanted = _param(call.request, "globalId")
+        if not wanted:
+            raise wire.bad("Returned if a global ID isn't provided.")
+        link = next((x for x in self._world.remote_links(issue.id) if x.globalId == wanted), None)
+        if link is None:
+            raise wire.Refusal(404, [REMOTE_LINK_404])
+        self._world.delete_remote_link(link, actor=Actor.AGENT)
+        return 204, None
+
+    # ------------------------------------------------------------------ edit metadata
+
+    def editmeta(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/#api-rest-api-3-issue-issueidorkey-editmeta-get
+        — the fields of the issue's screen that an edit can set (the project and the issue type it cannot)."""
+        issue, project = self._issue(call)
+        if _flag(call.request, "overrideScreenSecurity") or _flag(call.request, "overrideEditableFlag"):
+            raise NotServed("overrideScreenSecurity and overrideEditableFlag: screens hold here")
+        screen = project.screen(issue.issuetype)
+        names = [f for f in (screen.fields if screen is not None else []) if f not in _FIXED_FIELDS]
+        required = screen.required if screen is not None else []
+        return 200, {"fields": {f: self.field_meta(call, project, f, f in required) for f in names}}
+
+    # ------------------------------------------------------------------ components and versions
+
+    def component_out(self, call: Call, component: wire.StoredComponent) -> wire.Json:
+        """The component with the assignee its `assigneeType` names and the one `realAssigneeType` says it falls back
+        to, as the reference describes them."""
+        project = self._world.project(component.project)
+        assert project is not None
+        default = project.lead if project.assigneeType == "PROJECT_LEAD" else None
+        lead = component.leadAccountId
+        nominal = {"PROJECT_LEAD": project.lead, "COMPONENT_LEAD": lead, "UNASSIGNED": None, "PROJECT_DEFAULT": default}
+        real = "PROJECT_DEFAULT"
+        if component.assigneeType == "COMPONENT_LEAD" and lead is None:
+            pass
+        elif component.assigneeType != "PROJECT_DEFAULT":
+            real = component.assigneeType
+        out: wire.Json = {"self": f"{call.base}/rest/api/3/component/{component.id}", "id": component.id}
+        out["name"] = component.name
+        if component.description is not None:
+            out["description"] = component.description
+        if lead is not None:
+            out["lead"] = self.user(call, lead)
+        out["assigneeType"] = component.assigneeType
+        if nominal[component.assigneeType] is not None:
+            out["assignee"] = self.user(call, nominal[component.assigneeType])
+        out["realAssigneeType"] = real
+        if nominal[real] is not None:
+            out["realAssignee"] = self.user(call, nominal[real])
+        out["isAssigneeTypeValid"] = not (component.assigneeType == "COMPONENT_LEAD" and lead is None)
+        out["project"] = project.key
+        out["projectId"] = int(project.id)
+        return out
+
+    def version_out(self, call: Call, version: wire.StoredVersion) -> wire.Json:
+        out: wire.Json = {
+            "self": f"{call.base}/rest/api/3/version/{version.id}",
+            "id": version.id,
+            "name": version.name,
+        }
+        if version.description is not None:
+            out["description"] = version.description
+        out["archived"] = version.archived
+        out["released"] = version.released
+        if version.startDate is not None:
+            out["startDate"] = wire.jira_date(version.startDate)
+        if version.releaseDate is not None:
+            out["releaseDate"] = wire.jira_date(version.releaseDate)
+        out["projectId"] = int(version.project)
+        return out
+
+    def component_create(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-components/#api-rest-api-3-component-post
+        — `project` (the key) and `name` (at most 255 characters) are required; `assigneeType` is one of the four
+        the reference lists (`PROJECT_DEFAULT` unless given); `leadAccountId` names an account."""
+        body = wire.read_body(wire.ComponentIn, call.raw, missing=wire.bad(wire.INVALID))
+        if not body.project:
+            raise wire.bad("`projectId` is not provided.")
+        if not body.name:
+            raise wire.bad("`name` is not provided.")
+        if len(body.name) > 255:
+            raise wire.bad("`name` is over 255 characters in length.")
+        kinds = ("PROJECT_DEFAULT", "COMPONENT_LEAD", "PROJECT_LEAD", "UNASSIGNED")
+        if body.assigneeType is not None and body.assigneeType not in kinds:
+            raise wire.bad("`assigneeType` is an invalid value.")
+        if body.leadAccountId and self._world.user(body.leadAccountId) is None:
+            raise wire.bad("the user is not found.")
+        project = self._world.find_project(body.project)
+        if project is None or not self._desk.can_browse(project, call.account):
+            raise wire.Refusal(
+                404, ["Returned if the project is not found or the user does not have permission to browse the "
+                      "project containing the component."]
+            )  # fmt: skip
+        if any(c.name == body.name for c in self._world.components(project.id)):
+            raise NotServed("a component whose name another component of the project holds: what Jira answers is not "
+                            "documented")  # fmt: skip
+        made = wire.StoredComponent(
+            id=self._world.next_id(), project=project.id, name=body.name, description=body.description,
+            leadAccountId=body.leadAccountId or None,
+            assigneeType=_assignee_kind(body.assigneeType),
+        )  # fmt: skip
+        self._world.write_component(made, actor=Actor.AGENT)
+        return 201, self.component_out(call, made)
+
+    def component_get(self, call: Call) -> Answer:
+        found = self._world.component(call.params["id"])
+        project = self._world.project(found.project) if found is not None else None
+        if found is None or project is None or not self._desk.can_browse(project, call.account):
+            raise wire.Refusal(
+                404, ["Returned if the component is not found or the user does not have permission to browse the "
+                      "project containing the component."]
+            )  # fmt: skip
+        return 200, self.component_out(call, found)
+
+    def _components(self, call: Call) -> list[wire.StoredComponent]:
+        project = self._project(call, call.params["projectIdOrKey"])
+        if (_param(call.request, "componentSource") or "jira") == "compass":
+            raise NotServed("componentSource=compass: no project here uses Compass")
+        return self._world.components(project.id)
+
+    def project_components(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-components/#api-rest-api-3-project-projectidorkey-components-get"""
+        return 200, [self.component_out(call, c) for c in self._components(call)]
+
+    def project_components_page(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-components/#api-rest-api-3-project-projectidorkey-component-get
+        — 50 a page; ordered by `description`, `issueCount`, `lead` or `name` (`-` reverses); `query` keeps the
+        components whose name or description holds it, in any case."""
+        found = self._components(call)
+        query = (_param(call.request, "query") or "").lower()
+        if query:
+            found = [c for c in found if query in c.name.lower() or query in (c.description or "").lower()]
+        order = _param(call.request, "orderBy")
+        if order is not None:
+            keys: dict[str, Callable[[wire.StoredComponent], str | int]] = {
+                "description": lambda c: (c.description or "").lower(),
+                "issueCount": lambda c: 0,
+                "lead": lambda c: c.leadAccountId or "",
+                "name": lambda c: c.name.lower(),
+            }
+            asked = order.lstrip("+-")
+            if asked not in keys:
+                raise wire.bad(f"The field to order by should be one of [{', '.join(keys)}]. Instead, it was: {asked}.")
+            found.sort(key=keys[asked], reverse=order.startswith("-"))
+        return 200, self._paged(call, found, lambda c: self.component_out(call, c))
+
+    def version_create(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-versions/#api-rest-api-3-version-post
+        — `name` (at most 255 characters) and `projectId` are required; dates are `yyyy-mm-dd`."""
+        body = wire.read_body(wire.VersionIn, call.raw, missing=wire.bad(wire.INVALID))
+        if not body.name or body.projectId is None or len(body.name) > 255:
+            raise wire.bad(wire.INVALID)
+        if body.released:
+            raise NotServed("a version created already released: the reference says `released` is not applicable "
+                            "when creating a version")  # fmt: skip
+        try:
+            start = date.fromisoformat(body.startDate) if body.startDate else None
+            release = date.fromisoformat(body.releaseDate) if body.releaseDate else None
+        except ValueError as error:
+            raise wire.bad(wire.INVALID) from error
+        project = self._world.project(str(body.projectId))
+        if project is None or not self._desk.can_browse(project, call.account):
+            raise wire.Refusal(404, ["the project is not found."])
+        if any(v.name == body.name for v in self._world.versions(project.id)):
+            raise NotServed("a version whose name another version of the project holds: what Jira answers is not "
+                            "documented")  # fmt: skip
+        made = wire.StoredVersion(
+            id=self._world.next_id(), project=project.id, name=body.name, description=body.description,
+            archived=bool(body.archived), startDate=start, releaseDate=release,
+        )  # fmt: skip
+        self._world.write_version(made, actor=Actor.AGENT)
+        return 201, self.version_out(call, made)
+
+    def version_get(self, call: Call) -> Answer:
+        found = self._world.version(call.params["id"])
+        project = self._world.project(found.project) if found is not None else None
+        if found is None or project is None or not self._desk.can_browse(project, call.account):
+            raise wire.Refusal(404, ["Returned if the version is not found or the user does not have the necessary "
+                                     "permission."])  # fmt: skip
+        return 200, self.version_out(call, found)
+
+    def project_versions(self, call: Call) -> Answer:
+        project = self._project(call, call.params["projectIdOrKey"])
+        return 200, [self.version_out(call, v) for v in self._world.versions(project.id)]
+
+    def project_versions_page(self, call: Call) -> Answer:
+        """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-versions/#api-rest-api-3-project-projectidorkey-version-get
+        — 50 a page; ordered by `description`, `name`, `releaseDate` (those with none last), `sequence` (the order
+        they were made in) or `startDate` (`-` reverses); `query` as for components; `status` is any of `released`,
+        `unreleased` and `archived`, each by the flags the version holds."""
+        project = self._project(call, call.params["projectIdOrKey"])
+        found = self._world.versions(project.id)
+        query = (_param(call.request, "query") or "").lower()
+        if query:
+            found = [v for v in found if query in v.name.lower() or query in (v.description or "").lower()]
+        statuses = {s.strip() for s in (_param(call.request, "status") or "").split(",") if s.strip()}
+        if statuses - {"released", "unreleased", "archived"}:
+            raise wire.bad(wire.INVALID)
+        if statuses:
+            found = [v for v in found if _version_statuses(v) & statuses]
+        order = _param(call.request, "orderBy")
+        if order is not None:
+            name, down = order.lstrip("+-"), order.startswith("-")
+            dates: dict[str, Callable[[wire.StoredVersion], date | None]] = {
+                "releaseDate": lambda v: v.releaseDate,
+                "startDate": lambda v: v.startDate,
+            }
+            texts: dict[str, Callable[[wire.StoredVersion], str | int]] = {
+                "description": lambda v: (v.description or "").lower(),
+                "name": lambda v: v.name.lower(),
+                "sequence": lambda v: int(v.id),
+            }
+            if name in dates:
+                moment = dates[name]
+                dated = sorted((v for v in found if moment(v) is not None), key=lambda v: moment(v) or date.min,
+                               reverse=down)  # fmt: skip
+                found = [*dated, *(v for v in found if moment(v) is None)]
+            elif name in texts:
+                found.sort(key=texts[name], reverse=down)
+            else:
+                raise wire.bad(wire.INVALID)
+        return 200, self._paged(call, found, lambda v: self.version_out(call, v))
+
+    def _paged(self, call: Call, found: list[_Item], show: Callable[[_Item], wire.Json]) -> wire.Json:
+        start, most = _page(call.request, 50)
+        where = f"{call.base}{call.request.url.path}"
+        out: wire.Json = {
+            "self": f"{where}?startAt={start}&maxResults={most}",
+            "maxResults": most,
+            "startAt": start,
+            "total": len(found),
+            "isLast": start + most >= len(found),
+            "values": [show(x) for x in found[start : start + most]],
+        }
+        if start + most < len(found):
+            out["nextPage"] = f"{where}?startAt={start + most}&maxResults={most}"
+        return out
+
+    # ------------------------------------------------------------------ webhooks
+
+    def dispatch(self) -> list[webhooks.Outgoing]:
+        """What the webhooks are owed for what has happened since last asked, each body built now from the world as
+        it stands."""
+        happened, self._desk.outbox = self._desk.outbox, []
+        site = self._world.site() if self._world.seeded() else None
+        if site is None or not site.hooks:
+            return []
+        out: list[webhooks.Outgoing] = []
+        head = self._world.store.head()
+        for n, event in enumerate(happened):
+            issue = self._world.issue(event.issue)
+            if issue is None:
+                continue
+            for hook in site.hooks:
+                if event.event.value in hook.events and self._in_scope(hook, issue):
+                    body = wire.render(self.hooked(event, issue, f"https://{site.host}"))
+                    identifier = str(uuid.uuid5(_TOKENS, f"{site.cloudId}/{hook.id}/{head}/{n}"))
+                    out.append(webhooks.Outgoing(hook, identifier, body))
+        return out
+
+    def _in_scope(self, hook: wire.StoredHook, issue: wire.StoredIssue) -> bool:
+        if hook.jql is None:
+            return True
+        query = webhooks.check_filter(hook.jql)
+        context = search.Context(self._desk, self._world.site().agent, self._now())
+        return bool(search.matching(query, [issue], context))
+
+    def hears(self, issue: wire.StoredIssue, event: Event) -> bool:
+        """Whether some webhook is sent `event` for the issue."""
+        if not self._world.seeded():
+            return False
+        return any(event.value in h.events and self._in_scope(h, issue) for h in self._world.site().hooks)
+
+    def hooked(self, event: Happened, issue: wire.StoredIssue, base: str) -> wire.Json:
+        """The body of a webhook delivery (https://developer.atlassian.com/cloud/jira/platform/webhooks/)."""
+        who = self._world.user(event.by)
+        assert who is not None
+        shown = wire.user_out(base, who)
+        for left_out in ("locale", "emailAddress"):
+            shown.pop(left_out, None)
+        presenter = Call(Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""}),
+                         b"", "/", {}, event.by, base)  # fmt: skip
+        out: wire.Json = {
+            "timestamp": int(event.at.timestamp() * 1000),
+            "webhookEvent": event.event.value,
+        }
+        if event.event is Event.ISSUE_UPDATED:
+            out["issue_event_type_name"] = "issue_generic"
+        out["user"] = shown
+        out["issue"] = self.issue_out(presenter, issue, None, set(), default="*all")
+        if event.history is not None:
+            entry = next(h for h in issue.history if h.id == event.history)
+            items: list[JsonValue] = [i.model_dump(mode="json", by_alias=True) for i in entry.items]
+            out["changelog"] = {"id": int(entry.id), "items": items}
+        if event.comment is not None:
+            comment = next(c for c in self._world.comments(issue.id) if c.id == event.comment)
+            out["comment"] = self.comment(presenter, comment)
+        return out
+
+    async def flush(self) -> None:
+        """Send, and wait for, what the webhooks are owed (a person's move made outside a request)."""
+        for outgoing in self.dispatch():
+            await webhooks.send(outgoing)
+
     # ------------------------------------------------------------------ agile
 
     def boards(self, call: Call) -> Answer:
@@ -1488,12 +2248,66 @@ class JiraApi:
         return 204, None
 
 
-def _with(project: wire.StoredProject, issue: wire.StoredIssue, field: str) -> list[wire.StoredScreen]:
-    """The project's screens with `field` on the issue's type: a transition screen holds what it holds."""
-    return [
-        s.model_copy(update={"fields": [*s.fields, field]}) if s.issueType == issue.issuetype else s
-        for s in project.screens
-    ]
+def _assignee_kind(
+    text: str | None,
+) -> Literal["PROJECT_DEFAULT", "COMPONENT_LEAD", "PROJECT_LEAD", "UNASSIGNED"]:
+    """The component's `assigneeType`, `PROJECT_DEFAULT` unless given (the reference's default)."""
+    match text:
+        case "COMPONENT_LEAD" | "PROJECT_LEAD" | "UNASSIGNED" as kind:
+            return kind
+        case _:
+            return "PROJECT_DEFAULT"
+
+
+def _version_statuses(version: wire.StoredVersion) -> set[str]:
+    """The statuses a version has by its flags: `released` or `unreleased`, and `archived` when it is."""
+    held = {"released" if version.released else "unreleased"}
+    return held | {"archived"} if version.archived else held
+
+
+def _flag(request: Request, name: str) -> bool:
+    return (_param(request, name) or "false").lower() == "true"
+
+
+def _files(content_type: str, raw: bytes) -> list[tuple[str, str, bytes]]:
+    """The files of a multipart/form-data upload as (file name, media type, bytes). The reference names one
+    parameter, `file`; any other part is refused by name."""
+    if content_type.split(";")[0].strip().lower() != "multipart/form-data":
+        raise NotServed("an attachment upload that is not multipart/form-data")
+    message = BytesParser(policy=policy.HTTP).parsebytes(
+        b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + raw
+    )
+    found: list[tuple[str, str, bytes]] = []
+    for part in message.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        if name != _FILE_PARAMETER:
+            raise NotServed(f"the multipart parameter {name!r}: the reference names only `file`")
+        if not filename:
+            raise NotServed("an attachment part with no file name: what Jira answers is not documented")
+        content = part.get_payload(decode=True)
+        media = part.get_content_type() if "content-type" in part else None
+        found.append(
+            (str(filename), media or mimetypes.guess_type(str(filename))[0] or "application/octet-stream",
+             content if isinstance(content, bytes) else b"")
+        )  # fmt: skip
+    return found
+
+
+_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+
+def _span(header: str, size: int) -> tuple[int, int] | None:
+    """The first and last byte a `Range: bytes=a-b` header names; None when it is malformed."""
+    if "," in header:
+        raise NotServed("a Range header naming several ranges")
+    found = _RANGE.match(header.strip())
+    if found is None or (found.group(1) == "" and found.group(2) == ""):
+        return None
+    first, last = found.group(1), found.group(2)
+    if first == "":
+        return max(0, size - int(last)), size - 1
+    return int(first), int(last) if last else size - 1
 
 
 def _user_matches(user: wire.StoredUser, query: str) -> bool:
@@ -1633,7 +2447,46 @@ def _served(api: JiraApi) -> list[Served]:
         s("GET", f"{issue}/comment", api.comments_get, reads=f({"startAt", "maxResults", "orderBy"}),
           refuses=f({"expand"})),
         s("POST", f"{issue}/comment", api.comment_add, refuses=f({"expand"})),
+        s("PUT", f"{issue}/comment/{{id}}", api.comment_update, reads=f({"notifyUsers", "overrideEditableFlag"}),
+          refuses=f({"expand"})),
+        s("GET", f"{issue}/comment/{{id}}", api.comment_get, refuses=f({"expand"})),
+        s("DELETE", f"{issue}/comment/{{id}}", api.comment_delete),
         s("GET", f"{issue}/changelog", api.changelog, reads=f({"startAt", "maxResults"})),
+        s("GET", f"{issue}/worklog", api.worklogs_get,
+          reads=f({"startAt", "maxResults", "startedAfter", "startedBefore"}), refuses=f({"expand"})),
+        s("POST", f"{issue}/worklog", api.worklog_add,
+          reads=f({"notifyUsers", "adjustEstimate", "newEstimate", "reduceBy", "overrideEditableFlag"}),
+          refuses=f({"expand"})),
+        s("DELETE", f"{issue}/worklog", api.worklogs_delete, reads=f({"adjustEstimate", "overrideEditableFlag"})),
+        s("GET", f"{issue}/worklog/{{id}}", api.worklog_get, refuses=f({"expand"})),
+        s("PUT", f"{issue}/worklog/{{id}}", api.worklog_update,
+          reads=f({"notifyUsers", "adjustEstimate", "newEstimate", "overrideEditableFlag"}), refuses=f({"expand"})),
+        s("DELETE", f"{issue}/worklog/{{id}}", api.worklog_delete,
+          reads=f({"notifyUsers", "adjustEstimate", "newEstimate", "increaseBy", "overrideEditableFlag"})),
+        s("POST", f"{issue}/attachments", api.attachment_add),
+        s("GET", f"{v3}/attachment/{{id}}", api.attachment_get),
+        s("DELETE", f"{v3}/attachment/{{id}}", api.attachment_delete),
+        s("GET", f"{v3}/attachment/content/{{id}}", api.attachment_content, reads=f({"redirect"})),
+        s("GET", f"{issue}/watchers", api.watchers_get),
+        s("POST", f"{issue}/watchers", api.watcher_add),
+        s("DELETE", f"{issue}/watchers", api.watcher_remove, reads=f({"accountId"}), refuses=f({"username"})),
+        s("GET", f"{issue}/remotelink", api.remote_links_get, reads=f({"globalId"})),
+        s("POST", f"{issue}/remotelink", api.remote_link_post),
+        s("DELETE", f"{issue}/remotelink", api.remote_link_delete_global, reads=f({"globalId"})),
+        s("GET", f"{issue}/remotelink/{{linkId}}", api.remote_link_get),
+        s("PUT", f"{issue}/remotelink/{{linkId}}", api.remote_link_put),
+        s("DELETE", f"{issue}/remotelink/{{linkId}}", api.remote_link_delete),
+        s("GET", f"{issue}/editmeta", api.editmeta, reads=f({"overrideScreenSecurity", "overrideEditableFlag"})),
+        s("POST", f"{v3}/component", api.component_create),
+        s("GET", f"{v3}/component/{{id}}", api.component_get),
+        s("GET", f"{project}/components", api.project_components, reads=f({"componentSource"})),
+        s("GET", f"{project}/component", api.project_components_page,
+          reads=f({"startAt", "maxResults", "orderBy", "componentSource", "query"})),
+        s("POST", f"{v3}/version", api.version_create),
+        s("GET", f"{v3}/version/{{id}}", api.version_get, refuses=f({"expand"})),
+        s("GET", f"{project}/versions", api.project_versions, refuses=f({"expand"})),
+        s("GET", f"{project}/version", api.project_versions_page,
+          reads=f({"startAt", "maxResults", "orderBy", "query", "status"}), refuses=f({"expand"})),
         s("POST", f"{v3}/issueLink", api.link_create),
         s("GET", f"{v3}/issueLink/{{linkId}}", api.link_get),
         s("DELETE", f"{v3}/issueLink/{{linkId}}", api.link_delete),
@@ -1656,11 +2509,25 @@ def build(store: Store, clock: Clock) -> JiraApi:
     return api
 
 
-def build_app(store: Store, clock: Clock) -> Starlette:
+class JiraApp:
+    """The ASGI app, and what it still has to send: `DeliversInBackground`, as Notion's webhooks are."""
+
+    def __init__(self, api: JiraApi, routes: Starlette) -> None:
+        self._api = api
+        self._routes = routes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await self._routes(scope, receive, send)
+
+    def delivering(self) -> int:
+        return self._api.delivering()
+
+
+def build_app(store: Store, clock: Clock) -> JiraApp:
     api = build(store, clock)
 
     async def every(request: Request) -> Response:
         return await api.answer(request)
 
     methods = ["GET", "POST", "PUT", "DELETE", "PATCH"]
-    return Starlette(routes=[Route("/{path:path}", every, methods=methods)])
+    return JiraApp(api, Starlette(routes=[Route("/{path:path}", every, methods=methods)]))

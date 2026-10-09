@@ -8,11 +8,12 @@ import pytest
 
 from minutehand.checks.runner import evaluate, exit_code
 from minutehand.domain.agent import Commitment, CommitmentStatus, WaitingOn
-from minutehand.domain.assessments import StoppedBy
-from minutehand.domain.checks import FindingKind
+from minutehand.domain.assessments import IntegrityCheck, StoppedBy
+from minutehand.domain.checks import AroundProxy, FindingKind
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import Expectation, PersonAsked, Silent
+from minutehand.domain.world import Exchange
 from tests.checks.world import Log, at, person, rules, scenario, view
 
 OWNER = person("owner")
@@ -91,9 +92,10 @@ def test_done_after_following_the_question_up_passes() -> None:
     assert result.verdict.words == "Passed: no check failed, and the agent reported it was done."
 
 
-def test_a_silent_owner_told_the_result_once_every_expectation_is_met_leaves_nothing_open() -> None:
+def test_a_message_to_a_silent_owner_is_an_open_wait_whatever_it_said() -> None:
     """The agent asks Sofia, she answers, every expectation is met, and it tells its owner, who never answers, and
-    stops without DONE. Before, that one message kept the run 'Not finished'."""
+    stops without DONE. Nothing reads the message as 'the result being reported': the wait is open, and the run is
+    not finished unless the agent says it is done."""
     owner = person("owner", Silent())
     log = Log()
     asked = log.message([SOFIA_ANSWERS], 1)
@@ -106,8 +108,8 @@ def test_a_silent_owner_told_the_result_once_every_expectation_is_met_leaves_not
 
     told = evaluate(world, stop=StopReason.NOTHING_PENDING, ended=at(6))
 
-    assert told.verdict.kind is VerdictKind.PASSED and told.exit_code == 0, told.verdict.words
-    assert "1 message telling the owner, who never answers, is not counted as open" in told.verdict.words
+    assert told.verdict.kind is VerdictKind.UNFINISHED and told.verdict.open_waits == 1, told.verdict.words
+    assert evaluate(world, stop=StopReason.AGENT_DONE, ended=at(6)).verdict.kind is VerdictKind.PASSED
     assert evaluate(unmet, stop=StopReason.NOTHING_PENDING, ended=at(6)).verdict.kind is not VerdictKind.PASSED
 
 
@@ -201,18 +203,15 @@ def test_a_follow_up_hours_after_the_ask_is_not_reviewed() -> None:
     assert [f for f in evaluate(world, stop=StopReason.AGENT_DONE).findings if f.check != "expectations"] == []
 
 
-def test_a_run_nothing_assessed_is_reported_not_judged_whatever_it_did() -> None:
+def test_a_run_whose_files_declare_no_assessment_is_still_assessed_against_the_declared_world() -> None:
+    """Write the scenario, get the assessment: the agent's effects are measured against what the scenario declares
+    (`items`) whether or not anyone wrote a rule, so a run is never left unjudged for want of one."""
     world = view(scenario(OWNER, SOFIA), _asked_and_waiting())
 
     result = evaluate(world, stop=StopReason.AGENT_DONE)
 
-    assert result.assessed_by == [] and result.findings == []
-    assert result.verdict.kind is VerdictKind.NOT_JUDGED and result.exit_code == 5
-    assert result.verdict.words == (
-        "Not assessed: nothing judged this run, since neither the scenario nor the agent file declares an assessment "
-        "(`assess`, `expect`, `protected_names`, or the agent's own `checks`); the agent reported it was done. The "
-        "facts of the run are below."
-    )
+    assert result.assessed_by == ["items"] and result.findings == []
+    assert result.verdict.kind is VerdictKind.PASSED and result.exit_code == 0
     assert result.effectiveness.waits_opened == 1
 
 
@@ -222,4 +221,39 @@ def test_what_judged_a_run_is_recorded() -> None:
         _asked_and_waiting(),
         assess=INSTANT,
     )
-    assert evaluate(world, stop=None).assessed_by == ["waits_before_following_up", "expectations", "near_miss_name"]
+    assert evaluate(world, stop=None).assessed_by == [
+        "items",
+        "waits_before_following_up",
+        "expectations",
+        "near_miss_name",
+    ]
+
+
+_AROUND = AroundProxy(
+    host="slack.com", provider="slack", by_agent=1, through_proxy=0, around=1, example="POST https://slack.com/api"
+)
+_UNMATCHED = Exchange(method="POST", host="api.mail.example", path="/v3/send", status=501)
+
+
+@pytest.mark.parametrize("check", [IntegrityCheck.AROUND_PROXY, IntegrityCheck.UNMATCHED_CALL])
+def test_an_integrity_fact_changes_the_verdict_only_when_the_users_files_name_it(check: IntegrityCheck) -> None:
+    """Minutehand states whether a run can be trusted; it fails the run on it only when the user says so."""
+    world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]), _asked_and_waiting()).model_copy(
+        update={"around_proxy": [_AROUND], "unmatched_calls": [_UNMATCHED]}
+    )
+    stated = evaluate(world, stop=StopReason.AGENT_DONE)
+    assert stated.verdict.kind is VerdictKind.PASSED, stated.verdict.words
+    assert {f.check for f in stated.findings if f.kind is FindingKind.REVIEW} >= {check.value}
+
+    named = evaluate(world.model_copy(update={"fail_on_integrity": [check]}), stop=StopReason.AGENT_DONE)
+    assert named.verdict.kind is VerdictKind.FAILED and named.verdict.failed_checks == 1
+    assert [f.check for f in named.findings if f.kind is FindingKind.FAIL] == [check.value]
+    assert check.value in named.assessed_by
+
+
+def test_a_run_judged_by_an_integrity_fact_alone_is_assessed() -> None:
+    world = view(scenario(OWNER, SOFIA), Log()).model_copy(
+        update={"around_proxy": [], "fail_on_integrity": [IntegrityCheck.AROUND_PROXY]}
+    )
+    result = evaluate(world, stop=StopReason.AGENT_DONE)
+    assert result.assessed_by == ["items", "around_proxy"] and result.verdict.kind is VerdictKind.PASSED

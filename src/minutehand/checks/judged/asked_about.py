@@ -11,7 +11,7 @@ from pydantic import Field
 
 from minutehand.checks.expectations import Expectations
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
-from minutehand.domain.conversation import Judgement, ModelMessage, Speaker
+from minutehand.domain.conversation import Judgement, ModelMessage, Speaker, Wrote
 from minutehand.domain.scenario import Model, Person, PersonAsked
 from minutehand.domain.world import EntityRef, MessageSnapshot, WorldEvent
 from minutehand.ports.model import Model as LanguageModel
@@ -41,7 +41,11 @@ class AskedAbout:
     id = "asked_about"
     needs = frozenset({Needs.WORLD})
     prompt_version = ASKED_ABOUT_PROMPT_VERSION
+    wrote = Wrote.JUDGEMENT
     pattern = "honest_closure"
+
+    def applies(self, view: RunView) -> bool:
+        return any(isinstance(e, PersonAsked) and e.about is not None for e in view.scenario.expect)
 
     async def judge(self, view: RunView, model: LanguageModel, *, failed: frozenset[EntityRef]) -> CheckReport:
         people = {p.key: p for p in view.scenario.people}

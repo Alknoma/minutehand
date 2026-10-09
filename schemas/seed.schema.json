@@ -205,6 +205,147 @@
       "title": "Asks",
       "type": "object"
     },
+    "Calls": {
+      "additionalProperties": false,
+      "description": "The agent's own HTTP calls, answered or refused, each counted at the moment it was made: what it read, polled\nand tried, beside what it changed. Calls Minutehand made as a person, and tunnels relayed unopened, are not the\nagent's calls and are never counted.",
+      "properties": {
+        "answer_changed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: its answer differed from the answer to the agent's previous call of the same method and path (or there was none); False: it answered as that one had, so the call learned nothing new",
+          "title": "Answer Changed"
+        },
+        "host": {
+          "default": [],
+          "description": "To any of these hosts, exactly, in any case; empty: to any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Host",
+          "type": "array"
+        },
+        "method": {
+          "default": [],
+          "description": "With any of these methods (GET, POST, ...); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Method",
+          "type": "array"
+        },
+        "refused": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: answered 400 or more, by the service or because nothing claimed its host; False: answered below 400",
+          "title": "Refused"
+        },
+        "route": {
+          "default": [],
+          "description": "At any of these paths, the query left out; `{name}` stands for one segment of it, so `/v1/requests/{id}` is every request; empty: at any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Route",
+          "type": "array"
+        },
+        "status": {
+          "default": [],
+          "description": "Answered with any of these statuses: a number (`400`) or a class (`4xx`); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Status",
+          "type": "array"
+        }
+      },
+      "title": "Calls",
+      "type": "object"
+    },
+    "Collection": {
+      "additionalProperties": false,
+      "description": "One REST collection a `store` host keeps: `path` lists and creates (GET, POST), and `<path>/<id>` reads,\nreplaces, patches and deletes one item (GET, PUT, PATCH, DELETE). A `{name}` segment of `path` matches any one\nsegment, and each value of it is a collection of its own: `/v1/companies/{company}/contacts`.",
+      "properties": {
+        "created_status": {
+          "default": 201,
+          "maximum": 299,
+          "minimum": 200,
+          "title": "Created Status",
+          "type": "integer"
+        },
+        "deleted_status": {
+          "default": 204,
+          "maximum": 299,
+          "minimum": 200,
+          "title": "Deleted Status",
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/$defs/ItemId",
+          "default": {
+            "at": "id",
+            "format": "uuid",
+            "prefix": ""
+          }
+        },
+        "listing": {
+          "$ref": "#/$defs/Listing",
+          "default": {
+            "cursor_param": null,
+            "default_limit": 100,
+            "envelope": {},
+            "items_at": null,
+            "limit_param": null,
+            "next_at": null
+          }
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What an assessment counts it by (`stored: {collection: ...}`); the last literal segment of `path` when None",
+          "title": "Name"
+        },
+        "path": {
+          "description": "`/v1/contacts`; a `{name}` segment matches any one segment",
+          "title": "Path",
+          "type": "string"
+        },
+        "stamps": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Stamp"
+          },
+          "title": "Stamps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "Collection",
+      "type": "object"
+    },
     "Commented": {
       "additionalProperties": false,
       "description": "The person writes a comment on the document, not in it.",
@@ -311,6 +452,17 @@
           ],
           "default": null
         },
+        "calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Calls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "commitments": {
           "anyOf": [
             {
@@ -405,6 +557,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Touches"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "transitions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Transitions"
             },
             {
               "type": "null"
@@ -827,7 +990,8 @@
         "run",
         "ask",
         "handoff",
-        "person"
+        "person",
+        "transition"
       ],
       "title": "Each",
       "type": "string"
@@ -860,7 +1024,8 @@
         "passed",
         "failed",
         "unfinished",
-        "not_judged"
+        "not_judged",
+        "simulation_incomplete"
       ],
       "title": "ExpectedOutcome",
       "type": "string"
@@ -1060,6 +1225,27 @@
       "title": "Helpfulness",
       "type": "string"
     },
+    "IdFormat": {
+      "description": "How a stored item's id is made when it is created.",
+      "enum": [
+        "uuid",
+        "integer",
+        "prefixed",
+        "sent"
+      ],
+      "title": "IdFormat",
+      "type": "string"
+    },
+    "IntegrityCheck": {
+      "description": "A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails\nthe run only when the agent file or the scenario names it in `fail_on_integrity`.",
+      "enum": [
+        "around_proxy",
+        "agent_contract_changed",
+        "unmatched_call"
+      ],
+      "title": "IntegrityCheck",
+      "type": "string"
+    },
     "Intent": {
       "description": "What a person does with the message a step of their script answers. The words are the model's, written from\nthe step's facts, the person's own facts, voice and helpfulness.",
       "enum": [
@@ -1071,6 +1257,48 @@
       "title": "Intent",
       "type": "string"
     },
+    "ItemId": {
+      "additionalProperties": false,
+      "description": "Where an item's id is in its JSON, and how it is made: the one field of an item the API assigns besides\n`stamps`. The item is read and written at `<collection path>/<id>`.",
+      "properties": {
+        "at": {
+          "default": "id",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
+          "title": "At",
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/$defs/IdFormat",
+          "default": "uuid"
+        },
+        "prefix": {
+          "default": "",
+          "description": "Before the sequence number, with `format: prefixed`",
+          "title": "Prefix",
+          "type": "string"
+        }
+      },
+      "title": "ItemId",
+      "type": "object"
+    },
+    "ItemIds": {
+      "additionalProperties": false,
+      "description": "How the service names an item it creates: a UUID, or a prefix and a number.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/IdFormat",
+          "default": "uuid"
+        },
+        "prefix": {
+          "default": "",
+          "title": "Prefix",
+          "type": "string"
+        }
+      },
+      "title": "ItemIds",
+      "type": "object"
+    },
     "JsonValue": {},
     "Judged": {
       "description": "What a rule's finding asks of whoever reads it.",
@@ -1080,6 +1308,115 @@
       ],
       "title": "Judged",
       "type": "string"
+    },
+    "Listing": {
+      "additionalProperties": false,
+      "description": "How a GET of the collection answers: the stored items in the order they were created, in an envelope.\n\nWith `items_at` None the answer is the bare JSON list. With `limit_param`, a page holds at most that many\nitems (`default_limit` when the call names none); with `cursor_param`, the call names the id of the last item\nit has, and `next_at` is where the answer puts the id to send for the next page, absent on the last.",
+      "properties": {
+        "cursor_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor Param"
+        },
+        "default_limit": {
+          "default": 100,
+          "minimum": 1,
+          "title": "Default Limit",
+          "type": "integer"
+        },
+        "envelope": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "default": {},
+          "description": "Fields answered beside the items, as given",
+          "title": "Envelope",
+          "type": "object"
+        },
+        "items_at": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Items At"
+        },
+        "limit_param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Param"
+        },
+        "next_at": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next At"
+        }
+      },
+      "title": "Listing",
+      "type": "object"
+    },
+    "Machine": {
+      "additionalProperties": false,
+      "description": "The states an item of the service can be in and the transitions between them, fixed for a run.",
+      "properties": {
+        "initial": {
+          "description": "The state an item is created in",
+          "pattern": "^[A-Za-z][A-Za-z0-9_\\-]*$",
+          "title": "Initial",
+          "type": "string"
+        },
+        "states": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "States",
+          "type": "array"
+        },
+        "transitions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MachineTransition"
+          },
+          "title": "Transitions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "initial",
+        "states"
+      ],
+      "title": "Machine",
+      "type": "object"
     },
     "MachineCommand": {
       "additionalProperties": false,
@@ -1120,6 +1457,105 @@
       ],
       "title": "MachineCommand",
       "type": "object"
+    },
+    "MachineTransition": {
+      "additionalProperties": false,
+      "description": "One way an item moves: from any of `from` to `to`, by `by`.",
+      "properties": {
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Who does it, for `by: system`: `warehouse`",
+          "title": "Actor"
+        },
+        "after": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a timer or system: this long after the item entered the state",
+          "title": "After"
+        },
+        "by": {
+          "$ref": "#/$defs/Trigger"
+        },
+        "from": {
+          "description": "The states it leaves",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "From",
+          "type": "array"
+        },
+        "name": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_\\-]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "requires": {
+          "default": [],
+          "description": "Fields the agent's call, or the person's content, must carry for it to be taken",
+          "items": {
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
+            "type": "string"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "to": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_\\-]*$",
+          "title": "To",
+          "type": "string"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a timer or system instead of `after`: a moment drawn in this calendar span"
+        }
+      },
+      "required": [
+        "name",
+        "from",
+        "to",
+        "by"
+      ],
+      "title": "MachineTransition",
+      "type": "object"
+    },
+    "Meaning": {
+      "description": "What a call to a route does to the service.",
+      "enum": [
+        "create",
+        "transition",
+        "update",
+        "read",
+        "subscribe",
+        "other"
+      ],
+      "title": "Meaning",
+      "type": "string"
     },
     "Memory": {
       "additionalProperties": false,
@@ -1270,6 +1706,17 @@
       "title": "Moved",
       "type": "object"
     },
+    "Mover": {
+      "description": "Who made a transition, as a rule names it (`domain.world.Actor`).",
+      "enum": [
+        "agent",
+        "person",
+        "system",
+        "timer"
+      ],
+      "title": "Mover",
+      "type": "string"
+    },
     "Moves": {
       "additionalProperties": false,
       "description": "The person moves the ticket to a state: ticks it done, cancels it, or reopens it.",
@@ -1317,6 +1764,17 @@
           "default": null
         },
         "passed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "simulation_incomplete": {
           "anyOf": [
             {
               "$ref": "#/$defs/Rate"
@@ -1487,6 +1945,15 @@
             "type": "string"
           },
           "title": "Stale Facts",
+          "type": "array"
+        },
+        "takes": {
+          "default": [],
+          "description": "What this person is pinned to do on items waiting on them: a ticket moved, a control used, a decision made, an invitation answered (`docs/design-transitions.md`); without one their script answers in words, or a model picks among what is offered",
+          "items": {
+            "$ref": "#/$defs/Take"
+          },
+          "title": "Takes",
           "type": "array"
         },
         "title": {
@@ -2336,7 +2803,7 @@
             }
           ],
           "default": null,
-          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+          "description": "What the finding says; absent, one is written from the rule. May name {person.key}, {person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}, and for `each: transition` {transition.provider}, {transition.item}, {transition.name}, {transition.from}, {transition.to}, {transition.by}, {transition.who}",
           "title": "Message"
         },
         "pattern": {
@@ -2367,8 +2834,13 @@
         "where": {
           "$ref": "#/$defs/Where",
           "default": {
+            "by": [],
+            "first": false,
+            "name": [],
             "person": [],
-            "person_not": []
+            "person_not": [],
+            "provider": [],
+            "to": []
           }
         }
       },
@@ -2383,22 +2855,6 @@
       "additionalProperties": false,
       "description": "A plan of what this person knows, decides and does, step by step, in answer to the agent's messages. The\nwords are a model's, written from each step's facts in the person's voice, unless a step is `verbatim`.\n\nA message whose number has no step, before the last step, gets no answer: the script says so. Once the steps\nare used, the person keeps conversing (`then: answers`, the default), a model writing from their facts, until\nthe run ends; `then: silent` is the author's word that they say nothing more.",
       "properties": {
-        "decisions": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ScriptedDecision"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "What they decide on items waiting on them in the agent's own product, after their delay like a reply. None says nothing: with `then: answers` a model decides every item, and with `then: silent` a run whose agent declares an inbox they can receive items in is refused. `[]` leaves every item to `then`",
-          "title": "Decisions"
-        },
         "delay": {
           "$ref": "#/$defs/DelayRange",
           "default": {
@@ -2436,18 +2892,6 @@
           "description": "None uses the run's default model",
           "title": "Model"
         },
-        "presses_every": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptedPress"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "On every message the agent sends them that carries a control reading this label (an approval card's Approve), they press it after their delay, however many there are; a scripted reply to that ask is used instead when there is one"
-        },
         "replies": {
           "default": [],
           "items": {
@@ -2484,121 +2928,9 @@
       "title": "Scripted",
       "type": "object"
     },
-    "ScriptedDecision": {
-      "additionalProperties": false,
-      "description": "What this person decides on an item waiting on them in the agent's own product (`domain.inboxes`): the nth\nsuch item (`to_item`), or every one (`to_item` None), in one inbox or in any. A decision naming its item wins\nover one for every item. What they give with it (a reason, an answer) is written by a model from `facts`,\nunless `inputs` fixes the words.",
-      "properties": {
-        "decision": {
-          "description": "The name of one of the inbox's decisions",
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "title": "Decision",
-          "type": "string"
-        },
-        "facts": {
-          "default": [],
-          "description": "Why they decide so, as facts the model writes each input from",
-          "items": {
-            "type": "string"
-          },
-          "title": "Facts",
-          "type": "array"
-        },
-        "inbox": {
-          "anyOf": [
-            {
-              "pattern": "^[a-z][a-z0-9_]*$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The inbox's `name`; None: any. With one, `to_item` counts that inbox's items only",
-          "title": "Inbox"
-        },
-        "inputs": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "default": {},
-          "description": "Each input the decision takes, by its name, in exact words: no model for those",
-          "title": "Inputs",
-          "type": "object"
-        },
-        "to_item": {
-          "anyOf": [
-            {
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The nth item waiting on them, from 1; None: every one",
-          "title": "To Item"
-        },
-        "within": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Window"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "When this decision is made, in place of the person's own `reply_within` or delay"
-        }
-      },
-      "required": [
-        "decision"
-      ],
-      "title": "ScriptedDecision",
-      "type": "object"
-    },
-    "ScriptedPress": {
-      "additionalProperties": false,
-      "description": "Use a control on the message being answered instead of writing back: the one whose label reads `label`, as\nthe person sees it, in any case. When the agent answers the press by opening a form, the person fills it with\n`form` and submits it.",
-      "properties": {
-        "form": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/FormInput"
-          },
-          "title": "Form",
-          "type": "array"
-        },
-        "label": {
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
-        },
-        "picks": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Person.key chosen, when the control picks a person",
-          "title": "Picks"
-        }
-      },
-      "required": [
-        "label"
-      ],
-      "title": "ScriptedPress",
-      "type": "object"
-    },
     "ScriptedReply": {
       "additionalProperties": false,
-      "description": "One step of a person's script: what they know, decide or do in answer to the nth message they receive.\n\nBy default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the\nperson's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that\nneeds those words and no others. `press` uses a control on the message instead of writing back.",
+      "description": "One step of a person's script: what they know, decide or do in answer to the nth message they receive.\n\nBy default the words are a model's, written from `facts` (what this reply carries) and `intent`, in the\nperson's voice; the step fixes what is said, never how. `verbatim` is the rare exact string, for a test that\nneeds those words and no others. A step never uses a control on the message: that is a take (`Person.takes`).",
       "properties": {
         "facts": {
           "default": [],
@@ -2612,17 +2944,6 @@
         "intent": {
           "$ref": "#/$defs/Intent",
           "default": "answer"
-        },
-        "press": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptedPress"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "to_ask": {
           "minimum": 1,
@@ -3101,6 +3422,215 @@
       "title": "SeededTicket",
       "type": "object"
     },
+    "Service": {
+      "additionalProperties": false,
+      "description": "A service the agent files things with and the scenario's people respond through.",
+      "properties": {
+        "bias": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How its responders tend to respond, in plain language",
+          "title": "Bias"
+        },
+        "collections": {
+          "default": [],
+          "description": "Routes answered exactly as the `store` kind answers them: what the agent wrote",
+          "items": {
+            "$ref": "#/$defs/Collection"
+          },
+          "title": "Collections",
+          "type": "array"
+        },
+        "describe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What the service is, in plain language, for the model",
+          "title": "Describe"
+        },
+        "host": {
+          "description": "An exact lower-case host",
+          "title": "Host",
+          "type": "string"
+        },
+        "ids": {
+          "$ref": "#/$defs/ItemIds",
+          "default": {
+            "format": "uuid",
+            "prefix": ""
+          }
+        },
+        "machine": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Machine"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: derived from `openapi`, or proposed, once"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What its events are recorded under; from the host",
+          "title": "Name"
+        },
+        "odds": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "description": "Person transitions by name and their weights: drawn first, seeded, then worded",
+          "title": "Odds",
+          "type": "object"
+        },
+        "openapi": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The service's OpenAPI document: a file or an http(s) URL",
+          "title": "Openapi"
+        },
+        "responders": {
+          "description": "People who respond, by key: those the item names (by email or key) when it names any, else any; one is drawn per response. Empty: nobody ever responds",
+          "items": {
+            "type": "string"
+          },
+          "title": "Responders",
+          "type": "array"
+        },
+        "routes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ServiceRoute"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
+        "within": {
+          "$ref": "#/$defs/Window",
+          "description": "When a response comes: of the responder's available time after it is due"
+        }
+      },
+      "required": [
+        "host",
+        "responders",
+        "within"
+      ],
+      "title": "Service",
+      "type": "object"
+    },
+    "ServiceRoute": {
+      "additionalProperties": false,
+      "description": "A route pinned in the scenario, as a run showed it: what it means, and the shape of its answers.",
+      "properties": {
+        "item_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item At"
+        },
+        "means": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Meaning"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: read from the OpenAPI document or by the model"
+        },
+        "route": {
+          "pattern": "^(?P<method>[A-Z]+) (?P<path>/[^\\s?#]*)$",
+          "title": "Route",
+          "type": "string"
+        },
+        "shape": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null,
+          "description": "The JSON Schema of its answers; None: fixed by the first"
+        },
+        "state_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State At"
+        },
+        "transition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transition"
+        },
+        "url_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url At"
+        }
+      },
+      "required": [
+        "route"
+      ],
+      "title": "ServiceRoute",
+      "type": "object"
+    },
     "Shared": {
       "additionalProperties": false,
       "properties": {
@@ -3199,6 +3729,48 @@
       "title": "Silent",
       "type": "object"
     },
+    "Stamp": {
+      "additionalProperties": false,
+      "description": "A moment the API writes into an item, from the run's clock: a created or updated time.",
+      "properties": {
+        "at": {
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_\\-$@]+(\\.[A-Za-z0-9_\\-$@]+)*$",
+          "title": "At",
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/$defs/StampFormat",
+          "default": "iso8601"
+        },
+        "on": {
+          "$ref": "#/$defs/StampOn",
+          "default": "create"
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "title": "Stamp",
+      "type": "object"
+    },
+    "StampFormat": {
+      "enum": [
+        "iso8601",
+        "epoch_seconds",
+        "epoch_milliseconds"
+      ],
+      "title": "StampFormat",
+      "type": "string"
+    },
+    "StampOn": {
+      "enum": [
+        "create",
+        "write"
+      ],
+      "title": "StampOn",
+      "type": "string"
+    },
     "StoppedBy": {
       "description": "How the run stopped, as a rule may name it (`domain.run.StopReason`).",
       "enum": [
@@ -3270,6 +3842,118 @@
         }
       },
       "title": "StoredItems",
+      "type": "object"
+    },
+    "Take": {
+      "additionalProperties": false,
+      "description": "What a person is pinned to do on an item waiting on them (`docs/design-transitions.md`): the offer they take,\ninstead of the one their script or a model would, and, with `after` or `within`, when. The words it carries are\nexactly `verbatim` and `fields`, or a model's from `facts`.",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "format": "duration",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exactly this long after the item began to wait on them; None: drawn as their answers are",
+          "title": "After"
+        },
+        "facts": {
+          "default": [],
+          "description": "What its words carry, which a model writes them from",
+          "items": {
+            "type": "string"
+          },
+          "title": "Facts",
+          "type": "array"
+        },
+        "fields": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Exact values of the offer's fields, by name: a decision's inputs, `picks` for a control that picks a person (their key). No model writes them",
+          "title": "Fields",
+          "type": "object"
+        },
+        "form": {
+          "default": [],
+          "description": "What they type into the form the control they use opens",
+          "items": {
+            "$ref": "#/$defs/FormInput"
+          },
+          "title": "Form",
+          "type": "array"
+        },
+        "nth": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The nth item waiting on them there, from 1, in the order asked; None: every one",
+          "title": "Nth"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The provider the item is in: a ticket tracker, a messaging service, an inbox of the agent's own product (its `name`), a declared service. None: any, `nth` counting their asks (messages, invitations, items in the agent's product) across every provider, in the order asked",
+          "title": "Provider"
+        },
+        "take": {
+          "description": "The offer, in any case: by its name, the state it reaches, the label the person sees, or for a ticket what that state means (open, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'",
+          "minLength": 1,
+          "title": "Take",
+          "type": "string"
+        },
+        "verbatim": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Exact words for the offer's text (a reply, a comment): no model",
+          "title": "Verbatim"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Drawn within this of their available time, in place of their own `reply_within` or delay"
+        }
+      },
+      "required": [
+        "take"
+      ],
+      "title": "Take",
       "type": "object"
     },
     "Thing": {
@@ -3404,49 +4088,9 @@
       "title": "TicketDeleted",
       "type": "object"
     },
-    "TicketFate": {
-      "additionalProperties": false,
-      "description": "What happens to a ticket the agent hands to a person: it reaches a state, or its assignee deletes it.",
-      "properties": {
-        "after": {
-          "format": "duration",
-          "title": "After",
-          "type": "string"
-        },
-        "assignee": {
-          "description": "Person.key",
-          "title": "Assignee",
-          "type": "string"
-        },
-        "becomes": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TicketState"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The state it reaches; None when it is deleted"
-        },
-        "deleted": {
-          "default": false,
-          "description": "Its assignee deletes it instead, through `DeletesTickets`",
-          "title": "Deleted",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "assignee",
-        "after"
-      ],
-      "title": "TicketFate",
-      "type": "object"
-    },
     "TicketHappening": {
       "additionalProperties": false,
-      "description": "A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.\n\nIt lands on the run's clock through the provider that holds the ticket (`ports.provider.ActsOnTickets`),\nrecorded as that person's change, and wakes nobody, as a ticket fate does not. A ticket already deleted by\nthen is left alone.",
+      "description": "A person acts on a seeded ticket at a moment, with no agent involved: the agent finds it on its next read.\n\nIt lands on the run's clock as that person's transition of the ticket, through the provider that holds it\n(`ports.transitions`), and wakes nobody. A ticket already deleted by then is left alone.",
       "properties": {
         "action": {
           "discriminator": {
@@ -3671,6 +4315,100 @@
       "title": "Touches",
       "type": "object"
     },
+    "Transitions": {
+      "additionalProperties": false,
+      "description": "Transitions of items' states, by anyone (docs/design-transitions.md): each counted at the moment it was\nmade. States and names are the provider's own words, in any case.",
+      "properties": {
+        "by": {
+          "default": [],
+          "description": "Made by any of these; empty: by anyone",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "from": {
+          "default": [],
+          "description": "Out of any of these states; empty: out of any",
+          "items": {
+            "type": "string"
+          },
+          "title": "From",
+          "type": "array"
+        },
+        "name": {
+          "default": [],
+          "description": "Named any of these by the provider; empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
+        "not_reached": {
+          "default": [],
+          "description": "Its item had been in none of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Reached",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "In any of these providers; empty: in any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "reached": {
+          "default": [],
+          "description": "Its item had been in one of these states before it",
+          "items": {
+            "type": "string"
+          },
+          "title": "Reached",
+          "type": "array"
+        },
+        "same_item": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: of the item of the transition the rule is read for (`each: transition`)",
+          "title": "Same Item"
+        },
+        "to": {
+          "default": [],
+          "description": "Into any of these states; empty: into any",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
+          "type": "array"
+        },
+        "who": {
+          "default": [],
+          "description": "Made by any of these people; empty: by anyone or anything",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Who",
+          "type": "array"
+        }
+      },
+      "title": "Transitions",
+      "type": "object"
+    },
     "Trashed": {
       "additionalProperties": false,
       "properties": {
@@ -3683,6 +4421,17 @@
       },
       "title": "Trashed",
       "type": "object"
+    },
+    "Trigger": {
+      "description": "Who moves an item along a transition, as a machine declares it; recorded as the `Actor` of the same name.",
+      "enum": [
+        "agent",
+        "person",
+        "timer",
+        "system"
+      ],
+      "title": "Trigger",
+      "type": "string"
     },
     "Wakes": {
       "additionalProperties": false,
@@ -3762,8 +4511,32 @@
     },
     "Where": {
       "additionalProperties": false,
-      "description": "Which of the things the rule is read for: by the person asked or handed the work.",
+      "description": "Which of the things the rule is read for: by the person asked or handed the work, or who made the\ntransition; and, for `each: transition`, by its provider, name, states and who made it.",
       "properties": {
+        "by": {
+          "default": [],
+          "description": "For `each: transition`: made by these only",
+          "items": {
+            "$ref": "#/$defs/Mover"
+          },
+          "title": "By",
+          "type": "array"
+        },
+        "first": {
+          "default": false,
+          "description": "For `each: transition`: only the first transition the rest of `where` matches, in the run (the first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+          "title": "First",
+          "type": "boolean"
+        },
+        "name": {
+          "default": [],
+          "description": "For `each: transition`: named these by the provider only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
         "person": {
           "default": [],
           "description": "Only these; empty: everyone",
@@ -3782,6 +4555,24 @@
             "type": "string"
           },
           "title": "Person Not",
+          "type": "array"
+        },
+        "provider": {
+          "default": [],
+          "description": "For `each: transition`: in these providers only",
+          "items": {
+            "type": "string"
+          },
+          "title": "Provider",
+          "type": "array"
+        },
+        "to": {
+          "default": [],
+          "description": "For `each: transition`: into these states only",
+          "items": {
+            "type": "string"
+          },
+          "title": "To",
           "type": "array"
         }
       },
@@ -3853,19 +4644,6 @@
       "additionalProperties": false,
       "description": "Every change the agent made to the world: what it created, updated or deleted.",
       "properties": {
-        "gated": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "True: a call carrying an operation an item in the agent's own product held back (`gates`), made while that item was pending, turned down, or taken back undecided",
-          "title": "Gated"
-        },
         "in_repeated_wake": {
           "anyOf": [
             {
@@ -4070,6 +4848,15 @@
       "description": "The verdict this scenario is written to reach: every sample's, or, as a rate, the share of its samples that must (`{passed: \">= 0.9\"}`); `minutehand run-all` exits 1 when it is missed",
       "title": "Expect Outcome"
     },
+    "fail_on_integrity": {
+      "default": [],
+      "description": "Integrity facts that fail the run, besides those the agent file names, when they are found (`around_proxy`, `agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
+      "items": {
+        "$ref": "#/$defs/IntegrityCheck"
+      },
+      "title": "Fail On Integrity",
+      "type": "array"
+    },
     "goal": {
       "default": "",
       "description": "Handed to nobody: a standing world has no run loop",
@@ -4213,6 +5000,15 @@
       "description": "Where every draw of the run comes from (each person's reply moments); None: one derived from the scenario's name. `minutehand run --seed` overrides it, and the run records the one it played",
       "title": "Seed"
     },
+    "services": {
+      "default": [],
+      "description": "Hosts no provider fakes that the agent files things with and people respond through: each item's state held and moved along a machine, what the agent is answered rendered from it (docs/services.md)",
+      "items": {
+        "$ref": "#/$defs/Service"
+      },
+      "title": "Services",
+      "type": "array"
+    },
     "sign_ins": {
       "default": [],
       "items": {
@@ -4243,20 +5039,22 @@
       "description": "None: the moment the run starts",
       "title": "Starts At"
     },
-    "ticket_fates": {
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/TicketFate"
-      },
-      "title": "Ticket Fates",
-      "type": "array"
-    },
     "tickets": {
       "default": [],
       "items": {
         "$ref": "#/$defs/SeededTicket"
       },
       "title": "Tickets",
+      "type": "array"
+    },
+    "transitions_on": {
+      "default": [],
+      "description": "Providers whose people the people engine plays (docs/design-transitions.md): what waits on a person there is pending on them, and at their moment they take one of its legal transitions",
+      "items": {
+        "pattern": "^[a-z][a-z0-9_]*$",
+        "type": "string"
+      },
+      "title": "Transitions On",
       "type": "array"
     }
   },

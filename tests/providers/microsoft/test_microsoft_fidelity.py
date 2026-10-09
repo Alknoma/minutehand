@@ -167,21 +167,19 @@ async def test_a_replys_body_graph_composes_is_left_out_and_the_run_records_what
 async def test_message_properties_that_would_be_dropped_are_refused_by_name_and_nothing_is_sent(
     outlook: Outlook,
 ) -> None:
-    attachment = {"@odata.type": "#microsoft.graph.fileAttachment", "name": "a.txt", "contentBytes": "SGk="}
     refused = await outlook.http.post(
         f"{GRAPH}/me/sendMail",
         json={
             "message": {
                 "subject": "Brief",
                 "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}],
-                "attachments": [attachment],
                 "categories": ["Red"],
             }
         },
         headers=outlook.me,
     )
     assert refused.status_code == 501
-    assert "attachments, categories" in refused.json()["error"]["message"]
+    assert "categories" in refused.json()["error"]["message"]
     listed = (
         await outlook.http.get(
             f"{GRAPH}/me/mailFolders/sentitems/messages", params={"$orderby": "sentDateTime"}, headers=outlook.me
@@ -343,17 +341,23 @@ async def test_a_preference_that_would_change_the_answer_unserved_is_refused_by_
     assert utc.status_code == 200
 
 
-async def test_an_event_list_without_orderby_holding_more_than_one_is_refused_by_name(outlook: Outlook) -> None:
-    """Graph documents no order for a list of events (or messages) sent without `$orderby`, so a list that would
-    hold more than one is refused by name; with `$orderby` it is served."""
-    for when in ("2026-09-16", "2026-09-17"):
-        made = {**EVENT, "start": {"dateTime": f"{when}T10:00:00", "timeZone": "UTC"},
+async def test_an_event_list_and_the_calendar_view_without_orderby_answer_by_start_ascending(outlook: Outlook) -> None:
+    """Without `$orderby`, events and the calendar view are listed by start, earliest first, whatever order they
+    were made in."""
+    for when in ("2026-09-17", "2026-09-16"):
+        made = {**EVENT, "subject": when, "start": {"dateTime": f"{when}T10:00:00", "timeZone": "UTC"},
                 "end": {"dateTime": f"{when}T11:00:00", "timeZone": "UTC"}}  # fmt: skip
         assert (await outlook.http.post(f"{GRAPH}/me/events", json=made, headers=outlook.me)).status_code == 201
-    unordered = await outlook.http.get(f"{GRAPH}/me/events", headers=outlook.me)
-    assert unordered.status_code == 501 and "without $orderby" in unordered.json()["error"]["message"]
-    ordered = await outlook.http.get(f"{GRAPH}/me/events", params={"$orderby": "start/dateTime"}, headers=outlook.me)
-    assert ordered.status_code == 200 and len(ordered.json()["value"]) == 2
+    listed = await outlook.http.get(f"{GRAPH}/me/events", headers=outlook.me)
+    assert listed.status_code == 200
+    assert [e["subject"] for e in listed.json()["value"]] == ["2026-09-16", "2026-09-17"]
+    view = await outlook.http.get(
+        f"{GRAPH}/me/calendarView",
+        params={"startDateTime": "2026-09-14T00:00:00Z", "endDateTime": "2026-09-21T00:00:00Z"},
+        headers=outlook.me,
+    )
+    assert view.status_code == 200
+    assert [e["subject"] for e in view.json()["value"]] == ["2026-09-16", "2026-09-17"]
 
 
 async def test_internet_message_id_is_left_out_and_filtering_on_it_is_refused_by_name(outlook: Outlook) -> None:

@@ -72,6 +72,32 @@ that test instead.
 | A created shape holds its own text and fill, apart from the body placeholder | documented | `test_a_shape_keeps_its_own_text_and_fill_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createshaperequest |
 | A created table's cells hold the text inserted at their `cellLocation`, apart from the body | documented | `test_a_tables_cells_hold_their_own_text_apart_from_the_body` | https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request#createtablerequest |
 
+## What Google would refuse
+
+Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Google documents these refusals; this stack does not test them and answers the call instead. Each
+test in `test_any_credential.py` fails if the refusal comes back. Who may see what stays world data: another user's
+mailbox is "Delegation denied", an unshared calendar a 404, a file not shared with the caller not found.
+
+- No credential: 401 "Login Required." (Drive) or `UNAUTHENTICATED` (Docs, Slides, Gmail, Calendar)
+  (https://developers.google.com/workspace/drive/api/guides/handle-errors#resolve_a_401_error_invalid_credentials).
+  Acts as `WorkspaceSeed.unknown_credentials_act_as`, by default the scenario's owner
+  (`test_no_token_acts_as_the_owner_on_drive_docs_gmail_and_calendar`).
+- An unknown, expired or revoked access token: 401 `authError` "Invalid Credentials" (same page). An unknown one acts
+  as the default identity, an expired or revoked one as its user
+  (`test_an_unknown_token_acts_as_the_owner_and_an_expired_or_revoked_one_as_its_user`).
+- `/token` with a refresh token, code or service account Google does not know, revoked, or impersonating nobody:
+  400 `invalid_grant` (https://developers.google.com/identity/protocols/oauth2/web-server#exchange-authorization-code).
+  Every grant is answered in Google's shape, the code grant with a `refresh_token`; a seeded credential signs in as
+  its person, anything else as the default identity
+  (`test_a_seeded_refresh_token_acts_as_its_person_and_any_other_as_the_owner`, `test_a_revoked_refresh_token_signs_in_again`,
+  `test_an_authorization_code_is_answered_with_a_refresh_token_that_signs_in_again`,
+  `test_any_service_account_assertion_signs_in`, `test_the_seed_names_who_an_unknown_credential_acts_as`).
+  A grant missing its required parameter is still `invalid_request`
+  (`test_a_grant_missing_its_required_parameter_is_refused_invalid_request`). No `id_token` is issued for an `openid`
+  scope: the run holds no Google signing key to sign one with.
+- `/revoke` of a token Google does not hold, or already revoked: 400 `invalid_token`
+  (https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke). Always 200 here.
+
 ## Not carried over
 
 - **`alt=media` serving a Google Doc.** The older stand-in answered 200 to a media download of a Doc. Google's
@@ -141,6 +167,7 @@ parameter it gives a served method is served or answers 501 naming it (`calendar
 | A `dateTime` without an offset is read in its `timeZone`, and is answered with its offset; one with an offset is answered as written | documented | T `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
 | An attendee's `responseStatus` is `needsAction`, `declined`, `tentative` or `accepted`; a guest may answer with a `comment` | documented | T `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
 | An invitation offers its guest Yes, Maybe and No | documented | T `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://support.google.com/calendar/answer/37135 |
+| An invitation the agent sent, and, where the people engine plays Google Workspace, any other a guest has not answered (`needsAction`, the event not cancelled, they are not its organizer), is pending on them; they are offered a response comment alone, or each `responseStatus` but the one they hold, with a comment, and their answer is written as Calendar's own invitation writes one | documented | T `test_an_unanswered_invitation_is_pending_and_a_pinned_answer_lands_as_the_guests`, `test_an_answer_the_invitation_does_not_offer_again_is_refused` | https://developers.google.com/workspace/calendar/api/v3/reference/events |
 | `events.list` bounds an event's end by `timeMin` and its start by `timeMax`; `orderBy=startTime` needs `singleEvents=true` | documented | T `test_an_invitation_asks_its_guests_and_their_answers_land_on_the_event` | https://developers.google.com/workspace/calendar/api/v3/reference/events/list |
 | `showDeleted=true` includes deleted events as `cancelled`; on the organizer's calendar "cancelled events continue to expose event details"; elsewhere only `id` is guaranteed | documented | S `test_show_deleted_answers_a_deleted_event_in_the_window_as_cancelled_and_get_serves_it` | https://developers.google.com/workspace/calendar/api/v3/reference/events/list; https://developers.google.com/workspace/calendar/api/v3/reference/events (`status`) |
 | With `updatedMin`, "entries deleted since this time will always be included regardless of showDeleted" | documented | S `test_show_deleted_answers_a_deleted_event_in_the_window_as_cancelled_and_get_serves_it` | https://developers.google.com/workspace/calendar/api/v3/reference/events/list |
@@ -159,14 +186,14 @@ parameter it gives a served method is served or answers 501 naming it (`calendar
 
 Tests are in `tests/providers/google_workspace/test_calendar_push.py`, each driving Google's own client
 (`events().watch`, `channels().stop`) in a process of its own through the proxy, told to an HTTPS receiver of the
-test's whose certificate the run's CA signed. The machinery is Drive's `changes.watch` channel's, shared
+test's; its certificate is never checked (docs/design.md, "Authentication is out of scope"). The machinery is Drive's `changes.watch` channel's, shared
 (`channels.py`).
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
 | `POST /calendar/v3/calendars/{calendarId}/events/watch` takes `id`, `type` (`web_hook` or `webhook`), `address`, and optionally `token` and `params.ttl`, and answers a Channel: `kind` `api#channel`, `id`, `resourceId`, `resourceUri`, `token`, `expiration` in epoch milliseconds | documented | `test_a_watch_is_told_sync_then_exists_for_the_agents_own_change_and_a_guests_answer` | https://developers.google.com/workspace/calendar/api/v3/reference/events/watch |
 | The address "must use HTTPS"; an `http://` one is a 400 "WebHook callback must be HTTPS: <address>", whose envelope names no reason since no recorded answer shows one | observed | `test_an_http_address_a_past_expiration_and_a_ttl_that_is_no_number_are_refused` | https://developers.google.com/workspace/calendar/api/guides/push; https://stackoverflow.com/q/43484709, https://github.com/janeczku/calibre-web/issues/502 |
-| A push verifies the receiver's certificate ("a valid SSL certificate"); one the run does not trust is not reached | documented | `test_a_receiver_whose_certificate_the_run_does_not_trust_is_not_reached` | https://developers.google.com/workspace/calendar/api/guides/push |
+| Google asks for "a valid SSL certificate" on the receiver; Minutehand does no transport authentication, so a push reaches a receiver whatever certificate it serves, self-signed included (a deliberate departure, docs/design.md "Authentication is out of scope") | documented | `test_a_receiver_whose_certificate_the_run_does_not_trust_is_still_told_sync_then_exists` | https://developers.google.com/workspace/calendar/api/guides/push |
 | A watch may ask an `expiration`; where Google has a limit of its own "the more restrictive value is used", as it is between an `expiration` and a `params.ttl` | documented | `test_a_channel_past_its_expiry_is_told_nothing_more` | https://developers.google.com/workspace/calendar/api/guides/push |
 | A channel lives `params.ttl` seconds, "Default is 604800 seconds" | documented | `test_a_watch_is_told_sync_then_exists_for_the_agents_own_change_and_a_guests_answer` | https://developers.google.com/workspace/calendar/api/v3/reference/events/watch |
 | A longer `ttl` is cut to 30 days | observed | `test_a_channel_past_its_expiry_is_told_nothing_more` | https://stackoverflow.com/q/64986662, https://stackoverflow.com/a/65001852 |
@@ -186,7 +213,7 @@ test's whose certificate the run's CA signed. The machinery is Drive's `changes.
 
 Google lets "only the same user from the same client" stop a channel a user made
 (https://developers.google.com/workspace/calendar/api/guides/push). Minutehand does not enforce Google's caller and
-credential rules, by a rule of the product, not a reading of Google's: any signed-in caller may stop a channel.
+credential rules (authentication is out of scope, `docs/design.md`): any caller may stop a channel.
 
 ## Gmail and Calendar: refused by name
 

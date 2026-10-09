@@ -97,6 +97,7 @@ from minutehand.adapters.control.wire import (
     FiredView,
     FurtherSeed,
     Happen,
+    HeldItemView,
     InboxesView,
     LobbyKind,
     MarkStep,
@@ -119,6 +120,7 @@ from minutehand.adapters.control.wire import (
     Seeded,
     SpansPage,
     StepView,
+    TransitionsView,
     Unmatched,
     WorldList,
     WorldView,
@@ -424,13 +426,13 @@ def create_app(serving: Serving) -> Starlette:
         elif isinstance(asked, Reply):
             event = await live.reply(asked.person, asked.text, to=asked.to)
         elif isinstance(asked, MoveTicket):
-            event = live.move_ticket(asked.ticket, asked.to)
+            event = await live.move_ticket(asked.ticket, asked.to)
         elif isinstance(asked, EditTicket):
-            event = live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
+            event = await live.edit_ticket(asked.ticket, state=asked.state, assignee=asked.assignee)
         elif isinstance(asked, Happen):
             event = await live.happen_now(asked.happening)
         elif isinstance(asked, DeleteTicket):
-            event = live.delete_ticket(asked.ticket)
+            event = await live.delete_ticket(asked.ticket)
         else:
             assert isinstance(asked, PressControl)
             event = await live.press(asked.person, asked.on, asked.press)
@@ -544,7 +546,6 @@ def create_app(serving: Serving) -> Starlette:
                 person=item.person,
                 summary=item.summary,
                 decisions=item.decisions,
-                gates=item.gates,
                 seen_at=seen,
             )
             for ref, item, seen in live.pending_items()
@@ -562,6 +563,32 @@ def create_app(serving: Serving) -> Starlette:
             for at, person, item, decides in live.due_decisions()
         ]
         return _json(InboxesView(pending=pending, due=due, unread=looked.unread))
+
+    async def transitions(request: Request) -> Response:
+        live = world_of(request).standing
+        await live.look()
+        held, moves = live.transitions()
+        return _json(
+            TransitionsView(
+                items=[
+                    HeldItemView(
+                        pending=ref,
+                        person=item.person,
+                        item=item.item,
+                        nth=item.nth,
+                        state=item.state,
+                        status=item.status,
+                        since=since,
+                        due_at=item.due_at,
+                        take=item.take,
+                        transition=item.transition,
+                        failure=item.failure,
+                    )
+                    for ref, item, since in held
+                ],
+                transitions=moves,
+            )
+        )
 
     async def perform_due(request: Request) -> Response:
         done = await standing.perform_due(world_of(request).world_id)
@@ -641,6 +668,7 @@ def create_app(serving: Serving) -> Starlette:
             route("/worlds/{world_id}/steps", world_steps, ["POST"]),
             route("/worlds/{world_id}/report", report, ["POST"]),
             route("/worlds/{world_id}/inboxes/read", read_inboxes, ["POST"]),
+            route("/worlds/{world_id}/transitions", transitions, ["GET"]),
             route("/worlds/{world_id}/inboxes/due", perform_due, ["POST"]),
             route("/worlds/{world_id}/inboxes/decide", decide, ["POST"]),
             route("/cases", cases, ["GET"]),

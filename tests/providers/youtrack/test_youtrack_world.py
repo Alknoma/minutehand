@@ -19,7 +19,8 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
-from minutehand.ports.provider import ActsOnTickets, EditsTickets, HoldsTickets, Provider
+from minutehand.ports.provider import Provider
+from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
 from tests.providers.youtrack.youtrack_instance import (
     FIELD_OPS,
     IRIS,
@@ -37,6 +38,7 @@ from tests.providers.youtrack.youtrack_instance import (
     named,
     readable_ids,
 )
+from tests.support.tickets import assignee_moves, edited
 
 
 async def test_the_instance_survives_a_new_app_over_a_new_connection(instance: Instance) -> None:
@@ -141,9 +143,9 @@ async def test_transition_moves_the_issue_as_its_assignee(
     issue_id = _assigned(instance, "LAUNCH-1")
     instance.clock.jump(START + timedelta(days=2))
 
-    instance.provider.transition(state.issue_ref(issue_id), to, instance.store, instance.clock)
+    await assignee_moves(instance.provider, state.issue_ref(issue_id), to, SCENARIO, instance.store, instance.clock)
 
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, state.issue_ref(issue_id))
     assert last.after == TicketSnapshot(
         title="Write the release notes",
@@ -171,28 +173,36 @@ async def test_transition_moves_the_issue_as_its_assignee(
     }
 
 
-def test_transition_back_to_open_clears_resolved(instance: Instance) -> None:
+async def test_transition_back_to_open_clears_resolved(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-2")
 
-    instance.provider.transition(state.issue_ref(issue_id), TicketState.OPEN, instance.store, instance.clock)
+    await assignee_moves(
+        instance.provider, state.issue_ref(issue_id), TicketState.OPEN, SCENARIO, instance.store, instance.clock
+    )
 
     moved = instance.youtrack.issue(issue_id)
     assert moved is not None and moved.resolved is None
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.OPEN
 
 
-def test_transition_of_an_unassigned_issue_is_refused(instance: Instance) -> None:
+async def test_transition_of_an_unassigned_issue_is_refused(instance: Instance) -> None:
     with pytest.raises(ValueError, match="no assignee"):
-        instance.provider.transition(
-            state.issue_ref(_assigned(instance, "FIELDOPS-1")), TicketState.DONE, instance.store, instance.clock
+        await assignee_moves(
+            instance.provider,
+            state.issue_ref(_assigned(instance, "FIELDOPS-1")),
+            TicketState.DONE,
+            SCENARIO,
+            instance.store,
+            instance.clock,
         )
 
 
-def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) -> None:
+async def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-1")
 
-    instance.provider.edit(
+    await edited(
+        instance.provider,
         state.issue_ref(issue_id),
         state=TicketState.CANCELLED,
         assignee_email="iris@example.com",
@@ -200,7 +210,7 @@ def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) ->
         clock=instance.clock,
     )
 
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
         title="Write the release notes",
@@ -210,27 +220,26 @@ def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) ->
     )
 
 
-def test_edit_with_nothing_named_leaves_both_fields(instance: Instance) -> None:
+async def test_an_edit_naming_nothing_writes_nothing(instance: Instance) -> None:
     issue_id = _assigned(instance, "LAUNCH-2")
+    before = instance.store.head()
 
-    instance.provider.edit(
-        state.issue_ref(issue_id), state=None, assignee_email=None, world=instance.store, clock=instance.clock
+    await edited(
+        instance.provider,
+        state.issue_ref(issue_id),
+        state=None,
+        assignee_email=None,
+        world=instance.store,
+        clock=instance.clock,
     )
 
-    last = instance.store.events()[-1]
-    assert last.actor is Actor.SCENARIO
-    assert last.after == TicketSnapshot(
-        title="Book the venue",
-        body="Forty seats",
-        project="LAUNCH",
-        assignee_email="noor@example.com",
-        state=TicketState.DONE,
-    )
+    assert instance.store.head() == before
 
 
-def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
-    with pytest.raises(LookupError, match=r"nobody@example\.com"):
-        instance.provider.edit(
+async def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
+    with pytest.raises(ValueError, match=r"nobody@example\.com"):
+        await edited(
+            instance.provider,
             state.issue_ref(_assigned(instance, "LAUNCH-1")),
             state=None,
             assignee_email="nobody@example.com",
@@ -239,14 +248,13 @@ def test_edit_to_an_email_nobody_has_is_refused(instance: Instance) -> None:
         )
 
 
-def test_the_provider_meets_its_four_ports() -> None:
+def test_the_provider_is_one_people_act_through() -> None:
     provider = build()
     held: Provider = provider
-    holds: HoldsTickets = provider
-    edits: EditsTickets = provider
-    acts: ActsOnTickets = provider
-    assert held.manifest is MANIFEST and holds is edits is acts
-    assert isinstance(provider, ActsOnTickets)
+    acting: ProvidesTransitions = provider
+    seeded: HoldsSeeded = provider
+    assert held.manifest is MANIFEST and acting is seeded
+    assert isinstance(provider, ProvidesTransitions) and isinstance(provider, HoldsSeeded)
 
 
 def test_the_manifest_claims_youtrack_and_imports_nothing_else_of_the_provider() -> None:

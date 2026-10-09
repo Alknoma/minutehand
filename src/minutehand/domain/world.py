@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
+from minutehand.domain.clock import Drawn
 from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
 
 
@@ -24,6 +25,14 @@ class EntityKind(StrEnum):
     MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand.agent.store`
     NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand.agent.wake`
     STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
+    TRANSITION = "transition"  # one move of an item's state, by anyone (`domain.transitions.Transition`)
+    PENDING = "pending"  # an item pending on a person, as the people engine holds it (`application.people`)
+    SERVICE_RECORD = (
+        "service_record"  # what a declared service is, fixed once per run: its machine, a route, its errors
+    )
+    SERVICE_ITEM = "service_item"  # an item filed with a declared service, as its state stood after each transition
+    SERVICE_EVENT = "service_event"  # a write to a declared service that moves no item: an update, a subscription
+    PUSH = "push"  # one send of an event the world pushed to an address the agent gave it
 
 
 class Operation(StrEnum):
@@ -38,6 +47,8 @@ class Actor(StrEnum):
     AGENT = "agent"
     PERSON = "person"
     SCENARIO = "scenario"
+    SYSTEM = "system"  # a declared service's own actor moving an item: a warehouse, a payment processor
+    TIMER = "timer"  # a declared service moving an item when its time in a state runs out
 
 
 class EntityRef(Model):
@@ -54,7 +65,8 @@ class CaptureMode(StrEnum):
     REPLAY = "replay"
     DISCOVERED = "discovered"  # declared by nobody; passed through because the run captures unknown hosts
     FORWARD = "forward"  # sent to an external emulator the agent file or world declares (`domain.emulator`)
-    MODELED = "modeled"  # declared by nobody; answered by a model standing in for the service (`UnknownHosts.MODEL`)
+    SERVICE = "service"  # a service (`domain.services`), declared or, under `--capture-unknown model`, a host nobody
+    # declared: its items' state held, its answers rendered from it
     STORE = "store"  # kept and read back as sent, by the declaration's collections (`domain.outbound.DeclaredStore`)
 
 
@@ -431,15 +443,9 @@ class InboxItemSnapshot(Model):
     summary: str = Field(description="What it asks, as the product words it")
     category: str | None = Field(default=None, description="Its kind in the product's own words, when listed")
     decisions: list[str] = Field(description="The decisions the person can make on it, by name")
-    gates: str | None = Field(
-        default=None, description="The product's id for the operation it holds back, when the inbox says where"
-    )
     status: ItemStatus
     decision: str | None = Field(default=None, description="The decision made or tried, by name")
     said: str | None = Field(default=None, description="The decision as the record says it: 'approved'")
-    permits: bool | None = Field(
-        default=None, description="Whether the decision lets what the item gates go ahead; None when it says nothing"
-    )
     inputs: dict[str, str] = Field(default={}, description="What the person gave with the decision, by input name")
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 
@@ -487,6 +493,139 @@ class StoredSnapshot(Model):
     item: str | None = Field(default=None, description="The item as stored, JSON text; None for a delete")
 
 
+class TransitionSnapshot(Model):
+    """One move of an item's state (`domain.transitions.Transition`): the event's actor is who made it, its entity
+    the transition itself, listed under its item."""
+
+    kind: Literal["transition"] = "transition"
+    item: EntityRef = Field(description="The ticket, invitation, conversation or request it moved")
+    name: str = Field(description="The provider's own name for it")
+    from_state: str | None = Field(description="None when it created the item")
+    to_state: str
+    who: str | None = Field(description="A person's key; None for the agent, the scenario or time")
+    content: str = Field(description="What it carried, as a JSON object")
+
+
+class PendingStatus(StrEnum):
+    PENDING = "pending"  # waiting on the person; they act at `due_at`, or never when it is None
+    ACTED = "acted"  # they took a transition on it (`PendingSnapshot.transition`)
+    GONE = "gone"  # it stopped waiting on them before they acted: moved, reassigned, deleted, no move left
+    PASSED = "passed"  # they let it pass: a message that, read when they came to it, needed no answer
+
+
+class PendingSnapshot(Model):
+    """An item pending on a person, as the people engine holds it (`application.people`): written as actor SCENARIO
+    when the engine first sees it waiting on them and as it leaves, so a fork reads what was owed at its checkpoint
+    and no check counts it as anyone's work."""
+
+    kind: Literal["pending"] = "pending"
+    person: str = Field(description="Person.key it waits on")
+    item: EntityRef
+    nth: int = Field(ge=1, description="Which of the items pending on this person in its provider it is, from 1")
+    state: str = Field(description="The item's state when it became pending on them, in the provider's words")
+    turn: int = Field(
+        ge=0,
+        description="The seq of the last transition anyone else made on it when it became pending; 0: none. A "
+        "person acts once per turn: after their move it waits on them again only once someone else moves it",
+    )
+    status: PendingStatus
+    due_at: AwareDatetime | None = Field(description="When they act; None: never (silent, or nothing pinned)")
+    take: str | None = Field(default=None, description="The offer a scenario pinned (`Person.takes`)")
+    pinned: int | None = Field(default=None, description="Which of the person's `takes` pinned it, by its place")
+    drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
+    transition: int | None = Field(default=None, description="The seq of the transition they took")
+    failure: str | None = Field(default=None, description="Why their last try to act did not land")
+    conversation: bool = Field(
+        default=False,
+        description="An ask they answer in words (a message, an item in the agent's own product), planned and "
+        "worded by their script and voice: `item` is the ask that opened it",
+    )
+    plan: str | None = Field(
+        default=None, description="For a conversation, the plan of their answer (`domain.people.Plan`) as JSON"
+    )
+    asked: int | None = Field(default=None, description="For a conversation, the seq of the ask as it was planned")
+    follow_ups: list[str] = Field(
+        default=[], description="For a conversation, the messages that followed it up while it was owed, by id"
+    )
+    worded_at: AwareDatetime | None = Field(
+        default=None, description="For a conversation, when its answer's words were written, from what they knew then"
+    )
+    answer: str | None = Field(
+        default=None,
+        description="For a conversation, the answer's words as written when it was planned (`domain.people."
+        "PersonReply` as JSON), kept until it lands; None while a model has yet to write them",
+    )
+
+
+class ServiceRecordKind(StrEnum):
+    MACHINE = "machine"  # the states and transitions of the service's items (`domain.services.Machine`)
+    ROUTE = "route"  # what a route means and the shape of its answers (`domain.services.RouteMeaning`)
+    ERRORS = "errors"  # the shape of the service's refusals, as a JSON Schema
+    ANSWER = "answer"  # an answer rendered for a call in a state of the service, answered again while it holds
+
+
+class RecordSource(StrEnum):
+    """Where a declared service's record came from."""
+
+    DECLARED = "declared"  # the scenario's declaration
+    OPENAPI = "openapi"  # the service's OpenAPI document, read by the model where it says no more
+    MODEL = "model"  # the model's proposal, or the first answer the model rendered
+
+
+class ServiceRecordSnapshot(Model):
+    """Something a declared service is, fixed the first time a run needs it and kept for the run and its forks:
+    shown so a team can pin it in the scenario."""
+
+    kind: Literal["service_record"] = "service_record"
+    service: ProviderKey
+    record: ServiceRecordKind
+    route: str | None = Field(default=None, description="For a route or an answer: `GET /v1/requests/{id}`")
+    text: str = Field(description="The record as JSON: a machine, a route's meaning and shape, an error shape")
+    source: RecordSource
+
+
+class ServiceItemSnapshot(Model):
+    """An item filed with a declared service, and the state it is in."""
+
+    kind: Literal["service_item"] = "service_item"
+    service: ProviderKey
+    item: str = Field(description="The id the service gave it")
+    state: str
+
+
+class ServiceEventKind(StrEnum):
+    UPDATE = "update"  # the agent changed what an item says, not its state
+    SUBSCRIBE = "subscribe"  # the agent gave the service an address to push to
+    OTHER = "other"  # the agent wrote something the machine holds nothing of
+
+
+class ServiceEventSnapshot(Model):
+    """A write of the agent's to a declared service that moves no item (a move is a `TransitionSnapshot`)."""
+
+    kind: Literal["service_event"] = "service_event"
+    service: ProviderKey
+    event: ServiceEventKind
+    item: str | None = Field(default=None, description="The item it concerns; None for a write about none")
+    content: str = Field(description="What it carried, as JSON: the agent's body")
+    route: str | None = Field(default=None, description="The agent's call it came from, as its route")
+
+
+class PushSnapshot(Model):
+    """One send of an event the world pushed to an address the agent gave it (a declared service's push, a Slack
+    event), and how the address answered: each retry is a send of its own, `attempt` counted up."""
+
+    kind: Literal["push"] = "push"
+    service: ProviderKey = Field(description="The declared service or provider that pushed it")
+    item: str = Field(description="What it was about: a declared service's item id, a Slack event's `event_id`")
+    url: str
+    body: str = Field(description="What was sent, as JSON")
+    status: int | None = Field(default=None, description="The answer's status; None when none came")
+    failure: str | None = Field(default=None, description="Why it was not delivered")
+    attempt: int = Field(default=0, ge=0, description="0 for the first send, then each retry's number")
+    retry_reason: str | None = Field(default=None, description="Why it was sent again, in the service's own words")
+    seconds: float | None = Field(default=None, ge=0, description="How long the address took to answer, real time")
+
+
 class NextWakeSnapshot(Model):
     """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
 
@@ -495,7 +634,13 @@ class NextWakeSnapshot(Model):
 
 
 Snapshot = Annotated[
-    MemorySnapshot
+    TransitionSnapshot
+    | PendingSnapshot
+    | ServiceRecordSnapshot
+    | ServiceItemSnapshot
+    | ServiceEventSnapshot
+    | PushSnapshot
+    | MemorySnapshot
     | StoredSnapshot
     | NextWakeSnapshot
     | ToolCallSnapshot

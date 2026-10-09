@@ -1,9 +1,10 @@
-"""Assessments: how a team judges its agent, written by the team in YAML over the facts of a run.
+"""Assessments: a team's own policy, written by the team in YAML over the facts of a run.
 
-Minutehand holds no opinion of how an agent should behave. It records what happened (who was asked what and when,
-what the agent wrote and to whom, when each answer landed, what the agent planned and reported) and a run is judged
-only by the rules its own files declare: `assess:` in the agent file and in the scenario (`docs/assessments.md`).
-A run whose files declare none is reported as facts, and its verdict says nothing was assessed.
+Every run's effects are assessed against the world its files declare, with nothing written for it (`domain.items`,
+`checks/items.py`). What the world cannot imply, how often a team wants a person chased, what it wants its owner told,
+is the team's to write as rules: `assess:` in the agent file and in the scenario (`docs/assessments.md`). Minutehand
+records what happened (who was asked what and when, what the agent wrote and to whom, when each answer landed, what
+the agent planned and reported, every call it made) and the rules count it.
 
 A rule reads as one sentence: for each of something (the run, every ask, every hand-off, every person), when a
 condition holds, the number of some facts between two moments is within bounds.
@@ -30,7 +31,7 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import AfterValidator, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from minutehand.domain.model import Model
 from minutehand.domain.templates import refuse_unknown
@@ -43,6 +44,7 @@ class Each(StrEnum):
     ASK = "ask"  # every wait for a person's answer: a message they can answer, or an item in the agent's product
     HANDOFF = "handoff"  # every ticket the agent handed to a person
     PERSON = "person"  # every person in the scenario
+    TRANSITION = "transition"  # every transition of an item's state, by anyone (docs/design-transitions.md)
 
 
 class Anchor(StrEnum):
@@ -57,6 +59,7 @@ class Anchor(StrEnum):
     DUE = "due"  # when the scenario says the person would have answered by: their longest delay, or a ticket's fate
     MOMENT = "moment"  # each of the rule's own `at`
     ALL_ANSWERED = "all_answered"  # when the last ask of the run was answered; not read while any is unanswered
+    TRANSITION = "transition"  # when the transition the rule is read for was made
 
 
 SCOPED = {
@@ -64,8 +67,9 @@ SCOPED = {
     Anchor.ANSWER: (Each.ASK, Each.HANDOFF),
     Anchor.CLOSED: (Each.ASK, Each.HANDOFF),
     Anchor.DUE: (Each.ASK, Each.HANDOFF),
+    Anchor.TRANSITION: (Each.TRANSITION,),
 }
-"""Anchors that only an ask or a hand-off has."""
+"""Anchors that only an ask, a hand-off or a transition has."""
 
 _MOMENT = re.compile(r"^\s*(?P<anchor>[a-z_]+)\s*(?:(?P<sign>[+-])\s*(?P<offset>P\S+))?\s*$")
 _DURATION: TypeAdapter[timedelta] = TypeAdapter(timedelta)
@@ -188,11 +192,6 @@ class Writes(Model):
     in_repeated_wake: bool | None = Field(
         default=None, description="True: written in a wake that was the second delivery of the same wake (`dispatch`)"
     )
-    gated: bool | None = Field(
-        default=None,
-        description="True: a call carrying an operation an item in the agent's own product held back (`gates`), made "
-        "while that item was pending, turned down, or taken back undecided",
-    )
 
 
 class Wakes(Model):
@@ -282,6 +281,69 @@ class StoredItems(Model):
     )
 
 
+class Mover(StrEnum):
+    """Who made a transition, as a rule names it (`domain.world.Actor`)."""
+
+    AGENT = "agent"
+    PERSON = "person"
+    SYSTEM = "system"  # a declared service's own actor: a warehouse, a payment processor
+    TIMER = "timer"  # a declared service's timer
+
+
+class Transitions(Model):
+    """Transitions of items' states, by anyone (docs/design-transitions.md): each counted at the moment it was
+    made. States and names are the provider's own words, in any case."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", serialize_by_alias=True, validate_by_name=True)
+
+    provider: list[str] = Field(default=[], description="In any of these providers; empty: in any")
+    name: list[str] = Field(default=[], description="Named any of these by the provider; empty: any")
+    to: list[str] = Field(default=[], description="Into any of these states; empty: into any")
+    from_: list[str] = Field(default=[], alias="from", description="Out of any of these states; empty: out of any")
+    by: list[Mover] = Field(default=[], description="Made by any of these; empty: by anyone")
+    who: list[Who] = Field(default=[], description="Made by any of these people; empty: by anyone or anything")
+    reached: list[str] = Field(default=[], description="Its item had been in one of these states before it")
+    not_reached: list[str] = Field(default=[], description="Its item had been in none of these states before it")
+    same_item: bool | None = Field(
+        default=None, description="True: of the item of the transition the rule is read for (`each: transition`)"
+    )
+
+
+class Calls(Model):
+    """The agent's own HTTP calls, answered or refused, each counted at the moment it was made: what it read, polled
+    and tried, beside what it changed. Calls Minutehand made as a person, and tunnels relayed unopened, are not the
+    agent's calls and are never counted."""
+
+    host: list[str] = Field(default=[], description="To any of these hosts, exactly, in any case; empty: to any")
+    method: list[str] = Field(default=[], description="With any of these methods (GET, POST, ...); empty: any")
+    route: list[str] = Field(
+        default=[],
+        description="At any of these paths, the query left out; `{name}` stands for one segment of it, so "
+        "`/v1/requests/{id}` is every request; empty: at any",
+    )
+    status: list[str] = Field(
+        default=[],
+        description="Answered with any of these statuses: a number (`400`) or a class (`4xx`); empty: any",
+    )
+    refused: bool | None = Field(
+        default=None,
+        description="True: answered 400 or more, by the service or because nothing claimed its host; False: answered "
+        "below 400",
+    )
+    answer_changed: bool | None = Field(
+        default=None,
+        description="True: its answer differed from the answer to the agent's previous call of the same method and "
+        "path (or there was none); False: it answered as that one had, so the call learned nothing new",
+    )
+
+    @model_validator(mode="after")
+    def _statuses(self) -> Self:
+        for said in self.status:
+            if not re.fullmatch(r"[1-5](?:[0-9]{2}|xx)", said):
+                raise ValueError(f"calls: status {said!r} is a status (404) or a class of them (4xx)")
+        return self
+
+
 class Count(Model):
     """Which facts a rule counts, and between which moments."""
 
@@ -296,6 +358,8 @@ class Count(Model):
     memory: Memory | None = None
     stored: StoredItems | None = None
     replies: Replies | None = None
+    transitions: Transitions | None = None
+    calls: Calls | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -319,6 +383,8 @@ class Count(Model):
             ("memory", self.memory),
             ("stored", self.stored),
             ("replies", self.replies),
+            ("transitions", self.transitions),
+            ("calls", self.calls),
         ]
 
     @property
@@ -339,15 +405,45 @@ _COUNTED = (
     "memory",
     "stored",
     "replies",
+    "transitions",
+    "calls",
 )
 _ON_AN_ASK = ("follow_ups", "touches")
 
 
 class Where(Model):
-    """Which of the things the rule is read for: by the person asked or handed the work."""
+    """Which of the things the rule is read for: by the person asked or handed the work, or who made the
+    transition; and, for `each: transition`, by its provider, name, states and who made it."""
 
     person: list[Who] = Field(default=[], description="Only these; empty: everyone")
     person_not: list[Who] = Field(default=[], description="Not these")
+    provider: list[str] = Field(default=[], description="For `each: transition`: in these providers only")
+    name: list[str] = Field(default=[], description="For `each: transition`: named these by the provider only")
+    to: list[str] = Field(default=[], description="For `each: transition`: into these states only")
+    by: list[Mover] = Field(default=[], description="For `each: transition`: made by these only")
+    first: bool = Field(
+        default=False,
+        description="For `each: transition`: only the first transition the rest of `where` matches, in the run (the "
+        "first approval of an operation two people could approve), or, when none was made, the run's end in its place",
+    )
+
+    @property
+    def on_transitions(self) -> bool:
+        return bool(self.provider or self.name or self.to or self.by or self.first)
+
+
+class IntegrityCheck(StrEnum):
+    """A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails
+    the run only when the agent file or the scenario names it in `fail_on_integrity`."""
+
+    AROUND_PROXY = "around_proxy"  # the agent's own telemetry shows calls to a faked host that went around the proxy
+    AGENT_CONTRACT_CHANGED = "agent_contract_changed"  # the agent's product answered outside its own API description
+    UNMATCHED_CALL = "unmatched_call"  # a call to a host no provider claims and nothing declares
+
+
+def integrity_fails(agent: list[IntegrityCheck], scenario: list[IntegrityCheck]) -> list[IntegrityCheck]:
+    """The integrity facts that fail the run: those the agent file names, and those the scenario adds."""
+    return list(dict.fromkeys([*agent, *scenario]))
 
 
 class StoppedBy(StrEnum):
@@ -400,7 +496,9 @@ class Rule(Model):
     message: str | None = Field(
         default=None,
         description="What the finding says; absent, one is written from the rule. May name {person.key}, "
-        "{person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}",
+        "{person.name}, {ask.at}, {ask.answer}, {rule.id}, {rule.count}, {rule.moment}, and for `each: transition` "
+        "{transition.provider}, {transition.item}, {transition.name}, {transition.from}, {transition.to}, "
+        "{transition.by}, {transition.who}",
     )
     pattern: str | None = Field(default=None, description="Pattern.key of the design that avoids what this finds")
 
@@ -419,8 +517,15 @@ class Rule(Model):
             )
         if (self.when.open_at is not None or self.when.answered is not None) and not on_an_ask:
             raise ValueError(f"rule {self.id}: `when.open_at` and `when.answered` are read for an ask or a hand-off")
+        if self.where.on_transitions and self.each is not Each.TRANSITION:
+            raise ValueError(
+                f"rule {self.id}: `where.provider`, `name`, `to` and `by` pick transitions: write `each: transition`"
+            )
         if self.where != Where() and self.each is Each.RUN:
             raise ValueError(f"rule {self.id}: `where` picks asks, hand-offs or people; this rule is read once")
+        moves = self.count.transitions
+        if moves is not None and moves.same_item is not None and self.each is not Each.TRANSITION:
+            raise ValueError(f"rule {self.id}: `same_item` is the item of a transition: write `each: transition`")
         if self.count.messages is not None and self.count.messages.in_thread is not None and self.each is not Each.ASK:
             raise ValueError(f"rule {self.id}: `in_thread` is the thread of an ask: write `each: ask`")
         for said in self.moments():
@@ -435,9 +540,28 @@ class Rule(Model):
         for who in self.people():
             if who == THIS_PERSON and self.each is Each.RUN:
                 raise ValueError(f"rule {self.id}: `person` is the person the rule is read for; this one is read once")
-        allowed = ("person.key", "person.name", "ask.at", "ask.answer", "rule.id", "rule.count", "rule.moment")
+        allowed = (
+            "person.key",
+            "person.name",
+            "ask.at",
+            "ask.answer",
+            "rule.id",
+            "rule.count",
+            "rule.moment",
+            "transition.provider",
+            "transition.item",
+            "transition.name",
+            "transition.from",
+            "transition.to",
+            "transition.by",
+            "transition.who",
+        )
         if self.message is not None:
             refuse_unknown(f"rule {self.id}: message", self.message, allowed)
+            if "{transition." in self.message and self.each is not Each.TRANSITION:
+                raise ValueError(
+                    f"rule {self.id}: {{transition.*}} is the transition read for: write `each: transition`"
+                )
         if self.count.messages is not None:
             refuse_unknown(
                 f"rule {self.id}: holding",
@@ -474,6 +598,8 @@ class Rule(Model):
             named += self.count.commitments.waiting_on
         if self.count.asks is not None:
             named += self.count.asks.of
+        if self.count.transitions is not None:
+            named += self.count.transitions.who
         return named
 
 

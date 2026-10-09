@@ -8,19 +8,20 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from google.protobuf.message import Message as ProtoMessage
 
 from minutehand.domain.clock import Due
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import TypedItem
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
     InboundTarget,
     PermissionGrant,
     PersonMessage,
-    PersonReply,
 )
 from minutehand.domain.provider import Manifest, PersonChange
 from minutehand.domain.scenario import (
@@ -29,10 +30,8 @@ from minutehand.domain.scenario import (
     Model,
     Person,
     Scenario,
-    TicketHappening,
-    TicketState,
 )
-from minutehand.domain.world import Change, EntityRef
+from minutehand.domain.world import Change, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -103,14 +102,8 @@ class RendersErrors(Protocol):
 
 @runtime_checkable
 class PushesEvents(Protocol):
-    """A provider whose real service calls the agent: Slack events, Teams activities, webhooks."""
-
-    async def deliver(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None:
-        """Record the reply in the world and push it to the agent the way the real service would, signed with
-        `secret`: the value `target.secret` resolved to for this run."""
-        ...
+    """A provider whose real service calls the agent: Slack events, Teams activities, webhooks. A person's answer to
+    one of the agent's messages is a transition (`application.conversations`), not this port's."""
 
     async def say(
         self, message: PersonMessage, target: InboundTarget, world: Store, clock: Clock, *, secret: str
@@ -129,87 +122,13 @@ class PushesEvents(Protocol):
 
 
 @runtime_checkable
-class PushesInteractions(Protocol):
-    """A provider whose messages carry controls a person can use (Slack's buttons, Teams' card actions), and whose
-    real service tells the agent when one is used."""
+class ListensForAgent(Protocol):
+    """A provider whose own API calls set off events the agent hears of (Slack: a channel the agent made, a member it
+    invited; GitHub: an issue or a pull request the agent opened, closed, merged, reviewed or commented on): it is told where the agent takes its events and the secret that signs them, once, as a run or a world
+    starts. Nothing is sent to an agent that declares no target."""
 
-    async def press(
-        self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
-    ) -> None:
-        """The person uses `reply.press` on the message `reply.in_reply_to`: recorded as actor PERSON, pushed to
-        `target`'s interactivity URL signed with `secret`, and the agent's answer applied as the real service applies
-        it. A form the agent opens in answer is filled with `reply.press.form` and submitted the same way. A
-        reply with no press, or a control the message does not carry, is refused loudly."""
-        ...
-
-
-@runtime_checkable
-class LandsReplies(Protocol):
-    """A provider where a person's answer lands where the agent reads it, and nothing is pushed to the agent's inbound
-    target: a reply email in the agent's mailbox, an attendee's response on the agent's calendar event. The agent
-    needs no inbound target for it. It finds the answer on its next read, as it finds a ticket's fate, so its landing
-    wakes nobody, unless the service itself tells the agent of it (`heard`). A provider that also `PushesEvents`
-    lands only the replies `lands` names and pushes the rest."""
-
-    def lands(self, reply: PersonReply, world: Store) -> bool:
-        """Whether `reply` lands here rather than being pushed: it answers something the agent reads by polling (an
-        email in a mailbox, an invitation), not a message the service pushes answers to."""
-        ...
-
-    def heard(self, reply: PersonReply, world: Store, clock: Clock) -> bool:
-        """Whether landing `reply` tells the agent, by a push of the service's own that the agent asked for (a live
-        Graph subscription on the mailbox it lands in): that push is a wake, as a pushed reply's is."""
-        ...
-
-    async def land(self, reply: PersonReply, world: Store, clock: Clock) -> None:
-        """Write the person's answer to `reply.in_reply_to` as the real service would, recorded as actor PERSON: what
-        they wrote as their message, a control they used (`reply.press`) as its effect, and tell whoever `heard`
-        names. A message no longer there is left alone and nothing is written. A press on a control the message
-        does not carry raises `ValueError`: the replier offered what the provider never showed."""
-        ...
-
-
-@runtime_checkable
-class HoldsTickets(Protocol):
-    """A provider with tickets a person can finish or cancel. This is how a `TicketFate` lands."""
-
-    def transition(self, ticket: EntityRef, to: TicketState, world: Store, clock: Clock) -> None:
-        """Move the ticket to `to` the way its assignee would, recorded as actor PERSON."""
-        ...
-
-
-@runtime_checkable
-class DeletesTickets(Protocol):
-    """A provider whose tickets a person can delete: how a `TicketFate` that deletes lands, and how a person deletes
-    a ticket the agent filed, in a world already open."""
-
-    def delete_ticket(self, ticket: EntityRef, world: Store, clock: Clock) -> None:
-        """Delete the ticket the way its assignee would (or, unassigned, the scenario's owner), recorded as actor
-        PERSON; afterwards the service answers for it as for a ticket that never was. A ticket already gone
-        raises `LookupError`."""
-        ...
-
-
-@runtime_checkable
-class EditsTickets(Protocol):
-    """A provider whose tickets the scenario can rewrite: how a fork's `TicketEdit` lands."""
-
-    def edit(
-        self, ticket: EntityRef, *, state: TicketState | None, assignee_email: str | None, world: Store, clock: Clock
-    ) -> None:
-        """Change the ticket's state and/or assignee, recorded as actor SCENARIO. None leaves a field as it is."""
-        ...
-
-
-@runtime_checkable
-class ActsOnTickets(Protocol):
-    """A provider whose seeded tickets people act on by themselves: how a `TicketHappening` lands."""
-
-    def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
-        """Do what the happening says to the seeded ticket it names (`Scenario.happening_ticket`), as its person
-        would, recorded as actor PERSON. A ticket no longer there (the agent deleted it) is left alone and
-        nothing is written: the person finds nothing to act on. An action the provider cannot express raises:
-        the scenario asked for something this world cannot show."""
+    def listen(self, target: InboundTarget | None, secret: str | None) -> None:
+        """`target`, and `secret` which signs what is pushed to it; None for an agent that declares no target here."""
         ...
 
 
@@ -222,6 +141,29 @@ class Wakes(Protocol):
 
     def cancel(self, ref: str) -> None:
         """Drop the pending booking with this `ref`; no error when there is none."""
+        ...
+
+
+class HeldCalls(Protocol):
+    """What a run lends whoever answers the agent's calls (the proxy) for a call that waits on the world: a long poll
+    that finds nothing yet (`adapters.answering.waits`). The call is held, out of every lock, until the run's clock
+    reaches `at`, or something changes the world, and is looked at again then. The orchestrator implements it: each
+    held call is an entry of its table of what is due (`PendingCall`), so the clock moves to it."""
+
+    def hold(self, ref: str, at: datetime, *, ends: bool, look: Callable[[bool], Awaitable[bool]]) -> None:
+        """Call `ref` is held: look at it again at `at`, the end of its wait when `ends`, else the next moment the
+        world may answer it by itself (a message becoming visible). `look(over)` makes one look and answers whether
+        it answered the call; `over` answers it as the world stands, the wait being over. Holding a call already
+        held moves its moment."""
+        ...
+
+    def answered(self, ref: str) -> None:
+        """Call `ref`, held, has been answered: nothing more is due for it."""
+        ...
+
+    def answering(self, settled: Callable[[], Awaitable[None]]) -> None:
+        """How to wait until every call that has reached the world is answered or held, which the run does before
+        it moves its clock: a call still being answered then would be answered at the wrong moment."""
         ...
 
 
@@ -247,6 +189,16 @@ class BooksWakes(Protocol):
         """This occurrence is over, delivered or dropped: book the next occurrence of a recurring schedule under the
         same `ref` (the first after now, as a real scheduler skips what it missed), or complete a one-off one. The
         booking has already left the pending set when this is called."""
+        ...
+
+
+@runtime_checkable
+class TypesItems(Protocol):
+    """A provider whose manifest declares two item types of one entity kind (`Manifest.item_types`): it tells which
+    an event is from its own records, and reads from its own bodies what the snapshot does not carry."""
+
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """The event read as an item of one of the provider's item types; None when it is an item of none."""
         ...
 
 

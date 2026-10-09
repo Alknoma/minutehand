@@ -6,23 +6,26 @@ world already holds: an item seen for the first time is written as the agent ask
 as pending that is no longer listed, and that the person did not decide, is written as withdrawn by the agent.
 What is pending lives in the world's log, never in this object, so a fork or a reopened world reads it back.
 
-`decide` makes a decision a person's replier decided (`PersonReply.decides`) as that person, when it falls due,
-and writes it as their change: `DECIDED` when the product took it, still `PENDING` with the product's answer when
-it refused. A refusal never stops the run; the wait stays open.
-
-There is no default decision. `refuse_undecided` refuses, before anything runs, a person Minutehand can act as in
-an inbox whose script says nothing of deciding (`Scripted.decisions` None), naming them.
+Each inbox is a provider of the transitions port (`ports.transitions`): what is pending on a person waits on them,
+its decisions are the offers, and the people engine decides it as it decides anything (a take pins the decision; a
+model picks one otherwise). `decide` makes the decision as that person, as the product's own page sends it, and
+writes it as their change: `DECIDED` when the product took it, still `PENDING` with the product's answer when it
+refused. A refusal never stops the run; the wait stays open. `refuse_untakeable` refuses, before anything runs, a
+take naming a decision its inbox does not offer.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from minutehand.application.moments import decision_text
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
-from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import Account, AfterScript, Answers, Person, Scenario, Scripted, Silent
+from minutehand.domain.people import Decides, PersonReply
+from minutehand.domain.scenario import Account, Person, Scenario
+from minutehand.domain.transitions import AUTOMATIC_REPLY, TEXT, Offer, OfferField, Transition, Waiting, content_of
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -36,6 +39,18 @@ from minutehand.domain.world import (
 from minutehand.ports.clock import Clock
 from minutehand.ports.inboxes import ReachesInbox
 from minutehand.ports.store import Store
+from minutehand.ports.transitions import record
+
+PENDING = "pending"
+"""An item's state while it waits on its person: the product's own word, `ItemStatus.PENDING`."""
+DECIDED = "decided"
+"""An item's state once its person decided it."""
+WITHDRAWN = "withdrawn"
+"""An item's state once the agent took it back undecided."""
+WITHDRAW = "withdraw"
+"""The agent's move that takes an item back: it left the person's list undecided."""
+REFUSE = "refuse"
+"""The product's move that turns a person's decision down: the item is pending again."""
 
 READABLE = frozenset({Account.MEMBER, Account.GUEST})
 """Accounts that can sign in to the agent's product: a bot or a deactivated account never decides anything."""
@@ -59,44 +74,21 @@ def readers(scenario: Scenario, reach: ReachesInbox) -> list[Person]:
     return [p for p in scenario.people if p.account in READABLE and reach.can_act_as(p)]
 
 
-def refuse_undecided(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
-    """Every person who can receive items says what they do with them: a script of decisions, silence, or a model
-    (`Answers`, or a script that goes on conversing once it is used, `then: answers`). A script that says nothing of
-    items and nothing more once it is used is refused: there is no default decision. Each decision a script names
-    exists in an inbox it can apply to, and gives no input the decision does not take; what it leaves out, a model
-    writes."""
-    for reach in reaches:
-        declared = reach.declared
-        for person in readers(scenario, reach):
-            behaviour = person.reply
-            if isinstance(behaviour, Silent | Answers):
-                continue
-            assert isinstance(behaviour, Scripted)
-            if behaviour.decisions is None and behaviour.then is AfterScript.SILENT:
-                raise RunRefused(
-                    f"{person.key} can receive items in inbox {declared.name} and their script says nothing of "
-                    "deciding them and `then: silent`; there is no default decision: give them `decisions` (`[]` "
-                    "leaves every item pending), `reply: {kind: silent}`, or `then: answers` for a model to decide"
-                )
+def refuse_untakeable(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
+    """Each take pinned on an inbox (`Take.provider` its `name`) names one of its decisions and gives only inputs that
+    decision takes; what it leaves out, a model writes."""
     names = {r.declared.name: r.declared for r in reaches}
     for person in scenario.people:
-        behaviour = person.reply
-        if not isinstance(behaviour, Scripted):
-            continue
-        for scripted in behaviour.decisions or []:
-            if scripted.inbox is not None and scripted.inbox not in names:
-                raise RunRefused(f"{person.key} decides in inbox {scripted.inbox}, which the agent does not declare")
-            where = [names[scripted.inbox]] if scripted.inbox is not None else list(names.values())
-            found = [d for d in (i.decision(scripted.decision) for i in where) if d is not None]
-            if not found:
+        for take in person.takes:
+            if take.provider is None or take.provider not in names:
+                continue
+            decision = names[take.provider].decision(take.take)
+            if decision is None:
                 raise RunRefused(
-                    f"{person.key} decides {scripted.decision!r}, which no inbox "
-                    + (f"named {scripted.inbox} " if scripted.inbox else "the agent declares ")
-                    + "offers"
+                    f"{person.key} takes {take.take!r} in inbox {take.provider}, which offers no such decision"
                 )
             try:
-                for decision in found:
-                    decision.refuse_unknown_inputs(scripted.inputs, person.key)
+                decision.refuse_unknown_inputs(take.fields, person.key)
             except ValueError as e:
                 raise RunRefused(str(e)) from e
 
@@ -110,10 +102,9 @@ def refuse_clashing(reaches: Sequence[ReachesInbox], taken: Sequence[str]) -> No
 
 @dataclass
 class Looked:
-    """What one look at every inbox wrote: the asks seen first now, and the items gone undecided."""
+    """What one look at every inbox wrote: the asks seen first now, and each inbox it could not read whole."""
 
     asked: list[WorldEvent] = field(default_factory=list)
-    withdrawn: list[EntityRef] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
 
 
@@ -180,8 +171,21 @@ class Inboxes:
                         after=item.model_copy(update={"status": ItemStatus.WITHDRAWN}),
                     )
                 )
+                record(
+                    world,
+                    Transition(
+                        provider=name,
+                        item=ref,
+                        name=WITHDRAW,
+                        from_state=PENDING,
+                        to_state=WITHDRAWN,
+                        by=Actor.AGENT,
+                        who=None,
+                        content="{}",
+                        at=clock.now(),
+                    ),
+                )
                 held[ref] = _snapshot(event)
-                looked.withdrawn.append(ref)
         return looked
 
     def _asked(self, ref: EntityRef, item: ListedItem, person: Person, reach: ReachesInbox) -> Change:
@@ -196,7 +200,6 @@ class Inboxes:
             summary=item.summary,
             category=item.category,
             decisions=allowed,
-            gates=item.gates,
             status=ItemStatus.PENDING,
         )
         return Change(
@@ -207,6 +210,101 @@ class Inboxes:
             parent=person.key,
             after=snapshot,
         )
+
+    # -- `ProvidesTransitions`: each item pending on a person is an ask they answer by deciding it --------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        """Every item pending on the person in any inbox, as the product words it."""
+        return [
+            Waiting(item=ref, state=PENDING, shown=item.summary, conversation=True)
+            for ref, item in items_in(world.events()).items()
+            if ref.provider in self.reaches and item.person == person.key and item.status is ItemStatus.PENDING
+        ]
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        """The decisions the product offers on the item, each with the inputs it takes; and each note the inbox
+        declares (`Decision.settles` False), which leaves the item waiting, for a take or an automatic reply."""
+        del by, who
+        held = items_in(world.events())
+        snapshot = held[item] if item in held else None
+        if snapshot is None or snapshot.status is not ItemStatus.PENDING:
+            return []
+        declared = self.declared(item.provider)
+        offered = [d for d in (declared.decision(n) for n in snapshot.decisions) if d is not None and d.settles]
+        notes = [d for d in declared.decisions if not d.settles]
+        return [
+            Offer(
+                name=d.name,
+                to_state=DECIDED if d.settles else PENDING,
+                description=d.description,
+                fields=[OfferField(name=i.name, required=i.required, description=i.description) for i in d.inputs],
+                note=not d.settles,
+                unprompted=d.settles,
+            )
+            for d in [*offered, *notes]
+        ]
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        """The person makes the decision as the product's own page would send it (`decide`): their move is recorded
+        before the call goes out, so whatever the product does in handling it comes after the decision; when the
+        product does not take it, the product's refusal is a move of its own (`refuse`, by the system, back to
+        pending, its answer as content)."""
+        offers = self.legal(item, by, who, world)
+        if offer == AUTOMATIC_REPLY:
+            note = next((o for o in offers if o.note and o.fields), None)
+            if note is None or who is None:
+                raise ValueError(f"inbox {item.provider} takes no note an automatic reply could be")
+            words: dict[str, str] = json.loads(content)
+            offer, content = note.name, json.dumps({note.fields[0].name: words[TEXT] if TEXT in words else ""})
+        found = next((o for o in offers if o.name == offer), None)
+        if found is None or who is None:
+            raise ValueError(f"item {item.external_id} of inbox {item.provider} offers no decision {offer!r}")
+        inputs = content_of(content, found, who.key)
+        reply = PersonReply(
+            person=who.key,
+            in_reply_to=item,
+            text=decision_text(offer, inputs),
+            at=clock.now(),
+            decides=Decides(decision=offer, inputs=inputs),
+        )
+        moved = record(
+            world,
+            Transition(
+                provider=item.provider,
+                item=item,
+                name=offer,
+                from_state=PENDING,
+                to_state=found.to_state,
+                by=by,
+                who=who.key,
+                content=content,
+                at=clock.now(),
+            ),
+        )
+        made = await self.decide(reply, world, clock)
+        if made is not None and isinstance(made.after, InboxItemSnapshot) and made.after.refused is not None:
+            record(
+                world,
+                Transition(
+                    provider=item.provider,
+                    item=item,
+                    name=REFUSE,
+                    from_state=DECIDED,
+                    to_state=PENDING,
+                    by=Actor.SYSTEM,
+                    who=item.provider,
+                    content=json.dumps({"answer": made.after.refused}),
+                    at=clock.now(),
+                ),
+            )
+        return moved
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Always: the decision is a call to the agent's own product."""
+        del item, who, world, clock
+        return True
 
     async def decide(self, reply: PersonReply, world: Store, clock: Clock) -> WorldEvent | None:
         """Make `reply`'s decision as its person, now. None when the item is no longer pending (withdrawn, or decided
@@ -225,18 +323,15 @@ class Inboxes:
                 f"{person.key} decides {reply.decides.decision!r}, which inbox {ref.provider} does not offer"
             )
         answer = await reach.decide(person, ref.external_id, reply.decides, world, clock)
-        after = item.model_copy(
-            update={
-                "status": ItemStatus.DECIDED if answer.accepted else ItemStatus.PENDING,
-                "decision": decision.name,
-                "said": decision.said,
-                "permits": decision.permits,
-                "inputs": dict(reply.decides.inputs),
-                "refused": None
-                if answer.accepted
-                else f"{answer.status if answer.status is not None else 'no answer'}: {answer.answer}",
-            }
+        refused = (
+            None
+            if answer.accepted
+            else f"{answer.status if answer.status is not None else 'no answer'}: {answer.answer}"
         )
+        settled = {"status": ItemStatus.DECIDED if answer.accepted else ItemStatus.PENDING}
+        if decision.settles:
+            settled |= {"decision": decision.name, "said": decision.said, "inputs": dict(reply.decides.inputs)}
+        after = item.model_copy(update={**settled, "refused": refused} if decision.settles else {"refused": refused})
         return world.apply(
             Change(
                 entity=ref,

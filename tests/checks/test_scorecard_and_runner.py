@@ -21,11 +21,13 @@ CHECKS = {
     "around_proxy",
     "assessments",
     "expectations",
+    "items",
     "near_miss_name",
     "unmatched_call",
 }
-"""Minutehand's own: the scenario's words (expectations, protected names), the run's integrity, and the reader of the
-team's rules. None of them says how the agent should behave."""
+"""Minutehand's own: the scenario's words (expectations, protected names), the run's integrity, the reader of the
+team's rules, and the assessment of the agent's effects against the declared world (`items`). None of them holds an
+opinion of how an agent should behave that the scenario does not declare."""
 
 
 def test_the_slowest_reaction_is_a_stretch_of_time_with_no_threshold() -> None:
@@ -36,12 +38,23 @@ def test_the_slowest_reaction_is_a_stretch_of_time_with_no_threshold() -> None:
     assert (card.waits_settled, card.slowest_reaction) == (1, timedelta(hours=15))
 
 
-def test_an_answer_never_come_back_to_counts_to_the_end_of_the_run() -> None:
+def test_an_answer_followed_by_no_write_counts_to_the_end_of_the_run() -> None:
     log = Log()
     ask = log.message([SOFIA], 0)
-    log.message([OWNER], 3, text="status")
+    log.read(ask.entity, 3)  # the agent looked, and wrote nothing: a read tells nobody anything
+    log.memory("asks/sofia", "answered", 3)  # nor does its own memory
     card = measure(view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1.5)]), findings=[], met=0, ended_at=at(6))
     assert card.slowest_reaction == timedelta(hours=4.5)
+
+
+def test_a_write_elsewhere_right_after_an_answer_is_the_reaction() -> None:
+    """The trial's run: Sam's answer landed, the agent at once filed the approval (another person, another place) and
+    never wrote to Sam again. The scorecard said 4.8 days, to the run's end; the agent reacted at once."""
+    log = Log()
+    ask = log.message([SOFIA], 0)
+    log.message([OWNER], 1.5, text="Filed the approval with the cost centre Sofia gave.")
+    card = measure(view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1.5)]), findings=[], met=0, ended_at=at(120))
+    assert card.slowest_reaction == timedelta(0)
 
 
 def test_burden_counts_messages_per_person_and_the_ones_that_chased_an_open_ask() -> None:
@@ -77,7 +90,7 @@ def test_the_reference_capture_fails_on_its_own_scenarios_words_and_names_what_d
     assert sorted({f.check for f in result.findings}) == ["expectations", "near_miss_name"]
     assert result.effectiveness.expectations_met == 3 and result.effectiveness.failed_checks == 5
     assert {b.split(":")[0] for b in result.blocked} == {"unmatched_call"}
-    assert result.assessed_by == ["expectations", "near_miss_name"]
+    assert result.assessed_by == ["items", "expectations", "near_miss_name"]
 
 
 def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None:
@@ -119,7 +132,7 @@ def test_evaluate_run_reads_the_scenarios_own_rules_without_those_it_switches_of
     log.message([dania], 1, text="Any news?")
     world = scenario(dania).model_copy(update={"assess": written, "assess_off": ["no_messages"]})
     result = evaluate_run(world, log.events, [ONE_WAKE], [], unmatched_calls=[], stop=StopReason.AGENT_DONE)
-    assert [f.check for f in result.findings] == ["no_follow_ups"] and result.assessed_by == ["no_follow_ups"]
+    assert [f.check for f in result.findings] == ["no_follow_ups"] and result.assessed_by == ["items", "no_follow_ups"]
 
 
 def _result(failing: bool) -> RunResult:

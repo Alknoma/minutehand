@@ -1,8 +1,10 @@
 """A world can be waited on to go quiet, closing one waits for that by default, and a call that comes for a world
 after it closed is kept in the lobby as that world's late call rather than as a stray.
 
-Moments are recorded, never summed: each test asserts on the order of what happened (the last call of a turn
-before the wait returned), so a slow runner changes only how long it takes."""
+Nothing here races the clock. A service's turn is the work it does on an event pushed to it: the world is busy
+until the service answers the push, so every call the turn makes comes before the world can go quiet, however
+slowly a loaded runner makes them. A turn that only slept between its calls raced the quiet window instead: under
+load a gap grew past it, the world was quiet by definition, and its next call came late."""
 
 from __future__ import annotations
 
@@ -22,59 +24,72 @@ from tests.serve.support import Served, event_receiver, spec
 
 @dataclass
 class Turn:
-    """A service's turn still running in the background: a call every `gap` seconds, `calls` of them."""
+    """A service's turn on an event pushed to it: `calls` calls to the world, then its answer to the push."""
 
+    world: OpenWorld
     made: list[float] = field(default_factory=list)
-    finished: threading.Event = field(default_factory=threading.Event)
+    answered: threading.Event = field(default_factory=threading.Event)
 
 
 @contextmanager
-def running_turn(served: Served, token: str, *, calls: int, gap: float) -> Iterator[Turn]:
-    turn = Turn()
+def turn_on_a_push(served: Served, token: str, *, calls: int) -> Iterator[Turn]:
+    """A world whose service is pushed an event and makes `calls` calls before it answers; yielded once the push has
+    reached the service, so the turn is under way."""
     slack = served.slack(token)
+    made: list[float] = []
 
     def work() -> None:
-        try:
-            for _ in range(calls):
-                time.sleep(gap)
-                # Refused once the world is closed: the call still happened, and is what is asserted on.
-                with suppress(SlackApiError):
-                    slack.auth_test()
-                turn.made.append(time.monotonic())
-        finally:
-            turn.finished.set()
+        for _ in range(calls):
+            # Refused once the world is closed: the call still happened, and is what is asserted on.
+            with suppress(SlackApiError):
+                slack.auth_test()
+            made.append(time.monotonic())
 
-    thread = threading.Thread(target=work, daemon=True)
-    thread.start()
-    try:
-        yield turn
-    finally:
-        thread.join(30)
+    with event_receiver(working=work) as receiver:
+        world = OpenWorld(served.client, served.client.create_world(spec(token, inbound=receiver.url)))
+        turn = Turn(world=world, made=made)
+
+        def push() -> None:
+            try:
+                world.say("sofia", "are you there?")
+            finally:
+                turn.answered.set()
+
+        saying = threading.Thread(target=push, daemon=True)
+        saying.start()
+        deadline = time.monotonic() + 20
+        while not receiver.pushed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert receiver.pushed, "the event never reached the service"
+        try:
+            yield turn
+        finally:
+            saying.join(30)
 
 
 def test_quiet_returns_only_after_the_turn_still_running_has_made_its_last_call(served: Served) -> None:
-    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-quiet")))
-    try:
-        served.slack("xoxb-quiet").auth_test()
-        with running_turn(served, "xoxb-quiet", calls=5, gap=0.1) as turn:
-            quieted = world.quiet(quiet_for=timedelta(milliseconds=600), at_most=timedelta(seconds=20))
+    with turn_on_a_push(served, "xoxb-quiet", calls=5) as turn:
+        try:
+            quieted = turn.world.quiet(quiet_for=timedelta(milliseconds=600), at_most=timedelta(seconds=30))
             returned = time.monotonic()
             assert quieted.quiet, quieted
-            assert turn.finished.is_set() and turn.made[-1] <= returned
-        assert len(world.calls()) == 6
-        assert quieted.last_call is not None and "auth.test" in quieted.last_call
-    finally:
-        served.client.close_world(world.world_id, quiet=False)
+            assert turn.answered.is_set() and len(turn.made) == 5 and turn.made[-1] <= returned
+            assert len([c for c in turn.world.calls() if c.exchange.path.startswith("/api/auth.test")]) == 5
+            assert quieted.last_call is not None and "auth.test" in quieted.last_call
+        finally:
+            served.client.close_world(turn.world.world_id, quiet=False)
 
 
 def test_quiet_gives_up_at_its_bound_and_says_what_was_still_going_on(served: Served) -> None:
     world = OpenWorld(served.client, served.client.create_world(spec("xoxb-noisy")))
     try:
         served.slack("xoxb-noisy").auth_test()
-        with running_turn(served, "xoxb-noisy", calls=40, gap=0.05) as turn:
-            quieted = world.quiet(quiet_for=timedelta(seconds=5), at_most=timedelta(milliseconds=300))
-            assert not quieted.quiet and quieted.busy
-            assert not turn.finished.is_set()
+        quieted = world.quiet(quiet_for=timedelta(hours=1), at_most=timedelta(milliseconds=300))
+        assert not quieted.quiet
+        assert quieted.waited >= timedelta(milliseconds=300)
+        assert (
+            len(quieted.busy) == 1 and "before the wait gave up" in quieted.busy[0] and "auth.test" in quieted.busy[0]
+        )
     finally:
         served.client.close_world(world.world_id, quiet=False)
 
@@ -101,14 +116,12 @@ def test_a_delivery_still_awaiting_the_services_answer_keeps_the_world_from_bein
 
 
 def test_closing_a_world_waits_for_it_to_go_quiet_so_no_call_of_the_turn_comes_late(served: Served) -> None:
-    world = OpenWorld(served.client, served.client.create_world(spec("xoxb-closing")))
-    served.slack("xoxb-closing").auth_test()
-    with running_turn(served, "xoxb-closing", calls=4, gap=0.1) as turn:
-        checked = served.client.close_world(world.world_id, quiet=Quiet(quiet_for=timedelta(milliseconds=600)))
+    with turn_on_a_push(served, "xoxb-closing", calls=4) as turn:
+        checked = served.client.close_world(turn.world.world_id, quiet=Quiet(quiet_for=timedelta(milliseconds=600)))
         closed = time.monotonic()
         assert checked.quiet is not None and checked.quiet.quiet
-        assert turn.finished.is_set() and turn.made[-1] <= closed
-    assert world.late_calls() == []
+        assert turn.answered.is_set() and len(turn.made) == 4 and turn.made[-1] <= closed
+    assert turn.world.late_calls() == []
 
 
 def test_a_call_that_comes_after_its_world_closed_is_kept_as_that_worlds_late_call(served: Served) -> None:
