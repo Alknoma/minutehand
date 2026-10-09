@@ -7,6 +7,7 @@ from minutehand.adapters.providers.slack.app import build_app
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.seed import SlackSeed, seed, write_faults
 from minutehand.adapters.providers.slack.state import SlackWorld
+from minutehand.application.conversations import PushedConversations
 from minutehand.domain.errors import Rendered
 from minutehand.domain.people import (
     Header,
@@ -63,6 +64,10 @@ class SlackProvider:
         self, reply: PersonReply, target: InboundTarget, world: Store, clock: Clock, *, secret: str
     ) -> None:
         await interactive.press(reply, target, world, clock, secret=secret)
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
+        """`TalksToAgent`: people's answers to the agent's messages, pushed to `target` signed with `secret`."""
+        return PushedConversations(MANIFEST.key, self, target, secret)
 
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`SlackSeed.faults`, on a world already open."""

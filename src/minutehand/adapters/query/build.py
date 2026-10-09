@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from minutehand import session
 from minutehand.adapters.query.schema import BY_NAME, VERSION, VIEWS, SqlType
-from minutehand.application.checkpoint import Checkpoint, checkpoints, read_checkpoint
+from minutehand.application.checkpoint import Checkpoint, checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.model_calls import EventTrace, is_model_call, model_call, trace_of
 from minutehand.checks.facts import asks
@@ -173,19 +173,12 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
         wakes = session.wakes_of(state, run_id, world)
         dues = due_entries(world)
         kept = checkpoints(world)
-        last = read_checkpoint(world)
         joins = {
             e.seq: trace_of(e, world)
             for e in events
             if e.actor is Actor.AGENT and isinstance(e.after, MessageSnapshot) and e.operation in WRITES
         }
-    withdrawn = set(last.withdrawn) if last is not None else set()
     tables = _Tables()
-    ended = (
-        outcome.record.ended_at
-        if outcome is not None
-        else max((e.sim_time for e in events), default=scenario.starts_at)
-    )
 
     call_of: dict[int, int] = {}
     for number, call in enumerate(calls, start=1):
@@ -258,7 +251,7 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     )
 
     landed = _landed(replies, events)
-    messages = _messages(scenario, events, wakes, replies, withdrawn, landed, joins, call_of)
+    messages = _messages(scenario, events, wakes, replies, landed, joins, call_of)
     tables.put("messages", messages)
     tables.put("recipients", _recipients(scenario, events))
     tables.put("calls", [_call(number, call) for number, call in enumerate(calls, start=1)])
@@ -331,7 +324,7 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     for e in events:
         if e.entity not in first_seq:
             first_seq[e.entity] = e.seq
-    tables.put("replies", _replies(replies, person_calls, withdrawn, ended, first_seq, landed))
+    tables.put("replies", _replies(replies, person_calls, first_seq, landed))
 
     agent_calls = [s for s in spans if is_model_call(s)]
     traces: dict[str, list[StoredSpan]] = {}
@@ -558,12 +551,11 @@ def _messages(
     events: list[WorldEvent],
     wakes: list[WakeRecord],
     replies: list[PersonReply],
-    withdrawn: set[int],
     landed: dict[int, int],
     joins: dict[int, EventTrace],
     call_of: dict[int, int],
 ) -> list[Row]:
-    view = view_of(scenario, events, wakes, replies, withdrawn=withdrawn)
+    view = view_of(scenario, events, wakes, replies)
     opened: dict[int, int] = {}
     following: dict[int, int] = {}
     for ask in asks(view):
@@ -759,8 +751,6 @@ def _memory(events: list[WorldEvent]) -> list[Row]:
 def _replies(
     replies: list[PersonReply],
     person_calls: list[PersonCall],
-    withdrawn: set[int],
-    ended: datetime,
     first_seq: dict[EntityRef, int],
     landed: dict[int, int],
 ) -> list[Row]:
@@ -816,8 +806,6 @@ def _replies(
                 "decision": r.decides.decision if r.decides is not None else None,
                 "answers_seq": first_seq[ref] if ref in first_seq else None,
                 "in_reply_to": f"{ref.provider}/{ref.kind.value}/{ref.external_id}",
-                "withdrawn": int(position in withdrawn),
-                "landed": int(position not in withdrawn and r.at <= ended),
                 "seq": landed[position] if position in landed else None,
                 "drawn_from": r.drawn.source.value if r.drawn is not None else None,
                 "person_call_id": call,

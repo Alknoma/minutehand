@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.application.conversations import PushedConversations
 from minutehand.application.run_clock import RunClock
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.clock import Due, DueKind
@@ -97,6 +98,10 @@ class Chat:
     def __init__(self) -> None:
         self.pushed: list[str] = []
         self.signatures: list[str] = []
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> PushedConversations:
+        """People's answers to the agent's messages, pushed to its inbound URL as `deliver` pushes them."""
+        return PushedConversations(CHAT, self, target, secret)
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         async def post_message(request: Request) -> Response:

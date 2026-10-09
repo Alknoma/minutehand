@@ -97,7 +97,7 @@ from minutehand.adapters.web.responses import (
     WakesResponse,
     explained,
 )
-from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT
 from minutehand.application.forks import summary
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
@@ -191,13 +191,11 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
     def obligations(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
         with session.reading(state, run_id) as world:
-            last = read_checkpoint(world)
             view = view_of(
                 scenario,
                 world.events(),
                 session.wakes_of(state, run_id, world),
                 world.replies(),
-                withdrawn=last.withdrawn if last is not None else [],
             )
             sim_of = {e.seq: e.sim_time for e in world.events()}
         return _json(

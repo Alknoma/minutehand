@@ -200,3 +200,37 @@ provider steering them through `SteersPeople` (its `within`, `bias`, `odds`). A 
 (`ServiceRecordKind.ANSWER`), so polling an unchanged service calls no model. `--capture-unknown model` answers a
 host nobody declared as a service with no description; the separate stand-in (`adapters/proxy/modeled.py`,
 `CaptureMode.MODELED`) is gone.
+
+**Phase 3.** Every other provider implements the port, and people's answers to messages are the engine's.
+
+- **YouTrack**: an issue assigned to a person and not resolved is pending on them; the offers are every value of its
+  `State` field but the current one, with a comment; the agent's and people's State changes are transitions.
+- **Asana**: a task assigned to a person and not completed is pending on them; the offers are completing it and each
+  section or status option it can move to, each named as Asana words it; every such change is a transition.
+- **Conversations** (decision 2: one item per conversation). Each message the agent sent a person that they can
+  answer where it went is an ask (`Waiting.conversation`): Slack and Teams messages (pushed to the agent, bound to its
+  inbound target and signing secret through `TalksToAgent` and `application/conversations.py`), Gmail and Outlook
+  email and meeting requests (landed where the agent reads them), Google invitations, a captured channel's sends
+  (`adapters/agent/replies.py`), and every item of the agent's own product (`application/inboxes.py`, which offers
+  the item's decisions with their inputs). The offers are `reply`, with its words, and each control on the message
+  by its id; an invitation's are `reply` (a response comment) and each `responseStatus` but the one held, with a
+  comment, carried as `text`. Every answer is a transition, and is kept as said (`Store.replies`) when it lands.
+- **Who decides.** A take pins the nth item; a provider the scenario names in `transitions_on` has the model pick
+  among the offers (`person-transition/1`); otherwise the person's script and voice plan and word the answer as they
+  always did (`application/replier.py`), and the engine holds the plan and the words on its record
+  (`PendingSnapshot.plan`, `.answer`) until the answer's moment. A follow-up on an answer owed is no new ask: it moves
+  the answer sooner when the person is `reminded`. An ask edited before its answer is planned and worded again; one
+  that, so read, needs no answer passes (`PendingStatus.PASSED`) and nobody hears of anything. A person away while a
+  delegate covers sends their automatic reply at once, and the ask stays theirs. A fork that changes a person, or
+  pins a moment, plans their open asks again (`People.replan`).
+- **What moved for users.** The run loop's own reply path (`PendingReply`, `Checkpoint.withdrawn`,
+  `Checkpoint.unwritten`) and the standing world's are gone: an answer is a `PendingTransition` due as a reply
+  (`DueKind.PERSON_REPLY`). Only what landed is in the `replies` view, whose `withdrawn` and `landed` columns are
+  gone (read model version 2), and a run's checkpoints sit one seq later than before, since the engine records each
+  ask it holds. Answers land at the moments they did; what can shift is a reply whose words a model failed to write
+  (written again on the next look, or at its moment, where the old path waited a turn), and a standing world now puts
+  an edited ask to its person again, as a run does. An invitation's answer carries its comment as `text`.
+- **Not built.** GitHub pull request reviews (the fake serves none) and Drive or Docs comment replies (the fake
+  serves no `comments.replies`): a person cannot answer where the service does not, and nothing is invented for it.
+  In Notion and SharePoint nothing waits on a person in the fakes (no assignment or mention is modelled), so what
+  people do there stays a provider happening.

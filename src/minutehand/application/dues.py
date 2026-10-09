@@ -20,16 +20,15 @@ from minutehand.application.checkpoint import (
     PendingFate,
     PendingHappening,
     PendingMachine,
-    PendingReply,
     PendingService,
     PendingTimer,
     PendingTransition,
     PendingWake,
 )
 from minutehand.domain.agent import WakeReason
-from minutehand.domain.clock import PLANNED_BY, REACHED, Drawn, Due, DueClosed, DueEntry, DueSource
+from minutehand.domain.clock import PLANNED_BY, REACHED, Drawn, Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.scenario import DispatchFault, DispatchRule, Model, PlannedBy
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, WorldEvent
+from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, PendingSnapshot, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -39,8 +38,6 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.POLLED if pending.reason is WakeReason.TICK else DueSource.REPORTED
     if isinstance(pending, PendingBooking):
         return DueSource.BOOKED
-    if isinstance(pending, PendingReply):
-        return DueSource.REPLY
     if isinstance(pending, PendingFate):
         return DueSource.FATE
     if isinstance(pending, PendingHappening):
@@ -50,7 +47,7 @@ def source_of(pending: Pending) -> DueSource:
     if isinstance(pending, PendingTimer):
         return DueSource.TIMER
     if isinstance(pending, PendingTransition):
-        return DueSource.TRANSITION
+        return DueSource.REPLY if pending.due.kind is DueKind.PERSON_REPLY else DueSource.TRANSITION
     if isinstance(pending, PendingService):
         return DueSource.SERVICE
     assert isinstance(pending, PendingDirection)
@@ -189,7 +186,7 @@ class Dues:
 
     def resume(self, pending: list[Pending]) -> None:
         """Take up the table a fork's checkpoint holds. The log as the fork shares it says what was open: an entry
-        the checkpoint dropped (a reply withdrawn by a `PersonChange`) is cancelled, and one it added is entered."""
+        the checkpoint dropped (a reply a `PersonChange` planned again) is cancelled, and one it added is entered."""
         self._items = []
         self._open = {}
         refs = list(dict.fromkeys(e.entity for e in self._store.events() if e.entity.kind is EntityKind.DUE))
@@ -209,14 +206,18 @@ class Dues:
                 self._open[key] = (ref, entry)
             else:
                 self._close(ref, entry, DueClosed.CANCELLED)
-        replies = self._store.replies()
         for p in pending:
             if key_of(p.due) in self._open:
                 self._items.append(p)
-            elif isinstance(p, PendingReply) and 0 <= p.reply < len(replies):
-                self.enter(p, drawn=replies[p.reply].drawn)  # a reply the fork decided again: its draw with it
             else:
-                self.enter(p)
+                self.enter(p, drawn=self._drawn(p))
+
+    def _drawn(self, pending: Pending) -> Drawn | None:
+        """How a person's move a fork booked again was drawn: kept with the engine's record of it."""
+        if not isinstance(pending, PendingTransition):
+            return None
+        held = self._store.get(pending.pending)
+        return PendingSnapshot.model_validate_json(held.body).drawn if held is not None else None
 
     def _leave(self, leaving: list[Pending], how: DueClosed) -> None:
         if not leaving:

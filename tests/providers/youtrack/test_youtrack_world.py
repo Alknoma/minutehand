@@ -143,7 +143,7 @@ async def test_transition_moves_the_issue_as_its_assignee(
 
     instance.provider.transition(state.issue_ref(issue_id), to, instance.store, instance.clock)
 
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, state.issue_ref(issue_id))
     assert last.after == TicketSnapshot(
         title="Write the release notes",
@@ -178,7 +178,7 @@ def test_transition_back_to_open_clears_resolved(instance: Instance) -> None:
 
     moved = instance.youtrack.issue(issue_id)
     assert moved is not None and moved.resolved is None
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert isinstance(last.after, TicketSnapshot) and last.after.state is TicketState.OPEN
 
 
@@ -200,7 +200,7 @@ def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instance) ->
         clock=instance.clock,
     )
 
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
         title="Write the release notes",
@@ -217,7 +217,7 @@ def test_edit_with_nothing_named_leaves_both_fields(instance: Instance) -> None:
         state.issue_ref(issue_id), state=None, assignee_email=None, world=instance.store, clock=instance.clock
     )
 
-    last = instance.store.events()[-1]
+    last = [e for e in instance.store.events() if e.entity.kind is EntityKind.TICKET][-1]
     assert last.actor is Actor.SCENARIO
     assert last.after == TicketSnapshot(
         title="Book the venue",

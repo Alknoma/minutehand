@@ -82,7 +82,7 @@ from minutehand.application.forks import (
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
-from minutehand.application.people import People, needs_model
+from minutehand.application.people import needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
@@ -324,7 +324,7 @@ async def play(
                     environment=emulators,
                     inboxes=inboxes_for(agent, scenario, signing),
                     outside=own_files,
-                    people=people_for(scenario, services, model, desk),
+                    model=model,
                     desk=desk,
                 )
             write_recordings(directory, store.calls())
@@ -431,7 +431,7 @@ async def fork(
                     reach=reach_for(agent, env=env),
                     services=services,
                     replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
-                    people_for=lambda s: people_for(s, services, model, desk),
+                    model=model,
                     desk=desk,
                     state_dir=state / RUNS,
                     wire=routing,
@@ -976,7 +976,6 @@ class _Judge:
             world.events(),
             record.wakes,
             world.replies(),
-            withdrawn=last.withdrawn if last is not None else [],
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
@@ -1038,25 +1037,6 @@ def capturing_for(
         return Capturing(agent.outbound, replaying=replaying)
     except (ProviderConflict, FileNotFoundError, ValueError) as e:
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
-
-
-def people_for(
-    scenario: Scenario, services: Services, model: LanguageModel | None, desk: ServiceDesk | None
-) -> People | None:
-    """The people engine over the providers the scenario names in `transitions_on` and its declared services; None
-    when it has neither."""
-    if not scenario.played():
-        return None
-    by_key = {p.manifest.key: p for p in services.providers}
-
-    def provider(key: ProviderKey) -> object:
-        if key in by_key:
-            return by_key[key]
-        if desk is not None and any(s.key == key for s in scenario.services):
-            return desk.provider(key)
-        raise RunRefused(f"the scenario has people act through transitions on {key}, which is not in the run")
-
-    return People(scenario, provider, model)
 
 
 def desk_for(

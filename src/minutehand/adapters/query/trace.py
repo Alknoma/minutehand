@@ -144,9 +144,7 @@ def explain(db: sqlite3.Connection, run_id: str, seq: int) -> Explained:
         else []
     )
     landed = (
-        _records(db, "SELECT * FROM replies WHERE landed = 1 AND at = ? ORDER BY reply_id", [wake["at"]])
-        if wake is not None
-        else []
+        _records(db, "SELECT * FROM replies WHERE at = ? ORDER BY reply_id", [wake["at"]]) if wake is not None else []
     )
     # Where the event sits among the agent's acts: its own place, or, for an event not the agent's, before the
     # first act written after it.

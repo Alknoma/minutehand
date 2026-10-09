@@ -18,7 +18,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.agent import WakeRequest
 from minutehand.domain.inboxes import HttpInbox
 from minutehand.domain.scenario import ScriptedDecision
-from minutehand.domain.world import Actor, InboxAct, InboxItemSnapshot, ItemStatus
+from minutehand.domain.world import Actor, EntityKind, InboxAct, InboxItemSnapshot, ItemStatus
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, T0, TOKENS, Agent, checks_named, deciding, inbox, people, play, scenario
 from tests.support.stored import everything
@@ -288,5 +288,5 @@ async def test_an_agent_that_implements_minutehands_default_shape_declares_no_re
         }
     ]
     assert checks_named(played.result, "agent_contract_changed") == []
-    decided = [e for e in played.store.events() if e.actor is Actor.PERSON]
+    decided = [e for e in played.store.events() if e.actor is Actor.PERSON and e.entity.kind is EntityKind.INBOX_ITEM]
     assert len(decided) == 1

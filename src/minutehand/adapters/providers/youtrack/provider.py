@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pydantic import TypeAdapter, ValidationError
+
 from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
-from minutehand.adapters.providers.youtrack.state import YouTrackWorld, millis, placed
+from minutehand.adapters.providers.youtrack.state import YouTrackWorld, issue_ref, millis, placed
 from minutehand.domain.errors import Rendered
 from minutehand.domain.people import PermissionGrant
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
@@ -22,7 +24,8 @@ from minutehand.domain.scenario import (
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, Change, EntityRef
+from minutehand.domain.transitions import Offer, OfferField, Transition, Waiting, item_parent
+from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, TransitionSnapshot
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -124,6 +127,85 @@ class YouTrackProvider:
         )
         del clock
 
+    # -- transitions (`ProvidesTransitions`) ---------------------------------------------------------------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        """Every issue assigned to the person's account whose State is not a resolved one, as they read it."""
+        youtrack = YouTrackWorld(world)
+        user = youtrack.user_by_login(person.key) or youtrack.user_by_email(person.email)
+        if user is None:
+            return []
+        waiting: list[Waiting] = []
+        for issue in youtrack.every_issue():
+            project = youtrack.project(issue.project)
+            if project is None:
+                continue
+            assignee = youtrack.assignee_of(project, issue)
+            state = youtrack.state_of(project, issue)
+            if assignee is None or assignee.id != user.id or state is None or state.isResolved:
+                continue
+            waiting.append(Waiting(item=issue_ref(issue.id), state=state.name, shown=_shown(youtrack, issue, state)))
+        return waiting
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        """Every value of the project's State field but the one the issue is in, each with a comment: YouTrack
+        holds no workflow beside the field's values, and a person sets State as the agent does."""
+        del by, who
+        youtrack = YouTrackWorld(world)
+        issue, project = _located(youtrack, item)
+        field = youtrack.state_field(project)
+        current = youtrack.state_of(project, issue)
+        if field is None:
+            return []
+        return [
+            Offer(
+                name=value.name,
+                to_state=value.name,
+                fields=[OfferField(name=COMMENT, description="A comment added to the issue as its State changes")],
+            )
+            for value in sorted(field.values, key=lambda v: v.ordinal)
+            if current is None or value.id != current.id
+        ]
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        """The person sets the issue's State, as `POST /issues/{id}/customFields/{field}` sets it, and adds their
+        comment, as themselves."""
+        youtrack = YouTrackWorld(world)
+        issue, project = _located(youtrack, item)
+        if who is None:
+            raise ValueError("a YouTrack issue's State is set by an account: name the person")
+        author = _account(youtrack, who)
+        field = youtrack.state_field(project)
+        value = next((v for v in field.values if v.name == offer), None) if field is not None else None
+        current = youtrack.state_of(project, issue)
+        if value is None or (current is not None and current.id == value.id):
+            raise ValueError(f"{issue.idReadable} offers no State {offer!r}")
+        try:
+            given = _CONTENT.validate_json(content)
+        except ValidationError as e:
+            raise ValueError(f"a transition's content is a JSON object of text fields: {content!r}") from e
+        unknown = sorted(set(given) - {COMMENT})
+        if unknown:
+            raise ValueError(f"a YouTrack State change takes a comment, not {', '.join(unknown)}")
+        at = millis(clock.now())
+        moved = youtrack.moved(issue, project, value, by=author.id, at=at)
+        youtrack.update_issue(moved, actor=by, content=content)
+        if COMMENT in given and given[COMMENT].strip():
+            youtrack.write_comment(
+                wire.StoredComment(
+                    id=youtrack.next_id(4), issue=issue.id, text=given[COMMENT], author=author.id, created=at
+                ),
+                actor=by,
+            )
+        return _last_move(world, item)
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Never: the fake serves no webhooks, so the agent finds a person's change on its next read."""
+        del item, who, world, clock
+        return False
+
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """A person changes the state or assignee of a seeded issue, comments on it, or deletes it, as themselves. An
         issue no longer there (the agent or someone else deleted it) is left alone and nothing is written."""
@@ -178,6 +260,31 @@ def _assigned(
         values[field.id] = user.id
     changed = issue.model_copy(update={"values": values})
     return youtrack.settled(changed, project, was=issue, by=by, at=at)
+
+
+COMMENT = "comment"
+"""What a person's State change takes besides the value: a comment on the issue."""
+
+_CONTENT: TypeAdapter[dict[str, str]] = TypeAdapter(dict[str, str])
+
+
+def _shown(youtrack: YouTrackWorld, issue: wire.StoredIssue, state: wire.StoredBundleValue) -> str:
+    """The issue as its assignee reads it: id and summary, State, description and comments, oldest first."""
+    lines = [f"{issue.idReadable}: {issue.summary}", f"State: {state.name}"]
+    if issue.description:
+        lines += ["", issue.description]
+    for comment in youtrack.comments(issue.id):
+        author = youtrack.user(comment.author)
+        lines.append(f"{author.login if author else 'Someone'}: {comment.text}")
+    return "\n".join(lines)
+
+
+def _last_move(world: Store, item: EntityRef) -> Transition:
+    moves = world.children(MANIFEST.key, EntityKind.TRANSITION, item_parent(item), limit=1000)
+    last = max(moves, key=lambda s: s.seq)
+    event = next(e for e in world.events(since=last.seq - 1) if e.seq == last.seq)
+    assert isinstance(event.after, TransitionSnapshot)
+    return Transition.of(event)
 
 
 def _account(youtrack: YouTrackWorld, person: Person) -> wire.StoredUser:

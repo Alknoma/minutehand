@@ -146,6 +146,8 @@ def test_a_harness_with_its_own_clock_jumps_to_the_decision_due_and_has_it_perfo
     assert [(p.person, p.decisions) for p in view.pending] == [("nadia", ["approve", "reject"])]
     assert [(d.person, d.decision, d.at) for d in view.due] == [("nadia", "approve", answered + timedelta(hours=2))]
 
+    # Mutation: performing every decision owed, due or not, has Nadia decide two hours early.
+    assert minutehand_world.perform_due() == [], "nothing is due before its moment"
     due = view.due[0].at  # the harness's own clock jumps to the next moment something is due; the world's stays
     with minutehand_world.step(at=due, reason="nadia's decision is due"):
         done = minutehand_world.perform_due()

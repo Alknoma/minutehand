@@ -11,10 +11,10 @@ whoever it went to. It still counts as a touch on a wait already open with that 
 Whether a message asked anything is the replier's decision, never the ledger's:
 a message opens a wait when the person has a reply decided to it, or when the
 person is `Silent`, whose every message is a question left unanswered. A reply
-withdrawn before it landed (the agent edited the message it answered) still says
-the message asked something, and settles nothing: it never reached anyone. A message
-a person would not answer (a thank-you, a report) asked them nothing, whether or
-not they are away when it arrives.
+planned and not yet landed (the people engine's record of it, `PendingSnapshot.plan`)
+says the message asked something, and settles nothing yet. A message a person would
+not answer (a thank-you, a report), or one that, read when they came to it, needed
+no answer, asked them nothing, whether or not they are away when it arrives.
 
 Where the people engine plays a provider (`Scenario.transitions_on`), an item it held pending on a person (an
 invitation they were sent) asked them, whoever they are, and the person's first transition on it is their answer.
@@ -35,7 +35,6 @@ and treats a reminder sent in another channel as a new ask.
 
 from __future__ import annotations
 
-from collections.abc import Collection
 from datetime import datetime, timedelta
 
 from pydantic import AwareDatetime, Field
@@ -53,6 +52,7 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
     PendingSnapshot,
+    PendingStatus,
     TicketSnapshot,
     TransitionSnapshot,
     WorldEvent,
@@ -154,11 +154,8 @@ def build(
     scenario: Scenario,
     events: list[WorldEvent],
     replies: list[PersonReply],
-    *,
-    withdrawn: Collection[int] = (),
 ) -> list[Obligation]:
-    """Every obligation the run opened, in the order it opened; the scenario deadline last. `withdrawn` are the
-    positions in `replies` of replies withdrawn before they landed."""
+    """Every obligation the run opened, in the order it opened; the scenario deadline last."""
     events = sorted(events, key=lambda e: e.seq)
     head = events[-1].sim_time if events else scenario.starts_at
     by_key = {p.key: p for p in scenario.people}
@@ -166,15 +163,12 @@ def build(
     away = absences(scenario, events)
     answers = [(i, r) for i, r in enumerate(replies) if r.answers]  # an automatic reply says only they are away
     asked = {(_ref(r.in_reply_to), r.person) for _, r in answers}
-    answered = {(_ref(r.in_reply_to), r.person): r for i, r in answers if i not in withdrawn}
-    decided = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
+    answered = {(_ref(r.in_reply_to), r.person): r for _, r in answers}
+    decided = answered
     opened: list[_Open] = []
     holder: dict[tuple[str, EntityKind, str], str | None] = {}
-    pending = {
-        (_ref(e.after.item), e.after.person)
-        for e in events
-        if isinstance(e.after, PendingSnapshot) and e.operation is Operation.CREATE
-    }
+    held: dict[EntityRef, PendingSnapshot] = {e.entity: e.after for e in events if isinstance(e.after, PendingSnapshot)}
+    pending = {(_ref(p.item), p.person) for p in held.values() if _asks(p)}
     moved: dict[tuple[tuple[str, EntityKind, str], str], list[WorldEvent]] = {}
     for e in events:
         if isinstance(e.after, TransitionSnapshot) and e.actor is Actor.PERSON and e.after.who is not None:
@@ -311,6 +305,18 @@ def build(
             )
         )
     return ledger
+
+
+def _asks(pending: PendingSnapshot) -> bool:
+    """Whether an item the engine held on a person asked them something: any item but a message; a message whose
+    answer their script planned (`PendingSnapshot.plan`) unless, read when they came to it, it needed none; and a
+    message whose answer is the engine's pick (a take, a provider the scenario plays), which their script never
+    planned (`PendingSnapshot.asked` unset)."""
+    if not pending.conversation:
+        return True
+    if pending.status is PendingStatus.PASSED:
+        return False
+    return pending.plan is not None or pending.asked is None
 
 
 def _patience(person: Person, reply: PersonReply | None) -> timedelta:

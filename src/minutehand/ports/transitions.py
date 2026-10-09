@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.common import Window
+from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Person
 from minutehand.domain.transitions import Offer, Transition, Waiting
 from minutehand.domain.world import Actor, EntityRef
@@ -42,10 +43,10 @@ class ProvidesTransitions(Protocol):
         fields. An offer no longer legal raises `ValueError`, as the service refuses it."""
         ...
 
-    def heard_of(self, item: EntityRef, world: Store, clock: Clock) -> bool:
-        """Whether the service tells the agent when a person moves this item, by a push the agent asked for (a live
-        watch on the calendar it is on): that push is a wake, as a pushed reply's is. False: the agent finds the move
-        on its next read."""
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Whether the service tells the agent when `who` moves this item: an answer it pushes (a Slack event), or a
+        push the agent asked for (a live watch on the calendar or mailbox it lands in). That push is a wake. False:
+        the agent finds the move on its next read."""
         ...
 
 
@@ -66,4 +67,15 @@ class SteersPeople(Protocol):
     def drawn(self, item: EntityRef, offers: Sequence[Offer], world: Store) -> Offer | None:
         """The offer drawn for the item from the provider's own odds, seeded: the model then writes only what it
         carries; None: the model picks."""
+        ...
+
+
+@runtime_checkable
+class TalksToAgent(Protocol):
+    """A provider whose service pushes a person's answer to the agent (Slack's events, Teams' activities): its
+    transitions are taken for one agent, whose inbound target and signing secret say where the push goes."""
+
+    def talking(self, target: InboundTarget | None, secret: str | None) -> ProvidesTransitions:
+        """This provider's transitions, a person's answer pushed to `target` signed with `secret`; None for an
+        agent that declares no inbound target here, to whom nothing is pushed (an answer pushed is refused)."""
         ...

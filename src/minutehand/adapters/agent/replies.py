@@ -23,6 +23,16 @@ from minutehand.application.refusals import AgentFailed
 from minutehand.domain.outbound import DEFAULT_REPLY_BODY, Acknowledge, ReplyDelivery
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, Person
+from minutehand.domain.transitions import (
+    Offer,
+    Transition,
+    Waiting,
+    answer_transition,
+    answered,
+    conversations,
+    message_offers,
+    transition_change,
+)
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
@@ -52,6 +62,38 @@ class CapturedReplies:
         self._delivery: ReplyDelivery = declaration.replies
         self._people = {p.key: p for p in people}
         self._secret = secret
+
+    # -- `ProvidesTransitions`: each send that reached a person is an ask they answer by writing back ------------
+
+    def items_for(self, person: Person, world: Store) -> list[Waiting]:
+        return conversations(person.email, self._declaration.key, world.events())
+
+    def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
+        del by
+        asked = self._asked(item, world)
+        if asked is None or who is None or who.email not in asked.recipient_emails:
+            return []
+        return message_offers(asked)
+
+    async def apply(
+        self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
+    ) -> Transition:
+        asked = self._asked(item, world)
+        if asked is None or who is None:
+            raise ValueError(f"the send {item.external_id} is gone: there is nothing to answer")
+        await self.deliver(answered(item, asked, offer, who.key, content, clock.now()), world, clock)
+        moved = answer_transition(self._declaration.key, item, offer, by, who.key, content, clock.now())
+        recorded = world.apply(transition_change(moved, at_seq=world.head() + 1))
+        return moved.model_copy(update={"seq": recorded.seq})
+
+    def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
+        """Always: the answer is delivered to the agent's own inbound endpoint."""
+        del item, who, world, clock
+        return True
+
+    def _asked(self, item: EntityRef, world: Store) -> MessageSnapshot | None:
+        found = next((e.after for e in reversed(world.events()) if e.entity == item and e.after is not None), None)
+        return found if isinstance(found, MessageSnapshot) else None
 
     async def deliver(self, reply: PersonReply, world: Store, clock: Clock) -> None:
         asked = world.get(reply.in_reply_to)

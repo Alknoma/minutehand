@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import PendingService
-from minutehand.application.people import Booking, People, WrittenTransition
+from minutehand.application.people import Booking, WrittenTransition
 from minutehand.application.run_clock import RunClock
 from minutehand.application.services import ServiceDesk, WrittenAnswer
 from minutehand.domain.conversation import ModelMessage, Wrote
@@ -34,7 +34,7 @@ from minutehand.domain.world import (
 from minutehand.ports.model import Answered, AnswerT
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.services import Call, Delivered
-from tests.support.people import people_model
+from tests.support.people import people_engine, people_model
 
 START = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 HOST = "api.approvals.example"
@@ -127,7 +127,9 @@ class Desk:
 
     def use(self, model: LanguageModel, documents: dict[str, object] | None = None) -> None:
         self.desk = ServiceDesk(self.played, model, pushes=self.pushes, documents=documents or {})  # type: ignore[arg-type]
-        self.engine = People(self.played, self.desk.provider, model)
+        self.engine = people_engine(
+            self.played, {s.key: self.desk.provider(s.key) for s in self.played.services}, model
+        )
 
     async def call(self, method: str, path: str, body: object = None) -> tuple[int, object]:
         text = json.dumps(body) if body is not None else None
@@ -136,19 +138,19 @@ class Desk:
         )
         return answered.status, json.loads(answered.body) if answered.body else None
 
-    def look(self) -> None:
+    async def look(self) -> None:
         """What is owed now, as the run loop books it after a wake: the service's timers, people's responses."""
         new = self.store.events(since=self._seen)
         if new:
             self._seen = new[-1].seq
         self.owed_timers += [b for e in new for b in self.desk.bookings(e, self.store)]
-        looked = self.engine.look(self.store, self.clock)
+        looked = await self.engine.look(self.store, self.clock)
         self.owed_people = [b for b in self.owed_people if b.pending not in looked.gone]
         self.owed_people += [b for b in looked.booked if b.at is not None]
 
     async def fire_next(self) -> Fired:
         """Fire the earliest owed response or timer, at its moment."""
-        self.look()
+        await self.look()
         owed: list[tuple[datetime, Booking | PendingService]] = [
             *((b.at, b) for b in self.owed_people if b.at is not None),
             *((t.due.at, t) for t in self.owed_timers),
@@ -279,7 +281,7 @@ async def test_asking_back_waits_on_the_agent_whose_resubmit_brings_a_second_res
     await desk.fire_next()
     _, read = await desk.call("GET", f"/v1/requests/{item}")
     assert isinstance(read, dict) and read["status"] == "needs_info"
-    desk.look()
+    await desk.look()
     assert desk.owed_people == [], "nothing waits on a person while the item waits on the agent"
     status, _ = await desk.call("POST", f"/v1/requests/{item}/resubmit", {"note": "which one?"})
     assert status == 409, "resubmit requires the cost centre"
@@ -391,7 +393,7 @@ async def test_nobody_responds_through_a_service_with_no_responders_or_a_silent_
         desk = Desk(tmp_path / name, played, name)
         status, filed = await desk.call("POST", "/v1/requests", {"po": "PO-7731"})
         assert status == 201 and isinstance(filed, dict)
-        desk.look()
+        await desk.look()
         assert desk.owed_people == [] and desk.owed_timers == [], name
         assert [m[0] for m in desk.moves()] == ["create"], name
         _, read = await desk.call("GET", f"/v1/requests/{filed['id']}")
@@ -486,7 +488,7 @@ async def test_an_order_moves_by_its_people_its_agent_its_timer_and_its_warehous
     assert expired.at == START + timedelta(hours=1)
     states = {i.id: i.state for i in desk.desk.items(desk.service, desk.store)}
     assert states[str(early["id"])] == "expired"
-    desk.look()
+    await desk.look()
     assert desk.owed_people == [], "expired: the response owed is gone"
     status, refused = await desk.call("POST", f"/v1/orders/{early['id']}/request_ship")
     assert status == 409 and isinstance(refused, dict)
@@ -582,7 +584,7 @@ async def test_a_fork_holds_each_item_as_it_stood_and_responds_after_it_on_its_o
     desk = Desk(tmp_path, scenario())
     _, filed = await desk.call("POST", "/v1/requests", {"po": "PO-7731"})
     assert isinstance(filed, dict)
-    desk.look()
+    await desk.look()
     [owed] = desk.owed_people
     at = desk.store.head()
     clock = RunClock(START)
@@ -591,7 +593,7 @@ async def test_a_fork_holds_each_item_as_it_stood_and_responds_after_it_on_its_o
     assert [i.state for i in desk.desk.items(desk.service, desk.store)] == ["approved"]
 
     assert [i.state for i in desk.desk.items(desk.service, child)] == ["pending"], "the fork holds it as it stood"
-    assert desk.engine.look(child, clock).booked == [], "and what it owed then: nothing new to book"
+    assert (await desk.engine.look(child, clock)).booked == [], "and what it owed then: nothing new to book"
     assert owed.at is not None
     clock.jump(owed.at)
     acted = await desk.engine.act(owed.pending, child, clock)
@@ -610,6 +612,6 @@ async def test_an_item_naming_one_of_the_responders_waits_on_them_alone(tmp_path
         (tmp_path / f"s{seed}").mkdir()
         desk = Desk(tmp_path / f"s{seed}", Scenario.model_validate(two), f"s{seed}")
         await desk.call("POST", "/v1/requests", {"po": "PO-7731", "approver": "marta@example.com"})
-        desk.look()
+        await desk.look()
         assert [b.person for b in desk.owed_people] == ["marta"], seed
         assert desk.engine.held("nadia", desk.store) == [] and desk.engine.held("owen", desk.store) == [], seed

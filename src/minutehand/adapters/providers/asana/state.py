@@ -36,6 +36,7 @@ from datetime import datetime
 from minutehand.adapters.providers.asana import wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.domain.scenario import TicketState
+from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import (
     Actor,
     Change,
@@ -412,10 +413,21 @@ class AsanaWorld:
             )
         )
 
-    def put_task(self, task: wire.AsanaTask, *, operation: Operation, actor: Actor) -> WorldEvent:
+    def put_task(
+        self,
+        task: wire.AsanaTask,
+        *,
+        operation: Operation,
+        actor: Actor,
+        who: str | None = None,
+        content: str = "{}",
+    ) -> WorldEvent:
+        """The task's new version; when what its status says changed (`words`), the move recorded once as a
+        transition, by whoever made it (`who`, a person's key), carrying `content`."""
+        was = self.task(task.gid) if operation is Operation.UPDATE else None
         parent = task.memberships[0].project if task.memberships else task.workspace
         after: Snapshot = self.snapshot(task)
-        return self._store.apply(
+        written = self._store.apply(
             Change(
                 entity=task_ref(task.gid),
                 operation=operation,
@@ -425,6 +437,43 @@ class AsanaWorld:
                 after=after,
             )
         )
+        if was is not None and self.words(was) != self.words(task):
+            moved = Transition(
+                provider=MANIFEST.key,
+                item=task_ref(task.gid),
+                name=self.words(task),
+                from_state=self.words(was),
+                to_state=self.words(task),
+                by=actor,
+                who=who,
+                content=content,
+                at=written.sim_time,
+            )
+            self._store.apply(transition_change(moved, at_seq=self._store.head() + 1))
+        return written
+
+    def words(self, task: wire.AsanaTask) -> str:
+        """What the workspace's status source shows of the task, in Asana's own words: `completed` or
+        `incomplete` for the box alone; the section it is in, or the status field's option, else; a ticked task
+        under either is `completed` as well."""
+        rule = self.home().status
+        box = "completed" if task.completed else "incomplete"
+        match rule:
+            case wire.CompletedStatus():
+                return box
+            case wire.SectionStatus():
+                section = self.section(task.memberships[0].section) if task.memberships else None
+                where = section.name if section is not None else "(no section)"
+            case wire.FieldStatus():
+                value = next((v for v in task.custom_fields if v.field == rule.field), None)
+                field = self.custom_field(rule.field)
+                option = (
+                    next((o for o in field.enum_options if o.gid == value.option), None)
+                    if field is not None and value is not None and value.option is not None
+                    else None
+                )
+                where = option.name if option is not None else "(none)"
+        return f"{where} (completed)" if task.completed else where
 
     def delete_task(self, task: wire.AsanaTask, *, actor: Actor) -> None:
         """Delete the task and, as Asana does, every subtask under it."""

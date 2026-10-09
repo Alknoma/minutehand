@@ -46,7 +46,7 @@ from minutehand.adapters.web.responses import (
     TimelineResponse,
     WrittenBy,
 )
-from minutehand.application.checkpoint import CHECKPOINT, read_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT
 from minutehand.application.dues import due_entries
 from minutehand.application.model_calls import is_model_call, trace_of
 from minutehand.application.steps import STEP
@@ -505,13 +505,11 @@ class _Builder:
 
 def obligations(state: Path, run_id: str, world: Store, events: list[WorldEvent]) -> list[Obligation]:
     """What the world was waiting on (`checks.ledger`), as the checks read it."""
-    last = read_checkpoint(world)
     return view_of(
         session.scenario_of(state, run_id),
         events,
         session.wakes_of(state, run_id, world),
         world.replies(),
-        withdrawn=last.withdrawn if last is not None else [],
     ).obligations
 
 

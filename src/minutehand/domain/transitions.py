@@ -9,10 +9,39 @@ it; the team's rules judge it (`count: {transitions: ...}`, `each: transition`).
 
 from __future__ import annotations
 
-from pydantic import AwareDatetime, Field
+from collections.abc import Sequence
+from datetime import datetime
 
-from minutehand.domain.scenario import Model, ProviderKey
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, TransitionSnapshot, WorldEvent
+from pydantic import AwareDatetime, Field, TypeAdapter, ValidationError
+
+from minutehand.domain.people import PersonReply, Press, Writing
+from minutehand.domain.scenario import FormInput, Model, ProviderKey
+from minutehand.domain.world import (
+    Actor,
+    Change,
+    ControlKind,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    TransitionSnapshot,
+    WorldEvent,
+)
+
+AWAITING = "awaiting"
+"""A conversation's state while the person owes its answer."""
+REPLIED = "replied"
+"""A conversation's state once the person answered it."""
+REPLY = "reply"
+"""The move that answers a conversation in words."""
+AUTOMATIC_REPLY = "automatic reply"
+"""A person's automatic reply while away: no answer, so the conversation still awaits them. Never offered."""
+TEXT = "text"
+"""What a conversation's answer carries: the words written back, or what a form holds."""
+PICKS = "picks"
+"""What a control that picks a person carries: the person's key."""
+FORM = "form"
+"""What a control that opens a form carries: what is typed into it, as a JSON list of `FormInput`."""
 
 
 class OfferField(Model):
@@ -51,6 +80,11 @@ class Waiting(Model):
     item: EntityRef
     state: str = Field(description="Its state as it bears on the person, in the provider's own words")
     shown: str = Field(description="The item as the person sees it in the service, in plain text")
+    conversation: bool = Field(
+        default=False,
+        description="An ask the person answers in words: a message to them, an item in the agent's own product. "
+        "Their script and voice say what they answer (`application.replier`); a pinned take wins over both",
+    )
 
 
 class Transition(Model):
@@ -113,4 +147,120 @@ def transition_change(transition: Transition, *, at_seq: int) -> Change:
             who=transition.who,
             content=transition.content,
         ),
+    )
+
+
+_TEXTS: TypeAdapter[dict[str, str]] = TypeAdapter(dict[str, str])
+_FORM: TypeAdapter[list[FormInput]] = TypeAdapter(list[FormInput])
+
+
+def content_of(content: str, offer: Offer, who: str) -> dict[str, str]:
+    """An answer's content as its fields, refused when it is not a JSON object of text or does not fit `offer`."""
+    try:
+        given = _TEXTS.validate_json(content)
+    except ValidationError as e:
+        raise ValueError(f"an answer's content is a JSON object of text fields: {content!r}") from e
+    offer.refuse_content(given, who)
+    return given
+
+
+def conversations(person_email: str, provider: ProviderKey, events: Sequence[WorldEvent]) -> list[Waiting]:
+    """Every message the agent sent in `provider` that the person can answer where it went, still there: each an
+    ask, in the order sent, as it reads now. Which of them are asks and which follow-ups on an answer the person
+    already owes is the people engine's to say (decision 2: one item per conversation)."""
+    latest: dict[str, WorldEvent] = {}
+    gone: set[str] = set()
+    opened: list[str] = []
+    for event in events:
+        if event.entity.provider != provider or event.entity.kind is not EntityKind.MESSAGE:
+            continue
+        key = event.entity.external_id
+        if event.operation is Operation.DELETE:
+            gone.add(key)
+        elif isinstance(event.after, MessageSnapshot) and event.operation in (Operation.CREATE, Operation.UPDATE):
+            if event.operation is Operation.CREATE and event.actor is Actor.AGENT:
+                opened.append(key)
+            latest[key] = event
+    found: list[Waiting] = []
+    for key in opened:
+        event = latest[key]
+        after = event.after
+        if key in gone or not isinstance(after, MessageSnapshot) or not after.answerable:
+            continue
+        if person_email not in after.recipient_emails:
+            continue
+        found.append(Waiting(item=event.entity, state=AWAITING, shown=after.text, conversation=True))
+    return found
+
+
+def message_offers(asked: MessageSnapshot) -> list[Offer]:
+    """What a person can do with a message to them: write back, or use one of its controls (a button, a person
+    picker), each named by its own id and described by the label they see; a link is no answer."""
+    offers = [
+        Offer(name=REPLY, to_state=REPLIED, fields=[OfferField(name=TEXT, required=True, description="your reply")])
+    ]
+    for action in asked.actions:
+        if action.control is ControlKind.LINK:
+            continue
+        fields = [
+            OfferField(name=TEXT, description="what your answer says, as the service shows it"),
+            OfferField(name=FORM, description="what you type into the form it opens"),
+        ]
+        if action.control is ControlKind.USER_SELECT:
+            fields.append(OfferField(name=PICKS, required=True, description="the person you pick"))
+        offers.append(
+            Offer(
+                name=action.action_id,
+                to_state=action.value or action.action_id,
+                description=f'"{action.label}" on the message',
+                fields=fields,
+            )
+        )
+    return offers
+
+
+def answered(
+    asked: EntityRef, snapshot: MessageSnapshot, offer: str, who: str, content: str, at: datetime
+) -> PersonReply:
+    """The person's answer to a message as its provider delivers it: words written back, or a control used, with
+    what its form holds. Refused when the message does not offer it."""
+    if offer == AUTOMATIC_REPLY:
+        given = _TEXTS.validate_json(content)
+        text = given[TEXT] if TEXT in given else ""
+        return PersonReply(person=who, in_reply_to=asked, text=text, at=at, writing=Writing.AUTOMATIC)
+    found = next((o for o in message_offers(snapshot) if o.name == offer), None)
+    if found is None:
+        raise ValueError(f"the message {asked.external_id} offers no {offer!r}")
+    given = content_of(content, found, who)
+    if offer == REPLY:
+        return PersonReply(person=who, in_reply_to=asked, text=given[TEXT], at=at)
+    control = next(a for a in snapshot.actions if a.action_id == offer)
+    form = _FORM.validate_json(given[FORM]) if FORM in given and given[FORM].strip() else []
+    press = Press(
+        action_id=control.action_id,
+        label=control.label,
+        value=control.value,
+        picks=given[PICKS] if PICKS in given else None,
+        form=form,
+    )
+    text = given[TEXT] if TEXT in given else "\n".join(f.value for f in form) or control.label
+    return PersonReply(person=who, in_reply_to=asked, text=text, at=at, press=press)
+
+
+def answer_transition(
+    provider: ProviderKey, asked: EntityRef, offer: str, by: Actor, who: str, content: str, at: datetime
+) -> Transition:
+    """The move a person's answer to a conversation is: `reply` or the control used, from awaiting to replied; an
+    automatic reply leaves it awaiting."""
+    to = AWAITING if offer == AUTOMATIC_REPLY else REPLIED
+    return Transition(
+        provider=provider,
+        item=asked,
+        name=offer,
+        from_state=AWAITING,
+        to_state=to,
+        by=by,
+        who=who,
+        content=content,
+        at=at,
     )

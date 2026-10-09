@@ -19,7 +19,7 @@ import importlib
 import importlib.util
 import inspect
 import pkgutil
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -421,7 +421,6 @@ def evaluate_run(
     replies: list[PersonReply],
     *,
     stop: StopReason | None,
-    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     ended: datetime | None = None,
@@ -434,7 +433,6 @@ def evaluate_run(
         events,
         wakes,
         replies,
-        withdrawn=withdrawn,
         commitments=commitments,
         unmatched_calls=unmatched_calls,
         rules=merged([], scenario.assess, scenario.assess_off) if rules is None else rules,
@@ -449,7 +447,6 @@ def view_of(
     wakes: list[WakeRecord],
     replies: list[PersonReply],
     *,
-    withdrawn: Collection[int] = (),
     commitments: list[Commitment] | None = None,
     unmatched_calls: list[Exchange] | None = None,
     model_calls: list[WakeModelCalls] | None = None,
@@ -462,14 +459,14 @@ def view_of(
     rules: Sequence[Rule] = (),
     stop: StopReason | None = None,
 ) -> RunView:
-    """What every check reads: the world, the wakes, and the obligations ledger built from the replies, of
-    which `withdrawn` (positions) were withdrawn before they landed."""
+    """What every check reads: the world, the wakes, and the obligations ledger built from the replies that
+    landed."""
     return RunView(
         scenario=scenario,
         events=events,
         wakes=wakes,
-        obligations=build(scenario, events, replies, withdrawn=withdrawn),
-        replies=[r for i, r in enumerate(replies) if i not in withdrawn],
+        obligations=build(scenario, events, replies),
+        replies=replies,
         commitments=commitments,
         unmatched_calls=unmatched_calls,
         model_calls=model_calls,

@@ -2,7 +2,8 @@
 
 Flow of one wake (docs/design.md): jump the clock to the earliest pending moment, fire what is due there,
 wake the agent if any of it reaches the agent, poll it until it is no longer working, then read what it did
-from the world and schedule what the world owes back: people's replies and tickets' fates.
+from the world and schedule what the world owes back: what people do about what waits on them
+(`application.people`), and tickets' fates.
 """
 
 from __future__ import annotations
@@ -23,21 +24,18 @@ from minutehand.application.checkpoint import (
     PendingFate,
     PendingHappening,
     PendingMachine,
-    PendingReply,
     PendingService,
     PendingTimer,
     PendingTransition,
     PendingWake,
     Remembered,
-    Unwritten,
     write_checkpoint,
 )
 from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_undecided
 from minutehand.application.machine import record_machine, run_machine
-from minutehand.application.moments import automatic_reply, follow_up_of, messages_to, sooner
 from minutehand.application.outbound import emulator_uses, outbound_uses
-from minutehand.application.people import People
+from minutehand.application.people import Booking, People, Ready
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
 from minutehand.application.sandbox import SandboxClock
@@ -56,8 +54,8 @@ from minutehand.domain.agent import (
     WakeRequest,
 )
 from minutehand.domain.checks import WakeRecord
-from minutehand.domain.clock import DrawnFrom, Due, DueKind, next_jump
-from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply, Plan
+from minutehand.domain.clock import Due, DueKind, next_jump
+from minutehand.domain.people import InboundTarget, PersonMessage
 from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import DocumentHappening, Happening, Person, ProviderKey, Scenario, TicketHappening
@@ -65,8 +63,6 @@ from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
-    InboxItemSnapshot,
-    MessageSnapshot,
     NextWakeSnapshot,
     Operation,
     TicketSnapshot,
@@ -74,7 +70,7 @@ from minutehand.domain.world import (
 )
 from minutehand.ports.agent import AgentDriver, TakesReplies
 from minutehand.ports.clock import Clock
-from minutehand.ports.model import ModelFailed
+from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
 from minutehand.ports.provider import (
     ActsOnTickets,
@@ -85,14 +81,13 @@ from minutehand.ports.provider import (
     DeletesTickets,
     EditsTickets,
     HoldsTickets,
-    LandsReplies,
     NotifiesChanges,
     Provider,
     PushesEvents,
-    PushesInteractions,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
+from minutehand.ports.transitions import TalksToAgent
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
 _NOT_THE_WORLD = frozenset({EntityKind.MEMORY, EntityKind.NEXT_WAKE})
@@ -243,15 +238,10 @@ class Orchestrator:
         environment: Environment | None = None,
         inboxes: Inboxes | None = None,
         outside: OutsideState | None = None,
-        people: People | None = None,
+        model: LanguageModel | None = None,
         desk: ServiceDesk | None = None,
     ) -> None:
         refuse_fates_beside_the_engine(scenario, [p.manifest for p in services.providers])
-        if scenario.played() and people is None:
-            raise RunRefused(
-                f"the scenario has people act through transitions on {', '.join(scenario.played())}, and the "
-                "run was given no people engine"
-            )
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
         if inboxes is not None:
@@ -288,9 +278,15 @@ class Orchestrator:
         self._environment = environment
         self._inboxes = inboxes
         self._outside = outside
-        self._engine = people
         self._desk = desk
+        self._engine = People(
+            scenario,
+            transition_ports(services, agent, signing or {}, channels or {}, inboxes, desk, scenario),
+            replier,
+            model,
+        )
         self._untaken: list[EntityRef] = []
+        self._retried: list[EntityRef] = []
         self._mounted = False
         self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
@@ -302,15 +298,17 @@ class Orchestrator:
         self._timer_tasks: set[int] = set()
         self._timer_ns = -1
         self._watcher = Watcher(agent.watches)
-        self._replies: list[PersonReply] = []
-        self._withdrawn: list[int] = []
         self._fated: list[EntityRef] = []
-        self._unwritten: list[Unwritten] = []
         self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
         self._seen = 0
         self._calls_seen = 0
         self._people = {p.email: p for p in scenario.people}
+
+    @property
+    def people(self) -> People:
+        """The run's people engine."""
+        return self._engine
 
     # -- Wakes, for scheduler providers ---------------------------------------------------------------------
 
@@ -384,15 +382,11 @@ class Orchestrator:
                 f"the checkpoint is at {checkpoint.now} wake {checkpoint.wake}"
             )
         self._begin()
-        self._replies = self._store.replies()
-        self._withdrawn = list(checkpoint.withdrawn)
-        if len(self._replies) < checkpoint.replies:
-            raise RunRefused(
-                f"the checkpoint counts {checkpoint.replies} replies; the store holds {len(self._replies)}"
-            )
+        held = len(self._store.replies())
+        if held < checkpoint.replies:
+            raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {held}")
         self._dues.resume(list(checkpoint.pending))
         self._fated = list(checkpoint.fated)
-        self._unwritten = list(checkpoint.unwritten)
         self._untaken = list(checkpoint.untaken)
         self._commitments = checkpoint.commitments
         self._last_report = checkpoint.agent.report
@@ -518,8 +512,7 @@ class Orchestrator:
             if not await self._machine([p for p in fired if isinstance(p, PendingMachine)]):
                 self._failure = self._machine_failed
                 return StopReason.ENVIRONMENT_FAILED
-            rest: list[Pending] = [p for p in fired if not isinstance(p, PendingMachine)]
-            fired = rest
+            fired = await self._ready([p for p in fired if not isinstance(p, PendingMachine)])
             if not fired:
                 continue
             if all(isinstance(p, PendingFate) or self._unheard(p) for p in fired):
@@ -620,10 +613,8 @@ class Orchestrator:
             Checkpoint(
                 wake=self._clock.wake(),
                 now=self._clock.now(),
-                replies=len(self._replies),
-                withdrawn=self._withdrawn,
+                replies=len(self._store.replies()),
                 fated=self._fated,
-                unwritten=self._unwritten,
                 untaken=self._untaken,
                 commitments=self._commitments,
                 pending=self._dues.items,
@@ -633,9 +624,9 @@ class Orchestrator:
         self._record_new()
 
     async def _fire(self, fired: list[Pending]) -> None:
-        """Change the world for what is due, in a fixed order: people's moves on what is pending on them, tickets,
-        then replies (a message written back, or a control used), then what people do unprompted, then directions
-        sent by message, then bookings."""
+        """Change the world for what is due, in a fixed order: people's moves on what is pending on them (an answer
+        to a message among them), a declared service's own moves, tickets, then what people do unprompted, then
+        directions sent by message, then bookings."""
         for item in fired:
             if isinstance(item, PendingTransition):
                 await self._move(item.pending)
@@ -650,25 +641,6 @@ class Orchestrator:
                 self._deletes(item.ticket.provider).delete_ticket(item.ticket, self._store, self._clock)
             else:
                 self._tickets(item.ticket.provider).transition(item.ticket, item.becomes, self._store, self._clock)
-        for item in fired:
-            if isinstance(item, PendingReply):
-                reply = self._replies[item.reply]
-                provider = reply.in_reply_to.provider
-                if reply.decides is not None:
-                    assert self._inboxes is not None
-                    await self._inboxes.decide(reply, self._store, self._clock)
-                elif provider in self._channels:
-                    await self._channels[provider].deliver(reply, self._store, self._clock)
-                elif (lands := self._lands(reply)) is not None:
-                    await lands.land(reply, self._store, self._clock)
-                elif reply.press is not None:
-                    await self._interactions(provider).press(
-                        reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
-                    )
-                else:
-                    await self._pushes(provider).deliver(
-                        reply, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
-                    )
         for item in fired:
             if isinstance(item, PendingHappening):
                 await self._happen(self._scenario.happenings[item.happening])
@@ -740,33 +712,39 @@ class Orchestrator:
             while not scheduler.taken(booking.ref, self._store) and time.monotonic() < give_up:
                 await asyncio.sleep(TAKEN_EVERY)
 
+    async def _ready(self, fired: list[Pending]) -> list[Pending]:
+        """What is due, without each person's move that is not ready to land (`People.ready`): an answer that, read
+        now, needs none is passed and nobody hears of it; one a model failed to write is owed still, and booked again
+        once the next wake has been played."""
+        ready: list[Pending] = []
+        for item in fired:
+            if isinstance(item, PendingTransition):
+                readied = await self._engine.ready(item.pending, self._store, self._clock)
+                if readied is Ready.FAILED and item.pending not in self._untaken:
+                    self._untaken.append(item.pending)
+                if readied is not Ready.READY:
+                    continue
+            ready.append(item)
+        return ready
+
     async def _move(self, pending: EntityRef) -> None:
         """A person acts on an item pending on them; a move whose words a model failed to write is owed still, and
         tried again on the run's next turn."""
-        assert self._engine is not None
         acted = await self._engine.act(pending, self._store, self._clock)
         if acted.failure is not None and pending not in self._untaken:
             self._untaken.append(pending)
 
     def _unheard(self, pending: Pending) -> bool:
         """Something due the agent is not told of as it lands: a happening on a ticket or a document, which the
-        agent finds on its next read (a document's provider may then tell a watching agent, `_watched`), and a reply
-        that lands where the agent reads it (`LandsReplies`: a reply email, an attendee's response) and that the
-        service tells the agent nothing of. A messaging happening is pushed to the agent, and that push is a wake, as
-        a pushed reply's is, and so is the service's own notice of a landed reply (`LandsReplies.heard`). A person's
-        move on an item pending on them is unheard unless the service tells the agent of it (`heard_of`)."""
+        agent finds on its next read (a document's provider may then tell a watching agent, `_watched`), and a
+        person's move that the service tells the agent nothing of (`heard_of`): an email back, an answer to an
+        invitation on a calendar nobody watches, a ticket moved. A messaging happening is pushed to the agent, and
+        that push is a wake, as a pushed answer is, and so is the service's own notice of an answer that landed."""
         if isinstance(pending, PendingTransition):
-            assert self._engine is not None
             return not self._engine.heard_of(pending.pending, self._store, self._clock)
         if isinstance(pending, PendingService):
             assert self._desk is not None
             return not self._desk.heard(pending, self._store)
-        if isinstance(pending, PendingReply):
-            reply = self._replies[pending.reply]
-            if reply.decides is not None or reply.in_reply_to.provider in self._channels:
-                return False
-            lands = self._lands(reply)
-            return lands is not None and not lands.heard(reply, self._store, self._clock)
         return isinstance(pending, PendingHappening) and isinstance(
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
@@ -788,9 +766,7 @@ class Orchestrator:
         reasons: set[WakeReason] = set()
         directions: list[str] = []
         for item in fired:
-            if isinstance(item, PendingReply) or (
-                isinstance(item, PendingHappening | PendingTransition | PendingService) and not self._unheard(item)
-            ):
+            if isinstance(item, PendingHappening | PendingTransition | PendingService) and not self._unheard(item):
                 reasons.add(WakeReason.PERSON_REPLIED)
             elif isinstance(item, PendingDirection):
                 reasons.add(WakeReason.DIRECTION)
@@ -874,7 +850,7 @@ class Orchestrator:
         new = self._record_new()
         if not failed:
             self._marked(new, wake)
-            await self._schedule(new)
+            await self._schedule(new, retry=True)
         mine = [e for e in new if e.wake == wake and e.actor is Actor.AGENT]
         self._wakes.append(
             WakeRecord(
@@ -956,214 +932,75 @@ class Orchestrator:
             self._calls_seen = len(calls)
         return new
 
-    async def _schedule(self, new: list[WorldEvent]) -> None:
-        """What the world owes back for what the agent just did: replies to its messages, fates of its tickets.
+    async def _schedule(self, new: list[WorldEvent], *, retry: bool = False) -> None:
+        """What the world owes back for what the agent just did: a declared service's own moves, what people do about
+        what waits on them now (the people engine's), and the fates of its tickets.
 
-        A person answers a message as it reads when the wake ends: an agent that posts a placeholder and edits
-        it into its question in the same wake is answered about the question, once, and never about the
-        placeholder. An edit in a later wake that changes the text is put to the person again unless they
-        have already answered that message: a reply still on its way to the edited message is withdrawn and
-        decided afresh on the new text. What waits on a person where the people engine plays them is the engine's:
-        looked at first, booked at its moment, and never put to the replier."""
-        await self._retry()
+        A person answers a message as it reads when the engine looks at the end of the wake: an agent that posts a
+        placeholder and edits it into its question in the same wake is answered about the question, once, and never
+        about the placeholder. An edit in a later wake that changes what an ask says is put to the person again
+        unless they have already answered it: an answer still on its way is planned afresh on the new text."""
         if self._desk is not None:
             for event in new:
                 for owed in self._desk.bookings(event, self._store):
                     self._dues.enter(owed)
-        await self._transitions()
-        history: list[WorldEvent] | None = None
-        shown: dict[EntityRef, WorldEvent] = {}
+        await self._transitions(retry=retry)
         for event in new:
-            if event.actor is not Actor.AGENT:
-                continue
             after = event.after
-            if event.operation in (Operation.CREATE, Operation.UPDATE) and isinstance(after, MessageSnapshot):
-                if history is None:
-                    history = self._store.events()
-                if event.operation is Operation.CREATE or _text_changed(event, history):
-                    shown[event.entity] = event
-            if event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot) and after.person:
-                if history is None:
-                    history = self._store.events()
-                asked = next((p for p in self._scenario.people if p.key == after.person), None)
-                if asked is not None:
-                    await self._ask(asked, event, [h for h in history if h.seq <= event.seq])
-                continue
             if (
-                event.operation in (Operation.CREATE, Operation.UPDATE)
+                event.actor is Actor.AGENT
+                and event.operation in (Operation.CREATE, Operation.UPDATE)
                 and isinstance(after, TicketSnapshot)
                 and after.assignee_email in self._people
                 and event.entity not in self._fated
             ):
                 self._fate(self._people[after.assignee_email], event)
-        for event in sorted(shown.values(), key=lambda e: e.seq):
-            assert history is not None and isinstance(event.after, MessageSnapshot)
-            if not event.after.answerable:
-                continue  # a captured send: nobody can answer where it went
-            for email in event.after.recipient_emails:
-                if email not in self._people:
-                    continue
-                person = self._people[email]
-                if self._engine is not None and self._engine.holds(person.key, event.entity, self._store):
-                    continue
-                if event.operation is Operation.UPDATE and not self._withdraw(event.entity, person):
-                    continue
-                await self._ask(person, event, [h for h in history if h.seq <= event.seq])
 
-    async def _transitions(self) -> None:
-        """What waits on people where the engine plays them, looked at now: each new item booked at its person's
-        moment, each gone undone taken out of the table, each move owed from an earlier turn tried again."""
-        if self._engine is None:
-            return
-        untaken, self._untaken = self._untaken, []
-        for pending in untaken:
-            await self._move(pending)
-        looked = self._engine.look(self._store, self._clock)
+    async def _transitions(self, *, retry: bool) -> None:
+        """What waits on people, looked at now: each new item booked at its person's moment, each one whose moment
+        moved (a follow-up, an edit) booked again, each gone undone taken out of the table, and each move a model
+        failed to write booked again now: once, and again only after a wake (`retry`), so a model that stays down
+        does not hold the clock still."""
+        if retry:
+            self._retried = []
+        untaken = [p for p in self._untaken if p not in self._retried]
+        self._untaken = [p for p in self._untaken if p in self._retried]
+        if untaken:
+            self._retried += untaken
+            for pending in untaken:
+                conversation = self._engine.pending(pending, self._store).conversation
+                self._dues.enter(
+                    PendingTransition(
+                        due=Due(
+                            at=self._clock.now(),
+                            kind=DueKind.PERSON_REPLY if conversation else DueKind.TRANSITION,
+                            ref=f"transition:{pending.external_id}",
+                        ),
+                        pending=pending,
+                    )
+                )
+        looked = await self._engine.look(self._store, self._clock)
         for gone in looked.gone:
             self._dues.cancel(lambda p, gone=gone: isinstance(p, PendingTransition) and p.pending == gone)
-        for booked in looked.booked:
-            if booked.at is None:
-                continue
-            self._dues.enter(
-                PendingTransition(
-                    due=Due(
-                        at=max(booked.at, self._clock.now()),
-                        kind=DueKind.TRANSITION,
-                        ref=f"transition:{booked.pending.external_id}",
-                    ),
-                    pending=booked.pending,
-                ),
-                drawn=booked.drawn,
-            )
+        for moved in looked.moved:
+            self._dues.cancel(lambda p, moved=moved: isinstance(p, PendingTransition) and p.pending == moved.pending)
+        for booked in [*looked.booked, *looked.moved]:
+            due = booked_due(booked, self._clock.now())
+            if due is not None:
+                self._dues.enter(due, drawn=booked.drawn)
 
     async def _look(self) -> None:
         """Read every inbox in the agent's own product as each person: an item seen first is the agent asking them,
-        written now and decided when the new events are scheduled; one gone undecided withdraws whatever its person
-        had decided to it and not yet done, which never reaches anyone."""
-        if self._inboxes is None:
-            return
-        looked = await self._inboxes.look(self._store, self._clock)
-        for item in looked.withdrawn:
-            mine = [i for i, r in enumerate(self._replies) if r.in_reply_to == item and i not in self._withdrawn]
-            waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
-            unsaid = [i for i in mine if i in waiting]
-            self._dues.cancel(lambda p, unsaid=unsaid: isinstance(p, PendingReply) and p.reply in unsaid)
-            self._withdrawn += unsaid
-
-    def _withdraw(self, message: EntityRef, person: Person) -> bool:
-        """Before an edited message is put to `person` again: withdraw their reply to it that has not landed yet,
-        and record it as withdrawn, so it settles nothing. False when they have already answered it, and the edit
-        is not put to them."""
-        mine = [
-            i
-            for i, r in enumerate(self._replies)
-            if r.in_reply_to == message and r.person == person.key and i not in self._withdrawn
-        ]
-        waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
-        if any(i not in waiting for i in mine):
-            return False
-        self._dues.cancel(lambda p: isinstance(p, PendingReply) and p.reply in mine)
-        self._withdrawn += mine
-        return True
+        and the engine plans its answer when the new events are scheduled; one gone undecided is no longer theirs to
+        answer, and whatever they had planned for it never reaches anyone."""
+        if self._inboxes is not None:
+            await self._inboxes.look(self._store, self._clock)
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
         """The scenario's owner messages the agent: its goal, or a direction."""
         message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
         await self._pushes(provider).say(
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
-        )
-
-    def _owed(self) -> list[tuple[EntityRef, datetime]]:
-        """Every answer people owe or gave, by the message it answers: an automatic or withdrawn reply is none."""
-        return [(r.in_reply_to, r.at) for i, r in enumerate(self._replies) if r.answers and i not in self._withdrawn]
-
-    async def _ask(self, person: Person, asked: WorldEvent, history: list[WorldEvent]) -> None:
-        """`person` was asked something: their automatic reply if they are away while someone covers; a follow-up on
-        an answer they owe moves that answer only when they declare `reminded`; else whatever they plan to do."""
-        automatic = automatic_reply(self._scenario, person, asked, history, self._replies)
-        if automatic is not None:
-            self._land(person, automatic)
-        owed = self._owed()
-        if isinstance(asked.after, MessageSnapshot) and asked.operation is Operation.CREATE:
-            reminded = follow_up_of(asked, messages_to(person, history), owed)
-            if reminded is not None:
-                self._remind(person, asked, reminded, history)
-                return
-        planned = self._replier.plan(person, asked, history, owed)
-        if planned is None:
-            return
-        await self._write(person, asked, planned, history)
-
-    async def _write(self, person: Person, asked: WorldEvent, planned: Plan, history: list[WorldEvent]) -> None:
-        """The words of what `person` planned, written now; when the model fails, still owed and tried again on the
-        run's next turn (`_retry`), the failure kept with the world."""
-        try:
-            reply = await self._replier.write(person, asked, planned, history, self._store, self._clock)
-        except ModelFailed:
-            self._unwritten.append(Unwritten(person=person.key, asked=asked.seq))
-            return
-        if reply is None:
-            return
-        if reply.at < self._clock.now():
-            reply = reply.model_copy(update={"at": self._clock.now()})
-        self._land(person, reply)
-
-    async def _retry(self) -> None:
-        """Every answer whose words a model failed to write, tried again now, in the order they were owed."""
-        if not self._unwritten:
-            return
-        waiting, self._unwritten = self._unwritten, []
-        events = self._store.events()
-        by_seq = {e.seq: e for e in events}
-        by_key = {p.key: p for p in self._scenario.people}
-        for owed in waiting:
-            person, asked = by_key[owed.person], by_seq[owed.asked]
-            history = [e for e in events if e.seq <= asked.seq]
-            planned = self._replier.plan(person, asked, history, self._owed())
-            if planned is not None:
-                await self._write(person, asked, planned, history)
-
-    def _remind(self, person: Person, follow_up: WorldEvent, reminded: WorldEvent, history: list[WorldEvent]) -> None:
-        """A follow-up on an answer `person` owes to `reminded`: drawn again from their `reminded.sooner_within`,
-        and moved there when that is sooner; a moment a fork pinned stays."""
-        waiting = {p.reply for p in self._dues.items if isinstance(p, PendingReply)}
-        owing = [
-            i
-            for i, r in enumerate(self._replies)
-            if r.in_reply_to == reminded.entity and r.person == person.key and i in waiting and r.answers
-        ]
-        if not owing:
-            return
-        position = owing[-1]
-        reply = self._replies[position]
-        if reply.drawn is not None and reply.drawn.source is DrawnFrom.PINNED:
-            return
-        drawn = sooner(self._scenario, person, follow_up, history, reply.at)
-        if drawn is None:
-            return
-        self._dues.cancel(lambda p: isinstance(p, PendingReply) and p.reply == position)
-        self._withdrawn.append(position)
-        self._land(person, reply.model_copy(update={"at": max(drawn.lands_at, self._clock.now()), "drawn": drawn}))
-
-    def _land(self, person: Person, reply: PersonReply) -> None:
-        """Keep `reply` with the run and put it in the table, due when it lands."""
-        if reply.decides is not None:
-            if self._inboxes is None or not self._inboxes.holds(reply.in_reply_to):
-                raise RunRefused(f"{person.key} decided on {reply.in_reply_to.provider}, which is no inbox of the run")
-        elif reply.in_reply_to.provider not in self._channels and self._lands(reply) is None:
-            self._pushes(reply.in_reply_to.provider)
-            if reply.press is not None:
-                self._interactions(reply.in_reply_to.provider)
-            self._inbound(reply.in_reply_to.provider)
-        self._store.remember(reply)
-        position = len(self._replies)
-        self._replies.append(reply)
-        self._dues.enter(
-            PendingReply(
-                due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{position}"),
-                reply=position,
-            ),
-            drawn=reply.drawn,
         )
 
     def _fate(self, person: Person, assigned: WorldEvent) -> None:
@@ -1195,10 +1032,8 @@ class Orchestrator:
             Checkpoint(
                 wake=self._clock.wake(),
                 now=self._clock.now(),
-                replies=len(self._replies),
-                withdrawn=self._withdrawn,
+                replies=len(self._store.replies()),
                 fated=self._fated,
-                unwritten=self._unwritten,
                 untaken=self._untaken,
                 commitments=self._commitments,
                 pending=self._dues.items,
@@ -1223,12 +1058,6 @@ class Orchestrator:
             raise RunRefused(f"a person owes a reply on {provider}, which pushes no events to the agent")
         return self._services.pushes[provider]
 
-    def _interactions(self, provider: ProviderKey) -> PushesInteractions:
-        pushes = self._pushes(provider)
-        if not isinstance(pushes, PushesInteractions):
-            raise RunRefused(f"a person uses a control on a {provider} message, and {provider} carries no controls")
-        return pushes
-
     def _inbound(self, provider: ProviderKey) -> InboundTarget:
         target = next((t for t in self._agent.inbound if t.provider == provider), None)
         if target is None:
@@ -1239,12 +1068,6 @@ class Orchestrator:
         if provider not in self._signing:
             raise RunRefused(f"no signing secret was resolved for the agent's inbound target on {provider}")
         return self._signing[provider]
-
-    def _lands(self, reply: PersonReply) -> LandsReplies | None:
-        """The provider `reply` lands in without a push, if it lands: then the agent needs no inbound target."""
-        provider = reply.in_reply_to.provider
-        found = next((p for p in self._services.providers if p.manifest.key == provider), None)
-        return found if isinstance(found, LandsReplies) and found.lands(reply, self._store) else None
 
     def _changes(self, provider: ProviderKey) -> ChangesDocuments:
         found = next((p for p in self._services.providers if p.manifest.key == provider), None)
@@ -1280,6 +1103,51 @@ class Orchestrator:
         if not isinstance(found, ActsOnTickets):
             raise RunRefused(f"a happening acts on a seeded {provider} ticket, and {provider} cannot act on one")
         return found
+
+
+def booked_due(booked: Booking, now: datetime) -> PendingTransition | None:
+    """What the run owes for a person's booked move: due at its moment, or at once when that is past; as a reply when
+    it answers an ask in words. None when they never act on it."""
+    if booked.at is None:
+        return None
+    return PendingTransition(
+        due=Due(
+            at=max(booked.at, now),
+            kind=DueKind.PERSON_REPLY if booked.conversation else DueKind.TRANSITION,
+            ref=f"transition:{booked.pending.external_id}",
+        ),
+        pending=booked.pending,
+    )
+
+
+def transition_ports(
+    services: Services,
+    agent: AgentUnderTest,
+    signing: Mapping[ProviderKey, str],
+    channels: Mapping[ProviderKey, TakesReplies],
+    inboxes: Inboxes | None,
+    desk: ServiceDesk | None,
+    scenario: Scenario,
+) -> dict[ProviderKey, object]:
+    """Every provider of the run people act through (`ports.transitions`), by key: each provider in the run, one
+    that pushes answers to the agent bound to its inbound target and signing secret (`TalksToAgent`); each of the
+    agent's captured channels; each inbox of its own product; each declared service."""
+    ports: dict[ProviderKey, object] = {}
+    for provider in services.providers:
+        key = provider.manifest.key
+        if isinstance(provider, TalksToAgent):
+            target = next((t for t in agent.inbound if t.provider == key), None)
+            ports[key] = provider.talking(target, signing[key] if key in signing else None)
+        else:
+            ports[key] = provider
+    ports.update(channels)
+    if inboxes is not None:
+        for key in inboxes.reaches:
+            ports[key] = inboxes
+    if desk is not None:
+        for service in scenario.services:
+            ports[service.key] = desk.provider(service.key)
+    return ports
 
 
 def refuse_fates_beside_the_engine(scenario: Scenario, manifests: Sequence[Manifest]) -> None:
@@ -1341,21 +1209,6 @@ def _reported_wake(pending: Pending) -> bool:
     return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE and not pending.repeat
 
 
-def _text_changed(edit: WorldEvent, history: list[WorldEvent]) -> bool:
-    """Whether an edit changed what the message says or what a reader can press on it, against its version before
-    the edit: a card whose buttons appear in an edit asks something new."""
-    assert isinstance(edit.after, MessageSnapshot)
-    before = next(
-        (
-            (e.after.text, e.after.actions)
-            for e in reversed(history)
-            if e.seq < edit.seq and e.entity == edit.entity and isinstance(e.after, MessageSnapshot)
-        ),
-        None,
-    )
-    return before != (edit.after.text, edit.after.actions)
-
-
 async def run_scenario(
     *,
     scenario: Scenario,
@@ -1374,7 +1227,7 @@ async def run_scenario(
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
     outside: OutsideState | None = None,
-    people: People | None = None,
+    model: LanguageModel | None = None,
     desk: ServiceDesk | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
@@ -1400,6 +1253,6 @@ async def run_scenario(
         environment=environment,
         inboxes=inboxes,
         outside=outside,
-        people=people,
+        model=model,
         desk=desk,
     ).run()

@@ -10,7 +10,6 @@ from pathlib import Path
 
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.checkpoint import read_checkpoint
 from minutehand.application.inboxes import Inboxes
 from minutehand.application.orchestrator import Reach, Services, run_scenario
 from minutehand.application.replier import PeopleReplier
@@ -222,14 +221,11 @@ async def play(
 
 
 def score(scn: Scenario, store: SqliteStore, record: RunRecord) -> RunResult:
-    kept = read_checkpoint(store)
-    withdrawn = kept.withdrawn if kept is not None else []
     view = view_of(
         scn,
         store.events(),
         record.wakes,
         store.replies(),
-        withdrawn=withdrawn,
         contract_breaks=contract_breaks(store.calls()),
         rules=scn.assess,
         stop=record.stop,

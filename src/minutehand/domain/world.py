@@ -516,6 +516,7 @@ class PendingStatus(StrEnum):
     PENDING = "pending"  # waiting on the person; they act at `due_at`, or never when it is None
     ACTED = "acted"  # they took a transition on it (`PendingSnapshot.transition`)
     GONE = "gone"  # it stopped waiting on them before they acted: moved, reassigned, deleted, no move left
+    PASSED = "passed"  # they let it pass: a message that, read when they came to it, needed no answer
 
 
 class PendingSnapshot(Model):
@@ -539,6 +540,23 @@ class PendingSnapshot(Model):
     drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
     transition: int | None = Field(default=None, description="The seq of the transition they took")
     failure: str | None = Field(default=None, description="Why their last try to act did not land")
+    conversation: bool = Field(
+        default=False,
+        description="An ask they answer in words (a message, an item in the agent's own product), planned and "
+        "worded by their script and voice: `item` is the ask that opened it",
+    )
+    plan: str | None = Field(
+        default=None, description="For a conversation, the plan of their answer (`domain.people.Plan`) as JSON"
+    )
+    asked: int | None = Field(default=None, description="For a conversation, the seq of the ask as it was planned")
+    follow_ups: list[str] = Field(
+        default=[], description="For a conversation, the messages that followed it up while it was owed, by id"
+    )
+    answer: str | None = Field(
+        default=None,
+        description="For a conversation, the answer's words as written when it was planned (`domain.people."
+        "PersonReply` as JSON), kept until it lands; None while a model has yet to write them",
+    )
 
 
 class ServiceRecordKind(StrEnum):

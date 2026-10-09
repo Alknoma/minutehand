@@ -257,7 +257,7 @@ async def test_the_two_forks_of_a_rejected_run(tmp_path: Path, monkeypatch: pyte
     parent = await play("inbox", "rejected.yaml", tmp_path, monkeypatch)
     assert parent.verdict is VerdictKind.PASSED and parent.orders == []
     state = tmp_path / "state"
-    before_the_decision = 12  # the checkpoint after wake 1: the request is up, Nadia has not decided
+    before_the_decision = 13  # the checkpoint after wake 1: the request is up, Nadia has not decided
 
     outcomes: dict[str, Played] = {}
     for name in sorted(FORKS):

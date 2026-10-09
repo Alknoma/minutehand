@@ -24,7 +24,11 @@ def test_a_person_asked_by_email_answers_through_the_declared_webhook_and_the_wa
     assert len(asked) == 1 and asked[0].startswith("mail-")
     assert replies == [("rosa@lakeside.example", asked[0])]
     with rig.world(done.run_id) as world:
-        answer = [e for e in world.events() if e.actor.value == "person" and e.entity.provider == "mail"]
+        answer = [
+            e
+            for e in world.events()
+            if e.actor.value == "person" and e.entity.provider == "mail" and e.entity.kind.value == "message"
+        ]
     assert len(answer) == 1 and answer[0].after is not None
 
 

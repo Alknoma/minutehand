@@ -34,22 +34,27 @@ from minutehand.application.checkpoint import (
     NotRestorable,
     Pending,
     PendingBooking,
-    PendingReply,
-    Unwritten,
+    PendingTransition,
     checkpoints,
 )
-from minutehand.application.inboxes import Inboxes, items_in
+from minutehand.application.inboxes import Inboxes
 from minutehand.application.memory import store_digest
-from minutehand.application.moments import asks_of, pinned
-from minutehand.application.orchestrator import Environment, Mounts, Orchestrator, OutsideState, Reach, Scorer, Services
-from minutehand.application.people import People
+from minutehand.application.orchestrator import (
+    Environment,
+    Mounts,
+    Orchestrator,
+    OutsideState,
+    Reach,
+    Scorer,
+    Services,
+    booked_due,
+)
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.experiment import (
     DeadlineShift,
     DispatchChange,
@@ -67,17 +72,14 @@ from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.world import (
     Actor,
     EntityKind,
-    InboxItemSnapshot,
-    ItemStatus,
     MemorySnapshot,
-    MessageSnapshot,
     Operation,
     RecordedCall,
     WorldEvent,
 )
 from minutehand.ports.agent import Reports, TakesReplies
 from minutehand.ports.clock import Clock
-from minutehand.ports.model import ModelFailed
+from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -147,7 +149,7 @@ async def fork_run(
     reach: Reach,
     services: Services,
     replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
-    people_for: Callable[[Scenario], People | None] = lambda _: None,
+    model: LanguageModel | None = None,
     desk: ServiceDesk | None = None,
     state_dir: Path,
     wire: OnTheWire | None = None,
@@ -230,7 +232,7 @@ async def fork_run(
                 environment=environment,
                 inboxes=Inboxes(changed, list(inboxes.reaches.values())) if inboxes is not None else None,
                 outside=outside,
-                people=people_for(changed),
+                model=model,
                 desk=desk,
             )
             orchestrator.mount()
@@ -251,12 +253,9 @@ async def fork_run(
             )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)
-            changed_people = {o.person for o in fork.overrides if isinstance(o, PersonChange)}
-            if changed_people:
-                checkpoint = await _ask_again(child, changed, changed_people, checkpoint, replier, clock)
-            pins = [o for o in fork.overrides if isinstance(o, ReplyAt)]
-            if pins:
-                checkpoint = _pin_owed(child, changed, pins, checkpoint, clock)
+            replanning = {o.person for o in fork.overrides if isinstance(o, PersonChange | ReplyAt)}
+            if replanning:
+                checkpoint = await _replanned(orchestrator, child, replanning, checkpoint, clock)
             _edit_tickets(fork, services, changed, child, clock)
         except RunRefused:
             child.discard()
@@ -406,107 +405,19 @@ def _refuse_emulated(store: Store, checkpoint: Checkpoint, at_seq: int) -> None:
         )
 
 
-async def _ask_again(
-    child: Store,
-    scenario: Scenario,
-    people: set[str],
-    checkpoint: Checkpoint,
-    replier: Replier,
-    clock: Clock,
+async def _replanned(
+    orchestrator: Orchestrator, child: Store, people: set[str], checkpoint: Checkpoint, clock: Clock
 ) -> Checkpoint:
-    """Put every message to a changed person that they have not answered by the fork again, and every item still
-    waiting on them in the agent's own product, under their new behaviour.
-
-    A reply that landed before the fork stays as it was: a `PersonChange` does not withdraw what was already said.
-    A reply decided before the fork that had not landed by it was never said: it is withdrawn, as an edited
-    message's is, and the person is asked again as they now are. A reply that would have landed before the fork
-    lands at the fork instead, since the past is shared.
-    """
-    events = child.events()
-    replies = child.replies()
-    unsaid = [
-        p.reply
-        for p in checkpoint.pending
-        if isinstance(p, PendingReply) and replies[p.reply].person in people and p.reply not in checkpoint.withdrawn
+    """Every ask `people` still owe at the fork planned again under the scenario as the fork has it (their new
+    behaviour, a moment it pins), each booked at its new moment, or at the fork when that is already past since the
+    past is shared. What they said before the fork stays said."""
+    moved = await orchestrator.people.replan(child, clock, people)
+    refs = {b.pending.external_id for b in moved}
+    pending: list[Pending] = [
+        p for p in checkpoint.pending if not (isinstance(p, PendingTransition) and p.pending.external_id in refs)
     ]
-    withdrawn = [*checkpoint.withdrawn, *unsaid]
-    answered = {(r.in_reply_to, r.person) for i, r in enumerate(replies) if i not in withdrawn}
-    changed = {p.email: p for p in scenario.people if p.key in people}
-    pending = [p for p in checkpoint.pending if not (isinstance(p, PendingReply) and p.reply in unsaid)]
-    count = len(replies)
-    unwritten = list(checkpoint.unwritten)
-    held = items_in(events)
-    for event in events:
-        after = event.after
-        if event.actor is Actor.AGENT and event.operation is Operation.CREATE and isinstance(after, InboxItemSnapshot):
-            emails = [p.email for p in scenario.people if p.key == after.person]
-            if held[event.entity].status is not ItemStatus.PENDING:
-                continue  # decided or withdrawn by the fork: nothing is left to decide
-        elif (
-            event.actor is Actor.AGENT
-            and event.operation is Operation.CREATE
-            and isinstance(after, MessageSnapshot)
-            and after.answerable
-        ):
-            emails = after.recipient_emails
-        else:
-            continue
-        for email in emails:
-            if email not in changed or (event.entity, changed[email].key) in answered:
-                continue
-            person = changed[email]
-            history = [e for e in events if e.seq <= event.seq]
-            owed = [(r.in_reply_to, r.at) for i, r in enumerate(child.replies()) if r.answers and i not in withdrawn]
-            planned = replier.plan(person, event, history, owed)
-            if planned is None:
-                continue
-            try:
-                reply = await replier.write(person, event, planned, history, child, clock)
-            except ModelFailed:
-                unwritten.append(Unwritten(person=person.key, asked=event.seq))
-                continue
-            if reply is None:
-                continue
-            reply = reply.model_copy(update={"at": max(reply.at, clock.now())})
-            child.remember(reply)
-            pending.append(
-                PendingReply(due=Due(at=reply.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count)
-            )
-            count += 1
-    return checkpoint.model_copy(
-        update={"pending": pending, "replies": count, "withdrawn": withdrawn, "unwritten": unwritten}
-    )
-
-
-def _pin_owed(
-    child: Store, scenario: Scenario, pins: list[ReplyAt], checkpoint: Checkpoint, clock: Clock
-) -> Checkpoint:
-    """A reply owed at the fork that answers an ask the fork pins lands where the pin says, or at the fork when that
-    is already past: the pin wins over the moment drawn before the fork."""
-    events = child.events()
-    replies = child.replies()
-    by_key = {p.key: p for p in scenario.people}
-    owed = [(r.in_reply_to, r.at) for i, r in enumerate(replies) if r.answers and i not in checkpoint.withdrawn]
-    pending: list[Pending] = []
-    withdrawn = list(checkpoint.withdrawn)
-    count = len(replies)
-    for item in checkpoint.pending:
-        if not isinstance(item, PendingReply) or item.reply in withdrawn:
-            pending.append(item)
-            continue
-        reply = replies[item.reply]
-        person = by_key[reply.person]
-        asks = asks_of(person, events, owed)
-        nth = next((n for n, e in enumerate(asks, start=1) if e.entity == reply.in_reply_to), None)
-        pin = next((p for p in pins if p.person == person.key and p.to_ask == nth), None)
-        if pin is None or nth is None:
-            pending.append(item)
-            continue
-        asked = asks[nth - 1]
-        drawn = pinned(scenario, asked, pin.after)
-        moved = reply.model_copy(update={"at": max(drawn.lands_at, clock.now()), "drawn": drawn})
-        child.remember(moved)
-        withdrawn.append(item.reply)
-        pending.append(PendingReply(due=Due(at=moved.at, kind=DueKind.PERSON_REPLY, ref=f"reply:{count}"), reply=count))
-        count += 1
-    return checkpoint.model_copy(update={"pending": pending, "replies": count, "withdrawn": withdrawn})
+    for booked in moved:
+        due = booked_due(booked, clock.now())
+        if due is not None:
+            pending.append(due)
+    return checkpoint.model_copy(update={"pending": pending})
