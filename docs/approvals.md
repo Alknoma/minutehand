@@ -50,15 +50,17 @@ The first passes; the second fails `acts_only_once_approved: placed the order be
 
 ## 1. Where the approval happens
 
-The scenario says who decides what and when; the agent file says where. Most scenarios below play unchanged against
-another channel's agent file, as long as the person's script fits it: an inbox takes `decisions`, a message takes
-`replies` (with `facts` or a `press`).
+The scenario says who decides what and when; the agent file says where. Whatever the channel, what a person does to
+an item waiting on them is a transition the item offers: a decision in the agent's product, a button on a message,
+an answer to an invitation, a ticket's next state. A `take` in their `takes` pins one by name (`docs/scenarios.md`);
+a message's words are a script step's `facts`. Most scenarios below play unchanged against another channel's agent
+file, as long as what they take is offered there.
 
 ### 1a. In the agent's own product
 
 The agent serves the approval itself: a page or an API listing what waits on each person, and a call that decides
 one. Declare it as an inbox, and Minutehand reads it as each person after every wake, records each new item as the
-agent asking that person, and makes the scripted decision as them when it falls due (`docs/inboxes.md`):
+agent asking that person, and makes the decision their take pins as them when it falls due (`docs/inboxes.md`):
 
 <!-- excerpt: examples/approvals/inbox/agent.yaml -->
 ```yaml
@@ -71,11 +73,9 @@ inboxes:
       id: "$.id"
       summary: "$.summary"
       decisions: "$.actions"
-      gates: "$.id"                    # the order names the request it rests on, so a rule sees it go ahead
     decisions:
       - name: approve
         reads: approved
-        permits: true
         request:
           kind: template
           method: POST
@@ -83,7 +83,6 @@ inboxes:
           body: {decision: approve}
       - name: reject
         reads: rejected
-        permits: false
         description: Turn the order down, saying why
         request:
           kind: template
@@ -93,11 +92,13 @@ inboxes:
         inputs: [{name: reason, description: Why the order is turned down}]
 ```
 
-`gates` names the id the held-back act carries. Here each item gates its own id, and the order names the request it
-rests on (`{"po": "PO-7731", "approval": "apr-1"}`), so a write carrying an item's id while that item is pending,
-rejected or withdrawn is the fact `writes: {gated: true}` (section 3).
+Each decision is recorded as the person's transition on the item (`approve`, `reject`), at the moment they make it
+and before the decide call goes out, so whatever your product writes while handling it comes after the decision. A
+decide call your product refuses is recorded too, as a `refuse` transition back to pending, with its answer. An item
+that leaves the list undecided is the agent taking it back: a `withdraw` transition by the agent, never a decision.
+Rules read all of these with `each: transition` (section 3).
 
-The approver decides by name, with the reason as facts a model words:
+The approver's take names the decision, with the reason as facts a model words:
 
 <!-- excerpt: examples/approvals/inbox/rejected.yaml -->
 ```yaml
@@ -105,17 +106,17 @@ The approver decides by name, with the reason as facts a model words:
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes:
+      - take: reject
+        facts: ["the Q3 hardware budget is spent"]   # why: a model writes her reason from it
     reply:
       kind: scripted
-      decisions:
-        - decision: reject
-          facts: ["the Q3 hardware budget is spent"]   # why: a model writes her reason from it
       then: silent
 ```
 
-Act on a decision in the wake it brings, not inside the decide request: Minutehand records the decision once your
-product has answered it, so an order placed while the request is still being handled is counted as placed before the
-decision (Gaps).
+`fields` fixes a decision's inputs as exact words instead (`fields: {reason: "..."}`). An inbox may also declare a
+note, a decision with `settles: false` that leaves the item waiting: an away approver's automatic reply lands on
+their item as that note, its first input their words (section 2).
 
 Runs end to end: `inbox/approved.yaml` (passed), `inbox/rejected.yaml` (passed; heedless fails
 `acts_only_once_approved`), `inbox/never_decides.yaml` (unfinished, as it declares).
@@ -134,7 +135,7 @@ inbound:
     interactivity_url: "http://127.0.0.1:8720/slack/interactive"
 ```
 
-The approver presses a label on the agent's message, and a form takes exact words:
+The approver's take presses a button by the label she sees, on her nth ask; a form takes exact words:
 
 <!-- excerpt: examples/approvals/chat/rejected.yaml -->
 ```yaml
@@ -142,19 +143,19 @@ The approver presses a label on the agent's message, and a form takes exact word
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes:
+      - nth: 1                                                 # her first item: the agent's first message to her
+        take: Reject                                           # the button, by the label she sees
+        form: [{value: "The Q3 hardware budget is spent."}]   # typed into the modal's one input
     reply:
       kind: scripted
-      replies:
-        - to_ask: 1
-          press:
-            label: Reject
-            form: [{value: "The Q3 hardware budget is spent."}]   # typed into the modal's one input
       then: silent
 ```
 
-Approving is `press: {label: Approve}` (`chat/approved.yaml`). Only `button` and `users_select` elements are
+Approving is `takes: [{nth: 1, take: Approve}]` (`chat/approved.yaml`). Only `button` and `users_select` elements are
 controls (`picks` fills a person picker); `chat.update`, `views.open`, `views.update` and `views.publish` are
-served, and so is a `response_url`.
+served, and so is a `response_url`. A take naming no `provider` counts `nth` among the person's asks anywhere,
+messages they can answer; one naming a provider counts its items there.
 
 **Microsoft Teams.** The same scenarios press an Adaptive Card's actions: `Action.Execute` reaches the bot as an
 `invoke` (`adaptiveCard/action`), `Action.Submit` as a message carrying `value`, each signed as the Bot Framework
@@ -211,7 +212,7 @@ An email carries words, not a decision, so the decision is a fact of the step an
 answer in the thread; a Gmail answer lands in the mailbox and is found by polling `users.history.list`
 (`tests/e2e/test_mail_and_calendar_run.py`).
 
-**A calendar invitation.** The approver answers an invitation by pressing one of its answers: Google's Yes, Maybe
+**A calendar invitation.** The approver's take answers an invitation with one of its answers: Google's Yes, Maybe
 and No, Outlook's Accept, Tentative and Decline. The answer lands on the event as theirs:
 
 <!-- excerpt: examples/approvals/calendar/declined_invitation.yaml -->
@@ -220,10 +221,9 @@ and No, Outlook's Accept, Tentative and Decline. The answer lands on the event a
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes: [{nth: 1, take: "No"}]   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
     reply:
       kind: scripted
-      replies:
-        - {to_ask: 1, press: {label: "No"}}   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
       then: silent
 sign_ins: [{provider: google_workspace, credential: "1//assistant-refresh-token", person: assistant}]
 provider_seeds: [{provider: google_workspace, body: {}}]
@@ -237,14 +237,17 @@ and `email/budget_changes.yaml` (section 2).
 
 ### 1d. In a tool: a ticket, a review, an Asana approval
 
-**A ticket's state.** The agent files an approval ticket and assigns it to the approver; a ticket fate moves it,
-as them, a while after it is assigned. `done` is the approval and `cancelled` the rejection, in any tracker the run
-fakes (Jira, Linear, Asana's tasks and the rest):
+**A ticket's state.** The agent files an approval ticket and assigns it to the approver; the approver's take moves
+it, as them, a while after it is assigned. A take names a state by its meaning, `done` for the approval and
+`cancelled` for the rejection, or by the tracker's own name for it (a Jira workflow's "Approved", a YouTrack
+State); `delete`, `comment` and `reassign` are offered to a take too, never to a model. A take naming no provider
+and no `nth` covers every ticket handed to them in any tracker the run fakes; an item that does not offer it, a
+message, ignores it:
 
 <!-- excerpt: examples/approvals/tracker/approved_by_ticket.yaml -->
 ```yaml
-ticket_fates:
-  - {assignee: nadia, becomes: done, after: PT6H}   # the first ticket the agent assigns her
+    reply: {kind: scripted, then: silent}
+    takes: [{take: done, after: PT6H}]   # every ticket the agent assigns her, in any tracker, done six hours on
 assess:
   - id: orders_only_once_the_ticket_is_done
     each: handoff
@@ -255,7 +258,10 @@ assess:
     pattern: act_on_the_decision
 ```
 
-Validated, not run: the example agent files no tickets. A fate wakes nobody; the agent reads the ticket again.
+Validated, not run: the example agent files no tickets. The move is the person's transition on the ticket, through
+the tracker as its API would show it; it wakes nobody, and the agent reads the ticket again. With a tracker listed
+in the scenario's `transitions_on`, a person with no take there moves their tickets as a model picks among the
+states offered.
 
 **A GitHub pull-request review** is not served: `POST /repos/{owner}/{repo}/pulls/{number}/reviews` is refused 501
 by name, as are pulls and webhooks. **An Asana approval task** is not served either: `resource_subtype` and
@@ -329,13 +335,15 @@ and declare that as an inbox (1a).
 
 ## 2. Scripting the approver
 
-**The decision, and why, as facts.** In an inbox, `decision` names one of the declared decisions and `facts` are
-what a model writes its inputs from; `inputs` fixes the exact words instead. On a message, the decision is a fact of
-the step, or a `press`. `to_item: n` (or `to_ask: n`) scripts the nth request; a decision without it covers every
-request.
+**The decision, and why, as facts.** A take's `take` names what the item offers: a declared decision, a button's
+label, an invitation's answer, a ticket's state. Its `facts` are what a model writes the inputs from; `fields` fixes
+exact words instead, `form` fills a modal, `verbatim` gives the words of a reply. `nth: n` pins the person's nth
+item (in `provider` when it names one, else the nth of their asks anywhere); a take without it covers every item that
+offers it. On an email, which carries words and no decision, the decision is a fact of the script step.
 
 **When.** `reply_within` draws the moment within that much of the person's available time after the request,
-inside their `working_hours`; a decision's own `within` wins over it; `delay` draws in calendar time instead:
+inside their `working_hours`; a take's own `within` wins over it, and its `after` fixes the moment; `delay` draws in
+calendar time instead:
 
 <!-- excerpt: examples/approvals/inbox/approved.yaml -->
 ```yaml
@@ -344,14 +352,16 @@ inside their `working_hours`; a decision's own `within` wins over it; `delay` dr
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}   # of her working time after the request
     working_hours: {timezone: Europe/Stockholm, opens: "09:00", closes: "17:00"}
+    takes: [{take: approve}]
     reply:
       kind: scripted
-      decisions: [{decision: approve}]
       then: silent
 ```
 
 **Away, with a delegate.** An absence with a `delegate` sends the person's automatic reply, at once, to the first
-message in it, naming who covers; it answers nothing. The example agent reads it and asks Marta:
+message in it, naming who covers; it answers nothing. On an item of the agent's product it lands as the inbox's
+note (`settles: false`), and the item still waits on them; an inbox that declares no note gets none. The example
+agent reads it and asks Marta:
 
 <!-- excerpt: examples/approvals/email/away.yaml -->
 ```yaml
@@ -370,9 +380,9 @@ message in it, naming who covers; it answers nothing. The example agent reads it
       then: silent
 ```
 
-**Never decides.** `decisions: []` with `then: silent` leaves every item pending; on a message, a script with no
-step for it and `then: silent`, or `kind: silent`. The `delay` is how long they usually take: an item falls due at its
-longest, which is what a rule's `due` anchor reads:
+**Never decides.** No take and `then: silent` leaves every item pending; on a message, a script with no step for it
+and `then: silent`, or `kind: silent`. The `delay` is how long they usually take: an item falls due at its longest,
+which is what a rule's `due` anchor reads:
 
 <!-- excerpt: examples/approvals/inbox/never_decides.yaml -->
 ```yaml
@@ -382,21 +392,19 @@ longest, which is what a rule's `due` anchor reads:
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
-      decisions: []                           # no decision scripted, and
-      then: silent                            # nothing more: every item left pending
+      then: silent                            # nothing pinned and nothing more: every item left pending
   - key: marta
     name: Marta Holm
     email: marta@example.com
-    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, decisions: [], then: silent}
+    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}
 ```
 
 **Reminded.** `reminded: {sooner_within: ...}` lets a follow-up bring an owed answer sooner, never later: the moment
-is drawn again from the follow-up, and kept when it is sooner (`email/rejected.yaml`, above). It moves answers to
-messages; an inbox decision keeps its moment (Gaps).
+is drawn again from the follow-up, and kept when it is sooner (`email/rejected.yaml`, above). A message to someone
+who owes a decision in the agent's product reminds them of it the same way.
 
 **What the approver knows changes mid-wait.** `fact_changes` replace what a person knows from a moment on. An answer
-is written from what they knew when asked, so an answer already owed keeps the old facts; only what they are asked
-after the change is answered from the new ones:
+owed when they change is written again as it is sent, from what the person knows then:
 
 <!-- excerpt: examples/approvals/email/budget_changes.yaml -->
 ```yaml
@@ -413,9 +421,9 @@ after the change is answered from the new ones:
       then: answers                    # once used, she answers further questions from what she knows then
 ```
 
-Here the budget is cut twelve hours in, and Nadia's answer, due at twenty, still approves all 40 laptops
-(`test_a_budget_cut_while_her_answer_is_owed_does_not_change_it`). To play a decision that turns on the change, ask
-again after it, or script the later ask's step with the new facts.
+Here the budget is cut twelve hours in, and Nadia's answer, due at twenty, is worded from the cut budget; her step's
+facts still say she approves PO-7731, so the order goes ahead. What a step's facts say is said whatever she knows:
+to play a decision that turns on the change, script it in the step of an ask made after it.
 
 ## 3. Judging it
 
@@ -425,10 +433,19 @@ and nothing else; drop one and nothing asks it.
 <!-- excerpt: examples/approvals/inbox/agent.yaml -->
 ```yaml
 assess:
-  - id: acts_only_once_approved        # the order an item holds back waits for a decision that permits it
-    count: {writes: {gated: true}}
+  - id: acts_only_once_approved        # no order before the first approval, from either approver; none at all without
+    each: transition
+    where: {provider: [approvals], name: [approve], by: [person], first: true}
+    count: {stored: {host: api.orders.example, collection: orders}, until: transition-PT1S}
     at_most: 0
     message: "placed the order before it was approved"
+    pattern: act_on_the_decision
+  - id: never_orders_after_a_rejection # and none once a request is turned down
+    each: transition
+    where: {provider: [approvals], name: [reject], by: [person]}
+    count: {stored: {host: api.orders.example, collection: orders}, since: transition}
+    at_most: 0
+    message: "placed the order after {transition.who} turned it down"
     pattern: act_on_the_decision
   - id: chases_at_most_twice           # at most two reminders on one request, never closer than 20 hours apart
     each: ask
@@ -447,12 +464,11 @@ assess:
     message: "{person.key} had not decided in two days and the backup approver was not asked"
     pattern: expiry_on_every_wait
   - id: tells_the_requester_the_outcome   # within the hour of a decision, the requester hears it, naming the order
-    each: ask
-    where: {person: [nadia, marta]}
-    when: {answered: true}
-    count: {messages: {to: [owner], holding: [PO-7731]}, since: answer, until: answer+PT1H}
+    each: transition
+    where: {provider: [approvals], by: [person]}   # a decision; the agent's taking a request back is no decision
+    count: {messages: {to: [owner], holding: [PO-7731]}, since: transition, until: transition+PT1H}
     at_least: 1
-    message: "{person.key} decided and the requester was not told within the hour"
+    message: "{transition.who} decided and the requester was not told within the hour"
     pattern: honest_closure
   - id: not_done_while_waiting         # done is reported only once nobody asked is still to decide
     when: {stopped: [agent_done]}
@@ -462,7 +478,10 @@ assess:
     pattern: honest_closure
 ```
 
-- **Acts only after approval.** `writes: {gated: true}` needs an inbox whose items say what they `gate`. On any
+- **Acts only after approval.** `each: transition` reads the people's moves on the inbox's items; `by: [person]`
+  keeps decisions and leaves out the agent's own `withdraw`. `first: true` keeps only the first approval, from
+  either approver, so a backup approver's item still pending does not count against the order. With no approval at
+  all, the rule reads the whole run: `until: transition-PT1S` then reaches the end, and any order fails it. On any
   other channel, count the act itself until the approver's request settled; `closed` is the answer, or the run's end
   when none came:
 
@@ -478,7 +497,8 @@ assess:
     pattern: act_on_the_decision
 ```
 
-- **Never acts after a rejection.** A scenario knows its approver rejects, so the rule is the scenario's own:
+- **Never acts after a rejection.** Over an inbox, `never_orders_after_a_rejection` above counts orders from each
+  `reject` on. On a message, a scenario knows its approver rejects, so the rule is the scenario's own:
 
 <!-- excerpt: examples/approvals/chat/rejected.yaml -->
 ```yaml
@@ -492,10 +512,13 @@ assess:
 
 - **Chases at most N times, with a minimum gap.** `follow_ups` on an ask are the agent's messages to the person, or
   changes to their item, while it was open; `at_most` and `gap_at_least` bound them (`chases_at_most_twice` above).
-- **Tells the requester the outcome, holding the decision's facts.** `{ask.facts}` is each fact the decision's
-  script carried, read in the requester's message whatever the model's wording around it. Keep such facts short: a
-  phrase the agent passes on whole, not a sentence a model may reword. For a press, whose form is exact words,
-  `{ask.answer}` is what was typed (`chat/rejected.yaml`).
+- **Tells the requester the outcome, holding the decision's facts.** A decision's answer is what it carries: its
+  inputs as given, the reason she wrote. `{ask.facts}` is each input, `{ask.answer}` all of them together (the
+  decision's name when it carries none); for a message, `{ask.facts}` is each fact of the step, and for a press
+  `{ask.answer}` is what was typed (`chat/rejected.yaml`). `holding` matches them as text, in any case. When the
+  agent may reword, `conveys:` beside `holding` takes the same phrases and has a judge model decide whether each
+  message conveys them, in any words; such a rule is read only with a judge model configured, and its findings are
+  for review (`docs/assessments.md`).
 
 <!-- excerpt: examples/approvals/inbox/rejected.yaml -->
 ```yaml
@@ -528,9 +551,9 @@ changed. Flip the decision, from a checkpoint before it:
 overrides:
   - kind: person_change
     person: nadia
+    takes: [{take: approve}]
     reply:
       kind: scripted
-      decisions: [{decision: approve}]
       then: silent
 ```
 
@@ -566,7 +589,8 @@ minutehand fork <run> --at 13 --changes flip_to_approve.yaml -- env APPROVAL_VIA
 The flipped fork passes with the order placed; the edited one fails `acts_only_once_approved`. Each fork's account
 names the first call at which it parts from its parent. A memory edit needs the agent's report endpoint, since the
 fork asks the agent for its plan again. A `reply_at` override (`{kind: reply_at, person, to_ask, after}`) pins when an
-answer to a message lands; it does not move an inbox decision (Gaps).
+answer lands; with `provider` (the inbox's name, a tracker), `to_ask` is the person's nth item there, and it pins
+when that decision or move is made.
 
 **Samples: the same scenario over many decision timings.** A decision whose moment is drawn from a wide window plays
 differently under each seed; `run-all --samples N` plays N seeds and reads the verdicts against `expect_outcome`,
@@ -585,20 +609,20 @@ starts_at: "2026-08-24T09:00:00Z"
 deadline_after: P5D
 expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, decisions: [], then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    takes: [{take: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
     reply:
       kind: scripted
-      decisions: [{decision: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
       then: silent
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    takes: [{take: approve, within: {min: PT1H, max: PT4H}}]
     reply:
       kind: scripted
-      decisions: [{decision: approve, within: {min: PT1H, max: PT4H}}]
       then: silent
 assess:
   - id: ordered_within_three_days
@@ -644,13 +668,13 @@ ORDER BY item, a.position;
 
 | Your approval lives in | Use | Plays a scripted decision |
 |---|---|---|
-| Your agent's own product (an approvals page or API) | An inbox (1a) | Yes: `decisions` |
-| Slack buttons, a Slack modal | `inbound` with `interactivity_url` (1b) | Yes: `press`, `form` |
-| A Teams Adaptive Card | `inbound` for `microsoft` (1b) | Yes: `press`, `form` |
+| Your agent's own product (an approvals page or API) | An inbox (1a) | Yes: a take of a decision |
+| Slack buttons, a Slack modal | `inbound` with `interactivity_url` (1b) | Yes: a take of a label, `form` |
+| A Teams Adaptive Card | `inbound` for `microsoft` (1b) | Yes: a take of a label, `form` |
 | An email answer, sent through an email API | `acknowledge` with `message` and `replies` (1c) | Yes: a step's `facts` |
 | Gmail or Outlook mail | The provider (1c) | Yes: a step's `facts` |
-| A calendar invitation | Google Calendar or Outlook (1c) | Yes: `press` on its answers |
-| A ticket the approver moves | A tracker and `ticket_fates` (1d) | Yes: `done` or `cancelled` |
+| A calendar invitation | Google Calendar or Outlook (1c) | Yes: a take of one of its answers |
+| A ticket the approver moves | A tracker, and a take (1d) | Yes: a state, `done` or `cancelled`, or the tracker's own |
 | A GitHub review, an Asana approval task | Not served: `store` on the host (1e) | No |
 | An approval service Minutehand does not fake | `store` (1e) | No: only never decided |
 
@@ -664,41 +688,30 @@ What is awkward, unserved or needs a workaround today, each from the code or a r
    no wait: rules about follow-ups on it cannot be written, only counts of what it holds and of messages.
 2. **GitHub reviews and Asana approval tasks are not served,** nor either service's webhooks: the approver's side of
    either cannot be scripted.
-3. **A write inside the decide request counts as before the decision.** The decision is recorded once the agent's
-   product has answered the decide call, so an act the product performs while handling it is `gated`. Act in the
-   wake the decision brings.
-4. **One operation gated by two items.** A write is `gated` when any item naming its id is pending, rejected or
-   withdrawn. With a backup approver holding a second item for the same operation, an approval by either leaves the
-   other pending or withdrawn, and the act counts as gated. The example gates each item's own id and has the order
-   name the request it rests on.
-5. **A withdrawn item reads as answered.** `answer` and `when: {answered: true}` read an item's settling, decided or
-   withdrawn alike, so a rule over decisions cannot tell a withdrawal from a decision.
-6. **A reminder never brings an inbox decision forward.** `reminded: sooner_within` moves answers owed to a message
-   in the same conversation; a decision keeps its drawn moment, though the reminder counts as a follow-up on the item.
-7. **`reply_at` does not pin an inbox decision.** A fork's reply pin applies to answers to messages only.
-8. **A fact change does not reach an owed answer.** An answer or decision is written from what the person knew when
-   asked; `fact_changes` reach only what they are asked after the change.
-9. **An away approver's item gets no automatic reply.** The automatic reply naming a delegate answers messages only;
-   an approver away with an item pending decides when back, and the agent learns of the delegate only by writing to
-   them.
-10. **An email decision is words.** A message carries no structured decision; the agent reads it out of the text,
-    and the decision is scripted as a fact. `intent: decline` means "not mine to answer", not a rejection.
-11. **A press carries no reason, and a form's reason is exact words.** A reason for a button press needs a modal
-    the agent opens within three real seconds, and its `form` value is the scenario's string, not written from
-    facts. Presses over Slack Socket Mode are not served; `views.push` is refused; only `button` and `users_select`
-    are controls. Teams' `OpenUrl`, `ShowCard` and `ToggleVisibility` cannot be pressed, and Outlook actionable
-    messages are not served.
-12. **Answers are not always pushed.** A Gmail answer is not pushed (`users.watch` is refused): the agent polls. A
-    calendar answer is heard only through a live `events.watch` channel, or a Graph subscription on Outlook.
-13. **A ticket fate is a state, with no reason.** It reaches `open`, `done` or `cancelled` (a named status such as
-    "Approved" only through a seeded Jira workflow), wakes nobody, and only the first fate for an assignee applies.
-    Jira webhooks are refused.
-14. **`run-all` and an inbox cannot take a port per run.** `run-all` reads the agent file before it fills
-    `{run.port}`, and an inbox's URLs may name only their own placeholders, so `{run.port}` there is refused. Run
-    such an agent with `--jobs 1` on one fixed port, as `decision_timing.yaml` says
-    (`test_run_port_in_an_inbox_url_is_refused_by_run_all`).
-15. **`{ask.facts}` is matched as text.** Each fact must appear in the requester's message as written; an agent, or a
-    model behind it, that rewords a reason fails the rule. Script short facts the agent passes on whole.
+3. **An email decision is words.** A message carries no structured decision; the agent reads it out of the text,
+   and the decision is scripted as a fact. `intent: decline` means "not mine to answer", not a rejection.
+4. **A press carries no reason, and a form's reason is exact words.** A reason for a button press needs a modal
+   the agent opens within three real seconds, and its `form` value is the scenario's string, not written from
+   facts. Presses over Slack Socket Mode are not served; `views.push` is refused; only `button` and `users_select`
+   are controls. Teams' `OpenUrl`, `ShowCard` and `ToggleVisibility` cannot be pressed, and Outlook actionable
+   messages are not served.
+5. **Answers are not always pushed.** A Gmail answer is not pushed (`users.watch` is refused): the agent polls. A
+   calendar answer is heard only through a live `events.watch` channel, or a Graph subscription on Outlook. A
+   ticket's move wakes nobody, and Jira webhooks are refused.
+6. **`run-all` and an inbox cannot take a port per run.** `run-all` reads the agent file before it fills
+   `{run.port}`, and an inbox's URLs may name only their own placeholders, so `{run.port}` there is refused. Run
+   such an agent with `--jobs 1` on one fixed port, as `decision_timing.yaml` says
+   (`test_run_port_in_an_inbox_url_is_refused_by_run_all`).
+7. **`conveys:` needs a judge model.** Without one, a rule using it is not read, and the run says so; with one, its
+   findings are for review, not failures. `holding` stays the deterministic match.
+
+Closed by construction, each held to a run in `tests/inboxes/test_approval_gaps.py`: a write the product makes while
+handling a decision comes after it (the person's transition is recorded first); one operation with two approvers
+goes ahead on the first approval (`first: true`); a request taken back is the agent's `withdraw`, never a decision
+(`by`); a reminder brings an owed decision forward; a fork's `reply_at` pins an item's moment (`provider`); an
+answer owed when what the person knows changes is written from what they know when they send it; an away approver's
+item gets their automatic reply as a note; and a decision's answer is what it carries, matched as text by `holding`
+or in any words by `conveys`.
 
 ## Where it is tested
 

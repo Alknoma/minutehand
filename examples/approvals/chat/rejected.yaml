@@ -12,13 +12,12 @@ people:
     name: Nadia Ek
     email: nadia@example.com
     reply_within: {min: PT2H, max: PT6H}
+    takes:
+      - nth: 1                                                 # her first item: the agent's first message to her
+        take: Reject                                           # the button, by the label she sees
+        form: [{value: "The Q3 hardware budget is spent."}]   # typed into the modal's one input
     reply:
       kind: scripted
-      replies:
-        - to_ask: 1
-          press:
-            label: Reject
-            form: [{value: "The Q3 hardware budget is spent."}]   # typed into the modal's one input
       then: silent
   - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
 assess:

@@ -32,14 +32,14 @@ async def test_a_next_wake_reported_again_after_every_wake_is_one_entry_that_fir
     four_days = T0 + timedelta(days=4)
     assert _of(entries, DueSource.REPORTED) == [(four_days, DueClosed.FIRED, four_days)]
     assert _of(entries, DueSource.REPLY) == [(T0 + timedelta(hours=36), DueClosed.FIRED, T0 + timedelta(hours=36))]
-    assert _of(entries, DueSource.FATE) == [(T0 + timedelta(days=3), DueClosed.FIRED, T0 + timedelta(days=3))]
+    assert _of(entries, DueSource.TRANSITION) == [(T0 + timedelta(days=3), DueClosed.FIRED, T0 + timedelta(days=3))]
     reported = next(e for e in entries if e.source is DueSource.REPORTED)
     assert reported.entered_at == T0 and reported.entered_wake == 1
 
 
 async def test_a_booking_deleted_before_it_fires_leaves_the_table_cancelled_and_the_kept_one_fires(rig: Rig) -> None:
     booked = Booked(take_limit=timedelta(seconds=0.1))
-    _, store, _ = await rig.run(scenario(ticket_fates=[]), rig.agent("book", extra=[booked]))
+    _, store, _ = await rig.run(scenario(tom_finishes=False), rig.agent("book", extra=[booked]))
 
     assert _of(due_entries(store), DueSource.BOOKED) == [
         (T0 + timedelta(hours=5), DueClosed.FIRED, T0 + timedelta(hours=5)),
@@ -49,7 +49,7 @@ async def test_a_booking_deleted_before_it_fires_leaves_the_table_cancelled_and_
 
 async def test_a_next_wake_moved_by_the_agent_replaces_the_one_it_named_before(rig: Rig) -> None:
     # keep_waking names a new moment an hour on after every wake: each fires, none is left open
-    _, store, _ = await rig.run(scenario(max_wakes=3, ticket_fates=[]), rig.agent("keep_waking"))
+    _, store, _ = await rig.run(scenario(max_wakes=3, tom_finishes=False), rig.agent("keep_waking"))
 
     reported = _of(due_entries(store), DueSource.REPORTED)
     assert [at for at, _, _ in reported] == [T0 + timedelta(hours=h) for h in (1, 2, 3)]
@@ -77,7 +77,7 @@ PLANNED = """
 @pytest.mark.parametrize(("after_hours", "found"), [("100", 1), ("66", 0)])
 async def test_a_rule_reads_the_wakes_the_agent_planned_from_the_table(rig: Rig, after_hours: str, found: int) -> None:
     # Dania is silent: asking her opens a wait due 66 hours on; the agent plans its next wake 100 or 66 hours on
-    scn = scenario(ticket_fates=[], deadline_after=timedelta(days=5))
+    scn = scenario(tom_finishes=False, deadline_after=timedelta(days=5))
     record, store, _ = await rig.run(scn, rig.agent("ask_silent"), env=rig.env(NEXT_WAKE_AFTER_HOURS=after_hours))
     view = view_of(scn, store.events(), record.wakes, [], dues=due_entries(store), rules=rules(PLANNED))
 

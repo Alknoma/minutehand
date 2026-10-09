@@ -58,7 +58,7 @@ def _person_messages(events: list[WorldEvent]) -> list[WorldEvent]:
 async def test_a_placeholder_edited_into_a_question_in_the_same_wake_is_answered_once_about_the_question(
     rig: Rig,
 ) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     heard = Overheard(scn)
 
     record, store, _ = await rig.run(scn, rig.agent("placeholder"), replier=heard)
@@ -73,7 +73,7 @@ async def test_a_placeholder_edited_into_a_question_in_the_same_wake_is_answered
 async def test_a_placeholder_edited_in_a_later_wake_is_asked_again_and_its_first_answer_never_arrives(
     rig: Rig,
 ) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     heard = Overheard(scn)
 
     record, store, _ = await rig.run(scn, rig.agent("placeholder_later"), replier=heard)
@@ -107,7 +107,7 @@ class AnswersOnlyThePlaceholder(Overheard):
 
 
 async def test_an_ask_edited_into_one_that_needs_no_answer_opens_no_wait(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     heard = AnswersOnlyThePlaceholder(scn)
 
     record, store, _ = await rig.run(scn, rig.agent("placeholder_later"), replier=heard)
@@ -147,7 +147,7 @@ class FailsThenFindsNothingToSay(Overheard):
 
 
 async def test_an_answer_that_needs_none_when_written_at_its_moment_wakes_nobody(rig: Rig) -> None:
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     heard = FailsThenFindsNothingToSay(scn)
 
     record, store, _ = await rig.run(scn, rig.agent("placeholder"), replier=heard)

@@ -69,7 +69,7 @@ def _system() -> str:
 
 
 def _scn(*people: Person) -> Scenario:
-    return scenario(ticket_fates=[], people=[person("owner", Silent()), *people])
+    return scenario(tom_finishes=False, people=[person("owner", Silent()), *people])
 
 
 async def _answer(replier: PeopleReplier, who: Person, asked: WorldEvent, store: SqliteStore, clock: RunClock) -> str:

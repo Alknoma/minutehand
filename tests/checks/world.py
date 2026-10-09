@@ -25,7 +25,6 @@ from minutehand.domain.scenario import (
     Person,
     ReplyBehaviour,
     Scenario,
-    TicketFate,
     TicketState,
 )
 from minutehand.domain.world import (
@@ -60,7 +59,6 @@ def person(key: str, reply: ReplyBehaviour = QUICK, absences: list[Absence] | No
 def scenario(
     *people: Person,
     deadline_after: timedelta | None = None,
-    fates: list[TicketFate] | None = None,
     expect: list[Expectation] | None = None,
 ) -> Scenario:
     return Scenario(
@@ -70,7 +68,6 @@ def scenario(
         starts_at=START,
         deadline_after=deadline_after,
         people=list(people),
-        ticket_fates=fates or [],
         expect=expect or [],
     )
 

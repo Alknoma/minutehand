@@ -45,8 +45,8 @@ SCENARIO = Scenario.model_validate(
              "reply": {"kind": "scripted", "then": "silent", "replies": []}},
             {"key": "sofia", "name": "Sofia Romano", "email": "sofia@example.com",
              "reply": {"kind": "scripted", "then": "silent", "delay": {"shortest": "PT4H", "longest": "PT4H"},
-                       "replies": [{"to_ask": 1, "verbatim": f"{TELL} is free on Tuesday at 10."},
-                                   {"to_ask": 2, "press": {"label": "Accept"}}]}},
+                       "replies": [{"to_ask": 1, "verbatim": f"{TELL} is free on Tuesday at 10."}]},
+             "takes": [{"nth": 2, "take": "Accept"}]},
         ],
         "expect": [
             {"kind": "person_asked", "person": "sofia", "mentions": ["room"], "at_most": 2},

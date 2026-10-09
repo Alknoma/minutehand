@@ -156,7 +156,7 @@ def test_a_person_a_model_writes_for_decides_an_item_in_the_services_own_product
             world.advance(timedelta(hours=2))
             assert product.state("a1") == "approved"
             [call] = written.client.world(world.world_id).person_calls
-            assert call.wrote is Wrote.DECISION and call.prompt_version == "person-decision/2"
+            assert call.wrote is Wrote.TRANSITION and call.prompt_version == "person-transition/1"
         finally:
             written.client.close_world(world.world_id)
 

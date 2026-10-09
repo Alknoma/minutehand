@@ -127,7 +127,9 @@ async def test_an_answer_the_invitation_does_not_offer_again_is_refused(tmp_path
     dov = scenario.people[1]
     await google.apply(event_ref(event.id), "accepted", Actor.PERSON, dov, "{}", store, clock)
 
-    assert "accepted" not in [o.name for o in google.legal(event_ref(event.id), Actor.PERSON, dov, store)]
+    assert "accepted" not in [
+        o.name for o in google.legal(event_ref(event.id), Actor.PERSON, dov, store) if o.unprompted
+    ]
     with pytest.raises(ValueError, match="does not offer dov 'accepted'"):
         await google.apply(event_ref(event.id), "accepted", Actor.PERSON, dov, "{}", store, clock)
     with pytest.raises(ValueError, match="only a guest answers"):

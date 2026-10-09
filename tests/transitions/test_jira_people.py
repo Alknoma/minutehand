@@ -14,7 +14,6 @@ import pytest
 from minutehand.adapters.providers.jira.provider import build
 from minutehand.adapters.providers.jira.state import JiraWorld, issue_ref
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.orchestrator import refuse_fates_beside_the_engine
 from minutehand.application.people import TRANSITION_PROMPT_VERSION, People
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import PeopleReplier
@@ -177,7 +176,7 @@ async def test_a_pinned_take_the_issue_does_not_offer_is_dropped_saying_so_and_r
 
 async def test_an_offer_no_longer_legal_is_refused_as_jira_refuses_it(site: Site) -> None:
     tomas = next(p for p in SCENARIO.people if p.key == "tomas")
-    offers = site.provider.legal(_ref(site, "LAUNCH-1"), Actor.PERSON, tomas, site.store)
+    offers = [o for o in site.provider.legal(_ref(site, "LAUNCH-1"), Actor.PERSON, tomas, site.store) if o.unprompted]
     assert [(o.name, o.to_state) for o in offers] == [("Start work", "In Progress"), ("Drop", "Won't Do")]
     assert [f.name for f in offers[0].fields] == ["comment"]
     with pytest.raises(ValueError, match="offers no transition 'Submit for review' from To Do"):
@@ -211,11 +210,13 @@ def test_a_person_a_model_moves_with_no_model_configured_is_refused(site: Site) 
         People(_scenario(), {"jira": site.provider}, PeopleReplier(_scenario(), people_model()), None)
 
 
-def test_a_take_on_a_provider_the_engine_does_not_play_is_refused() -> None:
+def test_a_take_on_a_provider_nobody_can_act_through_in_the_run_is_refused(site: Site) -> None:
     body = SCENARIO.model_dump(mode="json")
-    body["people"][1]["takes"] = [{"provider": "jira", "take": "Done"}]
-    with pytest.raises(ValueError, match="which the people engine does not play: add it to `transitions_on`"):
-        Scenario.model_validate(body)
+    body["people"][1]["takes"] = [{"provider": "youtrack", "take": "Done"}]
+    scenario = Scenario.model_validate(body)
+    # Mutation: an engine that does not check where takes point leaves this one pinning nothing, silently.
+    with pytest.raises(RunRefused, match="tomas takes 'Done' on youtrack, which nobody can act through in this run"):
+        people_engine(scenario, {"jira": site.provider}, people_model())
 
 
 async def test_a_transition_whose_screen_requires_a_field_is_not_offered_to_a_person(tmp_path: Path) -> None:
@@ -235,14 +236,6 @@ async def test_a_transition_whose_screen_requires_a_field_is_not_offered_to_a_pe
     for name in ("Start work", "Submit for review"):
         await provider.apply(issue_ref(issue.id), name, Actor.PERSON, tomas, "{}", store, clock)
 
-    offers = provider.legal(issue_ref(issue.id), Actor.PERSON, tomas, store)
+    offers = [o for o in provider.legal(issue_ref(issue.id), Actor.PERSON, tomas, store) if o.unprompted]
 
     assert [o.name for o in offers] == ["Back to work", "Drop"], "Approve needs a resolution a person cannot type"
-
-
-def test_a_ticket_fate_beside_the_engine_on_a_ticket_provider_is_refused(site: Site) -> None:
-    body = _scenario().model_dump(mode="json")
-    body["ticket_fates"] = [{"assignee": "tomas", "becomes": "done", "after": "P1D"}]
-    with pytest.raises(RunRefused, match="ticket fates and the people engine plays jira"):
-        refuse_fates_beside_the_engine(Scenario.model_validate(body), [site.provider.manifest])
-    refuse_fates_beside_the_engine(_scenario(), [site.provider.manifest])

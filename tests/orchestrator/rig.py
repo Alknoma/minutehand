@@ -27,6 +27,7 @@ from minutehand.domain.scenario import (
     Scripted,
     ScriptedReply,
     Silent,
+    Take,
 )
 from minutehand.ports.clock import Clock
 from minutehand.ports.people import Replier
@@ -52,7 +53,12 @@ def scripted(*texts: str, hours: float) -> Scripted:
     )
 
 
-def scenario(**overrides: object) -> Scenario:
+def scenario(*, tom_finishes: bool = True, **overrides: object) -> Scenario:
+    """The pricing scenario: sofia answers in 36 hours, and (`tom_finishes`) tom finishes every ticket handed to him
+    three days after it is."""
+    tom = person("tom", Silent())
+    if tom_finishes:
+        tom = tom.model_copy(update={"takes": [Take(take="done", after=timedelta(days=3))]})
     fields: dict[str, object] = {
         "name": "pricing",
         "goal": "Pricing is confirmed and the legal review is done.",
@@ -62,10 +68,9 @@ def scenario(**overrides: object) -> Scenario:
         "people": [
             person("owner", Silent()),
             person("sofia", scripted("Yes, 40k.", hours=36)),
-            person("tom", Silent()),
+            tom,
             person("dania", Silent()),
         ],
-        "ticket_fates": [{"assignee": "tom", "becomes": "done", "after": timedelta(days=3)}],
     }
     fields.update(overrides)
     return Scenario.model_validate(fields)
@@ -121,8 +126,6 @@ class Rig:
         return Services(
             providers=[self.chat, self.sched],
             pushes={CHAT: self.chat},
-            tickets={CHAT: self.chat},
-            editors={CHAT: self.chat},
             schedulers={self.sched.manifest.key: self.sched},
         )
 

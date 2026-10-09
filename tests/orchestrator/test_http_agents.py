@@ -100,7 +100,7 @@ async def test_the_reported_driver_polls_through_working_and_takes_the_next_wake
         under_test = AgentUnderTest(
             name="reporter", wakes=[Reported(wake_url=f"{base}/wake", report_url=f"{base}/report")]
         )
-        record = await _run(rig, scenario(ticket_fates=[]), under_test, "reported")
+        record = await _run(rig, scenario(tom_finishes=False), under_test, "reported")
 
     assert record.stop is StopReason.AGENT_DONE
     assert [(w.reason, w.now) for w in agent.wakes] == [
@@ -118,7 +118,7 @@ async def test_a_reported_agent_answering_500_ends_the_run_agent_failed(rig: Rig
         under_test = AgentUnderTest(
             name="reporter", wakes=[Reported(wake_url=f"{base}/wake", report_url=f"{base}/report")]
         )
-        record = await _run(rig, scenario(ticket_fates=[]), under_test, "reported-500")
+        record = await _run(rig, scenario(tom_finishes=False), under_test, "reported-500")
 
     assert record.stop is StopReason.AGENT_FAILED
 
@@ -127,7 +127,7 @@ async def test_a_polled_agent_gets_one_wake_per_interval_and_none_skipped(rig: R
     agent = TickingAgent()
     async with serving(agent.app()) as base:
         under_test = AgentUnderTest(name="ticker", wakes=[Polled(wake_url=f"{base}/tick", every=timedelta(hours=2))])
-        record = await _run(rig, scenario(ticket_fates=[], deadline_after=timedelta(hours=9)), under_test, "polled")
+        record = await _run(rig, scenario(tom_finishes=False, deadline_after=timedelta(hours=9)), under_test, "polled")
 
     assert record.stop is StopReason.DEADLINE_PASSED
     assert agent.ticks == [(WakeReason.START, T0)] + [(WakeReason.TICK, T0 + timedelta(hours=h)) for h in (2, 4, 6, 8)]
@@ -139,7 +139,7 @@ async def test_a_scripted_direction_wakes_the_agent_with_the_owners_words(rig: R
     async with serving(agent.app()) as base:
         under_test = AgentUnderTest(name="ticker", wakes=[Polled(wake_url=f"{base}/tick", every=timedelta(hours=5))])
         scn = scenario(
-            ticket_fates=[],
+            tom_finishes=False,
             deadline_after=timedelta(hours=6),
             directions=[{"text": "Prioritise the legal review.", "after": timedelta(hours=2)}],
         )
@@ -232,7 +232,7 @@ async def test_a_turn_of_two_seconds_is_waited_for_and_asked_about_a_handful_of_
             report_at_most_every=timedelta(milliseconds=500),
             working_limit=timedelta(seconds=20),
         )
-        record = await _run(rig, scenario(ticket_fates=[]), under_test, "slow-turn")
+        record = await _run(rig, scenario(tom_finishes=False), under_test, "slow-turn")
 
     assert record.stop is StopReason.AGENT_DONE, record.failure
     # 20, 40, 80, 160, 320 ms, then every 500 ms: about nine asks for two seconds, not hundreds.
@@ -251,7 +251,7 @@ async def test_a_wake_still_working_past_its_limit_stops_the_run_agent_failed_na
             working_limit=timedelta(milliseconds=400),
         )
         started = time.monotonic()
-        record = await _run(rig, scenario(ticket_fates=[]), under_test, "too-slow")
+        record = await _run(rig, scenario(tom_finishes=False), under_test, "too-slow")
         took = time.monotonic() - started
 
     assert record.stop is StopReason.AGENT_FAILED
@@ -264,7 +264,7 @@ async def test_a_wake_call_slower_than_its_timeout_stops_the_run_agent_failed_na
     agent = SlowAgent(turn=0.0, answer=1.0)
     async with serving(agent.app()) as base:
         record = await _run(
-            rig, scenario(ticket_fates=[]), _reported(base, wake_timeout=timedelta(milliseconds=200)), "slow-wake"
+            rig, scenario(tom_finishes=False), _reported(base, wake_timeout=timedelta(milliseconds=200)), "slow-wake"
         )
 
     assert record.stop is StopReason.AGENT_FAILED
@@ -276,7 +276,7 @@ async def test_a_wake_call_inside_its_timeout_is_waited_for(rig: Rig) -> None:
     agent = SlowAgent(turn=0.0, answer=1.0)
     async with serving(agent.app()) as base:
         record = await _run(
-            rig, scenario(ticket_fates=[]), _reported(base, wake_timeout=timedelta(seconds=5)), "slow-wake-ok"
+            rig, scenario(tom_finishes=False), _reported(base, wake_timeout=timedelta(seconds=5)), "slow-wake-ok"
         )
 
     assert record.stop is StopReason.AGENT_DONE, record.failure
@@ -286,7 +286,7 @@ async def test_a_wake_made_only_of_a_booking_waits_for_the_agent_to_act_on_the_d
     # Until a delivery was a wake the loop waited on: the booking fired, no report was asked for, and the clock
     # ran on to the deadline before the agent had done anything with what the scheduler delivered.
     agent = BookingAgent(rig)
-    scn = scenario(ticket_fates=[])
+    scn = scenario(tom_finishes=False)
     async with serving(agent.app()) as base:
         under_test = AgentUnderTest(
             name="booker",

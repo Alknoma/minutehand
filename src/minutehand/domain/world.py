@@ -443,15 +443,9 @@ class InboxItemSnapshot(Model):
     summary: str = Field(description="What it asks, as the product words it")
     category: str | None = Field(default=None, description="Its kind in the product's own words, when listed")
     decisions: list[str] = Field(description="The decisions the person can make on it, by name")
-    gates: str | None = Field(
-        default=None, description="The product's id for the operation it holds back, when the inbox says where"
-    )
     status: ItemStatus
     decision: str | None = Field(default=None, description="The decision made or tried, by name")
     said: str | None = Field(default=None, description="The decision as the record says it: 'approved'")
-    permits: bool | None = Field(
-        default=None, description="Whether the decision lets what the item gates go ahead; None when it says nothing"
-    )
     inputs: dict[str, str] = Field(default={}, description="What the person gave with the decision, by input name")
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 
@@ -537,6 +531,7 @@ class PendingSnapshot(Model):
     status: PendingStatus
     due_at: AwareDatetime | None = Field(description="When they act; None: never (silent, or nothing pinned)")
     take: str | None = Field(default=None, description="The offer a scenario pinned (`Person.takes`)")
+    pinned: int | None = Field(default=None, description="Which of the person's `takes` pinned it, by its place")
     drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
     transition: int | None = Field(default=None, description="The seq of the transition they took")
     failure: str | None = Field(default=None, description="Why their last try to act did not land")
@@ -551,6 +546,9 @@ class PendingSnapshot(Model):
     asked: int | None = Field(default=None, description="For a conversation, the seq of the ask as it was planned")
     follow_ups: list[str] = Field(
         default=[], description="For a conversation, the messages that followed it up while it was owed, by id"
+    )
+    worded_at: AwareDatetime | None = Field(
+        default=None, description="For a conversation, when its answer's words were written, from what they knew then"
     )
     answer: str | None = Field(
         default=None,
