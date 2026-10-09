@@ -20,7 +20,7 @@ import importlib.util
 import inspect
 import pkgutil
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Protocol
@@ -32,7 +32,9 @@ from minutehand.checks import judged as judged_package
 from minutehand.checks.effectiveness import measure
 from minutehand.checks.expectations import Expectations
 from minutehand.checks.facts import ended_at
+from minutehand.checks.items import ItemChecks
 from minutehand.checks.judged.asked_about import AskedAbout
+from minutehand.checks.judged.review import Review
 from minutehand.checks.ledger import build
 from minutehand.checks.near_miss_name import NearMissName
 from minutehand.domain.agent import Commitment, CommitmentStatus
@@ -54,6 +56,8 @@ from minutehand.domain.checks import (
     WakeRecord,
 )
 from minutehand.domain.clock import DueEntry
+from minutehand.domain.conversation import Wrote
+from minutehand.domain.items import ItemCheck, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario
@@ -62,6 +66,7 @@ from minutehand.ports.model import JudgedCheck, ModelFailed
 from minutehand.ports.model import Model as LanguageModel
 
 NO_MODEL = "no model is configured"
+NOT_JUDGING = "not assessed: the run was not asked to judge (--judge, with a model configured)"
 
 
 class RunResult(Model):
@@ -74,9 +79,10 @@ class RunResult(Model):
     verdict: Verdict
     assessed_by: list[str] = Field(
         default=[],
-        description="What judged the run, all of it the team's own: each rule of `assess` by its id, `expectations` "
-        "and `near_miss_name` when the scenario declares them, each integrity fact its files say fails the run "
-        "(`fail_on_integrity`), and each of the agent's own checks; empty: nothing did",
+        description="What judged the run: `items`, the assessment of the agent's effects against the declared world "
+        "that every run gets, `review` when a model reviewed them, then each rule of `assess` by its id, "
+        "`expectations` and `near_miss_name` when the scenario declares them, each integrity fact its files say fails "
+        "the run (`fail_on_integrity`), and each of the agent's own checks",
     )
     rules_read: list[RuleRead] = Field(
         default=[], description="Each rule of `assess`, with how often it was read and how often it could not be"
@@ -108,6 +114,8 @@ def _is_judged(candidate: object) -> bool:
         isinstance(attributes["id"] if "id" in attributes else None, str)
         and isinstance(attributes["needs"] if "needs" in attributes else None, frozenset)
         and isinstance(attributes["prompt_version"] if "prompt_version" in attributes else None, str)
+        and isinstance(attributes["wrote"] if "wrote" in attributes else None, Wrote)
+        and callable(attributes["applies"] if "applies" in attributes else None)
         and callable(attributes["judge"] if "judge" in attributes else None)
     )
 
@@ -170,6 +178,12 @@ def load_checks(paths: Sequence[str]) -> list[Check]:
     return found
 
 
+def finding_names(own: Sequence[Check] = ()) -> set[str]:
+    """Every name a finding of Minutehand's or the agent's checks goes by, which a rule may not take: each check's id,
+    each judged check's, and each item check's (`domain.items.ItemCheck`)."""
+    return {c.id for c in discover(own)} | {c.id for c in discover_judged()} | {c.value for c in ItemCheck}
+
+
 def discover_judged() -> list[JudgedCheck]:
     """One instance of every judged check class defined in `checks.judged`, ordered by id."""
     found: list[JudgedCheck] = [cls() for cls in _classes(judged_package, _is_judged)]
@@ -202,18 +216,19 @@ class _Tally:
             blocked=self.blocked,
             notes=self.notes,
             effectiveness=card,
-            verdict=verdict(view, card, stop, assessed=bool(self.assessed_by)),
+            verdict=verdict(view, card, stop),
             assessed_by=self.assessed_by,
             rules_read=self.rules_read,
         )
 
 
 def assessed_by(view: RunView, own: Sequence[Check] = ()) -> list[str]:
-    """What the team declared to judge the run: its rules, the scenario's expectations and protected names, the
+    """What judged the run: the assessment of the agent's effects against the declared world, which every run gets
+    (`items`), then what the team wrote besides: its rules, the scenario's expectations and protected names, the
     integrity facts its files say fail the run, and the agent's own checks. An integrity fact nobody named (a call
     around the proxy, a contract the agent broke) is not an assessment: it is stated as a review and says whether the
     run can be trusted, never how the agent should behave."""
-    found = [r.id for r in view.rules]
+    found = [ItemChecks.id, *(r.id for r in view.rules)]
     if view.scenario.expect:
         found.append(Expectations.id)
     if view.scenario.protected_names:
@@ -233,17 +248,11 @@ _STOPPED = {
 }
 
 
-def verdict(
-    view: RunView,
-    card: Effectiveness,
-    stop: StopReason | None,
-    *,
-    assessed: bool = True,
-) -> Verdict:
+def verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Verdict:
     """Read from the findings of the run's own rules and checks, and from how the run stopped; nothing else.
 
     Tool failed when Minutehand broke answering any call: such a run says nothing about the agent. Otherwise failed
-    when a finding failed; not judged when nothing was assessed or a check could not run; passed when the agent
+    when a finding failed; not judged when a check could not run; passed when the agent
     reported done, or nothing was left open; unfinished otherwise. Whether the agent should have done anything
     else is the team's to say, in its rules (`domain/assessments.py`).
 
@@ -256,7 +265,7 @@ def verdict(
     open_waits = sum(1 for o in view.obligations if o.kind is not ObligationKind.DATE and o.settled_at is None)
     open_work = open_waits + (commitments or 0)
     how = _STOPPED[stop] if stop is not None else "how the run stopped was not recorded"
-    reasons = unjudged(view, assessed=assessed)
+    reasons = unjudged(view)
     if stop is StopReason.ENVIRONMENT_FAILED:
         kind = VerdictKind.ENVIRONMENT_FAILED
         words = (
@@ -274,9 +283,6 @@ def verdict(
     elif card.failed_checks:
         kind = VerdictKind.FAILED
         words = f"Failed: {_count(card.failed_checks, 'check')} failed; {how}."
-    elif not assessed:
-        kind = VerdictKind.NOT_JUDGED
-        words = f"Not assessed: {NOTHING_ASSESSED}; {how}. The facts of the run are below."
     elif reasons:
         kind = VerdictKind.NOT_JUDGED
         words = (
@@ -306,18 +312,12 @@ def verdict(
     )
 
 
-NOTHING_ASSESSED = (
-    "nothing judged this run, since neither the scenario nor the agent file declares an assessment (`assess`, "
-    "`expect`, `protected_names`, `fail_on_integrity`, or the agent's own `checks`)"
-)
-
-
-def unjudged(view: RunView, *, assessed: bool = True) -> list[str]:
-    """Why a run with no failed check cannot be called passed or unfinished, one reason each; empty when it can:
-    nothing was assessed, or a check that needs the agent's wakes ran over a run that recorded none (a standing world
-    nobody marked a step in and whose clock never moved). A check that could not read its input did not run, and a
-    run whose checks did not run is not one they passed."""
-    reasons: list[str] = [] if assessed else [NOTHING_ASSESSED]
+def unjudged(view: RunView) -> list[str]:
+    """Why a run with no failed check cannot be called passed or unfinished, one reason each; empty when it can: a
+    check that needs the agent's wakes ran over a run that recorded none (a standing world nobody marked a step in
+    and whose clock never moved). A check that could not read its input did not run, and a run whose checks did not
+    run is not one they passed."""
+    reasons: list[str] = []
     for check in discover():
         if Needs.WAKES in check.needs and not view.wakes:
             reasons.append(
@@ -350,10 +350,17 @@ def failed_entities(view: RunView, findings: list[Finding]) -> frozenset[EntityR
 def evaluate(
     view: RunView, *, stop: StopReason | None, ended: datetime | None = None, own: Sequence[Check] = ()
 ) -> RunResult:
-    """Every deterministic check over a view that is already built. Judged checks are not run, and an `about`
-    expectation, which only `asked_about` can settle, is not counted as met. `stop` is how the run ended, None
-    for a run captured elsewhere that does not say."""
-    return _deterministic(view, own).result(view, ended, stop)
+    """Every deterministic check over a view that is already built. Judged checks are not run, each said in a note
+    to be not assessed, and an `about` expectation, which only `asked_about` can settle, is not counted as met.
+    `stop` is how the run ended, None for a run captured elsewhere that does not say."""
+    tally = _deterministic(view, own)
+    tally.notes += [f"{check.id}: {NOT_JUDGING}" for check in discover_judged() if check.applies(view)]
+    return tally.result(view, ended, stop)
+
+
+type Keeping = Callable[[JudgedCheck], LanguageModel]
+"""The model a judged check is handed: the run's, with every answer kept with the world under the check's `wrote`
+(`application.kept.KeptModel`)."""
 
 
 async def evaluate_judged(
@@ -363,21 +370,27 @@ async def evaluate_judged(
     stop: StopReason | None,
     ended: datetime | None = None,
     own: Sequence[Check] = (),
+    kept: Keeping | None = None,
 ) -> RunResult:
     """Every deterministic check, then every judged check on what they did not fail. With no model, each judged
-    check is blocked; a model that fails partway blocks the check it failed in."""
+    check is blocked; a model that fails partway blocks the check it failed in. With `kept`, each check is handed
+    the model through it, so its calls are on the record and replayed when asked again."""
     tally = _deterministic(view, own)
     failed = failed_entities(view, tally.findings)
     for check in discover_judged():
+        if not check.applies(view):
+            continue
         if model is None:
             tally.blocked.append(f"{check.id}: {NO_MODEL}")
             continue
         try:
-            report = await check.judge(view, model, failed=failed)
+            report = await check.judge(view, kept(check) if kept is not None else model, failed=failed)
         except ModelFailed as e:
             tally.blocked.append(f"{check.id}: the model failed: {e}")
             continue
         tally.add(check.id, report)
+        if isinstance(check, Review):
+            tally.assessed_by.insert(1, check.id)
         if isinstance(check, AskedAbout):
             tally.unjudged = 0
             tally.met -= len(report.findings)
@@ -433,6 +446,10 @@ def view_of(
     rules: Sequence[Rule] = (),
     fail_on_integrity: Sequence[IntegrityCheck] = (),
     stop: StopReason | None = None,
+    calls: list[RecordedCall] | None = None,
+    typed: Sequence[TypedItem] = (),
+    item_types: Sequence[ProvidedTypes] = (),
+    rhythm: timedelta | None = None,
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies that
     landed."""
@@ -454,6 +471,10 @@ def view_of(
         rules=list(rules),
         fail_on_integrity=list(fail_on_integrity),
         stopped=_STOPPED_BY[stop] if stop is not None else None,
+        calls=calls,
+        typed=list(typed),
+        item_types=list(item_types),
+        rhythm=rhythm,
     )
 
 

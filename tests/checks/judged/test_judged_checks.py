@@ -47,11 +47,11 @@ def asked_sofia() -> tuple[list[Expectation], Log]:
     return [PersonAsked(person="sofia", about="the price")], log
 
 
-def test_the_only_judged_checks_are_the_ones_a_scenario_or_its_team_asks_for_and_they_are_not_deterministic() -> None:
-    """Nothing judges a run from Minutehand's side: the judged checks read only a scenario's `about` and the
-    team's own `conveys` rules."""
-    assert [c.id for c in discover_judged()] == ["asked_about", "conveys"]
-    assert not {c.id for c in discover()} & {"asked_about", "conveys"}
+def test_the_judged_checks_are_a_scenarios_about_and_the_reviewer_of_the_agents_effects() -> None:
+    """A model judges two things: a scenario's own `about`, and each of the agent's effects against the declared
+    world (`review`); neither is a deterministic check."""
+    assert [c.id for c in discover_judged()] == ["asked_about", "review"]
+    assert not {c.id for c in discover()} & {"asked_about", "review"}
 
 
 async def test_a_run_whose_scenario_asks_nothing_judged_asks_the_model_nothing() -> None:

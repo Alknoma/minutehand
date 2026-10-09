@@ -42,7 +42,7 @@ class Judgement(Provenance):
 
 
 class Wrote(StrEnum):
-    """What a model wrote for a person."""
+    """What a model wrote: for a person, for a declared service, or as a judge of the run."""
 
     REPLY = "reply"  # their words back to a message
     SUMMARY = "summary"  # what they saw before the turns they are shown word for word
@@ -50,14 +50,40 @@ class Wrote(StrEnum):
     SERVICE_MACHINE = "service_machine"  # the states and transitions of a declared service's items, proposed once
     SERVICE_ROUTE = "service_route"  # what a route of a declared service means, read once
     SERVICE_ANSWER = "service_answer"  # what a declared service answers a call, or pushes, from its state and log
+    JUDGEMENT = "judgement"  # a judged check's verdict on something the scenario asks (`asked_about`)
+    FACT_CHECK = "fact_check"  # whether a person's reply stays inside what they know, before it is sent
+    REVIEW = "review"  # the shared reviewer's reading of one of the agent's effects (`checks/judged/review.py`)
+
+
+class Side(StrEnum):
+    """Whose a model call Minutehand made was, as the read model's `model_calls.side` says it."""
+
+    PERSON = "person"  # a person's words, a summary of what they saw, or their move on an item
+    SERVICE = "service"  # a declared service's machine, a route's meaning, an answer
+    JUDGE = "judge"  # a judged check's verdict, or a person's reply checked against what they know
+    ASSESSOR = "assessor"  # the shared reviewer of the agent's effects
+
+
+SIDE = {
+    Wrote.REPLY: Side.PERSON,
+    Wrote.SUMMARY: Side.PERSON,
+    Wrote.TRANSITION: Side.PERSON,
+    Wrote.SERVICE_MACHINE: Side.SERVICE,
+    Wrote.SERVICE_ROUTE: Side.SERVICE,
+    Wrote.SERVICE_ANSWER: Side.SERVICE,
+    Wrote.JUDGEMENT: Side.JUDGE,
+    Wrote.FACT_CHECK: Side.JUDGE,
+    Wrote.REVIEW: Side.ASSESSOR,
+}
 
 
 class PersonCall(Model):
-    """One call Minutehand made to a model to write what a person says: kept with the world, so a rerun or fork
-    with the same context (`key`) replays its answer and calls nothing, and a failure is on the record."""
+    """One call Minutehand made to a model: to write what a person says or a declared service answers, or to judge
+    the run. Kept with the world, so a rerun or fork with the same context (`key`) replays its answer and calls
+    nothing, and a failure is on the record."""
 
     key: str = Field(description="SHA-256 of everything the model was asked: model, prompt version, system, messages")
-    person: str | None = Field(description="Person.key; None for what no person says (a service's answer)")
+    person: str | None = Field(description="Person.key; None for what no person says (a service's answer, a judgement)")
     service: str | None = Field(default=None, description="The declared service it was for, by its name")
     wrote: Wrote
     asked: EntityRef | None = Field(

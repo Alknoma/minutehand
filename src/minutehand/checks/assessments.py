@@ -9,7 +9,7 @@ and a note says how many were left unread, so a rule can never pass by being ski
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -19,6 +19,7 @@ from minutehand.checks.facts import (
     Fact,
     Moved,
     asks,
+    calls,
     ended_at,
     messages,
     planned_wakes,
@@ -52,7 +53,15 @@ from minutehand.domain.checks import (
 )
 from minutehand.domain.scenario import Person
 from minutehand.domain.templates import fill
-from minutehand.domain.world import Actor, EntityKind, MemorySnapshot, Operation, StoredSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    EntityKind,
+    MemorySnapshot,
+    Operation,
+    RecordedCall,
+    StoredSnapshot,
+    WorldEvent,
+)
 
 _KIND = {Judged.FAIL: FindingKind.FAIL, Judged.REVIEW: FindingKind.REVIEW}
 _SEVERITY = {Judged.FAIL: Severity.ERROR, Judged.REVIEW: Severity.WARNING}
@@ -121,48 +130,30 @@ class Assessments:
     id = "assessments"
     needs = frozenset({Needs.WORLD})
 
-    def run(self, view: RunView, conveyed: Conveyed | None = None) -> CheckReport:
-        """Every rule read over the facts; a judged one (`conveys`) only with `conveyed`, a model's verdicts."""
+    def run(self, view: RunView) -> CheckReport:
+        """Every rule read over the facts."""
         if not view.rules:
             return CheckReport()
-        reader = _Reader(view, conveyed)
+        reader = _Reader(view)
         findings: list[Finding] = []
-        notes = (
-            [f"rule {r.id} is judged (`conveys`): it is read only with a judge model" for r in view.rules if judged(r)]
-            if conveyed is None
-            else []
-        )
+        notes: list[str] = []
         tallies: list[RuleRead] = []
-        for rule in [r for r in view.rules if conveyed is not None or not judged(r)]:
+        for rule in view.rules:
             found, read, unread = reader.read(rule)
             findings += found
             tallies.append(RuleRead(rule=rule.id, read=read, unread=unread))
             if unread:
                 notes.append(
                     f"rule {rule.id} was not read {unread} time{'s' if unread != 1 else ''}: it names a moment the run "
-                    "never reached, or one that was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
+                    "never reached, or one that was not there (an answer never given, a deadline never set), or counts "
+                    "what the run did not record (the agent's planned wakes, its calls, what an item holds back)"
                 )
         return CheckReport(findings=findings, notes=notes, rules_read=tallies)
 
 
-def judged(rule: Rule) -> bool:
-    """Whether a model reads part of the rule (`Messages.conveys`): the judged check `conveys` reads it."""
-    return rule.count.messages is not None and bool(rule.count.messages.conveys)
-
-
-type Conveyed = Callable[[str, str], bool]
-"""Whether a message's text conveys a phrase, as a model judged it."""
-
-
-def read_with(view: RunView, rule: Rule, conveyed: Conveyed) -> None:
-    """Read `rule` with `conveyed` answering for meaning: how the judged check learns what it must ask."""
-    _Reader(view, conveyed).read(rule)
-
-
 class _Reader:
-    def __init__(self, view: RunView, conveyed: Conveyed | None = None) -> None:
+    def __init__(self, view: RunView) -> None:
         self.view = view
-        self.conveyed = conveyed
         self.end = ended_at(view)
         self.people = {p.key: p for p in view.scenario.people}
         self.asks = asks(view)
@@ -172,6 +163,7 @@ class _Reader:
         self.planned = planned_wakes(view, self.end)
         self.said = reported(view)
         self.moves = transitions(view)
+        self.called = calls(view)
         answered = [a.answered_at for a in self.asks]
         self.all_answered = (
             max(t for t in answered if t is not None) if answered and all(t is not None for t in answered) else None
@@ -305,6 +297,7 @@ class _Reader:
             raise _Unread
         if broke is None:
             return True, None
+        cited = sorted({c for f in counted for c in f.calls})
         evidence = sorted(
             {s for f in counted for s in f.seqs}
             | ({subject.ask.obligation.opened_by} if subject.ask else set())
@@ -338,6 +331,7 @@ class _Reader:
             else f"{subject.label()}: {len(counted)} {rule.count.counted.replace('_', '-')}{window}; {broke}",
             at=until or moment or (counted[-1].at if counted else None),
             evidence=evidence,
+            calls=cited,
             pattern=rule.pattern,
         )
 
@@ -374,8 +368,6 @@ class _Reader:
                 "person.name": subject.person.name if subject.person is not None else "",
             }
             phrases = self._phrases(m.holding, subject, known)
-            meant = self._phrases(m.conveys, subject, known)
-            assert self.conveyed is not None or not meant, "a judged rule is read only by the judged check"
             thread = (
                 subject.ask.obligation.entity.external_id if subject.ask and subject.ask.obligation.entity else None
             )
@@ -386,7 +378,6 @@ class _Reader:
                 and not (to_not & set(s.to))
                 and (m.in_thread is None or (s.thread_of == thread) == m.in_thread)
                 and all(p.casefold() in s.text.casefold() for p in phrases)
-                and all(self.conveyed is not None and self.conveyed(s.text, p) for p in meant)
                 and (m.to_away is None or bool(s.to_away and (not to or to & set(s.to_away))) == m.to_away)
             ]
         if count.writes is not None:
@@ -443,6 +434,21 @@ class _Reader:
                 and (not t.reached or any(_among(r, t.reached) for r in m.reached))
                 and not any(_among(r, t.not_reached) for r in m.reached if t.not_reached)
                 and (t.same_item is None or (m.transition.item == item) == t.same_item)
+            ]
+        if count.calls is not None:
+            if self.view.calls is None:
+                raise _Unread  # nobody recorded the run's calls
+            k = count.calls
+            routes = [_route(r) for r in k.route]
+            return [
+                Fact(at=c.at, seqs=_seqs(c.call), calls=[c.position])
+                for c in self.called
+                if _among(c.call.exchange.host, k.host)
+                and _among(c.call.exchange.method, k.method)
+                and (not routes or any(r.fullmatch(c.route) for r in routes))
+                and (not k.status or any(_status(c.call.exchange.status, s) for s in k.status))
+                and (k.refused is None or (c.call.exchange.status >= 400) == k.refused)
+                and (k.answer_changed is None or c.answer_changed == k.answer_changed)
             ]
         if count.replies is not None:
             r = count.replies
@@ -519,6 +525,20 @@ class _Reader:
         return [
             Fact(at=event.sim_time, seqs=[event.seq]) for _, event in sorted(held.items()) if _matches(event, s.values)
         ]
+
+
+def _route(said: str) -> re.Pattern[str]:
+    """A route as written (`/v1/requests/{id}`) as a pattern of paths: each `{name}` one segment."""
+    parts = re.split(r"(\{[^/{}]+\})", said.split("?", 1)[0])
+    return re.compile("".join("[^/]+" if p.startswith("{") and p.endswith("}") else re.escape(p) for p in parts))
+
+
+def _status(status: int, said: str) -> bool:
+    return said[0] == str(status)[0] if said.endswith("xx") else str(status) == said
+
+
+def _seqs(call: RecordedCall) -> list[int]:
+    return list(range(call.first_seq, call.last_seq + 1)) if call.first_seq <= call.last_seq else []
 
 
 def _among(said: str, wanted: list[str]) -> bool:

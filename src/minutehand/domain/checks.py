@@ -14,9 +14,10 @@ from minutehand.domain.agent import Commitment
 from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement
+from minutehand.domain.items import Assessed, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
-from minutehand.domain.world import EntityRef, Exchange, WorldEvent
+from minutehand.domain.world import EntityRef, Exchange, RecordedCall, WorldEvent
 
 
 class Severity(StrEnum):
@@ -49,6 +50,14 @@ class Finding(Model):
     evidence: list[int] = Field(default=[], description="WorldEvent.seq values")
     pattern: str | None = Field(default=None, description="Pattern.key: how a proactive agent avoids this")
     judged: Judgement | None = Field(default=None, description="Set when a model judged this: which, how, and why")
+    calls: list[int] = Field(
+        default=[], description="The agent's calls it cites, by their place among the run's calls (calls.call_id)"
+    )
+    assessed: Assessed | None = Field(
+        default=None,
+        description="Set by the assessment of the agent's effects: a violation, a wrong action or wrong timing, and "
+        "the declaration it was measured against",
+    )
 
 
 class Pattern(Model):
@@ -279,6 +288,22 @@ class RunView(Model):
         "(`domain.assessments.merged`)",
     )
     stopped: StoppedBy | None = Field(default=None, description="How the run stopped; None while it runs, or unknown")
+    calls: list[RecordedCall] | None = Field(
+        default=None,
+        description="Every call the proxy saw, in order, numbered from 1 by their place; None when nobody recorded them",
+    )
+    typed: list[TypedItem] = Field(
+        default=[],
+        description="Each event that changed an item of a kind the providers declare (`domain.items`), read as that item",
+    )
+    item_types: list[ProvidedTypes] = Field(
+        default=[], description="The item types each provider in the run declares, with the built-in ones"
+    )
+    rhythm: timedelta | None = Field(
+        default=None,
+        description="The agent's declared rhythm: the agent file's `tick`, else its shortest polled `every`; None when "
+        "it declares none",
+    )
     fail_on_integrity: list[IntegrityCheck] = Field(
         default=[],
         description="The integrity facts the agent file or the scenario says fail the run; any other is stated as "

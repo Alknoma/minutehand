@@ -358,7 +358,7 @@ def test_a_rule_naming_the_deadline_of_a_scenario_without_one_is_unread_and_note
     assert report.findings == []
     assert report.notes == [
         "rule nothing_after_the_deadline was not read 1 time: it names a moment the run never reached, or one that "
-        "was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
+        "was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, its calls, what an item holds back)"
     ]
 
 
@@ -775,7 +775,7 @@ def test_a_rules_findings_judge_the_run_and_a_review_does_not_fail_it() -> None:
     log.message([OWNER], 100, text="status")
     failing = view(scenario(OWNER, DANIA), log, assess=rules(FOLLOWS_UP_WHEN_DUE))
     result = evaluate(failing, stop=None)
-    assert result.verdict.kind.value == "failed" and result.assessed_by == ["follows_up_when_due"]
+    assert result.verdict.kind.value == "failed" and result.assessed_by == ["items", "follows_up_when_due"]
     reviewing = view(
         scenario(OWNER, DANIA),
         log,

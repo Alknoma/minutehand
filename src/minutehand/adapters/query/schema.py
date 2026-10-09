@@ -438,13 +438,23 @@ VIEWS: tuple[View, ...] = (
     View(
         name="model_calls",
         description="Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, "
-        "and the ones Minutehand made to write what people say. Cost only from prices the user declares.",
+        "and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. "
+        "Cost only from prices the user declares.",
         order="at, span_id, person_call_id",
         columns=[
-            _c("side", T, "agent or person"),
+            _c(
+                "side",
+                T,
+                "agent; person (a person's words or move); service (a declared service's); judge (a judged check, or "
+                "a person's reply checked against what they know); assessor (the reviewer of the agent's effects)",
+            ),
             _c("span_id", T, "The agent's model call span; NULL for a person's"),
             _c("person_call_id", N, "A person's model call, numbered from 1; NULL for the agent's"),
-            _c("source", T, "received (the agent exported it), wire (recorded on the wire) or person"),
+            _c(
+                "source",
+                T,
+                "received (the agent exported it), wire (recorded on the wire) or person (Minutehand's own)",
+            ),
             _c("person", T, "people.key, for a person's"),
             _c("wake", N, "The wake it is placed in"),
             _c("at", T, f"Simulated time: when it arrived (agent) or was made (person); {TIME}"),
@@ -461,7 +471,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "wrote",
                 T,
-                "For a person's: reply, decision, transition or summary; for a declared service's: service_machine, service_route or service_answer",
+                "For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or "
+                "service_answer; for a judge's: judgement or fact_check; for the assessor's: review",
             ),
             _c(
                 "wrote_seqs",
@@ -474,8 +485,9 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="findings",
-        description="Every finding the run's checks raised: the team's rules, the scenario's expectations and "
-        "protected names, the agent's own checks, and the run's integrity checks.",
+        description="Every finding the run's checks raised: the assessment of the agent's effects against the declared "
+        "world, the team's rules, the scenario's expectations and protected names, the agent's own checks, and the "
+        "run's integrity checks.",
         order="finding_id",
         columns=[
             _c("finding_id", N, "Numbered from 1, as list_findings numbers them"),
@@ -488,6 +500,16 @@ VIEWS: tuple[View, ...] = (
             _c("pattern", T, "The pattern that fixes it"),
             _c("pattern_title", T, "Its title"),
             _c("evidence", T, "JSON array of the seqs it cites"),
+            _c("calls", T, "JSON array of the agent's calls it cites (calls.call_id)"),
+            _c(
+                "assessed_kind",
+                T,
+                "For the assessment of the agent's effects (`items`, `review`): violation, wrong_action or "
+                "wrong_timing; NULL for any other finding",
+            ),
+            _c("item_kind", T, "The kind of item the effect was on: chat_message, email, ticket, ...; NULL: none"),
+            _c("against", T, "The declaration the effect was measured against, named or quoted"),
+            _c("judged_by", T, "The model that judged it, for a judged finding; NULL for a deterministic one"),
         ],
     ),
     View(

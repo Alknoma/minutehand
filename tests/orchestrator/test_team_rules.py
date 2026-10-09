@@ -65,6 +65,7 @@ async def test_the_correct_agent_passes_its_teams_policy(tmp_path: Path) -> None
     assert _failed(result) == []
     assert result.verdict.kind is VerdictKind.PASSED, result.verdict.words
     assert result.assessed_by == [
+        "items",
         "follows_up_at_a_day_and_two",
         "follows_up_twice_at_most",
         "escalates_at_three_days",
@@ -96,12 +97,13 @@ async def test_a_team_that_does_not_mind_nagging_passes_the_same_agent(tmp_path:
     assert result.verdict.kind is VerdictKind.PASSED, result.verdict.words
 
 
-async def test_with_no_assessment_the_run_reports_facts_and_says_nothing_was_assessed(tmp_path: Path) -> None:
+async def test_with_no_rules_the_run_is_judged_by_the_assessment_of_its_effects_alone(tmp_path: Path) -> None:
+    """No team rule says nagging is wrong, so nothing fails it for that: the assessment of the agent's effects against
+    the declared world is all that judges it, and it reads only items a provider declares."""
     result = await _judged(tmp_path, "nags", None)
 
     assert result.findings == []
-    assert result.assessed_by == []
-    assert result.verdict.kind is VerdictKind.NOT_JUDGED
-    assert result.verdict.words.startswith("Not assessed: nothing judged this run")
+    assert result.assessed_by == ["items"]
+    assert result.verdict.kind is not VerdictKind.NOT_JUDGED
     assert result.effectiveness.follow_ups_made == 48
     assert result.effectiveness.waits_opened == 2

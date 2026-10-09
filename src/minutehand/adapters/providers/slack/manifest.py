@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from minutehand.domain.items import CHAT_MESSAGE, DOCUMENT
 from minutehand.domain.provider import Manifest, PersonChange, Tier
 from minutehand.domain.world import EntityKind
 
@@ -13,4 +14,5 @@ MANIFEST = Manifest(
     pushes_events=True,
     books_work=True,
     people_changes=[PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
+    item_types=[CHAT_MESSAGE, DOCUMENT],
 )

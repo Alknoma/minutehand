@@ -36,7 +36,7 @@ import sqlite3
 from collections.abc import AsyncIterator, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -80,6 +80,9 @@ from minutehand.application.forks import (
     summary,
 )
 from minutehand.application.inboxes import Inboxes
+from minutehand.application.items import provided_types, typed_items
+from minutehand.application.items import rhythm as declared_rhythm
+from minutehand.application.kept import KeptModel
 from minutehand.application.model_calls import is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.people import needs_model
@@ -104,9 +107,9 @@ from minutehand.checks.runner import (
     RunResult,
     broken,
     contract_breaks,
-    discover,
     evaluate,
     evaluate_judged,
+    finding_names,
     load_checks,
     view_of,
 )
@@ -121,18 +124,30 @@ from minutehand.domain.agent import (
     Reported,
 )
 from minutehand.domain.assessments import IntegrityCheck, Rule, integrity_fails, merged, refuse_unknown_people
-from minutehand.domain.checks import Check, CommitmentsReported, Finding, FindingKind, Severity, Stability, WakeRecord
+from minutehand.domain.checks import (
+    Check,
+    CommitmentsReported,
+    Finding,
+    FindingKind,
+    RunView,
+    Severity,
+    Stability,
+    WakeRecord,
+)
 from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
+from minutehand.domain.items import TypedItem
 from minutehand.domain.outbound import Acknowledge, UnknownHosts
 from minutehand.domain.people import Delivery
+from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.world import Actor, Operation, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
+from minutehand.ports.model import JudgedCheck
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.provider import (
     ASGIApp,
@@ -141,6 +156,7 @@ from minutehand.ports.provider import (
     Provider,
     PushesEvents,
     ServesSockets,
+    TypesItems,
 )
 from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
@@ -288,6 +304,7 @@ async def play(
                 rules=rules,
                 fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
                 claims=_claims(registry, services),
+                rhythm=declared_rhythm(agent),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -388,6 +405,7 @@ async def fork(
         rules=rules,
         fail_on_integrity=integrity_fails(agent.fail_on_integrity, changed.fail_on_integrity),
         claims=_claims(registry, services),
+        rhythm=declared_rhythm(agent),
     )
     signing = signing_for(agent, changed.people)
 
@@ -487,6 +505,30 @@ def load(state: Path, run_id: str) -> Outcome:
         record=RunRecord.model_validate_json((directory / RECORD).read_text(encoding="utf-8")),
         result=RunResult.model_validate_json((directory / RESULT).read_text(encoding="utf-8")),
     )
+
+
+def recorded_view(state: Path, run_id: str) -> RunView:
+    """What every check reads of a finished run, built again from its world file, its inputs and its record: the
+    view a re-assessment or a test of a check reads."""
+    outcome = load(state, run_id)
+    directory = run_dir(state, run_id)
+    scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
+    agent = AgentUnderTest.model_validate_json((directory / AGENT).read_text(encoding="utf-8"))
+    registry = Registry.installed()
+    judge = _Judge(
+        scenario,
+        None,
+        judging=False,
+        rules=rules_for(agent, scenario),
+        fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
+        claims=_Claims(registry, frozenset()),
+        rhythm=declared_rhythm(agent),
+    )
+    world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
+    try:
+        return judge.view(outcome.record, world)
+    finally:
+        world.close()
 
 
 def runs(state: Path) -> list[Outcome]:
@@ -911,7 +953,7 @@ def rules_for(agent: AgentUnderTest, scenario: Scenario, own: Sequence[Check] = 
     unknown = sorted({r.pattern for r in rules if r.pattern is not None} - {p.key for p in PATTERNS})
     if unknown:
         raise RunRefused(f"the assessments: no pattern {', '.join(unknown)}; the patterns are in docs/patterns/")
-    taken = sorted({r.id for r in rules} & {c.id for c in discover(own)})
+    taken = sorted({r.id for r in rules} & finding_names(own))
     if taken:
         raise RunRefused(f"the assessments: a rule takes the id of a check: {', '.join(taken)}; rename the rule")
     return rules
@@ -957,8 +999,10 @@ class _Judge:
         rules: Sequence[Rule] = (),
         fail_on_integrity: Sequence[IntegrityCheck] = (),
         claims: _Claims | None = None,
+        rhythm: timedelta | None = None,
     ) -> None:
         self._claims = claims
+        self._rhythm = rhythm
         self._rules = list(rules)
         self._fail_on_integrity = list(fail_on_integrity)
         self._scenario = scenario
@@ -971,12 +1015,28 @@ class _Judge:
         self.own_files: OwnDatabases | None = None
         """The agent's own databases for the run being judged, which its notes name as outside forks."""
 
-    async def score(self, record: RunRecord, world: Store) -> RunResult:
+    def _manifests(self) -> list[Manifest]:
+        return self._claims.registry.manifests if self._claims is not None else []
+
+    def _typed(self, world: Store) -> list[TypedItem]:
+        """The run's writes read as items of their kinds, each by the provider that holds it."""
+        events = world.events()
+        manifests = {m.key: m for m in self._manifests()}
+        typers: dict[ProviderKey, TypesItems] = {}
+        if self._claims is not None:
+            for key in sorted({e.entity.provider for e in events} & set(manifests)):
+                provider = self._claims.registry.provider(manifests[key])
+                if isinstance(provider, TypesItems):
+                    typers[key] = provider
+        return typed_items(events, self._scenario, manifests, typers, world, world.calls())
+
+    def view(self, record: RunRecord, world: Store) -> RunView:
+        """What every check reads of the finished run."""
         last = read_checkpoint(world)
         calls = world.calls()
         spans = world.spans()
         claims = self._claims
-        view = view_of(
+        return view_of(
             self._scenario,
             world.events(),
             record.wakes,
@@ -995,9 +1055,29 @@ class _Judge:
             rules=self._rules,
             fail_on_integrity=self._fail_on_integrity,
             stop=record.stop,
+            calls=calls,
+            typed=self._typed(world),
+            item_types=provided_types(self._manifests()),
+            rhythm=self._rhythm,
         )
+
+    async def score(self, record: RunRecord, world: Store) -> RunResult:
+        view = self.view(record, world)
+        model = self._model
+
+        def kept(check: JudgedCheck) -> LanguageModel:
+            assert model is not None
+            return KeptModel(
+                model,
+                world,
+                wrote=check.wrote,
+                prompt_version=check.prompt_version,
+                sim_time=record.ended_at,
+                wake=len(record.wakes),
+            )
+
         result = (
-            await evaluate_judged(view, self._model, stop=record.stop, own=self._own)
+            await evaluate_judged(view, model, stop=record.stop, own=self._own, kept=kept)
             if self._judging
             else evaluate(view, stop=record.stop, own=self._own)
         )

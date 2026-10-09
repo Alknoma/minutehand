@@ -175,12 +175,6 @@ class Messages(Model):
     to_away: bool | None = Field(
         default=None, description="True: to someone away at that moment while a delegate covered for them"
     )
-    conveys: list[str] = Field(
-        default=[],
-        description="Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's "
-        "own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a "
-        "judge model is configured, its findings for review",
-    )
 
 
 class Writes(Model):
@@ -314,6 +308,41 @@ class Transitions(Model):
     )
 
 
+class Calls(Model):
+    """The agent's own HTTP calls, answered or refused, each counted at the moment it was made: what it read, polled
+    and tried, beside what it changed. Calls Minutehand made as a person, and tunnels relayed unopened, are not the
+    agent's calls and are never counted."""
+
+    host: list[str] = Field(default=[], description="To any of these hosts, exactly, in any case; empty: to any")
+    method: list[str] = Field(default=[], description="With any of these methods (GET, POST, ...); empty: any")
+    route: list[str] = Field(
+        default=[],
+        description="At any of these paths, the query left out; `{name}` stands for one segment of it, so "
+        "`/v1/requests/{id}` is every request; empty: at any",
+    )
+    status: list[str] = Field(
+        default=[],
+        description="Answered with any of these statuses: a number (`400`) or a class (`4xx`); empty: any",
+    )
+    refused: bool | None = Field(
+        default=None,
+        description="True: answered 400 or more, by the service or because nothing claimed its host; False: answered "
+        "below 400",
+    )
+    answer_changed: bool | None = Field(
+        default=None,
+        description="True: its answer differed from the answer to the agent's previous call of the same method and "
+        "path (or there was none); False: it answered as that one had, so the call learned nothing new",
+    )
+
+    @model_validator(mode="after")
+    def _statuses(self) -> Self:
+        for said in self.status:
+            if not re.fullmatch(r"[1-5](?:[0-9]{2}|xx)", said):
+                raise ValueError(f"calls: status {said!r} is a status (404) or a class of them (4xx)")
+        return self
+
+
 class Count(Model):
     """Which facts a rule counts, and between which moments."""
 
@@ -329,6 +358,7 @@ class Count(Model):
     stored: StoredItems | None = None
     replies: Replies | None = None
     transitions: Transitions | None = None
+    calls: Calls | None = None
     since: MomentText | None = Field(default=None, description="From this moment, inclusive; absent: the start")
     until: MomentText | None = Field(default=None, description="To this moment, inclusive; absent: the end")
 
@@ -353,6 +383,7 @@ class Count(Model):
             ("stored", self.stored),
             ("replies", self.replies),
             ("transitions", self.transitions),
+            ("calls", self.calls),
         ]
 
     @property
@@ -374,6 +405,7 @@ _COUNTED = (
     "stored",
     "replies",
     "transitions",
+    "calls",
 )
 _ON_AN_ASK = ("follow_ups", "touches")
 

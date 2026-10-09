@@ -31,7 +31,7 @@ from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import view_of
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import DueClosed, DueEntry
-from minutehand.domain.conversation import PersonCall, Wrote
+from minutehand.domain.conversation import SIDE, PersonCall, Wrote
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Answers, Scenario, Scripted
@@ -371,7 +371,7 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
         cost = prices.cost(p.model, p.input_tokens, p.output_tokens)
         model_rows.append(
             {
-                "side": "person",
+                "side": SIDE[p.wrote].value,
                 "span_id": None,
                 "person_call_id": number,
                 "source": "person",
@@ -412,6 +412,11 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "pattern": f.pattern,
                 "pattern_title": pattern(f.pattern).title if f.pattern is not None else None,
                 "evidence": _json(list(f.evidence)),
+                "calls": _json(list(f.calls)),
+                "assessed_kind": f.assessed.kind.value if f.assessed is not None else None,
+                "item_kind": f.assessed.item.value if f.assessed is not None and f.assessed.item is not None else None,
+                "against": f.assessed.against if f.assessed is not None else None,
+                "judged_by": f.judged.model if f.judged is not None else None,
             }
             for number, f in enumerate(findings, start=1)
         ],

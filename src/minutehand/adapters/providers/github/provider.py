@@ -10,12 +10,23 @@ from minutehand.adapters.providers.github.seed import GitHubSeed, github_seed, s
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.transitions import GitHubTransitions
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import ItemKind, TypedItem, read_as
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import Scenario
+from minutehand.domain.world import RecordSnapshot, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
+
+_KINDS = {
+    "issues": ItemKind.TICKET,
+    "pulls": ItemKind.TICKET,
+    "comments": ItemKind.COMMENT,
+    "reviews": ItemKind.COMMENT,
+    "review_comments": ItemKind.COMMENT,
+}
+"""GitHub's REST resources, by the names its API gives them, that are items of a kind."""
 
 
 class GitHubProvider:
@@ -54,6 +65,15 @@ class GitHubProvider:
         write_faults(github, found.faults, declared=True)
         write_limits(github, found.limits)
         del clock
+
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """`TypesItems`: an issue or a pull request is a ticket; a comment, a review or a review comment is a comment;
+        told by the REST resource the log names it by."""
+        del world
+        after = event.after
+        if not isinstance(after, RecordSnapshot) or after.resource not in _KINDS:
+            return None
+        return read_as(event, _KINDS[after.resource])
 
     def talking(self, target: InboundTarget | None, secret: str | None) -> GitHubTransitions:
         """`TalksToAgent`: what people do on GitHub (`transitions.py`), each move pushed as the webhooks GitHub sends to

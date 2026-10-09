@@ -21,11 +21,13 @@ CHECKS = {
     "around_proxy",
     "assessments",
     "expectations",
+    "items",
     "near_miss_name",
     "unmatched_call",
 }
-"""Minutehand's own: the scenario's words (expectations, protected names), the run's integrity, and the reader of the
-team's rules. None of them says how the agent should behave."""
+"""Minutehand's own: the scenario's words (expectations, protected names), the run's integrity, the reader of the
+team's rules, and the assessment of the agent's effects against the declared world (`items`). None of them holds an
+opinion of how an agent should behave that the scenario does not declare."""
 
 
 def test_the_slowest_reaction_is_a_stretch_of_time_with_no_threshold() -> None:
@@ -77,7 +79,7 @@ def test_the_reference_capture_fails_on_its_own_scenarios_words_and_names_what_d
     assert sorted({f.check for f in result.findings}) == ["expectations", "near_miss_name"]
     assert result.effectiveness.expectations_met == 3 and result.effectiveness.failed_checks == 5
     assert {b.split(":")[0] for b in result.blocked} == {"unmatched_call"}
-    assert result.assessed_by == ["expectations", "near_miss_name"]
+    assert result.assessed_by == ["items", "expectations", "near_miss_name"]
 
 
 def test_a_clean_run_exits_zero_and_the_ledger_is_built_from_the_world() -> None:
@@ -119,7 +121,7 @@ def test_evaluate_run_reads_the_scenarios_own_rules_without_those_it_switches_of
     log.message([dania], 1, text="Any news?")
     world = scenario(dania).model_copy(update={"assess": written, "assess_off": ["no_messages"]})
     result = evaluate_run(world, log.events, [ONE_WAKE], [], unmatched_calls=[], stop=StopReason.AGENT_DONE)
-    assert [f.check for f in result.findings] == ["no_follow_ups"] and result.assessed_by == ["no_follow_ups"]
+    assert [f.check for f in result.findings] == ["no_follow_ups"] and result.assessed_by == ["items", "no_follow_ups"]
 
 
 def _result(failing: bool) -> RunResult:

@@ -393,14 +393,14 @@ Every item the people engine held pending on a person (docs/design-transitions.m
 
 ### `model_calls`
 
-Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made to write what people say. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
+Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
-| `side` | TEXT | agent or person |
+| `side` | TEXT | agent; person (a person's words or move); service (a declared service's); judge (a judged check, or a person's reply checked against what they know); assessor (the reviewer of the agent's effects) |
 | `span_id` | TEXT | The agent's model call span; NULL for a person's |
 | `person_call_id` | INTEGER | A person's model call, numbered from 1; NULL for the agent's |
-| `source` | TEXT | received (the agent exported it), wire (recorded on the wire) or person |
+| `source` | TEXT | received (the agent exported it), wire (recorded on the wire) or person (Minutehand's own) |
 | `person` | TEXT | people.key, for a person's |
 | `wake` | INTEGER | The wake it is placed in |
 | `at` | TEXT | Simulated time: when it arrived (agent) or was made (person); UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
@@ -414,14 +414,14 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
 | `trace_id` | TEXT | The agent's trace |
-| `wrote` | TEXT | For a person's: reply, decision, transition or summary; for a declared service's: service_machine, service_route or service_answer |
+| `wrote` | TEXT | For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or service_answer; for a judge's: judgement or fact_check; for the assessor's: review |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why a person's call failed |
 
 ### `findings`
 
-Every finding the run's checks raised: the team's rules, the scenario's expectations and protected names, the agent's own checks, and the run's integrity checks. Kept in the order `finding_id`.
+Every finding the run's checks raised: the assessment of the agent's effects against the declared world, the team's rules, the scenario's expectations and protected names, the agent's own checks, and the run's integrity checks. Kept in the order `finding_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
@@ -435,6 +435,11 @@ Every finding the run's checks raised: the team's rules, the scenario's expectat
 | `pattern` | TEXT | The pattern that fixes it |
 | `pattern_title` | TEXT | Its title |
 | `evidence` | TEXT | JSON array of the seqs it cites |
+| `calls` | TEXT | JSON array of the agent's calls it cites (calls.call_id) |
+| `assessed_kind` | TEXT | For the assessment of the agent's effects (`items`, `review`): violation, wrong_action or wrong_timing; NULL for any other finding |
+| `item_kind` | TEXT | The kind of item the effect was on: chat_message, email, ticket, ...; NULL: none |
+| `against` | TEXT | The declaration the effect was measured against, named or quoted |
+| `judged_by` | TEXT | The model that judged it, for a judged finding; NULL for a deterministic one |
 
 ### `evidence`
 

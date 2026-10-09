@@ -267,7 +267,12 @@
       "wake INTEGER",
       "pattern TEXT",
       "pattern_title TEXT",
-      "evidence TEXT"
+      "evidence TEXT",
+      "calls TEXT",
+      "assessed_kind TEXT",
+      "item_kind TEXT",
+      "against TEXT",
+      "judged_by TEXT"
     ],
     "evidence": [
       "finding_id INTEGER",

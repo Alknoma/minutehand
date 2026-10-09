@@ -7,6 +7,7 @@ issues. The proxy routes by host alone, so no second provider could claim Calend
 
 from __future__ import annotations
 
+from minutehand.domain.items import CALENDAR_EVENT, COMMENT, DOCUMENT, EMAIL
 from minutehand.domain.provider import DocumentChange, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
@@ -31,4 +32,5 @@ MANIFEST = Manifest(
         DocumentChange.TRASHED,
         DocumentChange.COMMENTED,
     ],
+    item_types=[DOCUMENT, COMMENT, EMAIL, CALENDAR_EVENT],
 )

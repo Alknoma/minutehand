@@ -17,6 +17,8 @@ not something a person does here: it is a fault the scenario declares
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, wire
 from minutehand.adapters.providers.microsoft.app import build_app
 from minutehand.adapters.providers.microsoft.common import error_answer
@@ -37,6 +39,7 @@ from minutehand.adapters.providers.microsoft.state import (
 )
 from minutehand.application.conversations import PushedConversations
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import ItemKind, TypedItem, read_as
 from minutehand.domain.people import (
     Header,
     InboundCredential,
@@ -58,7 +61,7 @@ from minutehand.domain.scenario import (
     Shared,
     Trashed,
 )
-from minutehand.domain.world import Actor, EntityKind, Operation
+from minutehand.domain.world import Actor, EntityKind, Operation, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -200,6 +203,31 @@ class MicrosoftProvider:
 
     # ------------------------------------------------------------------ DeclaresFaults
 
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """`TypesItems`: a Teams message, an Outlook email, a file's content, or a calendar event, each told from its
+        own record as that write left it; an event's times and attendees read from it."""
+        kind = event.entity.kind
+        if kind is EntityKind.DOCUMENT:
+            return read_as(event, ItemKind.DOCUMENT)
+        if kind not in (EntityKind.MESSAGE, EntityKind.RECORD):
+            return None
+        version = next((v for v in world.versions(event.entity) if v.seq == event.seq), None)
+        if kind is EntityKind.MESSAGE:
+            mail = version is not None and _parses(wire.StoredMail, version.body)
+            return read_as(event, ItemKind.EMAIL if mail else ItemKind.CHAT_MESSAGE)
+        if version is None or not _parses(wire.StoredEvent, version.body):
+            return None
+        held = wire.StoredEvent.model_validate_json(version.body)
+        return read_as(event, ItemKind.CALENDAR_EVENT).model_copy(
+            update={
+                "text": f"{held.event.subject}\n{held.event.bodyPreview}".strip(),
+                "people": [a.emailAddress.address for a in held.event.attendees],
+                "starts": held.starts,
+                "ends": held.ends,
+                "conversation": held.conversation,
+            }
+        )
+
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`MicrosoftSeed.faults` and `.holds`, on a world already open, each counted from now."""
         found = fault_fragment(seed.MicrosoftSeed, faults, frozenset({"faults", "holds"}))
@@ -289,3 +317,11 @@ def build() -> MicrosoftProvider:
     """A `Provider` that also `PushesEvents`, `PushesPresses`, `LandsAnswers`, `ChangesDocuments`, `NotifiesChanges`,
     `DeclaresFaults`, `ChangesPeople` and `MintsInboundCredentials`."""
     return MicrosoftProvider()
+
+
+def _parses(model: type[wire.StoredMail] | type[wire.StoredEvent], body: str) -> bool:
+    try:
+        model.model_validate_json(body)
+    except ValidationError:
+        return False
+    return True

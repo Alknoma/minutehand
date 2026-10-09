@@ -11,10 +11,7 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.checks.runner import RunResult, evaluate_judged, view_of
 from minutehand.domain.agent import WakeRequest
-from minutehand.domain.checks import FindingKind
-from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario, Take
 from minutehand.domain.world import Actor, TransitionSnapshot
 from tests.inboxes.product import Approval, Product, serving
@@ -30,7 +27,6 @@ from tests.inboxes.support import (
     scenario,
     sends,
 )
-from tests.support.people import people_model
 from tests.support.rules import rules
 
 FIRST_APPROVAL = """
@@ -250,13 +246,6 @@ TOLD_WHY = """
   count: {messages: {to: [owen], holding: ["{ask.answer}"]}, since: answer}
   at_least: 1
   message: "Owen was not told her answer"
-- id: conveys_why
-  each: ask
-  where: {person: [nadia]}
-  when: {answered: true}
-  count: {messages: {to: [owen], conveys: ["{ask.facts}"]}, since: answer}
-  at_least: 1
-  message: "Owen was not told why, in any words"
 """
 
 
@@ -274,12 +263,7 @@ def _telling(product: Product, words: str) -> Callable[[SqliteStore], Agent]:
     return made
 
 
-async def _judged(played_scn: Scenario, store: SqliteStore, record: RunRecord) -> RunResult:
-    view = view_of(played_scn, store.events(), record.wakes, store.replies(), rules=played_scn.assess, stop=record.stop)
-    return await evaluate_judged(view, people_model(), stop=record.stop, ended=record.ended_at)
-
-
-async def test_gap_15_a_decisions_answer_is_what_it_carries_and_a_judged_rule_reads_its_meaning(
+async def test_gap_15_a_decisions_answer_is_what_it_carries_and_holding_reads_it_word_for_word(
     tmp_path: Path, product: Product
 ) -> None:
     rejecting = deciding(Take(take="reject", fields={"reason": REASON}, facts=[]))
@@ -296,16 +280,9 @@ async def test_gap_15_a_decisions_answer_is_what_it_carries_and_a_judged_rule_re
     # Mutation: an answer read as the decision's text ("reject (reason: ...)") is in no message.
     assert checks_named(exact.result, "tells_owen_why") == []
     assert checks_named(exact.result, "tells_owen_her_answer") == []
-    # Reworded, `holding` cannot see it; `conveys`, a rule the team wrote for a model to judge, can, and only with a
-    # judge: without one it is not read. Mutation: a `conveys` read as text fails the reworded run.
+    # Reworded, `holding` cannot see it: a value is a substring. Whether a reworded relay misreports her is the
+    # shared reviewer's to say (`checks/judged/review.py`), with no rule written for it.
     assert checks_named(reworded.result, "tells_owen_why") == ["Owen was not told why"]
-    assert checks_named(reworded.result, "conveys_why") == []
-    judged = await _judged(scn, reworded.store, reworded.record)
-    assert [f.message for f in judged.findings if f.check == "conveys_why"] == []
-    unsaid = await play(tmp_path / "unsaid", scn, inbox(product), _telling(product, "Nadia said no."))
-    judged = await _judged(scn, unsaid.store, unsaid.record)
-    [missed] = [f for f in judged.findings if f.check == "conveys_why"]
-    assert missed.kind is FindingKind.REVIEW and missed.judged is not None
 
 
 async def test_gap_15_each_input_a_decision_carries_is_a_fact_of_its_own(tmp_path: Path, product: Product) -> None:
