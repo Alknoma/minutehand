@@ -54,9 +54,11 @@ def _python_3_12_3() -> str | None:
 
 
 def test_query_reads_every_order_on_python_3_12_3() -> None:
+    """Under a 3.12.3 interpreter found on this machine, with this environment's packages, whose compiled modules
+    load only under a 3.12."""
     python = _python_3_12_3()
-    if python is None:
-        pytest.skip("no Python 3.12.3 here (`uv python install 3.12.3`)")
+    if python is None or sys.version_info[:2] != (3, 12):
+        pytest.skip("needs a Python 3.12.3 here (`uv python install 3.12.3`) and a 3.12 environment to borrow from")
     script = (
         "import sys; sys.path[:0] = sys.argv[1:3]\n"
         "from minutehand.cli import _parser\n"
