@@ -94,8 +94,8 @@ def test_trace_lists_the_agents_acts_toward_a_person(run: Fixture, capsys: pytes
     assert code == 0
     assert out.splitlines() == [
         f"run {run.run_id}: 2 action(s) of the agent's",
-        f"#4    wake 1   2026-08-24 10:00  message    slack D0SOFIA -> sofia: {QUESTION}  (seq {run.asked})",
-        f"#13   wake 2   2026-08-25 12:00  message    slack D0SOFIA -> sofia: {FOLLOW_UP}  (seq {run.follow_up})",
+        f"action 4    wake 1   2026-08-24 10:00  message    slack D0SOFIA -> sofia: {QUESTION}  (seq {run.asked})",
+        f"action 13   wake 2   2026-08-25 12:00  message    slack D0SOFIA -> sofia: {FOLLOW_UP}  (seq {run.follow_up})",
     ]
 
 
@@ -150,18 +150,22 @@ def test_explain_of_a_reply_names_what_woke_the_wake_and_the_ask_it_answers(
         f"  reply landed: sofia: {ANSWER} (reply 1, seq {run.answered})",
         f"  answers: seq {run.asked} 2026-08-24T10:00:00.000Z agent in slack D0SOFIA: {QUESTION}",
         "after",
-        "  next: #15 memory default/asks/sofia: get asks/sofia",
-        f"  next: #16 message D0OWNER: {TOLD}",
-        '  next: #17 memory default/asks/sofia: put asks/sofia = {"status":"answered"}',
-        '  next: #18 memory default/notes/last: put notes/last = "told the owner"',
+        "  next: action 15 (seq 20): memory default/asks/sofia: get asks/sofia",
+        f"  next: action 16 (seq 21): message D0OWNER: {TOLD}",
+        '  next: action 17 (seq 22): memory default/asks/sofia: put asks/sofia = {"status":"answered"}',
+        f'  next: action 18 (seq {run.late_write}): memory default/notes/last: put notes/last = "told the owner"',
     ]
 
 
 def test_explain_of_a_follow_up_names_the_ask_it_chases(run: Fixture, capsys: pytest.CaptureFixture[str]) -> None:
     _, out, _ = run_cli(capsys, "explain", run.run_id, str(run.follow_up), "--json", "--state", str(run.state))
     found = json.loads(out)
-    assert found["answers"]["seq"] == run.asked
+    assert found["follows_up"]["seq"] == run.asked
+    assert found["answers"] is None  # a follow-up answers nothing: the trial's `explain` said "answers: seq 29"
     assert [d["source"] for d in found["woken_by"]] == ["reported"]
+    _, said, _ = run_cli(capsys, "explain", run.run_id, str(run.follow_up), "--state", str(run.state))
+    assert f"  follows up: seq {run.asked} 2026-08-24T10:00:00.000Z agent in slack D0SOFIA: {QUESTION}" in said
+    assert "  answers:" not in said
     assert found["message"]["joined_by"] == "content"
 
 

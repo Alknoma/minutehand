@@ -21,7 +21,8 @@
     minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
-                                                 it answers, and what followed
+                                                 it answers or follows up, and what followed ("action N" is a place
+                                                 among the agent's acts, never a seq)
     minutehand rm <run_id>... [--state DIR]      remove runs with their forks
     minutehand doctor [--agent <agent.yaml>] [--model-host HOST]... [--agent-host H] [--no-proxy H]... [--json] -- <command...>
                                                  which HTTP clients in the agent's interpreter would go around the

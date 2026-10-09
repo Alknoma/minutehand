@@ -1666,7 +1666,7 @@ Built and tested (`adapters/mcp/server.py`, `minutehand mcp`, `tests/mcp/`): ser
 | `schema()` | the read model's views and columns, and its version (`docs/querying.md`) |
 | `query_run(run_id, sql, limit, offset, prices)` | one read-only SELECT over a run's read model, a page of at most 1,000 rows |
 | `trace(run_id, person, provider, kind, since, until, wake)` | the agent's acts in order (`actions`) |
-| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers, the model call and HTTP call behind it, and the replies, follow-ups and findings after it |
+| `explain(run_id, seq)` | one event: its wake and what woke it, what the agent read first, what it answers (a reply), follows up (a follow-up) or comes after (another message), the model call and HTTP call behind it; the agent's acts named `action N` by their place in `actions`, apart from seqs, and the replies, follow-ups and findings after it |
 
 The command line (`cli.py`) does the same:
 
