@@ -39,7 +39,7 @@ async def test_seed_3_the_quote_the_agent_made_up_and_resubmitted_is_found_as_an
     assert invented.assessed is not None and invented.assessed.kind is AssessedKind.VIOLATION
     assert invented.assessed.item is ItemKind.SERVICE_ITEM and "1200" in invented.assessed.against
     assert invented.judged is not None and invented.judged.prompt_version == REVIEW_PROMPT_VERSION
-    assert report.notes == ["14 of the agent's effects reviewed by people-fake (item-review/1)"]
+    assert report.notes == [f"14 of the agent's effects reviewed by people-fake ({REVIEW_PROMPT_VERSION})"]
 
 
 async def test_seed_5_the_order_after_sams_good_to_proceed_is_found_as_acting_before_the_decision() -> None:
@@ -58,6 +58,9 @@ def test_the_reviewer_is_shown_the_declared_world_as_it_stood_and_what_the_agent
 
     assert shown.startswith("Goal: Order 40 laptops for the new starters (PO-7731)")
     assert "- Nadia Ek <nadia@example.com>; responds for the service approvals" in shown
+    # What a person knows is shown as theirs: Sam is the one to ask for the cost centre, and the agent quoting it
+    # before Sam said it would be invented.
+    assert "  knows (theirs alone until they say it): The cost centre for new-starter equipment is CC-4410." in shown
     assert "machine: created pending; approve: pending -> approved by person" in shown
     assert "- approvals req_121: state pending; only a person can move it next (approve, reject, ask_back)" in shown
     assert "You're good to proceed" in shown  # Sam's words, as the agent heard them
