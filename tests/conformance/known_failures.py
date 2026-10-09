@@ -23,12 +23,6 @@ class Known:
 KNOWN: tuple[Known, ...] = (
     Known(
         "asana",
-        Property.FAMILY,
-        "tickets",
-        'VendorRefused: link two tasks: 404 {"errors": [{"message": "No matching route for request", "help": "For more information on API status codes and how to handle them, read the docs ',
-    ),
-    Known(
-        "asana",
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1190000000000000 -> 1190000000000001",

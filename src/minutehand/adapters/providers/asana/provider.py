@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import TypeAdapter, ValidationError
 
-from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana import state, webhooks, wire
 from minutehand.adapters.providers.asana.app import build_app
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, seeded_gid
@@ -132,34 +132,36 @@ class AsanaProvider:
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """What a person can make the task say as its status source reads it: each place (the completed box, a
         section, the status field's option) that means another of open, done or cancelled, as a person leaves it
-        when they move it there, each with a comment."""
+        when they move it there, each with a comment. An approval task is decided instead: `approved`, `rejected`
+        or `changes_requested`, whichever it is not now, each with a comment."""
         del by, who
         asana = AsanaWorld(world)
         task = _task(asana, item)
+        words = (
+            [d.value for d in DECISIONS if d is not task.approval_status]
+            if task.resource_subtype is wire.TaskSubtype.APPROVAL
+            else _reachable(asana, task)
+        )
         return [
             Offer(
-                name=words,
-                to_state=words,
+                name=w,
+                to_state=w,
                 fields=[OfferField(name=COMMENT, description="A comment added to the task as it moves")],
             )
-            for words in _reachable(asana, task)
+            for w in words
         ]
 
     async def apply(
         self, item: EntityRef, offer: str, by: Actor, who: Person | None, content: str, world: Store, clock: Clock
     ) -> Transition:
-        """The person moves the task as a fate or a happening moves it (`AsanaWorld.moved`), with their comment as
-        a story, as themselves."""
+        """The person moves the task as a fate or a happening moves it (`AsanaWorld.moved`), or decides an approval
+        task (`approved`, `rejected`, `changes_requested`: `completed` and `approval_status` set together, as the
+        reference says they are kept in step), with their comment as a story, as themselves; the webhooks that hear of
+        it are sent what they are owed."""
         asana = AsanaWorld(world)
         task = _task(asana, item)
         if who is None:
             raise ValueError("an asana task is moved by a person: name them")
-        target = next(
-            (t for t in TicketState if t is not asana.state_of(task) and _words_if_moved(asana, task, t) == offer),
-            None,
-        )
-        if target is None:
-            raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
         try:
             given = _CONTENT.validate_json(content)
         except ValidationError as e:
@@ -167,29 +169,54 @@ class AsanaProvider:
         unknown = sorted(set(given) - {COMMENT})
         if unknown:
             raise ValueError(f"an asana move takes a comment, not {', '.join(unknown)}")
-        moved = asana.moved(task, target, now=clock.now())
-        asana.put_task(moved, operation=Operation.UPDATE, actor=by, who=who.key, content=content)
+        person = state.user_gid(who.key)
+        if task.resource_subtype is wire.TaskSubtype.APPROVAL:
+            decision = next((d for d in DECISIONS if d.value == offer and d is not task.approval_status), None)
+            if decision is None:
+                raise ValueError(f"asana approval {task.gid} offers no decision {offer!r}")
+            at = wire.stamp(clock.now())
+            moved = task.model_copy(
+                update={
+                    "completed": True,
+                    "approval_status": decision,
+                    "completed_at": task.completed_at if task.completed else at,
+                    "modified_at": at,
+                }
+            )
+        else:
+            target = next(
+                (t for t in TicketState if t is not asana.state_of(task) and _words_if_moved(asana, task, t) == offer),
+                None,
+            )
+            if target is None:
+                raise ValueError(f"asana task {task.gid} offers no move to {offer!r}")
+            moved = asana.moved(task, target, now=clock.now())
+        asana.put_task(moved, operation=Operation.UPDATE, actor=by, who=who.key, content=content, by=person)
         if COMMENT in given and given[COMMENT].strip():
             asana.put_story(
                 wire.AsanaStory(
                     gid=asana.next_gid(),
                     text=given[COMMENT],
                     task=task.gid,
-                    created_by=state.user_gid(who.key),
+                    created_by=person,
                     created_at=wire.stamp(clock.now()),
                 ),
                 actor=by,
+                by=person,
             )
         moves = world.children(MANIFEST.key, EntityKind.TRANSITION, item_parent(item), limit=1000)
         last = max(moves, key=lambda s: s.seq)
         event = next(e for e in world.events(since=last.seq - 1) if e.seq == last.seq)
         assert isinstance(event.after, TransitionSnapshot)
+        await webhooks.deliver(asana, clock)
         return Transition.of(event)
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
-        """Never: Asana pushes nothing to the agent here; it finds a person's move on its next read."""
-        del item, who, world, clock
-        return False
+        """Whether a webhook on the task, or on a project or task above it, hears of the move: that push is a wake.
+        Otherwise the agent finds a person's move on its next read."""
+        del who, clock
+        asana = AsanaWorld(world)
+        return webhooks.watching(asana, asana.scope(_task(asana, item)))
 
     def act(self, happening: TicketHappening, scenario: Scenario, world: Store, clock: Clock) -> None:
         """The person does what the happening says to the seeded task, as themself. A task no longer there
@@ -208,6 +235,7 @@ class AsanaProvider:
                     operation=Operation.UPDATE,
                     actor=Actor.PERSON,
                     who=happening.person,
+                    by=person,
                 )
             case Reassigns():
                 to = state.user_gid(happening.action.to) if happening.action.to is not None else None
@@ -215,6 +243,7 @@ class AsanaProvider:
                     task.model_copy(update={"assignee": to, "modified_at": now}),
                     operation=Operation.UPDATE,
                     actor=Actor.PERSON,
+                    by=person,
                 )
             case Comments():
                 asana.put_story(
@@ -226,10 +255,14 @@ class AsanaProvider:
                         created_at=now,
                     ),
                     actor=Actor.PERSON,
+                    by=person,
                 )
             case Deletes():
                 asana.delete_task(task, actor=Actor.PERSON)
 
+
+DECISIONS = (wire.ApprovalStatus.APPROVED, wire.ApprovalStatus.REJECTED, wire.ApprovalStatus.CHANGES_REQUESTED)
+"""What an approver decides: the `approval_status` values that translate to `completed` true."""
 
 COMMENT = "comment"
 """What a person's move takes besides where it goes: a comment, kept as a story."""

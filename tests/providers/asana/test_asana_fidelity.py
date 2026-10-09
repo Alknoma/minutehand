@@ -73,7 +73,7 @@ async def test_opt_fields_paths_may_start_with_this_and_group_terms(agent: httpx
 @pytest.mark.parametrize(
     ("field", "named"),
     [
-        ("followers", "followers"),
+        ("hearted", "hearted"),
         ("subtasks.name", "subtasks"),
         ("html_notes", "html_notes"),
         ("assignee.photo", "assignee.photo"),
@@ -84,7 +84,7 @@ async def test_opt_fields_paths_may_start_with_this_and_group_terms(agent: httpx
 async def test_a_field_this_fake_never_answers_is_refused_501_naming_it(
     agent: httpx.AsyncClient, field: str, named: str
 ) -> None:
-    """A field Asana has that is not served here (`followers`), one Asana's document does not give a task
+    """A field Asana has that is not served here (`hearted`), one Asana's document does not give a task
     (`subtasks`), or a path into a string: answering without it would say it is absent or empty."""
     answered = await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": f"name,{field}"})
     assert unserved(answered) == f"opt_fields={named}"
@@ -92,8 +92,7 @@ async def test_a_field_this_fake_never_answers_is_refused_501_naming_it(
 
 async def test_a_full_task_leaves_out_what_is_opt_in_until_it_is_asked_for(agent: httpx.AsyncClient) -> None:
     """Asana's OpenAPI document marks `num_subtasks`, `dependencies` and `dependents` [Opt In] (TaskBase), and gives
-    no task a `subtasks` field. Nothing in the world links tasks (`addDependencies` is refused by name), so a task's
-    dependencies are none."""
+    no task a `subtasks` field. A task nothing was linked to has no dependencies or dependents."""
     full = got(await agent.get(f"/tasks/{INCIDENT}"))
     assert not {"num_subtasks", "dependencies", "dependents", "subtasks", "html_notes"} & set(full)
     assert got(await agent.get(f"/tasks/{INCIDENT}", params={"opt_fields": "num_subtasks"}))["num_subtasks"] == 1
