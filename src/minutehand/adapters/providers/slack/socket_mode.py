@@ -22,10 +22,12 @@ state. The tickets handed out and spent are the state, in the world's log.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from pydantic import JsonValue, ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -78,6 +80,14 @@ def open_connection(slack: SlackWorld) -> wire.ConnectionsOpen:
     return wire.ConnectionsOpen(url=f"wss://{HOST}{PATH}?ticket={ticket}&app_id={slack.team.app_id}")
 
 
+class Recorder(Protocol):
+    """Where each send of an event is told as it ends (`inbound.sent`)."""
+
+    def __call__(
+        self, *, url: str, attempt: int, reason: str | None, status: int | None, failure: str | None, seconds: float
+    ) -> object: ...
+
+
 class SocketNotAcknowledged(AgentFailed):
     """The agent took no event over Socket Mode: it had no connection open, or never acknowledged the envelope."""
 
@@ -119,12 +129,24 @@ class Hub:
         if waiting is not None and not waiting.done():
             waiting.set_result(ack.payload)
 
-    async def push(self, callback: wire.EventCallback) -> None:
-        """Send `callback` as an `events_api` envelope on the newest connection, again until it is acknowledged."""
+    async def push(self, callback: wire.EventCallback, *, record: Recorder | None = None) -> None:
+        """Send `callback` as an `events_api` envelope on the newest connection, again until it is acknowledged;
+        each send told to `record` as it ends."""
         for attempt in range(PUSH_ATTEMPTS):
             envelope_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{HOST}/{callback.event_id}/{attempt}"))
             envelope = wire.SocketEnvelope(envelope_id=envelope_id, payload=callback, retry_attempt=attempt)
-            if await self._send(envelope_id, wire.envelope_body(envelope)) is not None:
+            began = time.monotonic()
+            acked = await self._send(envelope_id, wire.envelope_body(envelope))
+            if record is not None:
+                record(
+                    url=f"wss://{HOST}{PATH}",
+                    attempt=attempt,
+                    reason=None,  # Socket Mode gives an envelope's retry no reason
+                    status=None,
+                    failure=None if acked is not None else f"not acknowledged within {ACK_WITHIN:g}s",
+                    seconds=time.monotonic() - began,
+                )
+            if acked is not None:
                 return
         raise SocketNotAcknowledged(
             f"the agent did not acknowledge Socket Mode event {callback.event_id} ({callback.event.type}) in "

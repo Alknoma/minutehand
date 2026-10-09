@@ -69,9 +69,20 @@ the built read model as a plain SQLite file, which any client reads with no Minu
   ```yaml
   prices:
     - {model: gpt-4o-mini, input_per_million: 0.15, output_per_million: 0.6, currency: USD}
+    - {model: claude-haiku-4-5, input_per_million: 1.0, output_per_million: 5.0,
+       cache_read_per_million: 0.1, cache_creation_per_million: 1.25}
   ```
 
-  A call to a model it does not name, or with a token count unknown, has no cost.
+  A call to a model it does not name, or with a token count unknown, has no cost. Input tokens are priced by kind:
+  `uncached_input_tokens` at `input_per_million`, `cache_read_tokens` at `cache_read_per_million` and
+  `cache_creation_tokens` at `cache_creation_per_million`; a call with cached tokens of a kind the file prices not
+  has no cost, rather than one at a guessed rate.
+- **Tokens.** `model_calls.input_tokens` is every input token, cached ones included, as OpenTelemetry's GenAI
+  conventions count `gen_ai.usage.input_tokens`. Vendors count differently: Anthropic's `usage.input_tokens` leaves
+  out `cache_read_input_tokens` and `cache_creation_input_tokens`, so a call recorded on the wire sums the three;
+  OpenAI's `prompt_tokens` already holds the `cached_tokens` it details. A span the agent exported is read as the
+  conventions say (`gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` beside an
+  `input_tokens` that includes them): an exporter that counts input without its cached tokens shows too few.
 
 ## The contract
 
@@ -112,7 +123,7 @@ The run being read, one row: a fork reads its parent's log up to the checkpoint 
 | `starts_at` | TEXT | When the scenario starts, simulated; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `ended_at` | TEXT | When the run ended, simulated; NULL while it runs |
 | `stop` | TEXT | How it stopped (agent_done, wake_limit, deadline_passed, ...); NULL while it runs |
-| `verdict` | TEXT | passed, failed, unfinished, not_judged, tool_failed or environment_failed; NULL while it runs |
+| `verdict` | TEXT | passed, failed, unfinished, not_judged, tool_failed, environment_failed or simulation_incomplete; NULL while it runs |
 | `verdict_words` | TEXT | The verdict in one sentence, as every surface states it |
 | `finished` | INTEGER | 1 once the run has finished and been judged, else 0 |
 | `read_model_version` | INTEGER | The read model's version |
@@ -393,14 +404,14 @@ Every item the people engine held pending on a person (docs/design-transitions.m
 
 ### `model_calls`
 
-Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made to write what people say. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
+Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
-| `side` | TEXT | agent or person |
+| `side` | TEXT | agent; person (a person's words or move); service (a declared service's); judge (a judged check, or a person's reply checked against what they know); assessor (the reviewer of the agent's effects) |
 | `span_id` | TEXT | The agent's model call span; NULL for a person's |
 | `person_call_id` | INTEGER | A person's model call, numbered from 1; NULL for the agent's |
-| `source` | TEXT | received (the agent exported it), wire (recorded on the wire) or person |
+| `source` | TEXT | received (the agent exported it), wire (recorded on the wire) or person (Minutehand's own) |
 | `person` | TEXT | people.key, for a person's |
 | `wake` | INTEGER | The wake it is placed in |
 | `at` | TEXT | Simulated time: when it arrived (agent) or was made (person); UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
@@ -409,19 +420,22 @@ Model calls: the agent's, from the telemetry it exported or the wire with --reco
 | `duration_ms` | REAL | In milliseconds (agent) |
 | `model` | TEXT | The model |
 | `prompt_version` | TEXT | The prompt's version (person) |
-| `input_tokens` | INTEGER | Tokens in, as reported |
+| `input_tokens` | INTEGER | Every input token, as reported, cached ones included (an Anthropic call's input_tokens, cache_read_input_tokens and cache_creation_input_tokens summed) |
 | `output_tokens` | INTEGER | Tokens out, as reported |
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
 | `trace_id` | TEXT | The agent's trace |
-| `wrote` | TEXT | For a person's: reply, decision, transition or summary; for a declared service's: service_machine, service_route or service_answer |
+| `wrote` | TEXT | For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or service_answer; for a judge's: judgement or fact_check; for the assessor's: review |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why a person's call failed |
+| `cache_read_tokens` | INTEGER | Of input_tokens, those read from the prompt cache; NULL when not reported |
+| `cache_creation_tokens` | INTEGER | Of input_tokens, those written to the prompt cache (Anthropic); NULL when not reported |
+| `uncached_input_tokens` | INTEGER | Of input_tokens, those billed at the base input rate: input_tokens less both cached counts |
 
 ### `findings`
 
-Every finding the run's checks raised: the team's rules, the scenario's expectations and protected names, the agent's own checks, and the run's integrity checks. Kept in the order `finding_id`.
+Every finding the run's checks raised: the assessment of the agent's effects against the declared world, the team's rules, the scenario's expectations and protected names, the agent's own checks, and the run's integrity checks. Kept in the order `finding_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
@@ -435,6 +449,11 @@ Every finding the run's checks raised: the team's rules, the scenario's expectat
 | `pattern` | TEXT | The pattern that fixes it |
 | `pattern_title` | TEXT | Its title |
 | `evidence` | TEXT | JSON array of the seqs it cites |
+| `calls` | TEXT | JSON array of the agent's calls it cites (calls.call_id) |
+| `assessed_kind` | TEXT | For the assessment of the agent's effects (`items`, `review`): violation, wrong_action or wrong_timing; NULL for any other finding |
+| `item_kind` | TEXT | The kind of item the effect was on: chat_message, email, ticket, ...; NULL: none |
+| `against` | TEXT | The declaration the effect was measured against, named or quoted |
+| `judged_by` | TEXT | The model that judged it, for a judged finding; NULL for a deterministic one |
 
 ### `evidence`
 
@@ -444,6 +463,42 @@ Each seq a finding cites, one row each, to join findings to events, messages and
 |---|---|---|
 | `finding_id` | INTEGER | findings.finding_id |
 | `seq` | INTEGER | events.seq |
+
+### `simulation_health`
+
+The simulated world's health, kept apart from the agent's findings: what did not play as the files declare (incomplete: the run is simulation_incomplete) and how much of what they declare the run reached (coverage). Kept in the order `health_id`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `health_id` | INTEGER | Numbered from 1, in the order the report lists them |
+| `kind` | TEXT | responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, waits_by_declaration, never_exercised or step_never_fired |
+| `incomplete` | INTEGER | 1 when it makes the run simulation_incomplete; 0 for coverage |
+| `words` | TEXT | What happened, in one sentence |
+| `person` | TEXT | people.key it is about; NULL when none |
+| `provider` | TEXT | The provider or declared service of what it is about; NULL when nothing |
+| `entity_kind` | TEXT | The kind of what it is about; NULL when nothing |
+| `entity_id` | TEXT | What it is about, within its provider and kind; NULL when nothing |
+| `since` | TEXT | When it began, simulated; NULL when it has no moment; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `evidence` | TEXT | JSON array of the seqs it cites |
+
+### `pushes`
+
+Every send of an event the world pushed to the agent (a Slack event, a declared service's push), each retry a row of its own, with how the agent's address answered: duplicates and timeouts are counted here. Kept in the order `seq`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `seq` | INTEGER | events.seq of the send |
+| `at` | TEXT | Simulated time; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `wake` | INTEGER | The wake in progress |
+| `provider` | TEXT | The provider or declared service that pushed it |
+| `item` | TEXT | What it was about: a Slack event's event_id, a declared service's item id |
+| `url` | TEXT | The agent's address it was sent to |
+| `attempt` | INTEGER | 0 for the first send, then each retry's number |
+| `retry_reason` | TEXT | Why it was sent again, in the service's words; NULL for a first send |
+| `status` | INTEGER | The address's HTTP status; NULL when none came |
+| `failure` | TEXT | Why it was not delivered; NULL when it was |
+| `seconds` | REAL | How long the address took to answer, real time; NULL when not measured |
+| `delivered` | INTEGER | 1 when the address answered 2xx |
 
 ### `spans`
 

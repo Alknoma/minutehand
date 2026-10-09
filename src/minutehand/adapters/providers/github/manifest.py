@@ -7,10 +7,16 @@ entity kind: everything it holds is a record.
 
 from __future__ import annotations
 
+from minutehand.domain.items import COMMENT, TICKET
 from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="github",
     tier=Tier.FINISHED,
     hosts=["api.github.com"],
+    item_types=[
+        TICKET.model_copy(update={"entity": EntityKind.RECORD}),
+        COMMENT.model_copy(update={"entity": EntityKind.RECORD}),
+    ],
 )

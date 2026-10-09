@@ -32,7 +32,7 @@ class EntityKind(StrEnum):
     )
     SERVICE_ITEM = "service_item"  # an item filed with a declared service, as its state stood after each transition
     SERVICE_EVENT = "service_event"  # a write to a declared service that moves no item: an update, a subscription
-    PUSH = "push"  # a call a declared service pushed to an address the agent gave it
+    PUSH = "push"  # one send of an event the world pushed to an address the agent gave it
 
 
 class Operation(StrEnum):
@@ -611,15 +611,19 @@ class ServiceEventSnapshot(Model):
 
 
 class PushSnapshot(Model):
-    """A call a declared service pushed to an address the agent gave it, and how the address answered."""
+    """One send of an event the world pushed to an address the agent gave it (a declared service's push, a Slack
+    event), and how the address answered: each retry is a send of its own, `attempt` counted up."""
 
     kind: Literal["push"] = "push"
-    service: ProviderKey
-    item: str
+    service: ProviderKey = Field(description="The declared service or provider that pushed it")
+    item: str = Field(description="What it was about: a declared service's item id, a Slack event's `event_id`")
     url: str
     body: str = Field(description="What was sent, as JSON")
     status: int | None = Field(default=None, description="The answer's status; None when none came")
     failure: str | None = Field(default=None, description="Why it was not delivered")
+    attempt: int = Field(default=0, ge=0, description="0 for the first send, then each retry's number")
+    retry_reason: str | None = Field(default=None, description="Why it was sent again, in the service's own words")
+    seconds: float | None = Field(default=None, ge=0, description="How long the address took to answer, real time")
 
 
 class NextWakeSnapshot(Model):

@@ -31,7 +31,7 @@ from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import view_of
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import DueClosed, DueEntry
-from minutehand.domain.conversation import PersonCall, Wrote
+from minutehand.domain.conversation import SIDE, PersonCall, Wrote
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Answers, Scenario, Scripted
@@ -58,6 +58,7 @@ from minutehand.domain.world import (
     Operation,
     PendingSnapshot,
     PendingStatus,
+    PushSnapshot,
     RecordedCall,
     StoredSnapshot,
     TransitionSnapshot,
@@ -341,7 +342,13 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     model_rows: list[Row] = []
     for s in agent_calls:
         call = model_call(s, traces[s.span.trace_id])
-        cost = prices.cost(call.model, call.input_tokens, call.output_tokens)
+        cost = prices.cost(
+            call.model,
+            call.uncached_input_tokens,
+            call.output_tokens,
+            cache_read_tokens=call.cache_read_tokens,
+            cache_creation_tokens=call.cache_creation_tokens,
+        )
         model_rows.append(
             {
                 "side": "agent",
@@ -365,13 +372,27 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "wrote_seqs": _json(list(wrote[s.span.span_id])) if s.span.span_id in wrote else "[]",
                 "replayed": None,
                 "failure": None,
+                "cache_read_tokens": call.cache_read_tokens,
+                "cache_creation_tokens": call.cache_creation_tokens,
+                "uncached_input_tokens": call.uncached_input_tokens,
             }
         )
     for number, p in enumerate(person_calls, start=1):
-        cost = prices.cost(p.model, p.input_tokens, p.output_tokens)
+        uncached = (
+            None
+            if p.input_tokens is None
+            else p.input_tokens - (p.cache_read_tokens or 0) - (p.cache_creation_tokens or 0)
+        )
+        cost = prices.cost(
+            p.model,
+            uncached,
+            p.output_tokens,
+            cache_read_tokens=p.cache_read_tokens,
+            cache_creation_tokens=p.cache_creation_tokens,
+        )
         model_rows.append(
             {
-                "side": "person",
+                "side": SIDE[p.wrote].value,
                 "span_id": None,
                 "person_call_id": number,
                 "source": "person",
@@ -392,6 +413,9 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "wrote_seqs": _json([first_seq[p.asked]] if p.asked is not None and p.asked in first_seq else []),
                 "replayed": int(p.replayed),
                 "failure": p.failure,
+                "cache_read_tokens": p.cache_read_tokens,
+                "cache_creation_tokens": p.cache_creation_tokens,
+                "uncached_input_tokens": uncached,
             }
         )
     model_rows.sort(key=lambda r: (str(r["at"]), str(r["span_id"] or ""), int(r["person_call_id"] or 0)))
@@ -412,6 +436,11 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "pattern": f.pattern,
                 "pattern_title": pattern(f.pattern).title if f.pattern is not None else None,
                 "evidence": _json(list(f.evidence)),
+                "calls": _json(list(f.calls)),
+                "assessed_kind": f.assessed.kind.value if f.assessed is not None else None,
+                "item_kind": f.assessed.item.value if f.assessed is not None and f.assessed.item is not None else None,
+                "against": f.assessed.against if f.assessed is not None else None,
+                "judged_by": f.judged.model if f.judged is not None else None,
             }
             for number, f in enumerate(findings, start=1)
         ],
@@ -422,6 +451,46 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
             {"finding_id": number, "seq": seq}
             for number, f in enumerate(findings, start=1)
             for seq in sorted(set(f.evidence))
+        ],
+    )
+    simulation = outcome.result.simulation if outcome is not None else []
+    tables.put(
+        "simulation_health",
+        [
+            {
+                "health_id": number,
+                "kind": h.kind.value,
+                "incomplete": int(h.incomplete),
+                "words": h.words,
+                "person": h.person,
+                "provider": h.entity.provider if h.entity is not None else None,
+                "entity_kind": h.entity.kind.value if h.entity is not None else None,
+                "entity_id": h.entity.external_id if h.entity is not None else None,
+                "since": at(h.since),
+                "evidence": _json(list(h.evidence)),
+            }
+            for number, h in enumerate(simulation, start=1)
+        ],
+    )
+    tables.put(
+        "pushes",
+        [
+            {
+                "seq": e.seq,
+                "at": at(e.sim_time),
+                "wake": e.wake,
+                "provider": e.after.service,
+                "item": e.after.item,
+                "url": e.after.url,
+                "attempt": e.after.attempt,
+                "retry_reason": e.after.retry_reason,
+                "status": e.after.status,
+                "failure": e.after.failure,
+                "seconds": e.after.seconds,
+                "delivered": int(e.after.status is not None and 200 <= e.after.status < 300),
+            }
+            for e in events
+            if isinstance(e.after, PushSnapshot)
         ],
     )
     tables.put(

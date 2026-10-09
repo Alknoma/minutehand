@@ -95,8 +95,8 @@ def described(traced: Traced) -> str:
             else f"span {a['span_id']}"
         )
         lines.append(
-            f"#{a['position']:<4} wake {a['wake']:<3} {when}  {a['kind']:<10} {a['provider'] or ''} {a['target'] or ''}"
-            f"{to}: {a['summary'] or ''}  ({ref})"
+            f"action {a['position']:<4} wake {a['wake']:<3} {when}  {a['kind']:<10} {a['provider'] or ''} "
+            f"{a['target'] or ''}{to}: {a['summary'] or ''}  ({ref})"
         )
     return "\n".join(lines) + "\n"
 
@@ -120,9 +120,14 @@ class Explained(Model):
     )
     model_call: Record | None = Field(description="The agent's model call that wrote it (model_calls)")
     answers: Record | None = Field(
-        description="The earlier message it answers: for a person's reply, the agent's message it answers; for the "
-        "agent's follow-up, the ask it chases; for another agent message, the last person's message before it in the "
-        "same conversation (messages)"
+        description="For a person's reply: the agent's message it answers (messages); None otherwise"
+    )
+    follows_up: Record | None = Field(
+        description="For the agent's follow-up: the ask it chases, still unanswered when it was sent (messages)"
+    )
+    after_message: Record | None = Field(
+        description="For any other agent message: the last person's message before it in the same conversation, "
+        "which it may or may not respond to (messages)"
     )
     replies: list[Record] = Field(description="Replies people gave to it (replies)")
     follow_ups: list[Record] = Field(description="The agent's follow-ups on it, when it opened a wait (messages)")
@@ -173,13 +178,15 @@ def explain(db: sqlite3.Connection, run_id: str, seq: int) -> Explained:
         else None
     )
     answers: Record | None = None
+    follows_up: Record | None = None
+    after_message: Record | None = None
     if message is not None:
         if message["answers_seq"] is not None:
             answers = _one(db, "SELECT * FROM messages WHERE seq = ?", [message["answers_seq"]])
         elif message["is_follow_up"] == 1 and message["ask_seq"] is not None:
-            answers = _one(db, "SELECT * FROM messages WHERE seq = ?", [message["ask_seq"]])
+            follows_up = _one(db, "SELECT * FROM messages WHERE seq = ?", [message["ask_seq"]])
         elif message["from_actor"] == "agent":
-            answers = _one(
+            after_message = _one(
                 db,
                 "SELECT * FROM messages WHERE from_actor = 'person' AND provider = ? AND channel = ? AND seq < ?"
                 " ORDER BY seq DESC LIMIT 1",
@@ -200,6 +207,8 @@ def explain(db: sqlite3.Connection, run_id: str, seq: int) -> Explained:
         read_before=read_before,
         model_call=model_call,
         answers=answers,
+        follows_up=follows_up,
+        after_message=after_message,
         replies=_records(db, "SELECT * FROM replies WHERE answers_seq = ? ORDER BY reply_id", [seq]),
         follow_ups=_records(db, "SELECT * FROM messages WHERE ask_seq = ? AND is_follow_up = 1 ORDER BY seq", [seq]),
         findings=_records(
@@ -214,6 +223,13 @@ def explain(db: sqlite3.Connection, run_id: str, seq: int) -> Explained:
 
 def _line(prefix: str, text: str) -> str:
     return f"  {prefix}: {text}"
+
+
+def _act(a: Record) -> str:
+    """One of the agent's acts, numbered as `actions.position` and, when it changed the world, by its seq: the two
+    numbers are named apart, since an act's position is not a seq."""
+    seq = f" (seq {a['seq']})" if a["seq"] is not None else ""
+    return f"action {a['position']}{seq}: {a['kind']} {a['target']}: {a['summary']}"
 
 
 def _said(m: Record) -> str:
@@ -248,9 +264,13 @@ def explanation(found: Explained) -> str:
             _line("reply landed", f"{r['person']}: {r['text']!s:.120} (reply {r['reply_id']}, seq {r['seq']})")
         )
     for a in found.read_before:
-        lines.append(_line("read first", f"#{a['position']} {a['kind']} {a['target']}: {a['summary']}"))
+        lines.append(_line("read first", _act(a)))
     if found.answers is not None:
         lines.append(_line("answers", _said(found.answers)))
+    if found.follows_up is not None:
+        lines.append(_line("follows up", _said(found.follows_up)))
+    if found.after_message is not None:
+        lines.append(_line("after their message", _said(found.after_message)))
     if found.model_call is not None:
         m = found.model_call
         joined = found.message["joined_by"] if found.message is not None else None
@@ -279,7 +299,7 @@ def explanation(found: Explained) -> str:
     for f in found.findings:
         lines.append(_line("finding", f"{f['kind']} {f['check_id']}: {f['message']} (finding {f['finding_id']})"))
     for a in found.after:
-        lines.append(_line("next", f"#{a['position']} {a['kind']} {a['target']}: {a['summary']}"))
+        lines.append(_line("next", _act(a)))
     if not (found.replies or found.follow_ups or found.findings or found.after):
         lines.append("  nothing followed in this run's record")
     return "\n".join(lines) + "\n"

@@ -240,6 +240,76 @@
       "title": "Booked",
       "type": "object"
     },
+    "Calls": {
+      "additionalProperties": false,
+      "description": "The agent's own HTTP calls, answered or refused, each counted at the moment it was made: what it read, polled\nand tried, beside what it changed. Calls Minutehand made as a person, and tunnels relayed unopened, are not the\nagent's calls and are never counted.",
+      "properties": {
+        "answer_changed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: its answer differed from the answer to the agent's previous call of the same method and path (or there was none); False: it answered as that one had, so the call learned nothing new",
+          "title": "Answer Changed"
+        },
+        "host": {
+          "default": [],
+          "description": "To any of these hosts, exactly, in any case; empty: to any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Host",
+          "type": "array"
+        },
+        "method": {
+          "default": [],
+          "description": "With any of these methods (GET, POST, ...); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Method",
+          "type": "array"
+        },
+        "refused": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "True: answered 400 or more, by the service or because nothing claimed its host; False: answered below 400",
+          "title": "Refused"
+        },
+        "route": {
+          "default": [],
+          "description": "At any of these paths, the query left out; `{name}` stands for one segment of it, so `/v1/requests/{id}` is every request; empty: at any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Route",
+          "type": "array"
+        },
+        "status": {
+          "default": [],
+          "description": "Answered with any of these statuses: a number (`400`) or a class (`4xx`); empty: any",
+          "items": {
+            "type": "string"
+          },
+          "title": "Status",
+          "type": "array"
+        }
+      },
+      "title": "Calls",
+      "type": "object"
+    },
     "Collection": {
       "additionalProperties": false,
       "description": "One REST collection a `store` host keeps: `path` lists and creates (GET, POST), and `<path>/<id>` reads,\nreplaces, patches and deletes one item (GET, PUT, PATCH, DELETE). A `{name}` segment of `path` matches any one\nsegment, and each value of it is a collection of its own: `/v1/companies/{company}/contacts`.",
@@ -428,6 +498,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Asks"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Calls"
             },
             {
               "type": "null"
@@ -1269,6 +1350,13 @@
           "title": "Provider",
           "type": "string"
         },
+        "push_timeout": {
+          "default": "PT5M",
+          "description": "How long one push to `url` or `interactivity_url` may take before it counts as unanswered and is sent again, as the vendor retries it. The default leaves room for a model's turn handled inside the request; Slack itself waits three seconds (PT3S), and a Socket Mode envelope is always held to that",
+          "format": "duration",
+          "title": "Push Timeout",
+          "type": "string"
+        },
         "secret": {
           "anyOf": [
             {
@@ -1372,8 +1460,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT5M",
-          "description": "How long one call to wake_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url may take: the whole wake, a model's turns and all",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"
@@ -1518,15 +1606,6 @@
       "additionalProperties": false,
       "description": "Messages the agent sent.",
       "properties": {
-        "conveys": {
-          "default": [],
-          "description": "Each phrase must be conveyed by the text, in whatever words, as a model judges it: the team's own phrase, or `{ask.facts}`, `{ask.answer}` as for `holding`. A rule with it is judged: read only when a judge model is configured, its findings for review",
-          "items": {
-            "type": "string"
-          },
-          "title": "Conveys",
-          "type": "array"
-        },
         "holding": {
           "default": [],
           "description": "Each phrase must be in the text, in any case; `{ask.facts}`, alone as a phrase, is each fact the answer's script step carried (else the answer itself), `{ask.answer}` the answer in the person's words, and `{person.key}`, `{person.name}` the person the rule is read for",
@@ -2234,8 +2313,8 @@
           "type": "string"
         },
         "wake_timeout": {
-          "default": "PT2M",
-          "description": "How long one call to wake_url or report_url may take",
+          "default": "PT10M",
+          "description": "How long one call to wake_url or report_url may take; the default leaves room for a model's turn taken inside the call",
           "format": "duration",
           "title": "Wake Timeout",
           "type": "string"

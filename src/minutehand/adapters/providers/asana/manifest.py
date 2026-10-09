@@ -17,6 +17,7 @@ resource not claimed (portfolios, goals), is Asana's 404 "No matching route for 
 
 from __future__ import annotations
 
+from minutehand.domain.items import COMMENT, TICKET
 from minutehand.domain.provider import Manifest, PersonChange, TicketField, Tier
 from minutehand.domain.world import EntityKind
 
@@ -28,4 +29,5 @@ MANIFEST = Manifest(
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
     ticket_fields=[TicketField.LABELS, TicketField.COMMENTS],
     people_changes=[PersonChange.REMOVED],
+    item_types=[TICKET, COMMENT],
 )

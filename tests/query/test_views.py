@@ -485,6 +485,36 @@ def test_model_calls_count_tokens_and_cost_only_what_was_priced(run: Fixture) ->
     ]
 
 
+def test_model_calls_give_cached_input_tokens_apart_from_the_ones_billed_at_the_base_rate(run: Fixture) -> None:
+    assert rows(
+        run,
+        "SELECT side, input_tokens, cache_read_tokens, cache_creation_tokens, uncached_input_tokens FROM model_calls "
+        "ORDER BY side, at",
+    ) == [
+        {
+            "side": "agent",
+            "input_tokens": 1200,
+            "cache_read_tokens": None,
+            "cache_creation_tokens": None,
+            "uncached_input_tokens": 1200,
+        },
+        {
+            "side": "agent",
+            "input_tokens": 900,
+            "cache_read_tokens": None,
+            "cache_creation_tokens": None,
+            "uncached_input_tokens": 900,
+        },
+        {
+            "side": "person",
+            "input_tokens": 300,
+            "cache_read_tokens": 100,
+            "cache_creation_tokens": None,
+            "uncached_input_tokens": 200,
+        },
+    ]
+
+
 def test_without_declared_prices_no_call_has_a_cost(run: Fixture) -> None:
     db = open_model(run.state, run.run_id)
     try:

@@ -179,7 +179,7 @@ def test_the_examples_wakes_dispatch_and_replies(follow_up: Played) -> None:
         "writing": "script",
         "written_by": "model",
         "model": PEOPLE_MODEL,
-        "prompt_version": "person-step/1",
+        "prompt_version": "person-step/2",
         "text": ROSA_SAYS,
     }
     assert (json.loads(str(reply["facts"])), reply["answers_seq"], reply["seq"]) == (
@@ -302,7 +302,7 @@ def test_the_reference_agents_calls_and_recorded_model_calls(reference: Played) 
 def test_the_reference_agent_read_with_the_installed_commands(reference: Played) -> None:
     [chase] = reference.rows("SELECT seq FROM messages WHERE is_follow_up = 1")
     explained = json.loads(reference.cli("explain", reference.run_id, str(chase["seq"]), "--json"))
-    assert (explained["wake"]["reason"], explained["answers"]["is_ask"]) == ("due", 1)
+    assert (explained["wake"]["reason"], explained["follows_up"]["is_ask"], explained["answers"]) == ("due", 1, None)
     assert [d["source"] for d in explained["woken_by"]] == ["reported"]
     assert explained["read_before"], "the agent reads its memory before it follows up"
     traced = json.loads(reference.cli("trace", reference.run_id, "--kind", "model_call", "--json"))

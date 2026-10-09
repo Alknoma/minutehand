@@ -13,6 +13,11 @@ Drive's push notifications do. Both kinds of channel are `channels.py`'s.
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from pydantic import ValidationError
+
 from minutehand.adapters.providers.google_workspace import calendar_wire, wire
 from minutehand.adapters.providers.google_workspace.app import DriveApi, build_app
 from minutehand.adapters.providers.google_workspace.calendars import (
@@ -28,6 +33,7 @@ from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.adapters.providers.google_workspace.seed import WorkspaceSeed, seed, write_faults
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import ItemKind, TypedItem, read_as
 from minutehand.domain.people import PersonReply
 from minutehand.domain.provider import Manifest, fault_fragment
 from minutehand.domain.scenario import DocumentHappening, Person, Scenario
@@ -45,7 +51,7 @@ from minutehand.domain.transitions import (
     message_offers,
     transition_change,
 )
-from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot
+from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, RecordSnapshot, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
@@ -208,6 +214,33 @@ class GoogleWorkspaceProvider:
     async def notify(self, world: Store, clock: Clock) -> None:
         await DriveApi(world, clock, Channels(world, clock)).notify()
 
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """`TypesItems`: a document, a comment, an email, or a calendar event, each from its own records: an event's
+        times and guests read from the event as that write left it."""
+        kind = event.entity.kind
+        if kind is EntityKind.DOCUMENT:
+            return read_as(event, ItemKind.DOCUMENT)
+        if kind is EntityKind.COMMENT:
+            return read_as(event, ItemKind.COMMENT)
+        if kind is not EntityKind.MESSAGE:
+            return None
+        version = next((v for v in world.versions(event.entity) if v.seq == event.seq), None)
+        held = _event(version.body) if version is not None else None
+        if held is None:
+            # gone since, or an email: an event with no guests is logged as a record, an email as a message
+            return read_as(
+                event, ItemKind.CALENDAR_EVENT if isinstance(event.after, RecordSnapshot) else ItemKind.EMAIL
+            )
+        typed = read_as(event, ItemKind.CALENDAR_EVENT)
+        return typed.model_copy(
+            update={
+                "people": [a.email for a in held.attendees or [] if a.email.lower() != held.organizer.email.lower()],
+                "starts": _moment(held.start),
+                "ends": _moment(held.end),
+                "conversation": held.id,
+            }
+        )
+
     def declare(self, faults: str, world: Store, clock: Clock) -> None:
         """`WorkspaceSeed.faults`, on a world already open."""
         write_faults(
@@ -237,6 +270,24 @@ def _asked(item: EntityRef, world: Store) -> MessageSnapshot | None:
 def _response(event: calendar_wire.StoredEvent, who: Person, world: Store) -> str | None:
     attendee = CalendarWorld(world).attendee(event, who.key)
     return attendee.responseStatus if attendee is not None else None
+
+
+def _event(body: str) -> calendar_wire.StoredEvent | None:
+    """The body as Calendar's event, when it is one; an email's body is not."""
+    try:
+        return calendar_wire.StoredEvent.model_validate_json(body)
+    except ValidationError:
+        return None
+
+
+def _moment(when: calendar_wire.EventTime) -> datetime | None:
+    """An event's start or end as an instant; None for an all-day date, which names no time."""
+    if when.dateTime is None:
+        return None
+    moment = datetime.fromisoformat(when.dateTime)
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=ZoneInfo(when.timeZone)) if when.timeZone else None
+    return moment
 
 
 def build() -> GoogleWorkspaceProvider:

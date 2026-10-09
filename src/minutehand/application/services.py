@@ -913,6 +913,8 @@ class ServiceDesk:
                     "answer": answered.answer.model_dump_json(),
                     "input_tokens": answered.input_tokens,
                     "output_tokens": answered.output_tokens,
+                    "cache_read_tokens": answered.cache_read_tokens,
+                    "cache_creation_tokens": answered.cache_creation_tokens,
                 }
             )
         )

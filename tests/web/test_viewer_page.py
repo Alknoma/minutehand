@@ -106,7 +106,7 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
 
     views = page.locator(".views a[data-view]")
     names = [views.nth(i).get_attribute("data-view") for i in range(views.count())]
-    assert len(names) == 13
+    assert len(names) == 14
     for name in names:
         page.click(f".views a[data-view={name}]")
         page.wait_for_function("!document.querySelector('#view').textContent.startsWith('Reading')")

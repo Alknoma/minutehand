@@ -203,19 +203,15 @@ def test_a_follow_up_hours_after_the_ask_is_not_reviewed() -> None:
     assert [f for f in evaluate(world, stop=StopReason.AGENT_DONE).findings if f.check != "expectations"] == []
 
 
-def test_a_run_nothing_assessed_is_reported_not_judged_whatever_it_did() -> None:
+def test_a_run_whose_files_declare_no_assessment_is_still_assessed_against_the_declared_world() -> None:
+    """Write the scenario, get the assessment: the agent's effects are measured against what the scenario declares
+    (`items`) whether or not anyone wrote a rule, so a run is never left unjudged for want of one."""
     world = view(scenario(OWNER, SOFIA), _asked_and_waiting())
 
     result = evaluate(world, stop=StopReason.AGENT_DONE)
 
-    assert result.assessed_by == [] and result.findings == []
-    assert result.verdict.kind is VerdictKind.NOT_JUDGED and result.exit_code == 5
-    assert result.verdict.words == (
-        "Not assessed: nothing judged this run, since neither the scenario nor the agent file declares an assessment "
-        "(`assess`, `expect`, `protected_names`, `fail_on_integrity`, or the agent's own `checks`); the agent reported "
-        "it was done. The "
-        "facts of the run are below."
-    )
+    assert result.assessed_by == ["items"] and result.findings == []
+    assert result.verdict.kind is VerdictKind.PASSED and result.exit_code == 0
     assert result.effectiveness.waits_opened == 1
 
 
@@ -225,7 +221,12 @@ def test_what_judged_a_run_is_recorded() -> None:
         _asked_and_waiting(),
         assess=INSTANT,
     )
-    assert evaluate(world, stop=None).assessed_by == ["waits_before_following_up", "expectations", "near_miss_name"]
+    assert evaluate(world, stop=None).assessed_by == [
+        "items",
+        "waits_before_following_up",
+        "expectations",
+        "near_miss_name",
+    ]
 
 
 _AROUND = AroundProxy(
@@ -255,4 +256,4 @@ def test_a_run_judged_by_an_integrity_fact_alone_is_assessed() -> None:
         update={"around_proxy": [], "fail_on_integrity": [IntegrityCheck.AROUND_PROXY]}
     )
     result = evaluate(world, stop=StopReason.AGENT_DONE)
-    assert result.assessed_by == ["around_proxy"] and result.verdict.kind is VerdictKind.PASSED
+    assert result.assessed_by == ["items", "around_proxy"] and result.verdict.kind is VerdictKind.PASSED

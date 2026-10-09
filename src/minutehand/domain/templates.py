@@ -5,6 +5,7 @@
     {input.<name>}                                                   what the person gives with a decision
     {clock.now}                                                      the simulated moment, ISO 8601
     {page.cursor}                                                    the cursor of the page a list reads
+    {run.port} {run.dir}                                             an agent file's: filled by `run` and `run-all`
     {run.id} {case.id}                                               reserved for declarations that need them
     {team.goal} {team.ask_email} ...                                 a team's values in a library scenario
                                                                      (`domain.library`)
@@ -25,6 +26,13 @@ from pydantic import JsonValue
 NAMESPACES = ("person", "item", "input", "clock", "page", "run", "case", "team")
 
 PLACEHOLDER = re.compile(r"\{([a-z]+)\.([a-z][a-z0-9_]*)\}")
+
+RUN_PORT = "{run.port}"
+RUN_DIR = "{run.dir}"
+RUN_FILLED = (RUN_PORT, RUN_DIR)
+"""Filled in an agent file's text, and in each word of the agent's command, by the commands that start the agent:
+`minutehand run` once per invocation and `run-all` once per scenario (`minutehand.run_all`). Any other reader of an
+agent file (`env`, `doctor`, `run` with no command) refuses a file that still holds one."""
 
 PERSON = ("person.key", "person.email", "person.name", "person.credential")
 

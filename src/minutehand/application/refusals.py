@@ -12,6 +12,15 @@ class AgentFailed(Exception):
     """The agent could not be reached, exited with an error, or answered with something that is not a report."""
 
 
+class Unheard(AgentFailed):
+    """A person's answer the world took, whose push to the agent then failed, retries and all: what they said stands
+    in the record as said, with the transition it made (`seq`), and the run stops as the agent failed."""
+
+    def __init__(self, why: str, *, seq: int) -> None:
+        super().__init__(why)
+        self.seq = seq
+
+
 class RunRefused(Exception):
     """The run cannot start or continue as configured: a missing provider, an unsupported person, no state hooks."""
 

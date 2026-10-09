@@ -11,7 +11,7 @@ from minutehand.application.model_calls import EventTrace, JoinedBy, ModelCall
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.assessments import Rule
-from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Obligation, Pattern, WakeRecord
+from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, Obligation, Pattern, WakeRecord
 from minutehand.domain.clock import Drawn, DrawnFrom, DueClosed, DueKind, DueSource
 from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply, Writing
@@ -216,6 +216,9 @@ class FindingsResponse(Model):
     findings: list[ExplainedFinding] = Field(description="Empty until the run finishes and is checked")
     blocked: list[str]
     notes: list[str]
+    simulation: list[HealthFinding] = Field(
+        default=[], description="The simulated world's health, kept apart from the findings (`checks.health`)"
+    )
 
 
 class ScorecardResponse(Model):

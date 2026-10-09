@@ -82,7 +82,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "verdict",
                 T,
-                "passed, failed, unfinished, not_judged, tool_failed or environment_failed; NULL while it runs",
+                "passed, failed, unfinished, not_judged, tool_failed, environment_failed or simulation_incomplete; "
+                "NULL while it runs",
             ),
             _c("verdict_words", T, "The verdict in one sentence, as every surface states it"),
             _c("finished", N, "1 once the run has finished and been judged, else 0"),
@@ -438,13 +439,23 @@ VIEWS: tuple[View, ...] = (
     View(
         name="model_calls",
         description="Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, "
-        "and the ones Minutehand made to write what people say. Cost only from prices the user declares.",
+        "and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. "
+        "Cost only from prices the user declares.",
         order="at, span_id, person_call_id",
         columns=[
-            _c("side", T, "agent or person"),
+            _c(
+                "side",
+                T,
+                "agent; person (a person's words or move); service (a declared service's); judge (a judged check, or "
+                "a person's reply checked against what they know); assessor (the reviewer of the agent's effects)",
+            ),
             _c("span_id", T, "The agent's model call span; NULL for a person's"),
             _c("person_call_id", N, "A person's model call, numbered from 1; NULL for the agent's"),
-            _c("source", T, "received (the agent exported it), wire (recorded on the wire) or person"),
+            _c(
+                "source",
+                T,
+                "received (the agent exported it), wire (recorded on the wire) or person (Minutehand's own)",
+            ),
             _c("person", T, "people.key, for a person's"),
             _c("wake", N, "The wake it is placed in"),
             _c("at", T, f"Simulated time: when it arrived (agent) or was made (person); {TIME}"),
@@ -453,7 +464,12 @@ VIEWS: tuple[View, ...] = (
             _c("duration_ms", R, "In milliseconds (agent)"),
             _c("model", T, "The model"),
             _c("prompt_version", T, "The prompt's version (person)"),
-            _c("input_tokens", N, "Tokens in, as reported"),
+            _c(
+                "input_tokens",
+                N,
+                "Every input token, as reported, cached ones included (an Anthropic call's input_tokens, "
+                "cache_read_input_tokens and cache_creation_input_tokens summed)",
+            ),
             _c("output_tokens", N, "Tokens out, as reported"),
             _c("cost", R, "From the prices the user declared for this model (--prices); NULL when none was declared"),
             _c("currency", T, "The declared price's currency"),
@@ -461,7 +477,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "wrote",
                 T,
-                "For a person's: reply, decision, transition or summary; for a declared service's: service_machine, service_route or service_answer",
+                "For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or "
+                "service_answer; for a judge's: judgement or fact_check; for the assessor's: review",
             ),
             _c(
                 "wrote_seqs",
@@ -470,12 +487,24 @@ VIEWS: tuple[View, ...] = (
             ),
             _c("replayed", N, "1 for a person's call answered from the record: no model was called"),
             _c("failure", T, "Why a person's call failed"),
+            _c("cache_read_tokens", N, "Of input_tokens, those read from the prompt cache; NULL when not reported"),
+            _c(
+                "cache_creation_tokens",
+                N,
+                "Of input_tokens, those written to the prompt cache (Anthropic); NULL when not reported",
+            ),
+            _c(
+                "uncached_input_tokens",
+                N,
+                "Of input_tokens, those billed at the base input rate: input_tokens less both cached counts",
+            ),
         ],
     ),
     View(
         name="findings",
-        description="Every finding the run's checks raised: the team's rules, the scenario's expectations and "
-        "protected names, the agent's own checks, and the run's integrity checks.",
+        description="Every finding the run's checks raised: the assessment of the agent's effects against the declared "
+        "world, the team's rules, the scenario's expectations and protected names, the agent's own checks, and the "
+        "run's integrity checks.",
         order="finding_id",
         columns=[
             _c("finding_id", N, "Numbered from 1, as list_findings numbers them"),
@@ -488,6 +517,16 @@ VIEWS: tuple[View, ...] = (
             _c("pattern", T, "The pattern that fixes it"),
             _c("pattern_title", T, "Its title"),
             _c("evidence", T, "JSON array of the seqs it cites"),
+            _c("calls", T, "JSON array of the agent's calls it cites (calls.call_id)"),
+            _c(
+                "assessed_kind",
+                T,
+                "For the assessment of the agent's effects (`items`, `review`): violation, wrong_action or "
+                "wrong_timing; NULL for any other finding",
+            ),
+            _c("item_kind", T, "The kind of item the effect was on: chat_message, email, ticket, ...; NULL: none"),
+            _c("against", T, "The declaration the effect was measured against, named or quoted"),
+            _c("judged_by", T, "The model that judged it, for a judged finding; NULL for a deterministic one"),
         ],
     ),
     View(
@@ -497,6 +536,50 @@ VIEWS: tuple[View, ...] = (
         columns=[
             _c("finding_id", N, "findings.finding_id"),
             _c("seq", N, "events.seq"),
+        ],
+    ),
+    View(
+        name="simulation_health",
+        description="The simulated world's health, kept apart from the agent's findings: what did not play as the "
+        "files declare (incomplete: the run is simulation_incomplete) and how much of what they declare the run "
+        "reached (coverage).",
+        order="health_id",
+        columns=[
+            _c("health_id", N, "Numbered from 1, in the order the report lists them"),
+            _c(
+                "kind",
+                T,
+                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, "
+                "waits_by_declaration, never_exercised or step_never_fired",
+            ),
+            _c("incomplete", N, "1 when it makes the run simulation_incomplete; 0 for coverage"),
+            _c("words", T, "What happened, in one sentence"),
+            _c("person", T, "people.key it is about; NULL when none"),
+            _c("provider", T, "The provider or declared service of what it is about; NULL when nothing"),
+            _c("entity_kind", T, "The kind of what it is about; NULL when nothing"),
+            _c("entity_id", T, "What it is about, within its provider and kind; NULL when nothing"),
+            _c("since", T, f"When it began, simulated; NULL when it has no moment; {TIME}"),
+            _c("evidence", T, "JSON array of the seqs it cites"),
+        ],
+    ),
+    View(
+        name="pushes",
+        description="Every send of an event the world pushed to the agent (a Slack event, a declared service's push), "
+        "each retry a row of its own, with how the agent's address answered: duplicates and timeouts are counted here.",
+        order="seq",
+        columns=[
+            _c("seq", N, "events.seq of the send"),
+            _c("at", T, f"Simulated time; {TIME}"),
+            _c("wake", N, "The wake in progress"),
+            _c("provider", T, "The provider or declared service that pushed it"),
+            _c("item", T, "What it was about: a Slack event's event_id, a declared service's item id"),
+            _c("url", T, "The agent's address it was sent to"),
+            _c("attempt", N, "0 for the first send, then each retry's number"),
+            _c("retry_reason", T, "Why it was sent again, in the service's words; NULL for a first send"),
+            _c("status", N, "The address's HTTP status; NULL when none came"),
+            _c("failure", T, "Why it was not delivered; NULL when it was"),
+            _c("seconds", R, "How long the address took to answer, real time; NULL when not measured"),
+            _c("delivered", N, "1 when the address answered 2xx"),
         ],
     ),
     View(

@@ -18,7 +18,7 @@ from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
-from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation
+from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation, PushSnapshot
 from tests.providers.slack.slack_workspace import GENERAL, START, Workspace, body, form, messages_of, text_of
 
 SECRET = "a-secret-made-for-the-run"
@@ -124,12 +124,14 @@ async def test_the_reply_is_in_the_world_as_the_person(
         reply, InboundTarget(provider="slack", url=agent.url), workspace.store, workspace.clock, secret=SECRET
     )
 
-    written = workspace.store.events()[-1]
+    *_, written, pushed = workspace.store.events()
     assert (written.actor, written.operation, written.entity.kind) == (
         Actor.PERSON,
         Operation.CREATE,
         EntityKind.MESSAGE,
     )
+    assert isinstance(pushed.after, PushSnapshot) and pushed.actor is Actor.SCENARIO, "every send is recorded"
+    assert (pushed.after.attempt, pushed.after.status, pushed.after.url) == (0, 200, agent.url)
     assert written.after == MessageSnapshot(text="I am", channel=workspace.dm("iris"), recipient_emails=[])
     history = await form(client, "conversations.history", channel=workspace.dm("iris"))
     assert text_of(history) == ["I am", "are you in for Thursday?"]
@@ -189,7 +191,7 @@ async def test_a_person_dms_the_bot_unprompted_as_a_signed_im_event(workspace: W
         secret=SECRET,
     )
 
-    written = workspace.store.events()[-1]
+    *_, written, _pushed = workspace.store.events()
     assert (written.actor, written.operation) == (Actor.PERSON, Operation.CREATE)
     assert written.after == MessageSnapshot(
         text="Please chase the pricing.", channel=workspace.dm("iris"), recipient_emails=[]

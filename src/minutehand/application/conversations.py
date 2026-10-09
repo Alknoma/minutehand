@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from minutehand.application.refusals import RunRefused
+from minutehand.application.refusals import AgentFailed, RunRefused, Unheard
 from minutehand.domain.people import InboundTarget, PersonReply, Press
 from minutehand.domain.scenario import Person, ProviderKey
 from minutehand.domain.transitions import (
@@ -107,6 +107,7 @@ class PushedConversations:
             raise ValueError(f"the message {item.external_id} is gone: there is nothing to answer")
         reply = answered(item, asked, offer, who.key, content, clock.now())
         lands = self._service if isinstance(self._service, LandsAnswers) else None
+        unheard: AgentFailed | None = None
         if lands is not None and lands.lands(reply, world):
             await lands.land(reply, world, clock)
         elif self._target is None or self._secret is None:
@@ -116,9 +117,14 @@ class PushedConversations:
                 raise RunRefused(f"{who.key} uses a control on a {self._key} message, and {self._key} carries none")
             await self._service.press(reply, self._target, world, clock, secret=self._secret)
         else:
-            await self._service.deliver(reply, self._target, world, clock, secret=self._secret)
+            try:
+                await self._service.deliver(reply, self._target, world, clock, secret=self._secret)
+            except AgentFailed as e:
+                unheard = e  # the service took their message, and only its push to the agent failed
         moved = answer_transition(self._key, item, offer, by, who.key, content, clock.now())
         recorded = world.apply(transition_change(moved, at_seq=world.head() + 1))
+        if unheard is not None:
+            raise Unheard(str(unheard), seq=recorded.seq) from unheard
         return moved.model_copy(update={"seq": recorded.seq})
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:

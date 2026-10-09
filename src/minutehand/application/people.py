@@ -49,7 +49,7 @@ from minutehand.application.moments import (
     pinned_at,
     sooner,
 )
-from minutehand.application.refusals import RunRefused
+from minutehand.application.refusals import RunRefused, Unheard
 from minutehand.application.replier import HELPFULNESS, PeopleReplier, believed_part, bulleted, voice_rule, who_is
 from minutehand.domain.clock import Drawn, DrawnFrom
 from minutehand.domain.conversation import ModelMessage, Provenance, Speaker, Wrote
@@ -830,6 +830,11 @@ class People:
         offer, content = _offer_of(reply)
         try:
             transition = await port.apply(snap.item, offer, Actor.PERSON, person, content, world, clock)
+        except Unheard as e:
+            # Said and taken by the service: kept as said, though its push to the agent failed; the run then stops.
+            world.remember(reply.model_copy(update={"at": clock.now()}))
+            self._close(world, Held(ref=held.ref, pending=snap), PendingStatus.ACTED, transition=e.seq, failure=str(e))
+            raise
         except ValueError as e:
             self._close(
                 world,

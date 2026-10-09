@@ -7,8 +7,10 @@ So Minutehand holds the service's state and renders what the agent observes from
 (`docs/design-transitions.md`), and the service's people act through the same people engine as a Jira assignee or a
 Calendar guest.
 
-Minutehand states facts and judges nothing the team did not write: whether the agent acted too early is a rule in the
-team's YAML. A person's words are a model's. Authentication is out of scope: any credential, or none, is let in.
+Minutehand judges the agent against the world the scenario declares, and nothing else: a move the machine refuses, an
+order placed before the state the goal waits on, an item left where only the agent could move it on, a reaction
+slower than the agent's declared rhythm, an invented figure in a resubmission (`docs/assessments.md`, "What every run
+is assessed on"); a team's own rules add policy the world cannot imply. A person's words are a model's. Authentication is out of scope: any credential, or none, is let in.
 
 ## The declaration
 
@@ -82,9 +84,27 @@ it waits on the responder drawn for it (from the responders the item names by em
 seeded by the run's seed, the service, the item and the state's entry). The engine books their moment within the
 service's `within` of their available time, and at it picks one of the legal offers (the drawn one when the service
 has `odds`, the pinned one when the scenario pins it) and writes its content: each field the transition `requires`,
-and a `note` in their words. With no responders, or a `Silent` one, nobody responds. Multi-step follows from the
-machine: a person who asks back moves the item to `needs_info`; the agent's `resubmit` moves it back, and it waits
-on its responder again.
+and a `note` in their words. Multi-step follows from the machine: a person who asks back moves the item to
+`needs_info`; the agent's `resubmit` moves it back, and it waits on its responder again.
+
+**A responder who never decides** is declared so: list no responders, or declare the responder
+`reply: {kind: silent}`. Either way nobody acts on the service's items, by the author's word, and the run's health
+says so as coverage (`waits_by_declaration`), never as a fault of the simulation:
+
+```yaml
+people:
+  - {key: nadia, name: Nadia Ek, email: nadia@example.com, reply: {kind: silent}}   # never decides
+services:
+  - {host: api.approvals.example, name: approvals, responders: [nadia], within: {min: PT3H, max: P1D}}
+```
+
+A responder whose script ends in silence (`reply: {kind: scripted, then: silent}`) with no `takes` pinning what they
+do on the service is not that: a script is a person meant to speak, and once its steps are used they say nothing
+more, so an item waits on them and they can never act on it. `minutehand validate` warns of every such responder,
+and a run in which an item waited on one ends `simulation_incomplete` (exit 6), naming the item, the person and
+since when (`responder_never_acts`, `docs/design.md` "The simulation's health"). Use `then: answers` for a responder
+who decides once their script is used, or a take (`takes: [{provider: approvals, take: approve}]`) to pin what they
+do.
 
 ## What the agent observes: answers rendered from the state and the log
 

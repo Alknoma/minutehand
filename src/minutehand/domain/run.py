@@ -31,6 +31,7 @@ class VerdictKind(StrEnum):
     ENVIRONMENT_FAILED = "environment_failed"  # the run's environment failed under the agent: nothing is judged
     TOOL_FAILED = "tool_failed"  # Minutehand broke while answering a call; the agent is not scored on this run
     NOT_JUDGED = "not_judged"  # no check failed, and checks could not run or there was nothing to judge
+    SIMULATION_INCOMPLETE = "simulation_incomplete"  # the simulated world did not play as declared: see `health`
 
 
 EXIT_CODES = {
@@ -40,9 +41,12 @@ EXIT_CODES = {
     VerdictKind.UNFINISHED: 3,
     VerdictKind.TOOL_FAILED: 4,
     VerdictKind.NOT_JUDGED: 5,
+    VerdictKind.SIMULATION_INCOMPLETE: 6,
 }
 """What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is also a run that could not be
-performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure."""
+performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure. 6 is
+a simulated world that did not play as its files declare (`checks.health`): the agent is judged on what did happen,
+and that judgement is kept beside it (`Verdict.on_what_happened`)."""
 
 
 class Verdict(Model):
@@ -61,6 +65,11 @@ class Verdict(Model):
         ge=0, description="Commitments the agent's last report held open; None when it reported none at all"
     )
     words: str = Field(description="The verdict in one sentence, as every surface states it")
+    on_what_happened: VerdictKind | None = Field(
+        default=None,
+        description="SIMULATION_INCOMPLETE: the verdict the agent's checks and its finishing come to over what did "
+        "happen, as it would read with the world whole; None for any other kind",
+    )
     unjudged: list[str] = Field(
         default=[],
         description="NOT_JUDGED: why, one reason each: a check that could not run and what it needed, or that "

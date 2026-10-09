@@ -13,7 +13,7 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from minutehand.domain.checks import CheckReport, Needs, RunView
-from minutehand.domain.conversation import ModelMessage
+from minutehand.domain.conversation import ModelMessage, Wrote
 from minutehand.domain.world import EntityRef
 
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
@@ -26,8 +26,10 @@ class Answered[T: BaseModel](BaseModel):
 
     answer: T
     model: str = Field(description="The model the request named")
-    input_tokens: int | None = None
+    input_tokens: int | None = Field(default=None, description="Every input token, cached ones included")
     output_tokens: int | None = None
+    cache_read_tokens: int | None = Field(default=None, description="Of the input, read from the prompt cache")
+    cache_creation_tokens: int | None = Field(default=None, description="Of the input, written to the prompt cache")
 
 
 class ModelFailed(Exception):
@@ -59,12 +61,18 @@ class JudgedCheck(Protocol):
     """A check that needs a model. It runs after every deterministic check, and never on an entity one of them
     already failed: a ticket failed for a wrong name is not then judged for clarity.
 
-    Its findings carry `Finding.judged` and are `FindingKind.REVIEW`.
+    Its findings carry `Finding.judged` and are `FindingKind.REVIEW`. Every call it makes is kept with the world
+    under `wrote` (`application.kept.KeptModel`), so a re-assessment replays it.
     """
 
     id: str
     needs: frozenset[Needs]
     prompt_version: str
+    wrote: Wrote
+
+    def applies(self, view: RunView) -> bool:
+        """Whether the run holds anything for it to judge: without, it asks nothing and is never said to be blocked."""
+        ...
 
     async def judge(self, view: RunView, model: Model, *, failed: frozenset[EntityRef]) -> CheckReport:
         """Judge what `view` holds, leaving out every entity in `failed`."""

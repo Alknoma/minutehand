@@ -110,9 +110,11 @@ def test_the_written_file_says_what_it_is_for(tmp_path: Path) -> None:
     head = text.split("\nname:")[0]
     assert head.startswith("# planned_wake_dropped, from the Minutehand scenario library")
     assert "# Situation: The person asked never answers" in head
+    flat = " ".join(line.removeprefix("# ") for line in head.splitlines())
+    assert flat.index("Every run of it is assessed against what it declares below") < flat.index("Optional team policy")
     assert (
-        "# Rules (in `assess` below, yours to edit): follows_up_when_due, planned_to_be_back_when_due,\n"
-        "# not_done_while_waiting. Patterns: expiry_on_every_wait." in head
+        "Optional team policy (in `assess` below, yours to edit or delete): follows_up_when_due, "
+        "planned_to_be_back_when_due, not_done_while_waiting. Patterns: expiry_on_every_wait." in flat
     )
     assert all(line.startswith("#") or not line for line in head.splitlines())
 
@@ -175,8 +177,10 @@ def test_scenarios_lists_every_library_scenario(capsys: pytest.CaptureFixture[st
 def test_scenarios_show_says_what_one_is_for(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["scenarios", "show", "approval_rejected"]) == 0
     out = capsys.readouterr().out
+    assert out.index("assessed on: what the scenario declares, on every run") < out.index("rules: ")
     assert (
-        "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (in the scenario's `assess`" in out
+        "rules: acts_only_once_approved, follows_up_when_due, not_done_while_waiting (optional team policy in the "
+        "scenario's `assess`" in out
     )
     assert "takes: --goal --owner --ask --other --answer --tell --credential-env" in out
 

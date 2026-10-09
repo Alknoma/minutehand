@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from minutehand.domain.items import CALENDAR_EVENT, CHAT_MESSAGE, DOCUMENT, EMAIL
 from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
@@ -33,4 +34,10 @@ MANIFEST = Manifest(
         DocumentChange.TRASHED,
     ],
     people_changes=[PersonChange.REMOVED, PersonChange.DEACTIVATED, PersonChange.REACTIVATED],
+    item_types=[
+        CHAT_MESSAGE,
+        EMAIL,
+        DOCUMENT,
+        CALENDAR_EVENT.model_copy(update={"entity": EntityKind.RECORD}),
+    ],
 )

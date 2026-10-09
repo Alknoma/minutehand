@@ -10,6 +10,7 @@ time: a second `run_scenario` or `rerun_from` while one plays is refused, not qu
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -18,7 +19,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from minutehand import session
+from minutehand import run_all, session
 from minutehand.adapters.mcp.results import (
     CitedEvent,
     Evidence,
@@ -45,7 +46,7 @@ from minutehand.adapters.query.schema import VIEWS
 from minutehand.adapters.query.trace import Explained, Traced, TraceFilter
 from minutehand.adapters.query.trace import explain as explained
 from minutehand.adapters.query.trace import trace as traced
-from minutehand.application.files import FileRefused, load_agent, load_prices, load_scenario
+from minutehand.application.files import FileRefused, load_prices, load_scenario
 from minutehand.application.model_calls import EventTrace, caller_of, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.patterns import pattern
@@ -143,8 +144,9 @@ def build(state: Path) -> FastMCP:
         runs.claim(f"scenario {scenario}")
         try:
             loaded = load_scenario(Path(scenario))
-            agent_file = load_agent(Path(agent))
-            outcomes = await session.play(loaded, agent_file, state=state, samples=samples, command=command)
+            filled = run_all.filled_for_run(Path(agent), command, state=state)
+            os.environ.update(filled.environment)  # the agent's command is started from this process's environment
+            outcomes = await session.play(loaded, filled.agent, state=state, samples=samples, command=filled.command)
         except (RunRefused, FileRefused, OSError) as e:
             raise ToolError(f"the run could not be performed: {e}") from e
         finally:

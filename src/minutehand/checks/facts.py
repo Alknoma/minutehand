@@ -7,6 +7,7 @@ the agent sent, every change it made, its wakes, the wakes it planned, and what 
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 
@@ -25,6 +26,7 @@ from minutehand.domain.world import (
     EntityRef,
     MessageSnapshot,
     Operation,
+    RecordedCall,
     Snapshot,
     TicketSnapshot,
     TransitionSnapshot,
@@ -40,6 +42,7 @@ class Fact(Model):
 
     at: AwareDatetime
     seqs: list[int] = Field(default=[], description="WorldEvent.seq of what shows it; empty for a wake or a plan")
+    calls: list[int] = Field(default=[], description="The agent's calls that show it, by their place among the calls")
 
 
 class Ask(Model):
@@ -358,6 +361,49 @@ def transitions(view: RunView) -> list[Moved]:
         if moved.to_state not in states:
             states.append(moved.to_state)
     return found
+
+
+class Called(Model):
+    """One of the agent's own calls, with its place among the run's calls and whether its answer was new."""
+
+    call: RecordedCall
+    position: int = Field(ge=1, description="Its place among every call the run recorded (calls.call_id)")
+    answer_changed: bool = Field(
+        description="Its answer differed from the answer to the agent's previous call of the same method and path, "
+        "or there was none"
+    )
+
+    @property
+    def at(self) -> datetime:
+        return self.call.sim_time
+
+    @property
+    def route(self) -> str:
+        return self.call.exchange.path.split("?", 1)[0]
+
+
+def calls(view: RunView) -> list[Called]:
+    """Every call the agent itself made, in order: not Minutehand's as a person, not a tunnel relayed unopened."""
+    found: list[Called] = []
+    last: dict[tuple[str, str, str], str] = {}
+    for position, call in enumerate(view.calls or [], start=1):
+        x = call.exchange
+        if x.inbox_call is not None or x.tunnelled is not None:
+            continue
+        key = (x.method, x.host, x.path)
+        answer = body_content(x.response_body if x.response_body is not None else repr(x.response_bytes))
+        changed = key not in last or last[key] != answer
+        last[key] = answer
+        found.append(Called(call=call, position=position, answer_changed=changed))
+    return found
+
+
+def body_content(body: str) -> str:
+    """A body as what it says: JSON with its keys in order and its spacing gone, else its text stripped."""
+    try:
+        return json.dumps(json.loads(body), sort_keys=True, separators=(",", ":"))
+    except ValueError:
+        return body.strip()
 
 
 class Reported(Model):

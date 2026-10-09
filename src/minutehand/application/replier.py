@@ -43,7 +43,7 @@ from minutehand.application.moments import (
 )
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.clock import DrawnFrom
-from minutehand.domain.conversation import ModelMessage, PersonCall, Provenance, Speaker, Wrote
+from minutehand.domain.conversation import FactCheck, ModelMessage, PersonCall, Provenance, Speaker, Wrote
 from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.inboxes import HttpInbox
 from minutehand.domain.people import PersonReply, Plan, Press, Writing
@@ -77,15 +77,24 @@ from minutehand.ports.store import Store
 
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
 
-PERSON_PROMPT_VERSION = "person-reply/3"
+PERSON_PROMPT_VERSION = "person-reply/4"
 """Changes whenever PERSON_PROMPT, HELPFULNESS or what the person is shown changes a word."""
 
-STEP_PROMPT_VERSION = "person-step/1"
+STEP_PROMPT_VERSION = "person-step/2"
 """Changes whenever STEP_PROMPT, INTENT or what the person is shown changes a word."""
 
 
 SUMMARY_PROMPT_VERSION = "person-summary/1"
 """Changes whenever SUMMARY_PROMPT changes a word."""
+
+FACT_CHECK_PROMPT_VERSION = "person-fact-check/1"
+"""Changes whenever FACT_CHECK_PROMPT or what the checker is shown changes a word."""
+
+AUTHORITY_RULE = (
+    "- You give no permission, approval or go-ahead and state no decision that {source} does not give you: telling "
+    "someone to go ahead, that something is approved, or that nobody else need be asked is a decision, and yours "
+    "to make only when {source} says so."
+)
 
 PERSON_PROMPT = """\
 You are {who}. You are at work, and someone has written to you. You are shown what you can see of your \
@@ -105,6 +114,7 @@ now holds; nothing else you said changes.
 - You state nothing that is not in what you know{or_believe} or in what you said before. Asked something it does \
 not cover, you say you do not know.
 - You do not offer to find out, promise to come back, or name anyone else, unless what you know says so.
+{authority}
 - {voice}
 - Write only the message itself, as it would appear where they wrote to you. Today is {today}.
 - Their last message may carry controls you can use instead of writing back, listed under it. To use one, set \
@@ -131,6 +141,7 @@ Rules:
 - Stay consistent with what you said before. Where what you know now differs from what you said, what you know \
 now holds; nothing else you said changes.
 - You state nothing that is not in what this reply says, in what you know{or_believe} or in what you said before.
+{authority}
 - {voice}
 - Write only the message itself, as it would appear where they wrote to you. Today is {today}.
 """
@@ -167,6 +178,14 @@ SUMMARY_PROMPT = """\
 You are {who}. Below are messages from your conversations at work, oldest first. Write a short account of them \
 for yourself: who asked you what, what you answered, and anything you said you would do. Keep every fact, name, \
 number and date as it was said, and add nothing.
+"""
+
+FACT_CHECK_PROMPT = """\
+You check one reply a person at work is about to send, against what they know. You are shown what they know, what \
+the reply was meant to say, the conversation they are answering, and the reply. List every statement in the reply \
+that none of these supports: a fact, a figure, a date, a name, a permission, approval or go-ahead, a decision, or a \
+promise made for someone else. Repeating what the other side said, saying they do not know, declining, or asking a \
+question is supported. Set "supported" to true when you list none.
 """
 
 _NOTHING = "- nothing about this beyond what the messages themselves say"
@@ -382,6 +401,23 @@ class PeopleReplier:
             written = await self.ask_model(
                 person, Wrote.REPLY, asked.entity, system, context, WrittenStep, STEP_PROMPT_VERSION, world, clock
             )
+            meant = list(step.facts)
+            unsupported = await self._overstepped(
+                person, behaviour, asked, meant, context, written.answer.text, world, clock
+            )
+            if unsupported:
+                written = await self.ask_model(
+                    person,
+                    Wrote.REPLY,
+                    asked.entity,
+                    system,
+                    _again(context, written.answer.text, unsupported),
+                    WrittenStep,
+                    STEP_PROMPT_VERSION,
+                    world,
+                    clock,
+                )
+                await self._overstepped(person, behaviour, asked, meant, context, written.answer.text, world, clock)
             return PersonReply(
                 text=written.answer.text,
                 facts=list(step.facts),
@@ -393,6 +429,23 @@ class PeopleReplier:
             person, Wrote.REPLY, asked.entity, system, context, WrittenReply, PERSON_PROMPT_VERSION, world, clock
         )
         said = written.answer
+        if said.replies and said.text is not None:
+            unsupported = await self._overstepped(person, behaviour, asked, [], context, said.text, world, clock)
+            if unsupported:
+                written = await self.ask_model(
+                    person,
+                    Wrote.REPLY,
+                    asked.entity,
+                    system,
+                    _again(context, said.text, unsupported),
+                    WrittenReply,
+                    PERSON_PROMPT_VERSION,
+                    world,
+                    clock,
+                )
+                said = written.answer
+                if said.replies and said.text is not None:
+                    await self._overstepped(person, behaviour, asked, [], context, said.text, world, clock)
         if not said.replies:
             return None
         press: Press | None = None
@@ -418,6 +471,44 @@ class PeopleReplier:
             written_by=Provenance(model=written.model, prompt_version=PERSON_PROMPT_VERSION),
             **common,
         )
+
+    async def _overstepped(
+        self,
+        person: Person,
+        behaviour: Answers | Scripted,
+        asked: WorldEvent,
+        meant: Sequence[str],
+        context: Sequence[ModelMessage],
+        text: str,
+        world: Store,
+        clock: Clock,
+    ) -> list[str]:
+        """What a reply a model wrote states that nothing the person knows, was meant to say, or heard supports: a
+        permission, a decision, a fact they were never given. The check is a model call kept like every other
+        (`Wrote.FACT_CHECK`), so the simulation's health can say a person went beyond their facts."""
+        facts, stale = person.knows_at(clock.now(), self._scenario.starts_at)
+        shown = "\n\n".join(
+            [
+                f"What they know:\n{bulleted(facts)}{believed_part(behaviour, stale)}",
+                "What the reply was meant to say:\n"
+                + (bulleted(meant) if meant else "- whatever of what they know bears on the message"),
+                "The conversation:\n" + "\n".join(m.text for m in context),
+                f"Their reply:\n{text}",
+            ]
+        )
+        checked = await self.ask_model(
+            person,
+            Wrote.FACT_CHECK,
+            asked.entity,
+            FACT_CHECK_PROMPT,
+            [ModelMessage(speaker=Speaker.ASKER, text=shown)],
+            FactCheck,
+            FACT_CHECK_PROMPT_VERSION,
+            world,
+            clock,
+            temperature=0,
+        )
+        return [] if checked.answer.supported else checked.answer.unsupported or [checked.answer.rationale]
 
     # -- what the person sees --------------------------------------------------------------------------------------
 
@@ -540,10 +631,26 @@ class PeopleReplier:
                     "answer": answered.answer.model_dump_json(),
                     "input_tokens": answered.input_tokens,
                     "output_tokens": answered.output_tokens,
+                    "cache_read_tokens": answered.cache_read_tokens,
+                    "cache_creation_tokens": answered.cache_creation_tokens,
                 }
             )
         )
         return _Written(answered.answer, named)
+
+
+def _again(context: Sequence[ModelMessage], draft: str, unsupported: Sequence[str]) -> list[ModelMessage]:
+    """The conversation once more, with the draft and why it cannot be sent: it went beyond what the person knows."""
+    said = "; ".join(f'"{u}"' for u in unsupported)
+    return [
+        *context,
+        ModelMessage(speaker=Speaker.MODEL, text=draft),
+        ModelMessage(
+            speaker=Speaker.ASKER,
+            text=f"Before you send it: your reply says {said}, which nothing you know supports. Write it again, "
+            "saying only what you know, and give no permission or decision that is not yours to give.",
+        ),
+    ]
 
 
 @dataclass(frozen=True)
@@ -606,6 +713,7 @@ def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at:
         believed=believed,
         helpfulness=HELPFULNESS[behaviour.helpfulness],
         or_believe=" or in what you believe" if believed else "",
+        authority=AUTHORITY_RULE.format(source="what you know"),
         voice=voice_rule(behaviour),
         today=today.strftime("%A %d %B %Y"),
     )
@@ -624,6 +732,7 @@ def step_prompt(person: Person, behaviour: Speaks, step: ScriptedReply, today: d
         intent=INTENT[step.intent],
         helpfulness=HELPFULNESS[behaviour.helpfulness],
         or_believe=" or in what you believe" if believed else "",
+        authority=AUTHORITY_RULE.format(source="what this reply says or what you know"),
         voice=voice_rule(behaviour),
         today=today.strftime("%A %d %B %Y"),
     )

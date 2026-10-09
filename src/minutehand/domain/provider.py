@@ -10,6 +10,7 @@ from typing import Annotated, ClassVar, Self, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, JsonValue, model_validator
 
+from minutehand.domain.items import ItemType
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import EntityKind
 
@@ -131,6 +132,12 @@ class Manifest(Model):
         default=[],
         description="What can happen to a person's account here while a world is open (`ChangesPeople`); any other "
         "is refused at the call, naming these",
+    )
+    item_types: list[ItemType] = Field(
+        default=[],
+        description="The kinds of item it holds that the agent's effects are assessed as (`domain.items`), each with "
+        "its checks and what the model reviewer looks for; two of one entity kind mean the provider tells its items "
+        "apart itself (`ports.provider.TypesItems`)",
     )
     state_outside_log: str | None = Field(
         default=None,

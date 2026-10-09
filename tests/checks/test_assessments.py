@@ -358,7 +358,7 @@ def test_a_rule_naming_the_deadline_of_a_scenario_without_one_is_unread_and_note
     assert report.findings == []
     assert report.notes == [
         "rule nothing_after_the_deadline was not read 1 time: it names a moment the run never reached, or one that "
-        "was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, what an item holds back)"
+        "was not there (an answer never given, a deadline never set), or counts what the run did not record (the agent's planned wakes, its calls, what an item holds back)"
     ]
 
 
@@ -775,7 +775,7 @@ def test_a_rules_findings_judge_the_run_and_a_review_does_not_fail_it() -> None:
     log.message([OWNER], 100, text="status")
     failing = view(scenario(OWNER, DANIA), log, assess=rules(FOLLOWS_UP_WHEN_DUE))
     result = evaluate(failing, stop=None)
-    assert result.verdict.kind.value == "failed" and result.assessed_by == ["follows_up_when_due"]
+    assert result.verdict.kind.value == "failed" and result.assessed_by == ["items", "follows_up_when_due"]
     reviewing = view(
         scenario(OWNER, DANIA),
         log,
@@ -954,3 +954,40 @@ def test_stored_counts_the_items_a_collection_holds_at_a_moment_matching_a_field
 def test_a_count_naming_stored_beside_another_fact_is_refused() -> None:
     with pytest.raises(ValidationError, match="this names 2"):
         rules("- id: s\n  count: {stored: {}, memory: {key: a}}\n  at_most: 0\n")
+
+
+# -- how a per-ask count is bounded: `since: ask` (docs/assessments.md) ----------------------------------------
+
+
+def test_a_per_ask_count_without_since_ask_counts_the_messages_of_earlier_asks_and_since_ask_does_not() -> None:
+    """The trial's trap: a rule over each ask of Sam that counted messages `until: closed` found the first ask's
+    messages again under the second. `since: ask` bounds it to the ask's own."""
+    written = """
+    - id: one_message_per_ask
+      each: ask
+      count: {messages: {to: [person]}, until: closed}
+      at_most: 1
+    """
+    log = Log()
+    first = log.message([SOFIA], 0, text="Which cost centre?")
+    second = log.message([SOFIA], 50, text="And the delivery address?")
+    log.message([OWNER], 60, text="status")
+    world = view(scenario(OWNER, SOFIA), log, [reply(SOFIA, first, 1), reply(SOFIA, second, 51)])
+    [finding] = found(world, written)
+    assert first.seq in finding.evidence and second.seq in finding.evidence
+    assert found(world, written.replace("until: closed}", "since: ask, until: closed}")) == []
+
+
+def test_the_first_transition_rule_is_read_at_the_runs_end_when_no_such_transition_came() -> None:
+    written = """
+    - id: never_orders_before_approval
+      each: transition
+      where: {provider: [approvals], to: [approved], first: true}
+      count: {stored: {}, until: transition-PT1S}
+      at_most: 0
+    """
+    log = Log()
+    log.message([OWNER], 0, text="Filing the request now.")
+    log.stored("orders", "ord_1", {"id": "ord_1", "amount_usd": 48000}, 2)
+    [finding] = found(view(scenario(OWNER), log), written)
+    assert "no such transition by the end of the run" in finding.message

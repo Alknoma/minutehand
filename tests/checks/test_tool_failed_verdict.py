@@ -78,10 +78,10 @@ def _standing(tmp_path: Path) -> tuple[StandingWorld, SqliteStore]:
     ("answer", "verdict"),
     [
         (CallOutcome.INTERNAL_ERROR, VerdictKind.TOOL_FAILED),
-        (CallOutcome.NOT_IMPLEMENTED, VerdictKind.NOT_JUDGED),
-        (CallOutcome.INJECTED_FAULT, VerdictKind.NOT_JUDGED),
-        (CallOutcome.REFUSED, VerdictKind.NOT_JUDGED),
-        (CallOutcome.ANSWERED, VerdictKind.NOT_JUDGED),
+        (CallOutcome.NOT_IMPLEMENTED, VerdictKind.PASSED),
+        (CallOutcome.INJECTED_FAULT, VerdictKind.PASSED),
+        (CallOutcome.REFUSED, VerdictKind.PASSED),
+        (CallOutcome.ANSWERED, VerdictKind.PASSED),
     ],
 )
 async def test_a_standing_worlds_checks_say_the_tool_failed_only_for_minutehands_own_error(

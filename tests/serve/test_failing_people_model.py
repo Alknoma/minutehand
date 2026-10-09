@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 
+from minutehand.domain.conversation import Wrote
 from minutehand.testing.world import OpenWorld
 from tests.serve.support import Served, dm, event_receiver
 from tests.serve.test_written_people import SAID, model_that_fails_first, served_with, sofia, spec
@@ -40,7 +41,11 @@ def test_a_failed_model_call_leaves_the_answer_owed_and_its_moment_writes_it(fai
             world.advance(timedelta(hours=2))
             assert receiver.texts() == [SAID]
             calls = failing.client.world(world.world_id).person_calls
-            assert [c.failure is None for c in calls] == [False, True]
+            assert [(c.wrote, c.failure is None) for c in calls] == [
+                (Wrote.REPLY, False),
+                (Wrote.REPLY, True),
+                (Wrote.FACT_CHECK, True),  # her words, checked against what she knows before they are sent
+            ]
             assert failing.client.world(world.world_id).people_owe == []
         finally:
             failing.client.close_world(world.world_id)

@@ -216,7 +216,7 @@ The clock of a world stands still. Nothing fires on its own.
   (for Slack, the signed event to the world's inbound target), recorded as actor `PERSON` and as the transition it
   is. An edit that changes what an ask says, before its answer, is put to the person again.
 - **The model** is the server's own, from its environment exactly as `run` reads it (`MINUTEHAND_MODEL`,
-  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`; a person's `model` names another), never from a request.
+  `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, `MINUTEHAND_MODEL_API`: `openai` or `anthropic`; a person's `model` names another), never from a request.
   A world created with `scripted_people: true` whose people a model speaks for, on a server with no model, is
   refused 409 naming each person and what to set; `minutehand doctor` says whether one is configured.
 - **Owed, and kept.** `GET /v1/worlds/{id}` lists each answer and decision people owe with its moment and how its
@@ -373,10 +373,10 @@ Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps
   moves the clock gets steps inferred, each marked `inferred`: the stretch from opening to the first forward move is
   the first, each forward move begins the next; a move to the moment the clock already shows begins nothing. The
   first step marked by hand stops inference, and the inferred steps before it are no longer counted.
-- **Not judged.** A world whose scenario declares nothing to judge it by (no `expect`, no `assess` rule, no
-  protected name) is `not_judged`, exit 5, never `passed`: its verdict says `Not assessed` and its scorecard still
-  counts what happened. A standing world is opened without an agent file, so only the scenario's own rules judge
-  it. A check that needs the agent's wakes, over a world with no step, is a reason too, listed in the verdict.
+- **Always assessed.** A world's effects are assessed against what its scenario declares (`docs/assessments.md`,
+  "What every run is assessed on") whether or not it declares a rule. A standing world is opened without an agent
+  file, so only the scenario's own rules add to that, and no rhythm is declared to time reactions against. A check
+  that needs the agent's wakes, over a world with no step, makes it `not_judged`, exit 5, listed in the verdict.
 - **Probes.** A standing world no call reached is not listed by `minutehand runs`, `list_runs` or the viewer.
 
 ## Each world is a run

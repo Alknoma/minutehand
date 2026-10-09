@@ -15,6 +15,7 @@ from google.protobuf.message import Message as ProtoMessage
 
 from minutehand.domain.clock import Due
 from minutehand.domain.errors import Rendered
+from minutehand.domain.items import TypedItem
 from minutehand.domain.people import (
     InboundCredential,
     InboundCredentialAsk,
@@ -30,7 +31,7 @@ from minutehand.domain.scenario import (
     Person,
     Scenario,
 )
-from minutehand.domain.world import Change
+from minutehand.domain.world import Change, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.store import Store
 
@@ -188,6 +189,16 @@ class BooksWakes(Protocol):
         """This occurrence is over, delivered or dropped: book the next occurrence of a recurring schedule under the
         same `ref` (the first after now, as a real scheduler skips what it missed), or complete a one-off one. The
         booking has already left the pending set when this is called."""
+        ...
+
+
+@runtime_checkable
+class TypesItems(Protocol):
+    """A provider whose manifest declares two item types of one entity kind (`Manifest.item_types`): it tells which
+    an event is from its own records, and reads from its own bodies what the snapshot does not carry."""
+
+    def typed(self, event: WorldEvent, world: Store) -> TypedItem | None:
+        """The event read as an item of one of the provider's item types; None when it is an item of none."""
         ...
 
 
