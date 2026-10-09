@@ -67,9 +67,11 @@ review.
 
 ### The shared reviewer
 
-Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/1`), it reads each effect for what
+Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/2`), it reads each effect for what
 only meaning can tell. It is shown, per effect, as the agent could know it at that moment: the goal, the owner and
-deadline; the people and their part (the owner, a declared service's responder); each declared service's description
+deadline; the people and their part (the owner, a declared service's responder) and what each knows, as theirs until they
+say it (it makes them the one to ask; a fact of theirs the agent states before they said it is invented); each
+declared service's description
 and machine; each item of a service as it stood, who could move it next, and its history with what each move
 carried; what the agent had read from services and stores; the conversation it had taken part in; and the effect,
 with its kind's own instruction (`ItemType.review`, declared by the provider). It reports:
@@ -85,6 +87,13 @@ Its findings are for review, never a failure on their own, and carry the model, 
 Every call is kept with the world and replayed when the run is assessed again; each is in `model_calls` with side
 `assessor`. An effect a deterministic check already failed is not shown to it. Without `--judge`, or with no model, the
 run's notes say the reviewer did not assess it; the deterministic checks still run.
+
+**Use a capable model for the reviewer.** Its findings are only as good as the model reading them. On the six runs of a
+real purchasing agent behind `tests/data/trial`, a small, fast model was wrong on 3 of the first 11 effects it read:
+it called asking the person who holds the answer "the wrong person", and filing the approval request itself "acting
+before approval". A larger model found the made-up quote at each of the three places the agent used it, and
+nothing that was not there. Use the most capable model you can for `--judge`. Its calls are kept and replayed, so it
+costs once per run. Read the reviewer's findings (`minutehand findings`) before you trust a cheaper model.
 
 ### On the trial's runs
 
