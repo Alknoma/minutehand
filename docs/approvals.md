@@ -582,8 +582,8 @@ overrides:
 ```
 
 ```bash
-minutehand checkpoints <run>                      # seq 13, after wake 1: the request is up, nobody has decided
-minutehand fork <run> --at 13 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
+minutehand checkpoints <run>                      # seq 9, after wake 1: the request is up, nobody has decided
+minutehand fork <run> --at 9 --changes flip_to_approve.yaml -- env APPROVAL_VIA=inbox python ../agent.py
 ```
 
 The flipped fork passes with the order placed; the edited one fails `acts_only_once_approved`. Each fork's account
@@ -698,11 +698,7 @@ What is awkward, unserved or needs a workaround today, each from the code or a r
 5. **Answers are not always pushed.** A Gmail answer is not pushed (`users.watch` is refused): the agent polls. A
    calendar answer is heard only through a live `events.watch` channel, or a Graph subscription on Outlook. A
    ticket's move wakes nobody, and Jira webhooks are refused.
-6. **`run-all` and an inbox cannot take a port per run.** `run-all` reads the agent file before it fills
-   `{run.port}`, and an inbox's URLs may name only their own placeholders, so `{run.port}` there is refused. Run
-   such an agent with `--jobs 1` on one fixed port, as `decision_timing.yaml` says
-   (`test_run_port_in_an_inbox_url_is_refused_by_run_all`).
-7. **`conveys:` needs a judge model.** Without one, a rule using it is not read, and the run says so; with one, its
+6. **`conveys:` needs a judge model.** Without one, a rule using it is not read, and the run says so; with one, its
    findings are for review, not failures. `holding` stays the deterministic match.
 
 Closed by construction, each held to a run in `tests/inboxes/test_approval_gaps.py`: a write the product makes while

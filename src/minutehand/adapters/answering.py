@@ -18,6 +18,10 @@ what the app sends and, when the app raises, sends the converted answer instead.
 How a call was answered is noted on the `Outcome` the proxy sets for it (`OUTCOME`): by `convert`, by a provider
 whose own fault fires (`injected`), by a provider that refuses with a status that does not say so (`refused`), or
 by the control API's armed fault; a call nobody noted is refused when its status is 400 or more, else answered.
+
+A provider whose call would wait on the world (a long poll that finds nothing yet) says so on it too (`waits`), and
+is told whether the proxy will hold it (`adapters.proxy.held`); once the wait is over (`wait_over`), it answers the
+call as the world stands.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import traceback
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime
 
 from starlette.requests import Request
 
@@ -43,6 +48,15 @@ INTERNAL_ERROR_CODE = "internal_error"
 INTERNAL_PREFIX = "minutehand internal error while answering"
 
 
+@dataclass(frozen=True)
+class Waiting:
+    """A call that waits on the world: until when at the latest, and the next moment the world may answer it by
+    itself (a message becoming visible), if any."""
+
+    until: datetime
+    again: datetime | None
+
+
 @dataclass
 class Outcome:
     """How one call was answered; `kind` None when nothing noted it, and its status decides (`kind_of`)."""
@@ -52,6 +66,12 @@ class Outcome:
     not_served: bool = False
     """The provider said by name that it does not serve the call (`NotServed`, or its own rendered 501 through
     `unimplemented`): the proxy may answer it from the run's declaration for the host instead."""
+    holds: bool = False
+    """The proxy can hold this call until the world answers it: the run moves the clock it waits on."""
+    over: bool = False
+    """The call was held, and its wait is over: answer it as the world stands."""
+    waiting: Waiting | None = None
+    """The provider said the call waits, and it is held: what the app answered is not the answer."""
 
 
 OUTCOME: ContextVar[Outcome | None] = ContextVar("minutehand_call_outcome", default=None)
@@ -87,6 +107,23 @@ def unimplemented(error: Exception, message: str) -> None:
         CallOutcome.NOT_IMPLEMENTED,
         CallFailure(kind=CallOutcome.NOT_IMPLEMENTED, message=message, exception_type=_qualified(error)),
     )
+
+
+def waits(until: datetime, again: datetime | None) -> bool:
+    """The call would wait on the world, at the latest `until`, sooner if it changes (by itself at `again`): True when
+    the proxy holds it, and what the app answers now is dropped; False when nothing can hold it (no run moves the
+    world's clock while it waits, as in a standing world), or its wait is over, and the app answers it now."""
+    outcome = OUTCOME.get()
+    if outcome is None or not outcome.holds or outcome.over:
+        return False
+    outcome.waiting = Waiting(until=until, again=again)
+    return True
+
+
+def wait_over() -> bool:
+    """The call was held and its wait is over: answer it as the world stands, without waiting again."""
+    outcome = OUTCOME.get()
+    return outcome is not None and outcome.over
 
 
 def kind_of(outcome: Outcome, status: int) -> CallOutcome:

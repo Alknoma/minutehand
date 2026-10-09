@@ -51,7 +51,7 @@ from minutehand.domain.world import (
     TicketSnapshot,
 )
 from minutehand.ports.clock import Clock
-from minutehand.ports.provider import ASGIApp, Wakes
+from minutehand.ports.provider import ASGIApp, HeldCalls, Wakes
 from minutehand.ports.store import Store
 from minutehand.ports.transitions import record
 
@@ -452,7 +452,16 @@ class Switchboard:
     def waiting(self) -> list[str]:
         return list(self.answering)
 
-    def mount(self, world: Store, clock: Clock, apps: Mapping[ProviderKey, ASGIApp], *, scenario: Scenario) -> None:
+    def mount(
+        self,
+        world: Store,
+        clock: Clock,
+        apps: Mapping[ProviderKey, ASGIApp],
+        *,
+        scenario: Scenario,
+        holds: HeldCalls | None = None,
+    ) -> None:
+        """It answers every call at once: no provider of its says a call waits."""
         self.apps = dict(apps)
 
     def flush(self) -> None:

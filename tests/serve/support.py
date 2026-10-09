@@ -7,7 +7,7 @@ import json
 import socketserver
 import ssl
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -126,9 +126,12 @@ class _Loopback(ThreadingHTTPServer):
 
 
 @contextmanager
-def event_receiver(*, answers_after: threading.Event | None = None) -> Iterator[Receiver]:
+def event_receiver(
+    *, answers_after: threading.Event | None = None, working: Callable[[], None] | None = None
+) -> Iterator[Receiver]:
     """A service's Slack events endpoint on loopback, keeping each push with its signature headers. With
-    `answers_after`, it answers a push only once that event is set: a service still working on what it was sent."""
+    `answers_after`, it answers a push only once that event is set, and with `working` only once that has run: a
+    service still working on what it was sent."""
     found: list[Pushed] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -137,6 +140,8 @@ def event_receiver(*, answers_after: threading.Event | None = None) -> Iterator[
             found.append(Pushed(body, self.headers["X-Slack-Request-Timestamp"], self.headers["X-Slack-Signature"]))
             if answers_after is not None:
                 answers_after.wait(30)
+            if working is not None:
+                working()
             self.send_response(200)
             self.end_headers()
 

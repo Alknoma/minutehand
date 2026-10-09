@@ -97,6 +97,17 @@ class PendingBooking(Model):
     )
 
 
+class PendingCall(Model):
+    """A call of the agent's held until the world can answer it (a long poll that found nothing yet), looked at again
+    at its moment: the end of its wait (`ends`), or the next moment the world may answer it by itself. It lives with
+    the connection it holds, in the process that played the run: a fork drops it, and the fork's agent makes its own
+    calls."""
+
+    kind: Literal["call"] = "call"
+    due: Due
+    ends: bool = Field(description="Its moment is the end of the call's wait, when it is answered as the world stands")
+
+
 Pending = Annotated[
     PendingHappening
     | PendingWake
@@ -105,7 +116,8 @@ Pending = Annotated[
     | PendingMachine
     | PendingTimer
     | PendingTransition
-    | PendingService,
+    | PendingService
+    | PendingCall,
     Field(discriminator="kind"),
 ]
 

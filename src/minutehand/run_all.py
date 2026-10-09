@@ -32,7 +32,7 @@ from pydantic import Field, ValidationError
 
 from minutehand import session
 from minutehand.adapters.proxy.trust import authority
-from minutehand.application.files import FileKind, FileRefused, kind_of, load_scenario, read_yaml
+from minutehand.application.files import FileKind, FileRefused, kind_of, load_agent, load_scenario, read_yaml
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
@@ -164,6 +164,16 @@ def free_port() -> int:
 
 def _filled(text: str, port: int, folder: Path) -> str:
     return text.replace(PORT, str(port)).replace(DIR, str(folder))
+
+
+def checked_agent(agent: Path) -> None:
+    """The agent file refused here, once, rather than once per scenario: read as a run reads it, with each
+    placeholder filled, since a field that checks what it holds (an inbox's URL) would refuse the placeholder."""
+    try:
+        text = agent.read_text(encoding="utf-8")
+    except OSError as e:
+        raise FileRefused(f"{agent}: cannot be read: {e.strerror}") from e
+    load_agent(agent, text=_filled(text, PORTS.start, agent.resolve().parent))
 
 
 async def play_all(
