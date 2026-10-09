@@ -218,9 +218,6 @@ class _Declared(Model):
     name: ProviderKey | None = Field(
         default=None, description="What its world events are recorded under; derived from the host when None"
     )
-    redact: list[BodyPath] = Field(
-        default=[], description="Body fields kept as [redacted], in the request and the answer, besides credentials"
-    )
     body_limit: int = Field(default=BODY_LIMIT, ge=0, description="Bytes of a text or JSON body kept")
 
     @property
@@ -232,7 +229,15 @@ class _Declared(Model):
         return ("any_" if self.host.startswith("*.") else "") + (spelled if spelled[:1].isalpha() else "h_" + spelled)
 
 
-class Acknowledge(_Declared):
+class _Redacting(_Declared):
+    """A host whose calls are only recorded: the record may keep more fields than credentials as [redacted]."""
+
+    redact: list[BodyPath] = Field(
+        default=[], description="Body fields kept as [redacted], in the request and the answer, besides credentials"
+    )
+
+
+class Acknowledge(_Redacting):
     """The call never leaves the machine: it is kept, and answered as declared. For sends: an email API, a
     webhook, an SMS."""
 
@@ -375,7 +380,8 @@ class Collection(Model):
 class DeclaredStore(_Declared):
     """What the agent writes is kept exactly as sent, in the run's world, and read back unchanged: for an API the
     agent writes to and reads its writes back from, which no provider fakes. Minutehand adds to an item only what
-    its collection says the API assigns (`id`, `stamps`); credentials are never checked.
+    its collection says the API assigns (`id`, `stamps`); credentials are never checked, and a field named like one
+    (`token`, `password`) is kept like any other.
 
     A call is answered by the first route that matches it (`routes`, as `acknowledge`), else by the collection
     whose path it is under, else with `answer`."""
@@ -384,6 +390,16 @@ class DeclaredStore(_Declared):
     collections: list[Collection] = Field(min_length=1)
     routes: list[Route] = []
     answer: Answer = Answer()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_redact(cls, value: object) -> object:
+        if isinstance(value, dict) and "redact" in value:
+            raise ValueError(
+                "`redact` was removed from `store`: a store keeps and returns every field verbatim, credentials "
+                "included; delete the key"
+            )
+        return value
 
     @model_validator(mode="after")
     def _collections_named_once(self) -> Self:
@@ -403,7 +419,7 @@ class InForks(StrEnum):
     PASS_THROUGH = "pass_through"  # sent to the real host again
 
 
-class PassThrough(_Declared):
+class PassThrough(_Redacting):
     """The call goes to the real host unchanged; the request and the answer are both kept. For lookups: a
     search, a page fetch. A streamed answer reaches the agent as a stream."""
 
@@ -435,7 +451,7 @@ class OnMiss(StrEnum):
     REFUSE = "refuse"  # answered 502, saying the recording holds no such call
 
 
-class Replay(_Declared):
+class Replay(_Redacting):
     """The call is answered from the recording of an earlier run, matched on method, host, path, query and a
     hash of the body with `ignore_query` and `ignore_body` left out (timestamps, nonces). The nth identical call
     gets the nth recorded answer to it, and the last one again after that."""
@@ -454,7 +470,7 @@ class HostHeader(StrEnum):
     UPSTREAM = "upstream"  # the upstream's own host and port, for a server that checks its own name
 
 
-class Forward(_Declared):
+class Forward(_Redacting):
     """The call is sent to an external emulator the same file declares (`domain.emulator.ExternalEmulator`), and
     kept, both sides verbatim, as a passed-through call is: request and answer streamed through untouched but for
     the headers `domain.emulator.ADDED_HEADERS` lists and `traceparent`, set on the forwarded copy only.

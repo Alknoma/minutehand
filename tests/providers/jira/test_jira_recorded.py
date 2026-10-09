@@ -40,15 +40,6 @@ CASES: list[Case] = [
     ("jql_value_missing", "GET", "/search/jql?jql=project%20%3D", None, {}),
     ("jql_and_or_expected", "GET", "/search/jql?jql=project%20%3D%20PUB%20status", None, {}),
     ("jql_value_unexpected", "GET", "/search/jql?jql=project%20%3D%20PUB%20AND%20status%20%3D%20%3D%20Open", None, {}),
-    ("jql_field_unknown", "GET", "/search/jql?jql=colour%20%3D%20red", None, {}),
-    ("jql_value_unknown", "GET", "/search/jql?jql=status%20%3D%20%22Zzqq%22", None, {}),
-    ("jql_function_unknown", "GET", "/search/jql?jql=assignee%20%3D%20noSuchFunction()", None, {}),
-    ("jql_function_wrong_field", "GET", "/search/jql?jql=status%20%3D%20currentUser()", None, {}),
-    ("jql_operator_unsupported", "GET", "/search/jql?jql=text%20%3D%20%22export%22", None, {}),
-    ("jql_date_invalid", "GET", "/search/jql?jql=updated%20%3E%3D%20yesterday", None, {}),
-    ("jql_key_unknown", "GET", "/search/jql?jql=key%20%3D%20PUB-99999999", None, {}),
-    ("jql_project_unknown", "GET", "/search/jql?jql=project%20%3D%20NOPEZZQ", None, {}),
-    ("jql_is_not_empty_value", "GET", "/search/jql?jql=status%20is%20Open", None, {}),
     ("search_max_results_zero", "GET", "/search/jql?jql=project%20%3D%20LAUNCH&maxResults=0", None, {}),
     ("search_max_results_over", "GET", "/search/jql?jql=project%20%3D%20LAUNCH&maxResults=6000&fields=id", None, {}),
     ("search_page_token_invalid", "GET", "/search/jql?jql=project%20%3D%20LAUNCH&nextPageToken=garbage", None, {}),
@@ -80,7 +71,11 @@ CASES: list[Case] = [
 ]  # fmt: skip
 """Each recording, the request that matches it here, and the identifiers swapped from the public site's to this
 world's. `comment_body_not_a_document.http` is held separately: the site refused the anonymous caller beside the
-body."""
+body. The recordings of invalid JQL answered 200 with no issues (`jql_field_unknown.http`, `jql_value_unknown.http`,
+`jql_function_*.http`, `jql_operator_unsupported.http`, `jql_date_invalid.http`, `jql_key_unknown.http`,
+`jql_project_unknown.http`, `jql_is_not_empty_value.http`, `jql_text_no_word.http`, `jql_period_invalid.http`,
+`jql_order_field_unknown.http`) are what an anonymous caller gets; every caller of the fake is signed in, so it
+answers those as Jira answers a signed-in caller (`test_jira_jql.py`, CLAIMS.md)."""
 
 
 @pytest.mark.parametrize(("name", "method", "path", "body", "swaps"), CASES, ids=[c[0] for c in CASES])

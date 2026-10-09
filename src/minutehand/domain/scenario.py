@@ -20,7 +20,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, TypeAdapter, field_validator, model_validator
 
-from minutehand.domain.assessments import Rule, refuse_repeated_rules, refuse_unknown_people
+from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules, refuse_unknown_people
 from minutehand.domain.common import (
     ProviderKey,
     SigningSecret,
@@ -1030,6 +1030,11 @@ class _ScenarioBody(Model):
     )
     assess_off: list[str] = Field(
         default=[], description="Ids of the agent file's rules this scenario does not judge by"
+    )
+    fail_on_integrity: list[IntegrityCheck] = Field(
+        default=[],
+        description="Integrity facts that fail the run, besides those the agent file names, when they are found (`around_proxy`, "
+        "`agent_contract_changed`, `unmatched_call`); unnamed, each is stated as `review` and never changes the verdict",
     )
     expect_outcome: ExpectedOutcome | OutcomeRate = Field(
         default=ExpectedOutcome.PASSED,

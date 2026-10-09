@@ -2,12 +2,14 @@
 
 Its HTTP client ignored `HTTPS_PROXY` and reached the real service: the run tested a different world from the one the
 scenario set up, and whatever the real service did is in no record. When the agent's own telemetry shows the calls
-(`RunView.around_proxy`), that is a fact and the check fails. When the only sign is that the agent was woken and called
+(`RunView.around_proxy`), that is a fact, stated as a review, and a failure only when the agent file or the
+scenario names `around_proxy` in `fail_on_integrity`. When the only sign is that the agent was woken and called
 nothing of any provider the run names (`RunView.uncalled_providers`), it may as well have done nothing: `review`.
 """
 
 from __future__ import annotations
 
+from minutehand.domain.assessments import IntegrityCheck
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 
 FIXES = (
@@ -26,11 +28,12 @@ class WentAroundProxy:
     pattern = None
 
     def run(self, view: RunView) -> CheckReport:
+        kind, severity = view.integrity(IntegrityCheck.AROUND_PROXY)
         findings = [
             Finding(
                 check=self.id,
-                severity=Severity.ERROR,
-                kind=FindingKind.FAIL,
+                severity=severity,
+                kind=kind,
                 message=f"the agent's own telemetry shows {went.by_agent} call{'s' if went.by_agent != 1 else ''} to "
                 f"{went.host} ({went.provider}) and the proxy saw {went.through_proxy}: {went.around} went around "
                 f"Minutehand to the real {went.host} (one: {went.example}), so the run did not test the world the "
