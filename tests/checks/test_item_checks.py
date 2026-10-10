@@ -490,3 +490,21 @@ def test_messages_sent_through_a_declared_send_only_host_are_assessed_as_its_kin
     assert [t.kind for t in typed] == [ItemKind.EMAIL, ItemKind.EMAIL]
     assert ("duplicate", "fail") in _checks(assessed)
     assert typed_items(built.events, built.scenario, {}, {}, None, ()) == [], "undeclared, it is no item of any kind"
+
+
+def test_a_chase_is_early_only_against_when_the_scenario_says_the_person_answers() -> None:
+    """With `reply_within` (or a delay its reply sets) the scenario says when the person answers, and a follow-up
+    before then is early; a silent person, of whom it says nothing, may be chased whenever: no default is a
+    declaration."""
+    log = Log()
+    rosa = person("rosa", Silent())
+    log.message([rosa], 1, "Could you confirm the venue?")
+    log.message([rosa], 3, "Following up: could you confirm the venue?")
+
+    def found(who: Person) -> list[str]:
+        built = view(scenario(person("owner"), who), log)
+        return [c for c, _ in _checks(_typed(built, _manifests(chat=[CHAT_MESSAGE])))]
+
+    assert "inside_reply_window" not in found(rosa)
+    declared = rosa.model_copy(update={"reply_within": Window(min=timedelta(hours=6), max=timedelta(hours=8))})
+    assert "inside_reply_window" in found(declared)

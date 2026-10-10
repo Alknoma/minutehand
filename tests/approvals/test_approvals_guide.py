@@ -178,12 +178,12 @@ async def test_inbox_rejected_fails_the_heedless_agent_that_orders_anyway(
     assert len(played.orders) == 1
 
 
-async def test_inbox_never_decided_is_chased_once_escalated_and_left_unfinished(
+async def test_inbox_never_decided_is_chased_once_escalated_and_left_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     played = await play("inbox", "never_decides.yaml", tmp_path, monkeypatch)
 
-    assert played.verdict is VerdictKind.UNFINISHED, played.failed
+    assert played.verdict is VerdictKind.PASSED, played.failed  # a world: what is left pending is counted
     assert played.orders == []
     assert sorted(played.items) == [("marta", "pending"), ("nadia", "pending")]
     assert [t.split("\n")[0] for t in to(played, NADIA)] == ["Reminder: PO-7731"]

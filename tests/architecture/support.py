@@ -127,8 +127,8 @@ def agent_file(
     inbox: bool = False,
     policy: bool = True,
 ) -> Path:
-    """The reference agent's file, on `port`; with `policy`, judged by its team's rules as
-    examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email. No hooks: its
+    """The reference agent's file, on `port`; with `policy`, judged also by the example team's rules as
+    examples/reference_agent/team_policy.yaml writes them; with `answered`, people can answer its email. No hooks: its
     memory is the run's (`minutehand.agent.store`)."""
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {
@@ -144,7 +144,7 @@ def agent_file(
             }
         ],
         "outbound": [mail, SEARCH],
-        "assess": yaml.safe_load((AGENT_DIR / "agent.yaml").read_text())["assess"] if policy else [],
+        "assess": yaml.safe_load((AGENT_DIR / "team_policy.yaml").read_text())["assess"] if policy else [],
     }
     if inbox:
         doc["inboxes"] = [approvals(port)]

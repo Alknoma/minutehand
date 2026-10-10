@@ -1,22 +1,20 @@
+# A world, not a task: the agent brings its own work (REFERENCE_JOB) and decides when it next wakes.
 # Rosa, who runs Lakeside Hall, answers the agent's first email within two days.
 name: venue_for_friday
-goal: Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.
-owner: owen
 starts_at: 2026-08-24T09:00:00Z      # a Monday
-deadline_after: P4D                  # Friday morning
+runs_for: P4D                  # Friday morning
 people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
+    profile: Organises the team offsite; wants the venue's booking reference.
     reply: {kind: scripted, then: silent}        # he is told things and answers nothing
   - key: rosa
     name: Rosa Lind
     email: rosa@lakeside.example
+    profile: Runs the lakeside hall's bookings.
     reply:
       kind: scripted
       delay: {shortest: PT20H, longest: P2D}
       replies:
         - {to_ask: 1, facts: ["Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."]}
-expect:
-  - {kind: person_asked, person: rosa, by: PT1H}
-  - {kind: relayed, said_by: rosa, to: owen, holding: [LH-2291]}

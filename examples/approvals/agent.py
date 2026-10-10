@@ -1,5 +1,6 @@
-"""An agent that must get a person's sign-off before it acts: it orders 40 laptops (PO-7731) once the approver
-approves, and tells the requester how it went. It is the one agent behind every example of docs/approvals.md; only
+"""An agent that must get a person's sign-off before it acts. It brings its own work (the run hands it none): order
+40 laptops (PO-7731) once the approver approves, and tell the requester how it went. It is proactive: it decides when
+it next wakes, and nothing wakes it on a schedule; its report names the moment, or none. It is the one agent behind every example of docs/approvals.md; only
 where the approval happens changes, by APPROVAL_VIA:
 
     inbox     in its own product: GET /approvals?approver=<email> lists what waits on a person,
@@ -12,7 +13,7 @@ where the approval happens changes, by APPROVAL_VIA:
 
 Whatever the channel, it reminds by email. Its wake contract is the usual one:
 
-    POST /wake     {"now": ..., "reason": ..., "goal": ...}
+    POST /wake     {"now": ..., "reason": ...}
     GET  /report   {"status": "idle" | "done", "next_wake": ... or null}
 
 The plan, from the first wake: ask the approver; a day on, still undecided, remind them once by email; two days

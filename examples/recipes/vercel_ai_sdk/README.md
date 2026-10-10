@@ -7,7 +7,7 @@ is; there is no build step. `../README.md` describes the agent and the contract 
 ## The lines that connect it
 
 ```ts
-const memory: { goal: string | null; waits: Map<string, Wait> } = { goal: null, waits: new Map() };
+const memory: { work: string | null; waits: Map<string, Wait> } = { work: null, waits: new Map() };
 
 remember_wait: tool({
   inputSchema: z.object({ email: z.string(), expected_by: z.iso.datetime({ offset: true }) }),
@@ -20,7 +20,7 @@ remember_wait: tool({
 async function wake(request) {                               // POST /wake
   const now = new Date(request.now);
   if (request.reason === "start") {
-    memory.goal = request.goal ?? null;
+    memory.work = WORK;
     await run(now, "Nobody has been asked yet.");            // generateText({ model, instructions, prompt, tools, stopWhen })
     return;
   }
@@ -30,7 +30,7 @@ async function wake(request) {                               // POST /wake
 }
 
 function report() {                                          // GET /report, after every wake
-  if (memory.goal === null) return { status: "idle", next_wake: null };
+  if (memory.work === null) return { status: "idle", next_wake: null };
   const dates = [...memory.waits.values()].map((w) => w.expectedBy.getTime());
   if (dates.length === 0) return { status: "done", next_wake: null };
   return { status: "idle", next_wake: iso(new Date(Math.min(...dates))) };
@@ -53,7 +53,7 @@ function report() {                                          // GET /report, aft
 
 ## What it remembers
 
-The goal and the waits are kept in a store (`minutehand-store.ts`): `recall()` reads them into `memory` before every
+Its work and the waits are kept in a store (`minutehand-store.ts`): `recall()` reads them into `memory` before every
 wake, Slack event and report, and `keep()` writes them back, in one batch, after every wake and event (`remembering`).
 It is the TypeScript twin of Python's `minutehand.agent.store`, about eighty lines over the same wire: in production
 a `Map` in this process (swap it for an adapter over your own database to keep it across restarts); under Minutehand
@@ -65,8 +65,8 @@ reaches it directly.
 
 ```ts
 async function recall(): Promise<void> {
-  const goal = await store.get("goal");
-  memory.goal = typeof goal === "string" ? goal : null;
+  const work = await store.get("work");
+  memory.work = typeof work === "string" ? work : null;
   memory.waits = new Map();
   for (const [email, kept] of await store.list("", "waits")) {
     const wait = kept as { expected_by: string; asks: number };

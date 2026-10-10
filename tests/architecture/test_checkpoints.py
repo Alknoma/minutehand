@@ -44,7 +44,7 @@ def test_a_fork_from_a_middle_checkpoint_starts_from_the_parents_memory_there_an
 
 
 def test_the_agents_own_database_is_never_opened_under_minutehand(rig: Rig) -> None:
-    done = rig.run("scenario.yaml")
+    done = rig.run("scenario.yaml", policy=False)
 
     assert done.code == 0, done.out + done.err[-2000:]
     assert not (rig.home / "agent.db").exists()

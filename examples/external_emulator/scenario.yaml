@@ -1,13 +1,7 @@
+# A world, not a task: the agent brings its own work (agent.py files Rosa as a customer and checks she is listed)
+# and decides when it next wakes. Its payments calls go to an outside emulator the agent file declares.
 name: payments_example
-goal: File Rosa as a customer, and check she is listed.
-owner: owen
 starts_at: 2026-08-24T09:00:00Z
-deadline_after: PT6H
+runs_for: PT6H
 people:
-  - {key: owen, name: Owen Owner, email: owen@example.com, reply: {kind: silent}}
-
-# How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
-assess:
-  - id: nothing_after_the_deadline   # the work is done inside the scenario's six hours
-    count: {writes: {}, since: deadline+PT1S}
-    at_most: 0
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Runs the shop's customer accounts.", reply: {kind: silent}}

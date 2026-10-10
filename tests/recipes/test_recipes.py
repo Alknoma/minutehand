@@ -109,12 +109,11 @@ def assert_late_answer_passes(played: Played, recipe: Recipe) -> None:
     assert any(to == OWEN and "lakeside hall" in text for to, text in played.said), played.said
     assert played.model_calls and set(played.model_calls) == {recipe.wire}
     # What it remembered went to the run's memory: the goal, and no wait left once Rosa answered.
-    assert json.loads(played.remembered[("default", "goal")]).startswith("Confirm"), played.remembered
+    assert json.loads(played.remembered[("default", "work")]).startswith("Confirm"), played.remembered
     assert not [k for k in played.remembered if k[0] == "waits"], played.remembered
 
 
 def assert_silence_draws_one_follow_up(played: Played, recipe: Recipe) -> None:
-    assert "follows_up_when_due" not in played.checks_failed
     assert played.verdict is VerdictKind.PASSED, (played.words, played.checks_failed)
     assert [text.startswith("Following up") for to, text in played.said if to == ROSA] == [False, True]
     assert [text.startswith("No answer from") for to, text in played.said if to == OWEN] == [True]

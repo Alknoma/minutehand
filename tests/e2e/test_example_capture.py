@@ -55,8 +55,6 @@ async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(
         )
     assert [r.path for r in real.received] == ["/v1/search?q=The%20lakeside%20hall%2C%20booked%20for%20the%2014th."]
     assert outcome.result.verdict.kind is VerdictKind.PASSED, outcome.result.verdict.words
-    [relayed] = [f for f in outcome.result.findings if "owen told what rosa said" in f.message]
-    assert "met by the message to Owen Hart" in relayed.message and "on the lake, seats 80" in relayed.message
     assert [(u.host, u.mode) for u in outcome.record.outbound] == [
         ("::1", CaptureMode.PASS_THROUGH),
         ("api.mail.example", CaptureMode.ACKNOWLEDGE),
@@ -66,6 +64,7 @@ async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(
         [emailed] = [e for e in events if e.entity.provider == "api_mail_example"]
     assert isinstance(emailed.after, MessageSnapshot) and emailed.after.recipient_emails == ["owen@example.com"]
     assert emailed.after.text.startswith("Offsite venue\n\nThe offsite venue is confirmed: The lakeside hall")
+    assert "on the lake, seats 80" in emailed.after.text, "what the lookup said reached Owen with Rosa's answer"
     # What the agent remembered is the run's memory, and its own database was never opened.
     remembered = memory_of(events)
     assert remembered[("default", "status")] == '"done"'

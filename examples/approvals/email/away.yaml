@@ -1,25 +1,28 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
 # Nadia is on leave from the first request: her automatic reply, sent at once, names Marta, who covers and approves.
 name: email_approver_away
-goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
-owner: owen
 starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P5D
+runs_for: P5D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     absences: [{trigger: on_first_ask, lasts: P7D, delegate: marta, reason: on leave}]
     reply: {kind: scripted, then: silent}
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     reply_within: {min: PT1H, max: PT3H}
     reply:
       kind: scripted
       replies: [{to_ask: 1, facts: ["I approve PO-7731 while Nadia is away"]}]
       then: silent
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: no_chasing_someone_away       # nothing more to Nadia while she is away and Marta covers
     count: {messages: {to_away: true}}

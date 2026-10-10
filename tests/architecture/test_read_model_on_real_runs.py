@@ -202,9 +202,9 @@ def test_the_examples_findings_are_the_runs(follow_up: Played) -> None:
         {"check_id": f.check, "kind": f.kind.value, "message": f.message, "evidence": json.dumps(f.evidence)}
         for f in result.findings
     ]
-    assert result.findings, "the example's expectations are each reported met"
+    assert result.findings == [], "a world with no rule of its own, and an agent that did nothing wrong in it"
     [row] = follow_up.rows("SELECT verdict, stop FROM run")
-    assert row == {"verdict": result.verdict.kind.value, "stop": "agent_done"}
+    assert row == {"verdict": result.verdict.kind.value, "stop": "window_ended"}
 
 
 def test_the_example_read_with_the_installed_commands(follow_up: Played) -> None:

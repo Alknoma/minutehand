@@ -1,36 +1,20 @@
-# Rosa never answers. An agent that asked once and stopped leaves the job waiting forever.
+# A world, not a task: the agent brings its own work and decides when it next wakes. Rosa never answers.
 name: offsite_venue_silent
-goal: Confirm the venue for the team offsite with Rosa.
-owner: owen
 starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P14D
+runs_for: P14D
 
 people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
-    reply:                            # Owen is told the outcome and owes no answer: a script with no steps
-      kind: scripted                  # that says nothing more once used. (`silent` would make every message to
-      then: silent                    # him a question he leaves unanswered.)
+    profile: Organises the team offsite; wants to hear which venue is booked.
+    reply:
+      kind: scripted
+      then: silent
 
   - key: rosa
     name: Rosa Lind
     email: rosa@example.com
+    profile: Runs the lakeside hall's bookings, and does not answer messages.
     reply:
       kind: silent
-
-expect:
-  - kind: person_asked
-    person: rosa
-
-# How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else. Rosa's answer
-# is due when her longest delay has passed; an hour after that, she must have been followed up at least once.
-assess:
-  - id: follows_up_when_due
-    each: ask
-    where: {person_not: [owner]}
-    when: {open_at: due+PT1H}
-    count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
-    at_least: 1
-    message: "{person.key}'s answer was due and no follow-up came by an hour later"
-    pattern: expiry_on_every_wait

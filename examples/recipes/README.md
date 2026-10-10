@@ -11,18 +11,20 @@ copying twenty lines rather than working the contract out:
 | `pydantic_ai/` | Pydantic AI | Python | chat completions |
 | `vercel_ai_sdk/` | Vercel AI SDK (`ai`, `@ai-sdk/openai`) | TypeScript on Node | chat completions |
 
-Each agent takes its goal on the first wake ("confirm the venue for the team offsite with Rosa"), asks Rosa in
-Slack through a tool built on the stock Slack client (`slack_sdk`, `@slack/web-api`), and remembers the wait with
-the date it expects her answer by. After every wake it reports that date as `next_wake`. If the date passes with no
-answer it follows up once and remembers a new date; if that one passes too, it tells Owen, who gave it the goal, and
-closes the wait. When Rosa answers it thanks her, tells Owen what she said, and reports that it is done.
+Each agent brings its own work, written in its own configuration as a real agent's prompt is (`WORK`: "confirm the
+venue for the team offsite with Rosa, and tell Owen what she said"); the run hands it none. It is **proactive: it
+decides when it next wakes.** Nothing wakes it on a schedule. It asks Rosa in Slack through a tool built on the stock
+Slack client (`slack_sdk`, `@slack/web-api`) and remembers the wait with the date it expects her answer by; after
+every wake it reports the moment it wants waking next, that date, as `next_wake`. If the date passes with no answer
+it follows up once and remembers a new date; if that one passes too, it tells Owen and closes the wait. When Rosa
+answers it thanks her and tells Owen what she said.
 
 | File in each folder | What it is |
 |---|---|
 | `agent.py` / `agent.ts` | The agent: the framework's agent and tools, and three endpoints for Minutehand |
 | `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, and where Slack pushes messages |
-| `scenario_late.yaml` | Rosa answers two and a half days after she is asked, after the agent's follow-up at two days |
-| `scenario_silent.yaml` | Rosa never answers |
+| `scenario_late.yaml` | A world where Rosa answers two and a half days after she is asked, after the agent's follow-up at two days |
+| `scenario_silent.yaml` | A world where Rosa never answers |
 | `README.md` | The lines that connect this framework to Minutehand, and the commands |
 
 ## The contract, once
@@ -30,18 +32,18 @@ closes the wait. When Rosa answers it thanks her, tells Owen what she said, and 
 Every recipe answers the same three calls (`docs/agent-contract.md`, the Reported wake source):
 
 ```
-POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}   it is now `now`: do what is due
+POST /wake          {"now": ..., "reason": "start" | "due" | ...}   it is now `now`: do what is due
 GET  /report        {"status": "idle" | "done", "next_wake": ISO 8601 or null}   asked after every wake
 POST /slack/events  Slack's Events API, signed: a person wrote to the agent
 ```
 
-and keeps the same shape of state: the goal, and for each person who owes an answer, the moment it is expected by.
-`next_wake` is the earliest of those moments; `done` is a goal taken and no wait left.
+and keeps the same shape of state: its work, and for each person who owes an answer, the moment it is expected by.
+`next_wake`, the moment it decides to be woken next, is the earliest of those moments.
 
 ## What they remember, and where
 
 Each keeps that state in `minutehand.agent.store` (the Node recipe in `minutehand-store.ts`, its twin over the same
-wire), never in the framework's own objects past a wake: the goal under `goal`, each wait under its person's email in
+wire), never in the framework's own objects past a wake: its work under `work`, each wait under its person's email in
 the collection `waits`. Each reads it back before every wake, Slack event and report, and writes it back in one batch
 after every wake and event.
 
@@ -95,25 +97,10 @@ uv run --group recipes minutehand run scenario_late.yaml --agent agent.yaml -- p
 uv run --group recipes minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
 ```
 
-Each recipe's README gives its own command. Both scenarios exit 0. The silent one ends like this:
-
-```
-run 6857256e8014: recipe_venue_silent
-  Passed: no check failed, and the agent reported it was done.
-  stopped at 2026-08-28 09:00 UTC (simulated) because the agent reported it was done
-...
-scorecard
-  expectations met: 1 of 1
-  waits opened: 1, still open at the end: 1
-  follow-ups made: 1
-```
-
-Rosa's wait is still open at the end, as Minutehand counts it: she never answered. The agent closed its side by
-telling Owen. Whether one follow-up two days in was right is the scenario's rules' to say; the recipes' scenarios
-ask for a follow-up once her answer is due.
-
-Leave the agent's follow-up out (have `/report` answer `next_wake: null`) and the silent run fails the scenario's
-rule `follows_up_when_due`, naming the fix: an expected-by date on every wait, and a wake on it.
+Each recipe's README gives its own command. Each scenario is a world watched for fourteen days; every run is
+assessed, automatically, against the agent's own instructions and that world (`docs/assessments.md`), with nothing
+more to write. Rosa's wait in the silent world is still open at the end: she never answered, and the agent told Owen
+so after its one follow-up.
 
 `tests/recipes/test_recipes.py` runs every recipe through both scenarios (`uv run --group recipes pytest -m recipes`).
 

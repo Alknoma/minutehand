@@ -1,5 +1,7 @@
 """A Claude Agent SDK agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 
+It is proactive: it decides when it next wakes. Nothing wakes it on a schedule; its report names the moment it wants waking next (`next_wake`), or none.
+
 The agent is a `query()` per wake or Slack event, with the situation as its prompt and three tools served in this
 process by `create_sdk_mcp_server`. Claude Code's own tools are switched off (`tools=[]`); only these three are
 allowed. The tools close over `Memory`, recalled from `minutehand.agent.store` on every wake, event and report and
@@ -9,7 +11,7 @@ earliest moment a wait is expected by.
 The SDK runs the Claude Code command line it bundles, which calls the messages API. ANTHROPIC_BASE_URL points it at
 the recipes' fake model; Slack calls are made by the tools, in this process, so they go through Minutehand's proxy.
 
-    POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}: run the agent on what is due
+    POST /wake          {"now": ..., "reason": "start" | "due" | ...}: run the agent on what is due
     GET  /report        {"status": "idle" | "done", "next_wake": the earliest expected-by date, or null}
     POST /slack/events  Slack's Events API: a person's answer, run through the agent
 
@@ -44,10 +46,12 @@ from slack_sdk.signature import SignatureVerifier
 
 from minutehand.agent import store
 
-OWNER = "owen@example.com"  # who gives the agent its goal
+OWNER = "owen@example.com"  # whom it tells the outcome
+# Its work, as its own configuration says: the run hands it none.
+WORK = "Confirm the venue for the team offsite with Rosa, and tell Owen what she said."
 ASK = "rosa@example.com"  # who knows the answer
 SYSTEM = (
-    "You carry one goal for its owner by asking a colleague in Slack. Whenever you ask, remember the wait with "
+    "You keep your work moving by asking a colleague in Slack. Whenever you ask, remember the wait with "
     "the date you expect an answer by. Follow up once; after that, tell the owner. When the answer comes, thank "
     "the colleague, tell the owner what they said, and close the wait."
 )
@@ -63,9 +67,9 @@ class Wait:
 
 @dataclass
 class Memory:
-    """What the agent knows between runs: its goal and who owes it an answer by when."""
+    """What the agent knows between runs: its work and who owes it an answer by when."""
 
-    goal: str | None = None
+    work: str | None = None
     waits: dict[str, Wait] = field(default_factory=dict)
 
 
@@ -81,19 +85,19 @@ memory = Memory()
 def recall() -> None:
     """Read what the agent remembers from the store: on every wake, event and report, never from the last one."""
     global memory
-    goal = store.get("goal")
+    work = store.get("work")
     waits: dict[str, Wait] = {}
     for email, kept in waits_kept.list():
         assert isinstance(kept, dict)
         waits[email] = Wait(datetime.fromisoformat(str(kept["expected_by"])), int(str(kept["asks"])))
-    memory = Memory(goal=goal if isinstance(goal, str) else None, waits=waits)
+    memory = Memory(work=work if isinstance(work, str) else None, waits=waits)
 
 
 def keep() -> None:
     """Write what the agent remembers back to the store, all of it at once."""
     gone = {email for email, _ in waits_kept.list()} - memory.waits.keys()
     with store.batch() as kept:
-        kept.put("goal", memory.goal)
+        kept.put("work", memory.work)
         for email in gone:
             kept.delete(email, collection="waits")
         for email, wait in memory.waits.items():
@@ -173,8 +177,8 @@ async def ask_claude(situation: str) -> None:
 
 
 def run(now: datetime, happened: str) -> None:
-    assert memory.goal is not None
-    situation = f"It is now {now.isoformat()}.\nGoal: {memory.goal}\nOwner: {OWNER}. Ask: {ASK}.\n{happened}"
+    assert memory.work is not None
+    situation = f"It is now {now.isoformat()}.\nWork: {memory.work}\nReport to: {OWNER}. Ask: {ASK}.\n{happened}"
     asyncio.run(ask_claude(situation))
 
 
@@ -185,7 +189,7 @@ def run(now: datetime, happened: str) -> None:
 def wake(request: dict[str, str]) -> None:
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
-        memory.goal = request["goal"]
+        memory.work = WORK
         run(now, "Nobody has been asked yet.")
         return
     for email, wait in list(memory.waits.items()):
@@ -196,7 +200,7 @@ def wake(request: dict[str, str]) -> None:
 
 def report() -> dict[str, object]:
     recall()
-    if memory.goal is None:
+    if memory.work is None:
         return {"status": "idle", "next_wake": None}
     if not memory.waits:
         return {"status": "done", "next_wake": None}

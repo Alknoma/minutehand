@@ -6,7 +6,6 @@
 version: 1
 name: purchasing_agent_in_teams
 
-goal: {kind: by_wake}
 wakes:
   - {kind: reported, wake_url: "http://127.0.0.1:8720/wake", report_url: "http://127.0.0.1:8720/report"}
 

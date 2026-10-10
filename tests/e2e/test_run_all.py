@@ -31,8 +31,9 @@ NEVER_FOLLOW_UP = [{"id": "never_follows_up", "each": "ask", "count": {"follow_u
 
 
 def _folder(tmp_path: Path, *, silent_expects: str) -> Path:
-    """Three scenarios and the agent file beside them: Rosa answers (passed); Rosa is silent and the agent is left
-    waiting (`silent_expects`); Rosa is silent and a rule forbids the follow-up the agent makes (failed)."""
+    """Three worlds and the agent file beside them: Rosa answers (passed); Rosa is silent, which a world with no
+    rule of its own passes (`silent_expects`); Rosa is silent and a rule forbids the follow-up the agent makes
+    (failed)."""
     folder = tmp_path / "scenarios"
     folder.mkdir()
     (folder / "agent.yaml").write_text((EXAMPLE / "agent.yaml").read_text().replace("8700", "{run.port}"))
@@ -51,7 +52,7 @@ def _cli(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_run_all_plays_every_scenario_in_parallel_and_exits_0_when_each_verdict_is_expected(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, silent_expects="unfinished")
+    folder = _folder(tmp_path, silent_expects="passed")
     state = tmp_path / "state"
 
     ran = _cli(
@@ -64,7 +65,7 @@ def test_run_all_plays_every_scenario_in_parallel_and_exits_0_when_each_verdict_
     assert sorted(by_name) == ["offsite_venue", "offsite_venue_silent", "offsite_venue_strict"], "notes.yaml skipped"
     assert [by_name[n].samples[0].verdict for n in sorted(by_name)] == [
         VerdictKind.PASSED,
-        VerdictKind.UNFINISHED,
+        VerdictKind.PASSED,
         VerdictKind.FAILED,
     ]
     assert all(p.matched for p in batch.played)
@@ -81,7 +82,7 @@ def test_run_all_plays_every_scenario_in_parallel_and_exits_0_when_each_verdict_
 
 
 def test_run_all_exits_1_when_a_verdict_differs_from_the_one_its_scenario_expects(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, silent_expects="passed")
+    folder = _folder(tmp_path, silent_expects="failed")
 
     ran = _cli(
         "run-all",
@@ -167,11 +168,10 @@ def test_run_and_findings_print_one_json_shape(tmp_path: Path) -> None:
 
 
 def test_run_all_samples_each_scenario_under_seeds_from_a_base_and_counts_each_verdict(tmp_path: Path) -> None:
-    folder = _folder(tmp_path, silent_expects="unfinished")
-    for name in ("strict.yaml",):
-        (folder / name).unlink()
-    silent = yaml.safe_load((folder / "silent.yaml").read_text())
-    rated = {**silent, "name": "offsite_venue_rated", "expect_outcome": {"passed": ">= 0.5"}}
+    folder = _folder(tmp_path, silent_expects="passed")
+    strict = yaml.safe_load((folder / "strict.yaml").read_text())
+    (folder / "strict.yaml").unlink()
+    rated = {**strict, "name": "offsite_venue_rated", "expect_outcome": {"passed": ">= 0.5"}}
     (folder / "rated.yaml").write_text(yaml.safe_dump(rated))
 
     ran = _cli(
@@ -197,9 +197,9 @@ def test_run_all_samples_each_scenario_under_seeds_from_a_base_and_counts_each_v
     answers = by_name["offsite_venue"]
     assert [s.seed for s in answers.samples] == [100, 101, 102]
     assert answers.counts["passed"] == 3 and answers.failing_seeds == [] and answers.matched
-    assert by_name["offsite_venue_silent"].counts["unfinished"] == 3 and by_name["offsite_venue_silent"].matched
+    assert by_name["offsite_venue_silent"].counts["passed"] == 3 and by_name["offsite_venue_silent"].matched
     rated_played = by_name["offsite_venue_rated"]
-    assert rated_played.counts["unfinished"] == 3 and rated_played.failing_seeds == [100, 101, 102]
+    assert rated_played.counts["failed"] == 3 and rated_played.failing_seeds == [100, 101, 102]
     assert not rated_played.matched, "none of three passed, and at least half must"
 
     said = _cli(
