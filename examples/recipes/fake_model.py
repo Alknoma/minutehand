@@ -135,7 +135,7 @@ def decide(situation: str) -> list[Call]:
 
 PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary")
 SERVICES = ("WrittenMachine", "WrittenRoute", "WrittenAnswer")
-JUDGES = ("ItemReview", "FactCheck")
+JUDGES = ("ItemReview", "FactCheck", "WorkReview")
 
 
 def _bullets(text: str, heading: str) -> list[str]:
@@ -442,6 +442,22 @@ def fact_check_answer(shown: str) -> dict[str, object]:
     return {"supported": True, "unsupported": [], "rationale": "It says only what they know."}
 
 
+def work_review_answer(shown: str) -> dict[str, object]:
+    """The window read whole: an agent that did nothing at all, with instructions that give it work, left it undone;
+    any agent that acted is taken to have done what it could."""
+    if "What the agent did, oldest first:\n(nothing)" not in shown:
+        return {"undone": []}
+    return {
+        "undone": [
+            {
+                "what": "everything its instructions give it",
+                "allowed_by": "The agent's own instructions",
+                "rationale": "It did nothing in the whole window, and nothing shown kept it from starting.",
+            }
+        ]
+    }
+
+
 def people_completion(body: dict[str, object], schema: str, number: int) -> dict[str, object]:
     messages = body["messages"]
     assert isinstance(messages, list)
@@ -451,6 +467,8 @@ def people_completion(body: dict[str, object], schema: str, number: int) -> dict
         answered = review_answer(shown)
     elif schema == "FactCheck":
         answered = fact_check_answer(shown)
+    elif schema == "WorkReview":
+        answered = work_review_answer(shown)
     elif schema in SERVICES:
         answered = service_answer(schema, system, _text(messages[1]["content"]))
     elif schema == "WrittenTransition":

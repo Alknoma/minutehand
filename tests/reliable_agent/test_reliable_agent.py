@@ -37,10 +37,10 @@ class Played:
     blocked: list[str]
 
 
-def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False) -> Played:
+def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False, wordy: bool = False) -> Played:
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
     state = tmp_path / "state"
-    with agent_model(reckless=reckless, flaky=flaky) as url:
+    with agent_model(reckless=reckless, flaky=flaky, wordy=wordy) as url:
         done = subprocess.run(
             [str(MINUTEHAND), "run", f"worlds/{world}.yaml", "--agent", "agent.yaml", "--state", str(state), "--",
              sys.executable, str(EXAMPLE / "agent.py")],
@@ -127,3 +127,13 @@ def test_a_model_down_for_a_while_ends_wakes_cleanly_and_the_agent_tries_again_u
     assert played.verdict is VerdictKind.PASSED and played.failed == [], "the run is not stopped by its model failing"
     assert [to for to, _ in played.said] == [SAM, OWEN] and played.orders == 1, "the same outcome, a little later"
     assert any(b.startswith("model or service failed") for b in played.blocked)
+
+
+def test_a_model_that_names_a_move_by_its_description_still_moves_the_work_on(tmp_path: Path) -> None:
+    """A real model answered with the move's description instead of its name, and the agent, refusing it, stalled
+    for good: the menu now reads a description as the one move it describes, and a wake that leaves a move open plans
+    its return."""
+    played = play("approved", tmp_path, reckless=False, wordy=True)
+
+    assert played.verdict is VerdictKind.PASSED
+    assert [to for to, _ in played.said] == [SAM, OWEN] and played.orders == 1

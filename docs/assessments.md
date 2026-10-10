@@ -90,6 +90,16 @@ Every call is kept with the world and replayed when the run is assessed again; e
 `assessor`. An effect a deterministic check already failed is not shown to it. Without `--judge`, or with no model, the
 run's notes say the reviewer did not assess it; the deterministic checks still run.
 
+### Work left undone
+
+Every other check reads something the agent did, so an agent that does nothing does nothing wrong and passes them
+all. With `--judge`, the window is also read whole (`checks/judged/undone.py`, `work-undone/1`): the reviewer is shown
+the agent's own instructions, the world, everything the agent did, what people said to it, and how each item stood at
+the end, and names each part of the work its instructions give it that it left undone, quoting what in the world
+allowed it (the answer came, the decision was made, the item was open to its move). Work the world kept from the
+agent, and how it might have done its work better, are not named. Each is a `work_left_undone` finding, for review.
+It needs the agent's instructions, read from its model calls; without them it does not run.
+
 **Use a capable model for the reviewer.** Its findings are only as good as the model reading them. On the six runs of a
 real purchasing agent behind `tests/data/trial`, a small, fast model was wrong on 3 of the first 11 effects it read:
 it called asking the person who holds the answer "the wrong person", and filing the approval request itself "acting

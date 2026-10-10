@@ -153,17 +153,37 @@ def wake(now: datetime) -> None:
                 move = None
                 for _ in range(2):  # a pick off the menu is refused and asked once more
                     picked = model.choose(menu, state, now.isoformat())
-                    move = next((m for m in menu if m.purpose == picked), None)
+                    move = on_menu(picked, menu)
                     if move is not None:
                         break
                     state.blocked.append(f"not on the menu: {picked!r}")
                 if move is None:
                     break
                 act(move, state, now)
+            if legal(state, now):  # a move still open is never left to chance: the planner brings it back
+                state.retry_at = planner.in_hours(now + planner.RETRY).isoformat()
         except httpx.HTTPError as failed:
             state.blocked.append(f"model or service failed at {now.isoformat()}: {type(failed).__name__}")
             state.retry_at = planner.in_hours(now + planner.RETRY).isoformat()
         save(state)
+
+
+def on_menu(picked: str | None, menu: list[Move]) -> Move | None:
+    """The move the model named, by its purpose, or, from a model that wrote a move's description or its kind
+    instead, the one move that matches it: nothing that is not on the menu."""
+    if picked is None:
+        return None
+    said = picked.strip().casefold()
+    for match in (
+        lambda m: m.purpose.casefold() == said,
+        lambda m: m.purpose.casefold() in said,
+        lambda m: m.why.casefold() == said,
+        lambda m: m.name.casefold() == said,
+    ):
+        found = [m for m in menu if match(m)]
+        if len(found) == 1:
+            return found[0]
+    return None
 
 
 def read_inbox(state: State) -> None:

@@ -19,11 +19,18 @@ MODEL = os.environ.get("AGENT_MODEL", "gpt-4o-mini")
 KEY = os.environ.get("AGENT_MODEL_API_KEY", "")
 
 
-def _ask(task: str, shown: str) -> dict[str, Any]:
-    body = {
+def _ask(task: str, shown: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The model's JSON answer; with `schema`, held to it by the API (structured output), so an answer outside it,
+    such as a move not on the menu, cannot come back."""
+    body: dict[str, Any] = {
         "model": MODEL,
         "messages": [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": f"{task}\n\n{shown}"}],
     }
+    if schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "answer", "strict": True, "schema": schema},
+        }
     answer = httpx.post(f"{BASE}/chat/completions", json=body, headers={"authorization": f"Bearer {KEY}"}, timeout=120)
     answer.raise_for_status()
     text = answer.json()["choices"][0]["message"]["content"] or "{}"
@@ -39,10 +46,19 @@ def _facts(state: State) -> str:
 
 
 def choose(menu: list[Move], state: State, now: str) -> str | None:
+    """The purpose of the move the model picks. The menu is the answer's schema: its only allowed values are the
+    moves open now, so the API itself refuses anything else."""
     shown = f"It is now {now}.\nFacts you hold:\n{_facts(state)}\nMoves open to you now:\n" + "\n".join(
-        f"- {m.name} ({m.purpose}): {m.why}" for m in menu
+        f"- {m.purpose} — {m.why}" for m in menu
     )
-    return _ask('Pick one move. Answer {"move": "<its purpose, exactly as listed>"}.', shown).get("move")
+    schema = {
+        "type": "object",
+        "properties": {"move": {"type": "string", "enum": [m.purpose for m in menu]}},
+        "required": ["move"],
+        "additionalProperties": False,
+    }
+    picked = _ask("Pick one move by its name, exactly as listed before the dash.", shown, schema).get("move")
+    return picked if isinstance(picked, str) else None
 
 
 def write(move: Move, state: State, now: str) -> str:
