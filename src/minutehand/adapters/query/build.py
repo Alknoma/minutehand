@@ -34,6 +34,7 @@ from minutehand.domain.clock import DueClosed, DueEntry
 from minutehand.domain.conversation import SIDE, PersonCall, Wrote
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.prices import Prices
+from minutehand.domain.reactions import reactions
 from minutehand.domain.scenario import Answers, Scenario, Scripted
 from minutehand.domain.telemetry import (
     ArrayValue,
@@ -317,6 +318,31 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "call_id": call_of[m.seq] if m.seq in call_of else None,
             }
             for m in moves(events)
+        ],
+    )
+    tables.put(
+        "reactions",
+        [
+            {
+                "change_seq": r.change.seq,
+                "at": at(r.change.at),
+                "provider": r.change.provider,
+                "item_kind": r.change.item.kind.value,
+                "item_id": r.change.item.external_id,
+                "change": r.change.name,
+                "to_state": r.change.to_state,
+                "actor": r.change.by.value,
+                "who": r.change.who,
+                "seen_at": at(r.seen_at),
+                "seen_by": r.seen_by,
+                "seen_call_id": r.seen_call,
+                "unseen_seconds": r.unseen.total_seconds() if r.unseen is not None else None,
+                "acted_seq": r.acted.seq if r.acted else None,
+                "acted_at": at(r.acted_at),
+                "acted": f"{r.acted.provider} {r.acted.name}" if r.acted else None,
+                "to_act_seconds": r.to_act.total_seconds() if r.to_act is not None else None,
+            }
+            for r in reactions(events, calls, [(w.sim_time, w.reason) for w in wakes])
         ],
     )
     tables.put("items", _items(events))

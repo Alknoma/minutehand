@@ -22,11 +22,17 @@ class TraceFilter(Model):
     since: str | None = Field(default=None, description="Simulated time, ISO 8601, inclusive")
     until: str | None = Field(default=None, description="Simulated time, ISO 8601, inclusive")
     wake: int | None = None
+    item: str | None = Field(
+        default=None, description="An item's id: the agent's acts naming it, and the changes others made to it"
+    )
 
 
 class Traced(Model):
     run_id: str
     actions: list[Record] = Field(description="Rows of the `actions` view, in order")
+    changes: list[Record] = Field(
+        default=[], description="With an item: rows of the `reactions` view for it, when others changed it"
+    )
 
 
 def _moment(text: str, said: str) -> str:
@@ -64,8 +70,16 @@ def trace(db: sqlite3.Connection, run_id: str, wanted: TraceFilter) -> Traced:
     if wanted.wake is not None:
         where.append("wake = ?")
         args.append(wanted.wake)
+    if wanted.item is not None:
+        where.append("(instr(coalesce(target, ''), ?) > 0 OR instr(coalesce(summary, ''), ?) > 0)")
+        args += [wanted.item, wanted.item]
     sql = "SELECT * FROM actions" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY position"
-    return Traced(run_id=run_id, actions=_records(db, sql, args))
+    changes = (
+        _records(db, "SELECT * FROM reactions WHERE item_id = ? ORDER BY change_seq", [wanted.item])
+        if wanted.item is not None
+        else []
+    )
+    return Traced(run_id=run_id, actions=_records(db, sql, args), changes=changes)
 
 
 def _records(db: sqlite3.Connection, sql: str, args: list[Value]) -> list[Record]:
@@ -80,7 +94,31 @@ def _one(db: sqlite3.Connection, sql: str, args: list[Value]) -> Record | None:
     return found[0] if found else None
 
 
+def _hours(seconds: object) -> str:
+    if not isinstance(seconds, int | float):
+        return "never"
+    minutes = round(seconds / 60)
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _changes(traced: Traced) -> list[str]:
+    lines = [f"changes others made to it: {len(traced.changes)}"]
+    for c in traced.changes:
+        when = str(c["at"])[:16].replace("T", " ")
+        seen = (
+            f"seen by {c['seen_by']} after {_hours(c['unseen_seconds'])}"
+            + (f" (call {c['seen_call_id']})" if c["seen_call_id"] is not None else "")
+            if c["seen_at"] is not None
+            else "never seen"
+        )
+        acted = f"acted after {_hours(c['to_act_seconds'])}: {c['acted']}" if c["acted"] else "no act after"
+        lines.append(f"  {when}  {c['who'] or c['actor']} {c['change']} -> {c['to_state']}; {seen}; {acted}")
+    return lines
+
+
 def described(traced: Traced) -> str:
+    if traced.changes and not traced.actions:
+        return "\n".join([f"run {traced.run_id}: no action of the agent's matches", *_changes(traced)]) + "\n"
     if not traced.actions:
         return f"run {traced.run_id}: no action of the agent's matches\n"
     lines = [f"run {traced.run_id}: {len(traced.actions)} action(s) of the agent's"]
@@ -98,6 +136,8 @@ def described(traced: Traced) -> str:
             f"action {a['position']:<4} wake {a['wake']:<3} {when}  {a['kind']:<10} {a['provider'] or ''} "
             f"{a['target'] or ''}{to}: {a['summary'] or ''}  ({ref})"
         )
+    if traced.changes:
+        lines += _changes(traced)
     return "\n".join(lines) + "\n"
 
 

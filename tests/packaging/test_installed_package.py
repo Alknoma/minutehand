@@ -44,7 +44,7 @@ def test_uv_build_makes_an_sdist_and_a_wheel(dist: Dist) -> None:
         "README.md",
         "LICENSE.md",
         "src/minutehand/cli.py",
-        "examples/reliable_agent/agent.py",
+        "examples/proactive_agent/agent.py",
     } <= names
 
 
