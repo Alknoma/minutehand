@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -210,7 +211,16 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class Server(ThreadingHTTPServer):
+    """The standard server, bound without its reverse-DNS lookup of its own address (`HTTPServer.server_bind` asks
+    `socket.getfqdn`), which can stall for a minute on a machine whose resolver does not answer for 127.0.0.1."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = Server(("127.0.0.1", PORT), Handler)
     print(f"listening on 127.0.0.1:{PORT}", flush=True)
     server.serve_forever()
