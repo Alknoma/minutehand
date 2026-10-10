@@ -20,6 +20,7 @@ that world (`docs/assessments.md`), with nothing more to write.
 | `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, where Slack pushes messages, and the two hosts it calls that are not faked (`outbound`). |
 | `scenario.yaml` | A world where Rosa answers 36 hours after she is asked. |
 | `scenario_silent.yaml` | A world where Rosa never answers. |
+| `scenario_team_policy.yaml` | The silent world with one rule of a team's own: a follow-up is owed two days on. An example of optional policy. |
 
 The agent needs `slack_sdk` and `minutehand` (for `minutehand.agent`, which imports only the standard library)
 in the Python that runs it. Rosa's words are a model's, written from her profile and facts, so Minutehand needs a
@@ -87,7 +88,8 @@ passes: nothing it sent contradicts the world, repeats itself, or comes before a
 answer (her profile says she does not answer; it declares no time). Run it forgetful
 (`AGENT_BEHAVIOUR=forgetful`) and it passes too: a follow-up nobody sent is no fact of the world. Whether one is
 owed is the agent's own instructions' to say, which the reviewer reads with `--judge` and a capable model; a team
-that wants it as a hard rule writes it in `assess:` (`docs/assessments.md`).
+that wants it as a hard rule writes it in `assess:` (`docs/assessments.md`), as `scenario_team_policy.yaml` does: run
+forgetful against it and the run fails, naming the rule.
 
 ## Afterwards
 

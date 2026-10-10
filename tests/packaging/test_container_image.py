@@ -60,13 +60,13 @@ def test_the_image_runs_minutehand_as_a_user_other_than_root_and_serves_by_defau
 def test_the_image_passes_the_example_and_fails_the_forgetful_agent(image: str) -> None:
     passed = _in_container(image, "scenario.yaml", "diligent")
     assert passed.returncode == 0, f"{passed.stdout}\n{passed.stderr}"
-    assert "\n  Passed: no check failed, and the agent reported it was done.\n" in passed.stdout, passed.stdout
+    assert "\n  Passed: no check failed in the window;" in passed.stdout, passed.stdout
     assert "\nfail (" not in passed.stdout, passed.stdout
 
-    failed = _in_container(image, "scenario_silent.yaml", "forgetful")
+    failed = _in_container(image, "scenario_team_policy.yaml", "forgetful")  # the team's own rule: a follow-up is owed
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
     out = failed.stdout
     assert "\nfail (1)\n" in out, out
     found = out[out.index("\nfail (1)") : out.index("\nscorecard")]
-    assert "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later" in found
+    assert "follows_up_when_due: rosa was asked two days ago and no follow-up came" in found
     assert "pattern expiry_on_every_wait: An expiry on every wait." in found
