@@ -17,7 +17,7 @@ It is proactive: it decides when it next wakes, and nothing wakes it on a schedu
 An event is only recorded: the model never runs while Slack waits for an answer, so a retried event is never acted on
 twice, and what was said is read on the wake that follows (a reply also wakes it).
 
-    PORT=8730 python agent.py
+    AGENT_PORT=8730 python agent.py
 """
 
 from __future__ import annotations
@@ -39,7 +39,9 @@ from slack_sdk.signature import SignatureVerifier
 from state import Request, State, Wait, load, save
 from work import WORK
 
-PORT = int(os.environ.get("PORT") or os.environ.get("MINUTEHAND_RUN_PORT") or "8730")
+PORT = int(os.environ.get("AGENT_PORT") or os.environ.get("MINUTEHAND_RUN_PORT") or "8730")
+"""Where it listens: AGENT_PORT, else the port Minutehand gives a run's agent, else 8730. Never a bare PORT, which a
+machine may hold for something else."""
 SECRET = os.environ.get("AGENT_SLACK_SIGNING_SECRET", "")
 MOST_MOVES = 8  # in one wake: a model that keeps choosing is stopped
 slack = WebClient(token=os.environ.get("AGENT_SLACK_TOKEN", "xoxb-reliable-agent"))
