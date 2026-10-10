@@ -26,6 +26,7 @@ import json
 import os
 import socketserver
 import threading
+from collections.abc import Mapping
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,6 +40,8 @@ from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 from state import Request, State, Wait, load, save
 from work import WORK
+
+from minutehand.agent import store
 
 PORT = int(os.environ.get("AGENT_PORT") or os.environ.get("MINUTEHAND_RUN_PORT") or "8730")
 """Where it listens: AGENT_PORT, else the port Minutehand gives a run's agent, else 8730. Never a bare PORT, which a
@@ -63,10 +66,20 @@ def deliver(email: str, text: str) -> None:
     slack.chat_postMessage(channel=channel, text=text)
 
 
+def call(method: str, url: str, body: Mapping[str, object] | None = None) -> dict[str, object]:
+    """A call to a service, answered 2xx, or `httpx.HTTPStatusError`: a failed call is never taken for an answer. A read
+    that failed is no read (its state is not the item's, and the backoff does not move), and a write that failed is not
+    done; the wake ends, and the planner tries again shortly."""
+    answer = httpx.request(method, url, json=body, timeout=30)
+    answer.raise_for_status()
+    found = answer.json()
+    return found if isinstance(found, dict) else {}
+
+
 def read_request(state: State, now: datetime) -> None:
     """The request as the service holds it now; the planner's next look moves on while it does not change."""
     assert state.request is not None
-    body = httpx.get(f"{WORK.approvals}/v1/requests/{state.request.id}", timeout=30).json()
+    body = call("GET", f"{WORK.approvals}/v1/requests/{state.request.id}")
     status = str(body.get("status", state.request.status))
     unchanged = state.request.unchanged_reads + 1 if status == state.request.status else 0
     said = json.dumps(body).lower()
@@ -105,7 +118,7 @@ def act(move: Move, state: State, now: datetime) -> None:
             "amount": WORK.budget,
             "cost_centre": state.facts["cost_centre"]["value"],
         }
-        filed = httpx.post(f"{WORK.approvals}/v1/requests", json=body, timeout=30).json()
+        filed = call("POST", f"{WORK.approvals}/v1/requests", body)
         state.request = Request(
             id=str(filed["id"]),
             status=str(filed.get("status", "pending")),
@@ -114,7 +127,7 @@ def act(move: Move, state: State, now: datetime) -> None:
         )
     elif move.name == "resubmit" and state.request is not None:
         body = {a: state.facts[a]["value"] for a in state.request.asks_for}
-        httpx.post(f"{WORK.approvals}/v1/requests/{state.request.id}/resubmit", json=body, timeout=30)
+        call("POST", f"{WORK.approvals}/v1/requests/{state.request.id}/resubmit", body)
         state.sent[move.purpose] = stamp
         state.request.status, state.request.unchanged_reads = "pending", 0
         state.request.next_check = planner.next_check(now, 0).isoformat()
@@ -130,7 +143,7 @@ def act(move: Move, state: State, now: datetime) -> None:
             "amount": WORK.budget,
             "approval": state.request.id,
         }
-        state.order = str(httpx.post(f"{WORK.orders}/v1/orders", json=body, timeout=30).json()["id"])
+        state.order = str(call("POST", f"{WORK.orders}/v1/orders", body)["id"])
 
 
 def wake(now: datetime) -> None:
@@ -263,6 +276,8 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
+    # In production its memory is a SQLite file; under a run, the run's own memory takes its place.
+    store.configure(store.SqliteBackend(os.environ.get("AGENT_DB", "reliable_agent.db")))
     server = Server(("127.0.0.1", PORT), Handler)
     print(f"listening on 127.0.0.1:{PORT}", flush=True)
     server.serve_forever()
