@@ -701,7 +701,16 @@ class ServiceDesk:
         except json.JSONDecodeError as e:
             return f"the body is not JSON: {e}"
         if shape is not None:
-            departs = problems(body, shape, self._document(service))
+            # a shape learned from a first answer cannot know a field the agent sends later; a document's can
+            learned = self._document(service) is None
+            written_by_agent = self._written_fields(service, world) if learned else set()
+            departs = [
+                d
+                for d in problems(body, shape, self._document(service))
+                if not (
+                    d.endswith(": is not a field this shape has") and d.split(":")[0].split(".")[-1] in written_by_agent
+                )
+            ]
             if departs:
                 return "it departs from the route's shape: " + "; ".join(departs[:8])
         if meaning is not None and meaning.item_at is not None and meaning.state_at is not None:
@@ -716,6 +725,26 @@ class ServiceDesk:
                 ):
                     return f"it shows item {item} as {state!r}, and it is {states[str(item)]!r}"
         return None
+
+    def _written_fields(self, service: Service, world: Store) -> set[str]:
+        """Every field the agent wrote to the service: a route's shape, learned from its first answer, cannot know a
+        field the agent sends later, and what the agent wrote comes back as it wrote it (data is kept verbatim)."""
+        found: set[str] = set()
+        for e in world.events():
+            after = e.after
+            if e.actor is not Actor.AGENT or not isinstance(after, TransitionSnapshot | ServiceEventSnapshot):
+                continue
+            if isinstance(after, TransitionSnapshot) and after.item.provider != service.key:
+                continue
+            if isinstance(after, ServiceEventSnapshot) and after.service != service.key:
+                continue
+            try:
+                said = json.loads(after.content)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(said, dict):
+                found |= set(said)
+        return found
 
     def _state_text(self, service: Service, machine: Machine, world: Store) -> str:
         items = self.items(service, world)

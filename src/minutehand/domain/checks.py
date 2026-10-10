@@ -68,6 +68,7 @@ class HealthKind(StrEnum):
     WAITS_ON_NOBODY = "waits_on_nobody"  # an item only a person can move, held pending on nobody
     OWED_UNBOOKED = "owed_unbooked"  # a reply or decision someone owes, with no moment booked for it
     MODEL_FAILED = "model_failed"  # a people model call that failed and was never answered after
+    SERVICE_FAILED = "service_failed"  # a declared service answered the agent with Minutehand's own failure (502)
     PUSH_FAILED = "push_failed"  # an event the world pushed that never reached the agent, retries and all
     BEYOND_FACTS = "beyond_facts"  # a person's model-written reply said what nothing they know supports
     WAITS_BY_DECLARATION = "waits_by_declaration"  # an item pending on someone the files declare never acts
@@ -81,6 +82,7 @@ INCOMPLETE = frozenset(
         HealthKind.WAITS_ON_NOBODY,
         HealthKind.OWED_UNBOOKED,
         HealthKind.MODEL_FAILED,
+        HealthKind.SERVICE_FAILED,
         HealthKind.PUSH_FAILED,
         HealthKind.BEYOND_FACTS,
     }
