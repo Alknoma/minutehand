@@ -50,7 +50,7 @@ outbound:
 | Mode | The call | What is kept | For |
 |---|---|---|---|
 | `acknowledge` | Never leaves the machine. Answered with the declared status, headers and JSON or text body, or a route's | The request, the declared answer | Sends: an email, a webhook, an SMS |
-| `pass_through` | Sent to the real host unchanged; the answer reaches the agent chunk by chunk as it arrives (the tee `--record-model-calls` uses) | The request and the real answer | Lookups: a search, a page fetch |
+| `pass_through` | Sent to the real host unchanged; the answer reaches the agent chunk by chunk as it arrives (the tee a recorded model call uses) | The request and the real answer | Lookups: a search, a page fetch |
 | `replay` | Answered from an earlier run's recording of the same call, marked `x-minutehand-replayed: <source>` | The request and the replayed answer, with `replayed_from` | Lookups whose answers must not drift between runs |
 | `store` | Never leaves the machine. Kept in the run's world and answered from it, by REST collections (below) | The request, the answer, and each item as a world event | An API the agent writes to and reads back that no provider fakes: a CRM, a notes API |
 | `forward` | Sent to an external emulator the same file declares (`emulators:`), streamed, with `x-minutehand-world`, `x-minutehand-wake`, `x-minutehand-time` and a continued `traceparent` added to the forwarded copy only | The request and the emulator's answer, with the emulator, the operation and what the answer was (`Exchange.outcome`) | A service with a fake outside Minutehand: `docs/external-emulators.md` |
@@ -286,6 +286,36 @@ What makes matching fail in practice:
 - **A redaction that changed** between the recording and the replay (another `redact` list) changes the hash.
 - **Order:** an agent that makes the same call more times than the recording holds gets the last answer
   again, not a fresh one.
+
+## Replaying a whole run
+
+The agent's calls to its model are recorded on the wire by default, each request and answer byte for byte
+(credential fields redacted, nothing of the headers or query kept), with the wake and the simulated moment it was
+made; `--tunnel-model-calls` passes them through unopened instead. Two commands read them:
+
+```bash
+minutehand model-calls <run_id> > calls.jsonl      # one line per call, in the OpenAI Batch API's shape
+minutehand replay <run_id> [--live-from TIME] -- <command>
+```
+
+**`model-calls`** writes each call as a batch input line has it (`custom_id`, `method`, `url`, `body`) and its answer
+as a batch output line has it (`response.status_code`, `response.body`), with `minutehand.run`, `wake`, `at`,
+`host`, `content_type` and `replayed_from`. Any OpenAI-compatible tool reads the requests; a streamed answer's
+`body` is its server-sent events as text; a body that was no text at all is `{"hex": ...}`.
+
+**`replay`** plays the run again from its start, as a new run: the scenario as it played (its start and seed), the
+people's words as they said them (no model call), the pass-through hosts' answers as `in_forks: replay` gives them,
+and each of the agent's model calls answered with what its model answered then. An agent that keeps its state only
+in its own process (a conversation, a plan) rebuilds it exactly, which a fork cannot give it: a fork starts the agent
+at the checkpoint with only its memory (`minutehand.agent.store`).
+
+A call is matched by host, path and body as recorded; alike calls are answered in the order they were made. The
+first call the recording never saw is where the runs part, and that call and every one after it go to the model:
+the recording's later answers describe another run. `--live-from TIME` parts them at a simulated moment instead, so
+the agent plays on live from the state the replay rebuilt. `replayed.json` in the run's directory, and the command's
+first line, say how many calls were answered from the record and where the runs parted; each replayed call's span
+carries `minutehand.replayed_from`. The agent file is the one the run kept, so the agent listens where it did.
+`tests/e2e/test_replay.py` replays an agent whose notes live only in its process, then plays it live from a moment.
 
 ## Forks
 

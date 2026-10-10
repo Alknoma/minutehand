@@ -93,7 +93,7 @@ Each scenario gets a port of its own and a folder of its own (`{run.port}`, `{ru
 command; `MINUTEHAND_RUN_PORT`, `MINUTEHAND_RUN_DIR` in the agent's environment). `minutehand run` fills them the
 same way, once, when it starts the agent's command (the folder is under `<state>/run-all/run/`); with no command to
 start, and in `env` and `doctor`, a file holding either is refused by name. `run-all` hands each of its runs
-`--record-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
+`--tunnel-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
 `--no-proxy` and `--no-receive-telemetry` as given; each run takes free ports of its own. Each says the verdict it is written
 to reach (`expect_outcome: passed | failed | unfinished | not_judged | simulation_incomplete`, default `passed`): one
 that shows a known bug may expect `failed`; `unfinished` is only an older scenario's, one that hands the agent a

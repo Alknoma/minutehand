@@ -16,6 +16,8 @@ with the attributes OpenTelemetry's GenAI conventions name:
     gen_ai.usage.output_tokens
     minutehand.request.body                the request body, byte for byte
     minutehand.response.body               the answer's body, byte for byte (a stream as its events arrived)
+    minutehand.response.content_type       the answer's content type, so a replay answers as the model did
+    minutehand.replayed_from               the run whose recording answered it (`replay.py`); absent when the model did
 
 A body is kept as a string only when it is valid UTF-8 text, with credential fields redacted as an exchange's
 are; any other body (JSON in UTF-16, a byte that is no text at all) is kept as exactly its bytes, and nothing
@@ -309,7 +311,7 @@ def _utf8(raw: bytes) -> str | None:
         return None
 
 
-def _body(raw: bytes, content_type: str) -> AttributeValue | None:
+def kept_body(raw: bytes, content_type: str) -> AttributeValue | None:
     """A body as the span keeps it: UTF-8 text, credentials redacted, or exactly its bytes; None when empty."""
     text, kept = redact.kept(raw, content_type)
     if kept is not None:
@@ -331,6 +333,7 @@ class Exchanged:
     traceparent: str | None
     started: datetime
     ended: datetime
+    replayed_from: str | None = None
 
 
 def span_of(exchanged: Exchanged) -> ReceivedSpan:
@@ -358,9 +361,13 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
         ("minutehand.request.body", exchanged.request_body, exchanged.request_type),
         ("minutehand.response.body", exchanged.response_body, exchanged.response_type),
     ):
-        kept = _body(raw, kind)
+        kept = kept_body(raw, kind)
         if kept is not None:
             attributes.append((key, kept))
+    if exchanged.response_type:
+        attributes.append(("minutehand.response.content_type", StringValue(value=exchanged.response_type)))
+    if exchanged.replayed_from is not None:
+        attributes.append(("minutehand.replayed_from", StringValue(value=exchanged.replayed_from)))
     if known:
         vendor = StringValue(value=_VENDOR[call.shape])
         attributes += [
