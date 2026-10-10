@@ -224,6 +224,18 @@ class Effectiveness(Model):
         "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
+    changes_by_others: int = Field(
+        default=0, ge=0, description="Changes someone else made in the world: replies, decisions, ask-backs"
+    )
+    changes_never_seen: int = Field(default=0, ge=0, description="Of them, those the agent could never have known")
+    slowest_unseen: timedelta | None = Field(
+        default=None, description="The longest any change sat before the agent could know it (`domain.reactions`)"
+    )
+    slowest_unseen_change: str | None = Field(default=None, description="Which change that was")
+    slowest_to_act: timedelta | None = Field(
+        default=None, description="The longest from the agent seeing a change to its next move in the world"
+    )
+    slowest_to_act_change: str | None = Field(default=None, description="Which change that was")
     messages_to_people: int = Field(default=0, ge=0)
     messages_edited: int = Field(
         default=0,

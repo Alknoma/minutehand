@@ -20,7 +20,7 @@
     minutehand gc [--state DIR]                  remove stored bodies nothing refers to
     minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] [--state DIR]
     minutehand query --schema                    read-only SQL over a run's read model, and its views (docs/querying.md)
-    minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
+    minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--item ID] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
                                                  it answers or follows up, and what followed ("action N" is a place
@@ -442,6 +442,9 @@ def _parser() -> _Parser:
     traced.add_argument("--from", dest="since", default=None, metavar="TIME", help="simulated time, ISO 8601")
     traced.add_argument("--to", dest="until", default=None, metavar="TIME", help="simulated time, ISO 8601")
     traced.add_argument("--wake", type=int, default=None)
+    traced.add_argument(
+        "--item", default=None, help="an item's id: the agent's acts naming it, and when others changed it"
+    )
     traced.add_argument("--json", action="store_true")
     priced(traced)
     state(traced)
@@ -1150,6 +1153,7 @@ def _read(args: argparse.Namespace, state: Path) -> int:
                     since=args.since,
                     until=args.until,
                     wake=args.wake,
+                    item=args.item,
                 )
                 found = trace(db, run_id, wanted)
                 print(

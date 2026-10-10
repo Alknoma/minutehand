@@ -391,6 +391,27 @@ def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
         ),
         ScoreLine(label="failed checks", value=str(card.failed_checks)),
     ]
+    if card.changes_by_others:
+        lines.insert(
+            3,
+            ScoreLine(
+                label="changes by others",
+                value=f"{card.changes_by_others}, never seen by the agent: {card.changes_never_seen}",
+            ),
+        )
+    if card.slowest_unseen is not None:
+        lines.insert(
+            4,
+            ScoreLine(label="slowest to be seen", value=f"{_lost(card.slowest_unseen)} ({card.slowest_unseen_change})"),
+        )
+    if card.slowest_to_act is not None:
+        lines.insert(
+            5,
+            ScoreLine(
+                label="slowest to act after seeing",
+                value=f"{_lost(card.slowest_to_act)} ({card.slowest_to_act_change})",
+            ),
+        )
     if card.slowest_reaction is not None:
         lines.insert(
             3,
