@@ -55,6 +55,7 @@ from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replayi
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
+from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.pushing import HttpPushes
@@ -170,6 +171,7 @@ RECORD = "record.json"
 RESULT = "result.json"
 SCENARIO = "scenario.json"
 AGENT = "agent.json"
+REPLAYED = "replayed.json"
 AGENT_LOG = "agent.log"
 
 CA_VARIABLES = (
@@ -243,6 +245,7 @@ async def play(
     listen: Listen | None = None,
     progress: Progress | None = None,
     seed: int | None = None,
+    replaying: Replaying | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -260,6 +263,9 @@ async def play(
 
     A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
     records it, so a fork of any of them starts from the same moment.
+
+    `replaying` plays a finished run again (`replay`): its people's words, its pass-through hosts' answers and the
+    agent's own model calls answered from its record.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
@@ -279,8 +285,9 @@ async def play(
     services = _services(scenario, agent, registry)
     routes: dict[str, Running] = {}
     desk = desk_for(scenario, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    parent = replaying.run_id if replaying is not None else None
     capturing = (
-        capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
+        capturing_for(agent, registry, state=state, parent=parent, model_hosts=listen.model_hosts)
         .with_emulators(routes)
         .with_services(desk)
     )
@@ -291,6 +298,9 @@ async def play(
         intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
     ):
+        if replaying is not None:
+            first[0].adopt_written(replaying.world)  # the people say what they said, without a model call
+            proxy.proxy.addon.model_replay = replaying.model
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
@@ -348,10 +358,84 @@ async def play(
                     desk=desk,
                 )
             write_recordings(directory, store.calls())
+            if replaying is not None:
+                (directory / REPLAYED).write_text(replaying.summary(), encoding="utf-8")
             outcomes.append(_keep(directory, record, scorer))
     for store in opened:
         store.close()  # the run is over: its write-ahead log is cut to nothing
     return outcomes
+
+
+@dataclass(frozen=True)
+class Replaying:
+    """A finished run being played again: its id, its world file (where its people's words are kept), and the
+    agent's model calls it recorded, answered in turn (`adapters.proxy.replay`)."""
+
+    run_id: str
+    world: Path
+    model: ModelReplay
+
+    def summary(self) -> str:
+        """`replayed.json`: what was replayed, and where the runs parted."""
+        return json.dumps(
+            {
+                "replay_of": self.run_id,
+                "model_calls_replayed": self.model.answered,
+                "parted": self.model.parted,
+                "live_from": self.model.live_from.isoformat() if self.model.live_from else None,
+            },
+            indent=2,
+        )
+
+
+def replayed(state: Path, run_id: str) -> dict[str, object] | None:
+    """What a replay answered from its source, and where they parted (`replayed.json`); None for any other run."""
+    path = run_dir(state, run_id) / REPLAYED
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+async def replay(
+    parent_run: str,
+    *,
+    state: Path,
+    command: Sequence[str] | None = None,
+    telemetry: Telemetry | None = None,
+    model: LanguageModel | None = None,
+    judge: bool = False,
+    listen: Listen | None = None,
+    progress: Progress | None = None,
+    live_from: datetime | None = None,
+) -> Outcome:
+    """Play a finished run again from its start, as a new run: its scenario as it played (start and seed), its
+    people's words as they said them, its pass-through hosts' answers, and each of the agent's model calls answered
+    with what the model answered then, so an agent that keeps its state in its own process rebuilds it exactly.
+
+    The agent's calls to its model are recorded on the wire (`Listen.record_model_calls`) for the replay to answer;
+    the first one the recording never saw, or the first from `live_from` on, goes to the model, and so does every
+    call after it: from there the run is played live. A finished run that recorded no model calls is replayed with
+    every call live.
+    """
+    parent = load(state, parent_run)
+    directory = run_dir(state, parent_run)
+    scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
+    with reading(state, parent_run) as kept:
+        recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from)
+    listen = (listen or Listen()).model_copy(update={"record_model_calls": True})
+    replaying = Replaying(parent_run, _root_dir(state, parent.record) / WORLD, recorded)
+    [outcome] = await play(
+        scenario,
+        agent,
+        state=state,
+        command=command,
+        telemetry=telemetry,
+        model=model,
+        judge=judge,
+        listen=listen,
+        progress=progress,
+        replaying=replaying,
+    )
+    return outcome
 
 
 async def fork(
@@ -1384,8 +1468,9 @@ class Listen(Model):
     )
     telemetry_port: int = Field(default=0, ge=0, le=65535, description="The receiver's port; 0 lets the system pick")
     record_model_calls: bool = Field(
-        default=False,
-        description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
+        default=True,
+        description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span (for "
+        "`replay` and `model-calls`); False tunnels them unopened",
     )
     capture_unknown: UnknownHosts = Field(
         default=UnknownHosts.REFUSE,

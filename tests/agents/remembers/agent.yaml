@@ -1,0 +1,5 @@
+name: remembers
+wakes:
+  - kind: reported
+    wake_url: "http://127.0.0.1:8740/wake"
+    report_url: "http://127.0.0.1:8740/report"
