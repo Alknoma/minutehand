@@ -4,7 +4,7 @@ Minutehand reads the approvals of, and who decides, as herself, by her script. N
 Approved after a delay, the timeline holds the ask, her decision and the tell it held back, in that order. Rejected,
 the agent does not send the tell; a heedless one that does fails the team's `acts_only_once_approved`. Silent, the ask
 stays open: the agent reminds her, or, forgetful, fails `follows_up_when_due`. Away, she decides when she is back.
-The rules are the reference agent's own (examples/reference_agent/agent.yaml)."""
+The rules are the reference agent's own (tests/agents/reference_agent/agent.yaml)."""
 
 from __future__ import annotations
 

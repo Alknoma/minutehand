@@ -35,9 +35,9 @@ from tests.support.people import MODEL as PEOPLE_MODEL
 from tests.support.people import people_environment
 
 ASK = "Hi Rosa, could you confirm the venue for the team offsite, please?"
-"""What the follow-up example asks Rosa (examples/follow_up/agent.py)."""
+"""What the follow-up example asks Rosa (tests/agents/follow_up/agent.py)."""
 ROSA_SAYS = "The lakeside hall, booked for the 14th."
-"""The one fact her scripted answer carries (examples/follow_up/scenario.yaml); the stand-in writes it as it is."""
+"""The one fact her scripted answer carries (tests/agents/follow_up/scenario.yaml); the stand-in writes it as it is."""
 REFERENCE_SAYS = "Yes, that is confirmed. The reference is RF-4410."
 PRICES = Prices(prices=[Price(model="planner-small", input_per_million=1.0, output_per_million=4.0)])
 DOCS = ROOT / "docs" / "querying.md"
@@ -66,7 +66,7 @@ class Played:
 
 @pytest.fixture(scope="module")
 def follow_up(tmp_path_factory: pytest.TempPathFactory) -> Played:
-    """examples/follow_up as its README and CI run it: diligent, Rosa answering after a day and a half."""
+    """tests/agents/follow_up as its README and CI run it: diligent, Rosa answering after a day and a half."""
     base = tmp_path_factory.mktemp("follow_up")
     port = free_port()
     agent = base / "agent.yaml"

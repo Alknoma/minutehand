@@ -34,24 +34,25 @@ yet.
 
 ## Quick start
 
-The example agent is in the repository, so clone it for the example files:
+The example is a reliable proactive agent (`examples/reliable_agent`): it runs a purchase on its own, from asking finance
+for a cost centre to ordering once the approval comes through, built so the usual failures of an agent left to work
+for weeks cannot happen. Clone the repository for its files:
 
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
-cd minutehand/examples/follow_up
-python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand   # its Slack client and `minutehand.agent`
+cd minutehand/examples/reliable_agent
+python3 -m venv .venv && .venv/bin/pip install slack_sdk httpx minutehand
 
-# Rosa's words are written by a model from what the scenario says she knows. Any OpenAI-compatible API will do, or
-# Anthropic's (MINUTEHAND_MODEL_API=anthropic);
-# offline, the recipes' stand-in answers by fixed rules, the same every run:
-python3 ../recipes/fake_model.py &
+# Offline, two stand-ins answer by fixed rules: one plays its people and the approvals service, one is its own model.
+# With accounts, set MINUTEHAND_MODEL* and AGENT_MODEL* to any OpenAI-compatible API instead.
+.venv/bin/python ../recipes/fake_model.py &
+.venv/bin/python offline_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
+export AGENT_MODEL_BASE_URL=http://127.0.0.1:8792 AGENT_MODEL_API_KEY=offline
 
-minutehand run scenario.yaml --agent agent.yaml -- .venv/bin/python agent.py
-# exits 0: a fortnight watched; Rosa answers after a day and a half, and the agent tells Owen
-
-minutehand run scenario_silent.yaml --agent agent.yaml -- .venv/bin/python agent.py
-# exits 0: Rosa never answers; the agent follows her up once, on the day it chose, and nothing it sent was wrong
+minutehand run worlds/asks_back.yaml --agent agent.yaml -- .venv/bin/python agent.py
+# two simulated weeks in seconds: the approver asks back for a quote only the requester has; the agent asks him for it
+# instead of making one up, resubmits his words, and orders once she approves
 
 minutehand runs                  # every run, one line each
 minutehand findings <run_id>     # a run's findings again, and the checkpoints it can be forked from
@@ -59,15 +60,16 @@ minutehand view                  # the runs in a browser, at http://127.0.0.1:80
 ```
 
 Each run takes a few seconds. Runs are kept in `.minutehand/` in the folder you ran them from. The example's
-`README.md` explains both runs line by line.
+`README.md` says what each part of the agent is for and what it does in each world.
 
 To try your own agent, write two files. The agent file says how Minutehand reaches it: how it is woken, the events
 it receives, its own systems to keep inside the run (`minutehand schema agent` prints its JSON Schema). The scenario
 is the world: its people, each with a profile and what they know, the state its services start in, and how long to
 watch the agent (`runs_for`). That is all a run needs to be assessed (`docs/assessments.md`); rules of your team's own
 (`assess:`) are optional, for policy the world cannot imply. `minutehand scenarios new --person 'Name <email>'`
-writes ready-made worlds with your people in them (`docs/scenarios.md`). Check the files with `minutehand validate`, and run `minutehand doctor -- <your agent's command>` to find
-any HTTP client in the agent that would go around the proxy.
+writes ready-made worlds with your people in them (`docs/scenarios.md`). Check the files with `minutehand validate`,
+and run `minutehand doctor -- <your agent's command>` to find any HTTP client in the agent that would go around the
+proxy. `examples/recipes` shows the wiring in five agent frameworks.
 
 ## How the agent touches Minutehand
 

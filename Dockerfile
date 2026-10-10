@@ -7,7 +7,7 @@
 # container runs in an environment of its own, as it would outside one.
 #
 #   docker build -t minutehand .                     the image a user runs
-#   docker build --target example -t example .      the same, plus slack_sdk for examples/follow_up/agent.py
+#   docker build --target example -t example .      the same, plus slack_sdk for tests/agents/follow_up/agent.py
 
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
 
@@ -44,7 +44,7 @@ EXPOSE 8080 8081 4318
 ENTRYPOINT ["minutehand"]
 CMD ["serve", "--host", "0.0.0.0"]
 
-# -- example: the base image plus what examples/follow_up/agent.py imports: slack_sdk, and `minutehand.agent` (the
+# -- example: the base image plus what tests/agents/follow_up/agent.py imports: slack_sdk, and `minutehand.agent` (the
 # store and the wake marker, standard library only), so the package goes in without its dependencies -------------
 FROM base AS example
 USER root

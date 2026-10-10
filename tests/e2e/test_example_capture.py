@@ -1,4 +1,4 @@
-"""`examples/follow_up` as a user runs it, with its outbound hosts: the email to Owen is acknowledged and counts
+"""`tests/agents/follow_up` as a user runs it, with its outbound hosts: the email to Owen is acknowledged and counts
 as the message that tells him, and the venue search reaches a local server standing in for the real one."""
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from tests.e2e.support import free_port
 from tests.proxy.upstream import Answer, make_authority, model_api
 from tests.support.people import people_model
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "follow_up"
+EXAMPLE = Path(__file__).resolve().parents[2] / "tests" / "agents" / "follow_up"
 
 
 async def test_the_example_emails_owen_what_rosa_said_and_looks_the_venue_up(

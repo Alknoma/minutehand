@@ -15,7 +15,7 @@ from minutehand.application.files import FileKind, schema
 from minutehand.cli import main
 
 SCHEMAS = Path(__file__).parent.parent / "schemas"
-EXAMPLES = Path(__file__).parent.parent / "examples" / "reference_agent"
+EXAMPLES = Path(__file__).parent.parent / "tests" / "agents" / "reference_agent"
 
 
 @pytest.mark.parametrize("kind", list(FileKind))
