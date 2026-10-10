@@ -11,19 +11,19 @@ from minutehand.domain.world import InboxItemSnapshot, ItemStatus
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenWorld
 from tests.architecture.support import APPROVER_TOKEN
-from tests.architecture.test_driven_approvals import _spec, _until_approval, agent  # noqa: F401  (a fixture)
+from tests.architecture.test_driven_approvals import _spec, _until_approval, agent, port  # noqa: F401  (fixtures)
 
 
-def _given(credentials: dict[str, str]) -> CreateWorld:
-    spec = _spec().model_dump(mode="json")
+def _given(credentials: dict[str, str], at: int) -> CreateWorld:
+    spec = _spec(at).model_dump(mode="json")
     for person in spec["seed"]["people"]:
         person["credential"] = None
     return CreateWorld.model_validate({**spec, "credentials": credentials})
 
 
 @pytest.fixture
-def minutehand_spec() -> CreateWorld:
-    return _given({"nadia": APPROVER_TOKEN})
+def minutehand_spec(port: int) -> CreateWorld:  # noqa: F811
+    return _given({"nadia": APPROVER_TOKEN}, port)
 
 
 @pytest.mark.timeout(600)
@@ -41,6 +41,9 @@ def test_a_credential_given_with_the_world_is_whom_minutehand_reads_and_decides_
     assert made.event.after.status is ItemStatus.DECIDED
 
 
-def test_a_credential_given_for_someone_who_is_not_in_the_world_refuses_it(minutehand: MinutehandClient) -> None:
+def test_a_credential_given_for_someone_who_is_not_in_the_world_refuses_it(
+    minutehand: MinutehandClient,
+    port: int,  # noqa: F811
+) -> None:
     with pytest.raises(Exception, match="not people of this world"):
-        minutehand.create_world(_given({"nobody": "x"}))
+        minutehand.create_world(_given({"nobody": "x"}, port))

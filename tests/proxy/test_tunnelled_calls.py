@@ -109,7 +109,11 @@ async def test_a_burst_still_answering_when_the_wake_ends_belongs_to_the_wake_it
         clock.begin_wake()
         sim_time = clock.now()
         call = asyncio.create_task(http.post(URL.format(port=upstream.port), content=b"{}"))
-        await asyncio.sleep(0.3)
+        async with asyncio.timeout(
+            10
+        ):  # the burst has begun in wake 1 once the model API has the request, however slow
+            while not upstream.received:
+                await asyncio.sleep(0.01)
         clock.begin_wake()
         clock.jump(sim_time.replace(hour=sim_time.hour + 1))
         hold.set()

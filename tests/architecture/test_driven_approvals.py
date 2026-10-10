@@ -38,10 +38,9 @@ from tests.architecture.support import (
 
 T0 = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 MAIL_SECRET = "mail-signing-secret-of-the-test"
-PORT = free_port()
 
 
-def _spec() -> CreateWorld:
+def _spec(port: int) -> CreateWorld:
     seed = Seed.model_validate(
         {
             "starts_at": T0.isoformat(),
@@ -68,23 +67,30 @@ def _spec() -> CreateWorld:
             "seed": seed.model_dump(mode="json"),
             "claims": Claims(tokens=["mail-d", "model-d", "search-d"]).model_dump(),
             "outbound": [MAIL, SEARCH, {"host": "model.localhost", "name": "model", "kind": "pass_through"}],
-            "inboxes": [approvals(PORT)],
+            "inboxes": [approvals(port)],
             "scripted_people": True,
         }
     )
 
 
 @pytest.fixture
-def minutehand_spec() -> CreateWorld:
-    return _spec()
+def port() -> int:
+    """The agent's port, taken when the test starts: one taken when the module was imported could be handed to
+    another test's server by then, since a worker's block of ports is counted through again (`tests.ports`)."""
+    return free_port()
 
 
 @pytest.fixture
-def agent(minutehand: MinutehandClient, outside: object, tmp_path: Path) -> Iterator[int]:
+def minutehand_spec(port: int) -> CreateWorld:
+    return _spec(port)
+
+
+@pytest.fixture
+def agent(minutehand: MinutehandClient, outside: object, tmp_path: Path, port: int) -> Iterator[int]:
     env = {
         **{k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")},
         **minutehand.environment(),
-        "REFERENCE_PORT": str(PORT),
+        "REFERENCE_PORT": str(port),
         "REFERENCE_HOME": str(tmp_path),
         "REFERENCE_MODEL_URL": outside.model,  # type: ignore[attr-defined]
         "REFERENCE_SEARCH_URL": outside.search,  # type: ignore[attr-defined]
@@ -96,8 +102,8 @@ def agent(minutehand: MinutehandClient, outside: object, tmp_path: Path) -> Iter
         "REFERENCE_APPROVER": "nadia@example.com",
         "REFERENCE_APPROVER_TOKEN": APPROVER_TOKEN,
     }
-    with started(env, PORT):
-        yield PORT
+    with started(env, port):
+        yield port
 
 
 def _wake(port: int, now: datetime, reason: str, **more: str) -> dict[str, object]:

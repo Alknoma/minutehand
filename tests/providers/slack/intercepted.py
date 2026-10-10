@@ -52,7 +52,7 @@ class Intercepted:
 
     def http(self) -> httpx.AsyncClient:
         """A plain HTTP client, as the agent's own code posts a `response_url` or downloads a file."""
-        return httpx.AsyncClient(proxy=self.proxy.url, verify=self.trust, trust_env=False)
+        return httpx.AsyncClient(proxy=self.proxy.url, verify=self.trust, trust_env=False, timeout=30.0)  # slow runners
 
 
 @pytest.fixture

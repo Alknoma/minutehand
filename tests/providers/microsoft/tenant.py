@@ -123,8 +123,13 @@ class Intercepted:
     trust: ssl.SSLContext
 
     def http(self, **kwargs: Any) -> httpx.AsyncClient:
-        """`httpx.AsyncClient` as the services build it, reaching the internet through the proxy."""
+        """`httpx.AsyncClient` as the services build it, reaching the internet through the proxy. The first call
+        loads the provider's code in the proxy, which on a slow runner takes longer than httpx's 5 s default."""
+        kwargs.setdefault("timeout", SLOW_RUNNER)
         return httpx.AsyncClient(proxy=self.proxy.url, verify=self.trust, trust_env=False, **kwargs)
+
+
+SLOW_RUNNER = 30.0
 
 
 @pytest.fixture
