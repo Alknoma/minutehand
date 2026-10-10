@@ -20,9 +20,12 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-def _answer(prompt: str, reckless: bool, picks: list[int]) -> dict[str, object]:
+def _answer(prompt: str, reckless: bool, picks: list[int], *, wordy: bool = False) -> dict[str, object]:
     if prompt.startswith("Pick one move"):
-        offered = re.findall(r"^- \w+ \(([^)]*)\):", prompt, re.MULTILINE)
+        offered = re.findall(r"^- (\S+) — ", prompt, re.MULTILINE)
+        if wordy:  # as a real model did: the move's description, not its name
+            described = re.findall(r"^- \S+ — (.+)$", prompt, re.MULTILINE)
+            return {"move": described[0] if described else None}
         picks[0] += 1
         if reckless and picks[0] % 2 == 1:
             return {"move": "order"}  # off the menu unless the request is approved
@@ -51,7 +54,7 @@ FLAKY_FAILURES = 3
 """How many of its first calls the flaky mood fails, as a model API down for a while would."""
 
 
-def _server(reckless: bool, port: int, *, flaky: bool = False) -> ThreadingHTTPServer:
+def _server(reckless: bool, port: int, *, flaky: bool = False, wordy: bool = False) -> ThreadingHTTPServer:
     picks = [0]
     calls = [0]
 
@@ -65,7 +68,7 @@ def _server(reckless: bool, port: int, *, flaky: bool = False) -> ThreadingHTTPS
                 self.end_headers()
                 return
             prompt = body["messages"][-1]["content"]
-            content = json.dumps(_answer(prompt, reckless, picks))
+            content = json.dumps(_answer(prompt, reckless, picks, wordy=wordy))
             raw = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
@@ -80,9 +83,9 @@ def _server(reckless: bool, port: int, *, flaky: bool = False) -> ThreadingHTTPS
 
 
 @contextmanager
-def agent_model(*, reckless: bool = False, flaky: bool = False) -> Iterator[str]:
+def agent_model(*, reckless: bool = False, flaky: bool = False, wordy: bool = False) -> Iterator[str]:
     """A server on a free port for as long as the block runs: its base URL, for AGENT_MODEL_BASE_URL."""
-    server = _server(reckless, 0, flaky=flaky)
+    server = _server(reckless, 0, flaky=flaky, wordy=wordy)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"

@@ -47,11 +47,12 @@ def asked_sofia() -> tuple[list[Expectation], Log]:
     return [PersonAsked(person="sofia", about="the price")], log
 
 
-def test_the_judged_checks_are_a_scenarios_about_and_the_reviewer_of_the_agents_effects() -> None:
-    """A model judges two things: a scenario's own `about`, and each of the agent's effects against the declared
-    world (`review`); neither is a deterministic check."""
-    assert [c.id for c in discover_judged()] == ["asked_about", "review"]
-    assert not {c.id for c in discover()} & {"asked_about", "review"}
+def test_the_judged_checks_are_a_scenarios_about_the_reviewer_of_the_agents_effects_and_of_its_window() -> None:
+    """A model judges three things: a scenario's own `about`, each of the agent's effects against the declared world
+    (`review`), and the window whole for work its instructions give it left undone; none is a deterministic check."""
+    judged = ["asked_about", "review", "work_left_undone"]
+    assert [c.id for c in discover_judged()] == judged
+    assert not {c.id for c in discover()} & set(judged)
 
 
 async def test_a_run_whose_scenario_asks_nothing_judged_asks_the_model_nothing() -> None:
