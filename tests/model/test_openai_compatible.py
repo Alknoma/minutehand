@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import BaseModel
 
 from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE, from_environment
 from minutehand.adapters.model.openai_compatible import DEFAULT_BASE_URL, OpenAICompatible
@@ -143,3 +144,37 @@ def test_the_base_url_defaults_to_openai_and_may_be_set() -> None:
     assert default is not None and DEFAULT_BASE_URL in repr(default)
     assert local is not None and "http://127.0.0.1:1/v1/chat/completions" in repr(local)
     assert default.model_id == "m"
+
+
+async def test_a_model_that_takes_only_its_default_temperature_is_asked_again_without_one_and_from_then_on() -> None:
+    """OpenAI refuses a temperature some models do not take, naming it (`param: temperature`); the request is sent
+    again without it, and no later request to that model carries one."""
+    refusal = {
+        "error": {
+            "message": "Unsupported value: 'temperature' does not support 0 with this model.",
+            "type": "invalid_request_error",
+            "param": "temperature",
+            "code": "unsupported_value",
+        }
+    }
+
+    def rule(received: Received) -> BaseModel | Answer:
+        if "temperature" in received.body:
+            return Answer(status=400, body=json.dumps(refusal))
+        return Forecast(sunny=True, note=None)
+
+    async with fake_completions(rule) as fake:
+        asked = client(fake.base_url)
+        first = (await asked.answer("s", ASKED, Forecast, temperature=0)).answer
+        await asked.answer("s", ASKED, Forecast, temperature=0.6)
+
+    assert first == Forecast(sunny=True, note=None)
+    assert [r.temperature for r in fake.received] == [0, None, None], "refused once, then never sent again"
+
+
+async def test_any_other_refusal_of_a_request_is_a_failure_naming_it() -> None:
+    other = {"error": {"message": "max_tokens is too large", "param": "max_tokens"}}
+    async with fake_completions(lambda _: Answer(status=400, body=json.dumps(other))) as fake:
+        with pytest.raises(ModelFailed, match=r"answered 400: .*max_tokens is too large"):
+            await client(fake.base_url).answer("s", ASKED, Forecast, temperature=0)
+    assert len(fake.received) == 1

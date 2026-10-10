@@ -46,6 +46,7 @@ class State:
     said: dict[str, list[str]] = field(default_factory=dict)  # person -> every message sent them
     inbox: list[dict[str, str]] = field(default_factory=list)  # replies heard, not yet read by a wake
     blocked: list[str] = field(default_factory=list)  # what the structure stopped, for anyone looking
+    retry_at: str | None = None  # a wake its model failed in is tried again then
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -62,6 +63,7 @@ class State:
             said=raw.get("said", {}),
             inbox=raw.get("inbox", []),
             blocked=raw.get("blocked", []),
+            retry_at=raw.get("retry_at"),
         )
 
 
