@@ -43,7 +43,7 @@ def play(world: str, tmp_path: Path, *, reckless: bool) -> Played:
     with agent_model(reckless=reckless) as url:
         done = subprocess.run(
             [str(MINUTEHAND), "run", f"worlds/{world}.yaml", "--agent", "agent.yaml", "--state", str(state), "--",
-             sys.executable, "agent.py"],
+             sys.executable, str(EXAMPLE / "agent.py")],
             cwd=EXAMPLE, env=env | {"AGENT_MODEL_BASE_URL": url, "AGENT_MODEL_API_KEY": "test"},
             capture_output=True, text=True, timeout=600,
         )  # fmt: skip
