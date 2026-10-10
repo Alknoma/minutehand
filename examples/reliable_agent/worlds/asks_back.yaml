@@ -1,0 +1,48 @@
+# A world, not a task. Nadia asks back for a per-unit quote, which only Owen has; once given, she approves.
+name: purchase_asks_back
+starts_at: "2026-08-24T09:00:00Z"   # a Monday
+runs_for: P14D                      # how long the run watches the agent
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Asked for the laptops for the new starters; wants to hear how the purchase went.
+    facts: ["The vendor quote is $1,150 per laptop, $46,000 in all."]
+    reply_within: {min: PT1H, max: PT4H}
+  - key: sam
+    name: Sam Okafor
+    email: sam@example.com
+    profile: Finance lead; answers questions about cost centres within a few hours, in working hours.
+    facts: ["The cost centre for new-starter equipment is CC-4410."]
+    reply_within: {min: PT2H, max: PT5H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    profile: Approves purchases; careful with money.
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    takes:                            # her moves on the request, in order: she asks back, then approves
+      - {provider: approvals, take: ask_back, facts: ["Please add the per-unit quote breakdown."]}
+      - {provider: approvals, take: approve}
+services:
+  - host: api.approvals.example
+    name: approvals
+    responders: [nadia]
+    within: {min: PT3H, max: P1D}
+    describe: >-
+      Purchase approvals. A requester files a request (po, description, amount, cost centre). The approver,
+      Nadia, approves it, rejects it with a reason, or asks back for missing information (needs_info) such as a
+      per-unit quote breakdown; the requester then resubmits with that information.
+    ids: {format: prefixed, prefix: req_}
+    machine:
+      initial: pending
+      states: [pending, approved, rejected, needs_info]
+      transitions:
+        - {name: approve,  from: [pending],    to: approved,   by: person}
+        - {name: reject,   from: [pending],    to: rejected,   by: person}
+        - {name: ask_back, from: [pending],    to: needs_info, by: person}
+        - {name: resubmit, from: [needs_info], to: pending,    by: agent}
+    routes:
+      - {route: "POST /v1/requests", means: create, item_at: id, state_at: status}
+      - {route: "GET /v1/requests/{id}", means: read, item_at: id, state_at: status}
+      - {route: "POST /v1/requests/{id}/resubmit", means: transition, transition: resubmit, item_at: id, state_at: status}

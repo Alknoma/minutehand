@@ -94,6 +94,10 @@ move, and optionally the provider and the nth item there, when, and what it carr
       - {provider: jira, take: done, after: P3D}                # each Jira ticket handed to her, three days on
 ```
 
+Takes that name the same item are its moves in order: `[{provider: approvals, take: ask_back}, {provider:
+approvals, take: approve}]` asks back on the first decision and approves the resubmission; the last holds from
+then on.
+
 Without a take, a model picks among what the item offers when the scenario plays its provider (`transitions_on`,
 and always for the agent's product); a delete, a comment or a note is never picked unprompted. `minutehand migrate
 <file>` rewrites an older scenario's `ticket_fates`, `press`, `presses_every` and scripted `decisions` as takes

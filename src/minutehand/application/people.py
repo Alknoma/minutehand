@@ -618,7 +618,8 @@ class People:
         in any provider that the item does not offer pins nothing there: the person answers it, or leaves it, as they
         otherwise would. One naming the provider holds there, offered or not."""
         nth, nth_any = _places(held, item, conversation)
-        found = pinned(person, item.provider, nth, nth_any)
+        moved = sum(1 for h in held if h.pending.item == item and h.pending.status is PendingStatus.ACTED)
+        found = pinned(person, item.provider, nth, nth_any, moved)
         if found is None:
             return None
         take = person.takes[found]
@@ -1125,20 +1126,21 @@ async def move(
     return await port.apply(item, offer.name, by, who, json.dumps(dict(given)), world, clock)
 
 
-def pinned(person: Person, provider: ProviderKey, nth: int, nth_any: int | None) -> int | None:
+def pinned(person: Person, provider: ProviderKey, nth: int, nth_any: int | None, moved: int = 0) -> int | None:
     """Which of `person`'s takes pins the item that is their nth in `provider` and their `nth_any` of all, by its
     place in `Person.takes`: one naming the provider and the item wins, then one naming the provider for every item,
     then one naming the item among all their asks (`nth_any`, None for anything but an ask), then one for every item
-    anywhere."""
+    anywhere. Takes that name the same item are its moves in order: the one for the move after the `moved` they
+    already made on it, the last holding from then on (an ask back, then an approval)."""
     for wanted in (
         (provider, nth),
         (provider, None),
         *([(None, nth_any)] if nth_any is not None else []),
         (None, None),
     ):
-        found = next((n for n, t in enumerate(person.takes) if (t.provider, t.nth) == wanted), None)
-        if found is not None:
-            return found
+        found = [n for n, t in enumerate(person.takes) if (t.provider, t.nth) == wanted]
+        if found:
+            return found[min(moved, len(found) - 1)]
     return None
 
 

@@ -615,3 +615,41 @@ async def test_an_item_naming_one_of_the_responders_waits_on_them_alone(tmp_path
         await desk.look()
         assert [b.person for b in desk.owed_people] == ["marta"], seed
         assert desk.engine.held("nadia", desk.store) == [] and desk.engine.held("owen", desk.store) == [], seed
+
+
+async def test_a_field_the_agent_sends_later_comes_back_though_the_routes_shape_was_learned_before_it(
+    tmp_path: Path,
+) -> None:
+    """A route's shape is learned from its first answer, which cannot know a field the agent sends later: what the
+    agent wrote comes back as it wrote it, where a field it never sent would still be refused (the trial's
+    resubmission of a quote, whose every read failed before)."""
+    desk = Desk(tmp_path, scenario(facts=["I ask back: which cost centre pays for this?"]))
+    _, filed = await desk.call("POST", "/v1/requests", {"po": "PO-7731"})
+    assert isinstance(filed, dict)
+    item = str(filed["id"])
+    _, before = await desk.call("GET", f"/v1/requests/{item}")  # the read's shape is learned here, without a quote
+    await desk.fire_next()
+    status, _ = await desk.call(
+        "POST", f"/v1/requests/{item}/resubmit", {"cost_centre": "CC-12", "quote": "$1,150 each"}
+    )
+    assert status == 200
+
+    status, read = await desk.call("GET", f"/v1/requests/{item}")
+
+    assert isinstance(before, dict) and "quote" not in before
+    assert status == 200 and isinstance(read, dict), read
+
+
+async def test_takes_pinned_on_the_same_item_are_its_moves_in_order(tmp_path: Path) -> None:
+    """Nadia asks back first, and approves the resubmission: two takes on one item, played in the order written."""
+    takes = [{"provider": "approvals", "take": "ask_back"}, {"provider": "approvals", "take": "approve"}]
+    desk = Desk(tmp_path, scenario(nadia={"takes": takes}))
+    _, filed = await desk.call("POST", "/v1/requests", {"po": "PO-7731"})
+    assert isinstance(filed, dict)
+    item = str(filed["id"])
+    await desk.fire_next()
+    status, resubmitted = await desk.call("POST", f"/v1/requests/{item}/resubmit", {"cost_centre": "CC-12"})
+    assert status == 200 and isinstance(resubmitted, dict)
+    await desk.fire_next()
+
+    assert [m[0] for m in desk.moves()[1:]] == ["ask_back", "resubmit", "approve"]

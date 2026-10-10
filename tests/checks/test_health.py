@@ -3,6 +3,7 @@ and which of them make the run `SIMULATION_INCOMPLETE`."""
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from minutehand.checks.health import health
@@ -27,15 +28,18 @@ from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
+    Exchange,
     Operation,
     PendingSnapshot,
     PendingStatus,
     PushSnapshot,
+    RecordedCall,
     ServiceItemSnapshot,
     WorldEvent,
 )
 from tests.checks.world import Log, at, person, scenario, view
 
+HOST = "api.approvals.example"
 ITEM = EntityRef(provider="approvals", kind=EntityKind.SERVICE_ITEM, external_id="req_1")
 OWEN = person("owen", Silent())
 NADIA = person("nadia")
@@ -275,3 +279,24 @@ def test_over_samples_an_incomplete_world_exits_6_before_a_failure() -> None:
         }
     )
     assert exit_code([failing, incomplete]) == 6
+
+
+def test_a_declared_service_answering_the_agent_with_minutehands_own_failure_is_incomplete() -> None:
+    """A 502 holding the error Minutehand could not answer past is the world failing the agent; the service's own
+    refusal of a move its machine does not allow (a 4xx) is the world answering it."""
+
+    def call(status: int, body: dict[str, str], hours: float) -> RecordedCall:
+        exchange = Exchange(
+            method="GET", host=HOST, path="/v1/requests/req_1", status=status, response_body=json.dumps(body)
+        )
+        return RecordedCall(exchange=exchange, provider=None, first_seq=1, last_seq=0, wake=1, sim_time=at(hours))
+
+    world = _with_service(scenario(OWEN, NADIA), ["nadia"])
+    failure = {"error": "the answer could not be rendered: $.quote: is not a field this shape has", "host": HOST}
+    failed = view(world, Log()).model_copy(update={"calls": [call(502, failure, 3), call(502, failure, 5)]})
+
+    [found] = [f for f in health(failed) if f.kind is HealthKind.SERVICE_FAILED]
+    assert (found.incomplete, found.since) == (True, at(3))
+    assert f"{HOST} could not answer 2 of the agent's calls" in found.words and "$.quote" in found.words
+    refused = view(world, Log()).model_copy(update={"calls": [call(409, {"error": "not from pending"}, 3)]})
+    assert HealthKind.SERVICE_FAILED not in [f.kind for f in health(refused)]

@@ -1158,15 +1158,11 @@ class _ScenarioBody(Model):
         return [*self.transitions_on, *(s.key for s in self.services)]
 
     def _takes_resolve(self) -> None:
-        """Each provider is played once, and a person pins one take for one item, or for every one, once."""
+        """Each provider is played once. Takes a person pins on the same item are its moves in order
+        (`application.people.pinned`)."""
         played = self.played()
         if len(played) != len(set(played)):
             raise ValueError("transitions_on names a provider twice, or one a declared service is named")
-        for person in self.people:
-            said = [(t.provider, t.nth) for t in person.takes]
-            twice = sorted({f"{p or 'any'} {n or 'every'}" for p, n in said if said.count((p, n)) > 1})
-            if twice:
-                raise ValueError(f"{person.key} pins two takes on the same item: {', '.join(twice)}")
 
     def happening_ticket(self, happening: TicketHappening) -> SeededTicket:
         """The one seeded ticket a happening acts on, found by its title."""

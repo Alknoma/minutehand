@@ -552,7 +552,7 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "kind",
                 T,
-                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, "
+                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, service_failed, push_failed, "
                 "waits_by_declaration, never_exercised or step_never_fired",
             ),
             _c("incomplete", N, "1 when it makes the run simulation_incomplete; 0 for coverage"),

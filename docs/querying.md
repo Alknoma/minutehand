@@ -471,7 +471,7 @@ The simulated world's health, kept apart from the agent's findings: what did not
 | Column | Type | What it holds |
 |---|---|---|
 | `health_id` | INTEGER | Numbered from 1, in the order the report lists them |
-| `kind` | TEXT | responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, waits_by_declaration, never_exercised or step_never_fired |
+| `kind` | TEXT | responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, service_failed, push_failed, waits_by_declaration, never_exercised or step_never_fired |
 | `incomplete` | INTEGER | 1 when it makes the run simulation_incomplete; 0 for coverage |
 | `words` | TEXT | What happened, in one sentence |
 | `person` | TEXT | people.key it is about; NULL when none |
