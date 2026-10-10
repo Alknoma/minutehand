@@ -1,0 +1,8 @@
+name: remembers
+starts_at: "2026-08-24T09:00:00Z"
+runs_for: P2DT12H
+people:
+  - key: sam
+    name: Sam Okafor
+    email: sam@example.com
+    reply: {kind: silent}

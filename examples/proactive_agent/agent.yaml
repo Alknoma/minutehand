@@ -1,0 +1,10 @@
+# How Minutehand reaches the agent: the endpoints any proactive agent already serves.
+name: proactive_agent
+wakes:
+  - kind: reported           # it names its next wake after every wake (the wake package's moment)
+    wake_url: "http://127.0.0.1:{run.port}/wake"
+    report_url: "http://127.0.0.1:{run.port}/report"
+inbound:
+  - provider: slack
+    url: "http://127.0.0.1:{run.port}/slack/events"
+    secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}

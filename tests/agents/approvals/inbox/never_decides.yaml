@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
+# Nobody ever decides. The agent reminds Nadia once, asks Marta at two days, and orders nothing; the run is left
+# unfinished, with both requests pending, which is what this scenario is written to reach.
+name: inbox_never_decides
+starts_at: "2026-08-24T09:00:00Z"
+runs_for: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    profile: Approves the team's purchases.
+    reply:
+      kind: scripted
+      delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
+      then: silent                            # nothing pinned and nothing more: every item left pending
+  - key: marta
+    name: Marta Holm
+    email: marta@example.com
+    profile: Covers approvals when Nadia is away.
+    reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}

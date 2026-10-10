@@ -29,7 +29,7 @@ def _agent(*, tick: timedelta | None = None, polled: timedelta | None = None) ->
             _agent(tick=timedelta(hours=1)),
             WakeLimit(
                 wakes=120 + DEFAULT_WAKES,
-                why="120 wakes of the agent's 1-hour rhythm before the scenario's deadline, and 20 more for what else "
+                why="120 wakes of the agent's 1-hour rhythm across the scenario's deadline, and 20 more for what else "
                 "wakes it",
             ),
         ),
@@ -39,7 +39,7 @@ def _agent(*, tick: timedelta | None = None, polled: timedelta | None = None) ->
             _agent(tick=timedelta(hours=2), polled=timedelta(minutes=30)),
             WakeLimit(
                 wakes=48 + DEFAULT_WAKES,
-                why="48 wakes of the agent's 30-minute rhythm before the scenario's deadline, and 20 more for what "
+                why="48 wakes of the agent's 30-minute rhythm across the scenario's deadline, and 20 more for what "
                 "else wakes it",
             ),
         ),

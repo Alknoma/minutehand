@@ -444,16 +444,19 @@ def test_an_event_typed_as_a_kind_its_provider_does_not_declare_is_not_assessed(
 
 
 def test_seed_5_the_order_placed_while_the_approval_was_pending_fails_with_no_rule_written() -> None:
-    """The goal says "once it's approved" and the declared service's machine has an `approved` state: the order is
-    measured against that, whatever rules the team wrote (the trial's own rule caught it too)."""
+    """The agent's own instructions say "Only order once the request is approved" and the declared service's machine
+    has an `approved` state: the order is measured against that, with no goal in the scenario and no rule written."""
     run = _trial("seed5_ordered_while_pending")
-    [early] = [f for f in _found(run.model_copy(update={"rules": []})) if f.check == "before_decision"]
+    no_goal = run.model_copy(update={"rules": [], "scenario": run.scenario.model_copy(update={"goal": None})})
+    [early] = [f for f in _found(no_goal) if f.check == "before_decision"]
     assert early.kind is FindingKind.FAIL and early.assessed is not None
     assert early.assessed.item is ItemKind.STORED_RECORD and "approvals req_121 was pending" in early.message
-    assert "waits on approved" in early.assessed.against
-    # Mutation: a goal that names no state of the machine implies no decision to wait on.
-    unnamed = run.model_copy(update={"scenario": run.scenario.model_copy(update={"goal": "Order 40 laptops."})})
-    assert "before_decision" not in {f.check for f in _found(unnamed)}
+    assert early.assessed.against.startswith('its instructions ("Only order once the request is approved.")')
+    # Mutation: instructions that only describe the service, naming its states but waiting on none, imply nothing.
+    described = no_goal.model_copy(
+        update={"agent_instructions": ["File requests with approvals; the approver may approve or reject them."]}
+    )
+    assert "before_decision" not in {f.check for f in _found(described)}
 
 
 def test_seed_3_the_deadline_passing_with_the_approval_pending_and_the_slow_resubmit_are_found() -> None:
@@ -469,3 +472,39 @@ def test_the_report_says_what_each_finding_is_and_what_it_was_measured_against()
     assert said[0].startswith("  refused_move: POST /v1/requests/req_64/resubmit to approvals was refused 400")
     assert said[1].startswith("    violation, measured against the service approvals's machine (approve: pending")
     assert said[1].endswith("(seq 288; call 76)")
+
+
+def test_messages_sent_through_a_declared_send_only_host_are_assessed_as_its_kind_of_item() -> None:
+    """An agent that emails through its own mail API (an `acknowledge` host reading each send as a message) has its
+    messages assessed like any provider's: the same email twice with nothing said between is a duplicate."""
+    rosa = person("rosa", Silent())
+    log = Log()
+    log.message([rosa], 1, "Could you confirm the booking?")
+    log.message([rosa], 13, "Could you confirm the booking?")
+    built = view(scenario(person("owner"), rosa), log)
+    messengers = {"chat": ItemKind.EMAIL}  # the log's messages are recorded under the host's key, "chat"
+
+    typed = typed_items(built.events, built.scenario, {}, {}, None, (), messengers)
+    assessed = built.model_copy(update={"typed": typed, "item_types": provided_types([], messengers)})
+
+    assert [t.kind for t in typed] == [ItemKind.EMAIL, ItemKind.EMAIL]
+    assert ("duplicate", "fail") in _checks(assessed)
+    assert typed_items(built.events, built.scenario, {}, {}, None, ()) == [], "undeclared, it is no item of any kind"
+
+
+def test_a_chase_is_early_only_against_when_the_scenario_says_the_person_answers() -> None:
+    """With `reply_within` (or a delay its reply sets) the scenario says when the person answers, and a follow-up
+    before then is early; a silent person, of whom it says nothing, may be chased whenever: no default is a
+    declaration."""
+    log = Log()
+    rosa = person("rosa", Silent())
+    log.message([rosa], 1, "Could you confirm the venue?")
+    log.message([rosa], 3, "Following up: could you confirm the venue?")
+
+    def found(who: Person) -> list[str]:
+        built = view(scenario(person("owner"), who), log)
+        return [c for c, _ in _checks(_typed(built, _manifests(chat=[CHAT_MESSAGE])))]
+
+    assert "inside_reply_window" not in found(rosa)
+    declared = rosa.model_copy(update={"reply_within": Window(min=timedelta(hours=6), max=timedelta(hours=8))})
+    assert "inside_reply_window" in found(declared)

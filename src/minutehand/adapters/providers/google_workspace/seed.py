@@ -212,7 +212,9 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
         drive.write_file(root, operation=Operation.CREATE, actor=Actor.SCENARIO)
 
-    default = people[own.unknown_credentials_act_as or scenario.owner]
+    default = people[
+        scenario.acting(own.unknown_credentials_act_as, "an unknown credential acts as (unknown_credentials_act_as)")
+    ]
     drive.keep_credential(state.ANY_CREDENTIAL, wire.Credential(email=default.email), operation=Operation.CREATE)
     for sign_in in sign_ins:
         email = people[sign_in.person].email if sign_in.person is not None else sign_in.credential
@@ -236,7 +238,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     for position, document in enumerate(scenario.documents):
         if document.provider != MANIFEST.key:
             continue
-        owner = users[document.owner or scenario.owner]
+        owner = users[scenario.acting(document.owner, f"who owns {document.title!r} (owner)")]
         assert owner.emailAddress is not None
         root = spaces[document.space] if document.space is not None else drive.file(state.root_id(owner.emailAddress))
         assert root is not None

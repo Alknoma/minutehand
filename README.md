@@ -1,15 +1,16 @@
 # Minutehand
 
-Minutehand runs your proactive agent through simulated days of work in a few seconds and tells you how well it
-carried the work. The agent talks to fake Slack, Teams, Asana, Jira, YouTrack, Notion, GitHub, Google Drive and others,
-with people who answer late or not at all. Minutehand owns the clock, records every change in an append-only
-log, and assesses every message, ticket, document, calendar event and service item the agent touched against the
-world your scenario declares: who knows what, who answers when, what a service allows, what the goal waits on, when
-the deadline falls. Write the scenario, get the assessment: too early, too late, again with nothing new, a move the
-service refuses, a fact the agent made up. Nothing is measured against an opinion of how agents should work, and
-each finding names the declaration it was held to; policy the world cannot imply (how often your team chases) is
-yours to add in YAML. A failure can name the design that fixes it. A finished run can be forked
-from a checkpoint with the prompt, the model, a person or the world changed, and played forward again.
+Minutehand runs your proactive agent through months of simulated work in minutes and tells you how well it carried
+that work. A proactive agent brings its own work (its prompt, and the state and items it sets), decides when it next
+wakes, and keeps going: nothing hands it a task, and nothing wakes it on a schedule. Minutehand gives it a world
+instead: fake Slack, Teams, Asana, Jira, YouTrack, Notion, GitHub, Google Drive and others, and people, each described
+by who they are and what they know, who answer late, are away, or never answer. It owns the clock, records every change
+in an append-only log, and assesses every message, ticket, document, calendar event and service item the agent
+touches, as it happens, against the agent's own instructions and the world your scenario declares: too early, too
+late, again with nothing new, a move the service refuses, a fact the agent made up. Nothing is measured against an
+opinion of how agents should work, and each finding names what it was held to; policy the world cannot imply (how
+often your team chases) is yours to add in YAML. A finished run can be forked from a checkpoint with the prompt, the
+model, a person or the world changed, and played forward again.
 
 Minutehand starts the agent's own command, or reaches one already running, and points it at the fakes through its
 environment: `HTTPS_PROXY`, `NO_PROXY` and a CA bundle. Minutehand owns the agent's time and its memory, so the one
@@ -33,38 +34,47 @@ yet.
 
 ## Quick start
 
-The example agent is in the repository, so clone it for the example files:
+The example is a small proactive agent (`examples/proactive_agent`): it gets answers from people and passes them on.
+Its work is its own file, `work.json` (here: a cost centre from Sam, for Owen); it asks in Slack, follows up at most
+twice, and tells the answer on. Its one decision about time, when to wake next, is its own small
+package (`wake/`): a Pydantic AI sub-agent proposes the moment, and plain code holds it to the rules (never before an
+answer can be due, never in the past, always in working hours, never no wake while something is open). Clone the
+repository for its files:
 
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
-cd minutehand/examples/follow_up
-python3 -m venv .venv && .venv/bin/pip install slack_sdk minutehand   # its Slack client and `minutehand.agent`
+cd minutehand/examples/proactive_agent
+python3 -m venv .venv && .venv/bin/pip install minutehand slack_sdk pydantic-ai-slim[openai]
 
-# Rosa's words are written by a model from what the scenario says she knows. Any OpenAI-compatible API will do, or
-# Anthropic's (MINUTEHAND_MODEL_API=anthropic);
-# offline, the recipes' stand-in answers by fixed rules, the same every run:
-python3 ../recipes/fake_model.py &
+# Offline: a stand-in plays Sam and Owen, and AGENT_MODEL=test leaves each wake to the guard.
+# With accounts, set MINUTEHAND_MODEL* for the people, and AGENT_MODEL=openai:<model> with OPENAI_API_KEY.
+.venv/bin/python ../recipes/fake_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
+export AGENT_MODEL=test
 
-minutehand run scenario.yaml --agent agent.yaml -- .venv/bin/python agent.py
-# exits 0: Rosa answers after a day and a half, and the agent tells Owen and finishes
-
-AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml -- .venv/bin/python agent.py
-# exits 1: Rosa never answers, the agent never follows up, and the scenario's rule follows_up_when_due names the fix
+minutehand run worlds/quiet.yaml --agent agent.yaml -- .venv/bin/python agent.py
+# two simulated weeks in seconds: Sam never answers; the agent follows up a working day apart, twice, tells Owen,
+# and stops
 
 minutehand runs                  # every run, one line each
 minutehand findings <run_id>     # a run's findings again, and the checkpoints it can be forked from
+minutehand trace <run_id>        # what the agent did, in order
+minutehand replay <run_id> -- .venv/bin/python agent.py   # the run again, its model's answers from the record
+minutehand model-calls <run_id>  # the agent's model calls, as OpenAI Batch API lines
 minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```
 
 Each run takes a few seconds. Runs are kept in `.minutehand/` in the folder you ran them from. The example's
-`README.md` explains both runs line by line.
+`README.md` says how the agent decides when to wake.
 
-To try your own agent, write an agent file (`minutehand schema agent` prints its JSON Schema) and a scenario: its
-goal, its people with what they know and when they answer, the services they decide through. That is all a run
-needs to be assessed (`docs/assessments.md`); rules of your team's own (`assess:`) are optional, for policy the world
-cannot imply. Check the files with `minutehand validate`, and run `minutehand doctor -- <your agent's command>` to find
-any HTTP client in the agent that would go around the proxy.
+To try your own agent, write two files. The agent file says how Minutehand reaches it: how it is woken, the events
+it receives, its own systems to keep inside the run (`minutehand schema agent` prints its JSON Schema). The scenario
+is the world: its people, each with a profile and what they know, the state its services start in, and how long to
+watch the agent (`runs_for`). That is all a run needs to be assessed (`docs/assessments.md`); rules of your team's own
+(`assess:`) are optional, for policy the world cannot imply. `minutehand scenarios new --person 'Name <email>'`
+writes ready-made worlds with your people in them (`docs/scenarios.md`). Check the files with `minutehand validate`,
+and run `minutehand doctor -- <your agent's command>` to find any HTTP client in the agent that would go around the
+proxy. `examples/recipes` shows the wiring in five agent frameworks.
 
 ## How the agent touches Minutehand
 
@@ -93,9 +103,9 @@ of that: the store's reads and writes in every wake, a fresh empty SQLite file p
 file names (`own_databases`), noted as outside forks, and a fork refused when the agent's report after it is not the
 one recorded at the checkpoint.
 
-Beside that, nothing is required. An agent that takes its goal by message and books its own wakes implements no
-endpoint. An agent can also take a wake (a `POST` carrying the simulated `now`), answer a report (still working,
-done, when to wake next), take pushed events in each provider's own format, and list its own inboxes for the
+Beside that, nothing is required. An agent that books its own wakes on its own scheduler, and hears from people
+through the providers' own pushes, implements no endpoint. An agent can also take a wake (a `POST` carrying the
+simulated `now`), answer a report (still working, idle, and the moment it decides to be woken next), take pushed events in each provider's own format, and list its own inboxes for the
 simulated people to decide. Hosts no fake answers are declared in the agent file: acknowledge, pass through,
 replay, or forward to an emulator of your own. `docs/agent-contract.md` lists every touch point, and
 `schemas/agent-api.openapi.json` describes the endpoints.
@@ -126,11 +136,11 @@ Built and tested (`docs/design.md`, "What exists", counts the tests for each par
   agent's report, and `minutehand serve` for test suites that open many worlds at once.
 - Providers: Slack, Microsoft Teams and Graph, Asana, Jira, YouTrack, Notion, GitHub, Google Drive with Docs and Slides,
   AWS EventBridge Scheduler and SQS (through moto), and Google Cloud Tasks over its REST transport.
-- Assessments: the team's own rules, in YAML in the agent file and the scenario (`assess:`), counting the facts of
-  a run (follow-ups, messages, writes, wakes, the wakes the agent planned, what it reported, the keys of its memory) between moments
-  (`ask+P1D`, `answer`, `due`, `deadline`) against bounds. `docs/assessments.md` writes a real agent's policy whole,
-  and the fourteen behaviours Minutehand once judged by itself as rules a team may copy.
-- What the scenario says must be true at the end (`expect:`) and protected names. The run's integrity (calls that
+- Assessment, automatic: every effect the agent has on the world, by kind of item, as it happens, against the
+  agent's own instructions (read from its recorded model calls) and the world the scenario declares; a model reviewer
+  for what only meaning can tell (`--judge`). Simulation health apart: a world that failed to play as declared is never
+  counted against the agent. Optional team rules in YAML (`assess:`) for policy the world cannot imply.
+- Protected names, and, for older scenarios, what must be true at the end (`expect:`). The run's integrity (calls that
   went around the proxy, an agent answering against its own API description, a call nothing answered) is stated for
   review and fails a run only when the agent file or the scenario names it in `fail_on_integrity`. The scorecard
   counts facts only.
@@ -157,8 +167,7 @@ and has been run on arm64 only.
 
 Checked by hand, not in the test suite: an agent in containers (`docs/containers.md`).
 
-Not built: people written by a model, checks a model judges, generated providers, a faked system clock
-(`libfaketime`), the hosted service. No fake has been checked against the real service's wire details; each is
+Not built: generated providers, a faked system clock (`libfaketime`), the hosted service. No fake has been checked against the real service's wire details; each is
 tested against the service's own client library. `docs/design.md`, "Known issues", lists the limits of what is
 built.
 
@@ -180,11 +189,11 @@ built.
 
 ## Scenarios to start from
 
-`minutehand scenarios` lists a library of ready-made situations (a person goes quiet, answers late, is away with a
-delegate; an approval is rejected or never decided; a deadline moves; a scheduled wake comes late, twice or never).
-`minutehand scenarios new --all --goal ... --owner 'Name <email>' --ask 'Name <email>'` writes each out with your
-values; every run of one is assessed against what it declares. Each also carries a few rules of team policy in its
-`assess:`, optional and yours to edit or delete. See `docs/scenarios.md`.
+`minutehand scenarios` lists a library of ready-made worlds (a person goes quiet, answers late, is away with a
+delegate; an approval is rejected or never decided; a date moves earlier; a wake the agent planned comes late, twice
+or never). `minutehand scenarios new --all --person 'Name <email>' --other 'Name <email>'` writes each out with your
+people; each hands the agent no work, and every run of one is assessed against the agent's own instructions and the
+world it declares. See `docs/scenarios.md`.
 
 ## Develop
 

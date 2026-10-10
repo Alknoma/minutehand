@@ -116,10 +116,13 @@ do.
   assigns; a transition is applied if legal. Then the answer's body is rendered (`service-answer/1`). A route under
   `collections` is answered exactly as the `store` kind answers it.
 - **One shape per route.** The first rendered answer to a route fixes its JSON shape for the run (and its forks);
-  later answers must conform. An OpenAPI response schema, or a pinned `shape`, fixes it before any answer. The
+  later answers must conform, save a field the agent itself wrote to the service, which comes back as written: a
+  shape learned from one answer cannot know a field the agent sends later. An OpenAPI response schema, or a pinned `shape`, fixes it before any answer. The
   host's error shape is fixed the same way by its first refusal, or by the document's error responses.
 - **No impossible state.** A rendered answer naming an item in a state other than its own (`item_at`, `state_at`),
-  or not of the route's shape, is rendered again once; then the call is answered 502, the failure recorded.
+  or not of the route's shape, is rendered again once; then the call is answered 502, the failure recorded, and the
+  run's health says `service_failed`: the world did not answer the agent as it declares, so the run is
+  `simulation_incomplete` and nothing the agent did after is held against it.
 - **Call-free polling.** Each rendered answer is kept with the state it was rendered in. The same call while the
   service's state is unchanged is answered from that record with no model call, in a run, a rerun or a fork.
 - **Marked.** A call answered by the model is `answered_by: model`; one a collection answered is `declaration`.

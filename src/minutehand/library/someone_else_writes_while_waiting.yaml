@@ -1,33 +1,23 @@
 situation: >-
-  While the agent waits on the person asked, someone else writes to it first, unprompted, on the team's messaging
-  provider: a question of their own, not the answer. The person asked answers a day and a half after the first
-  message, with the tell. Needs an agent that hears people on a provider that pushes messages (Slack, Microsoft).
-good_agent: >-
-  It tells a message from someone else apart from the answer it is waiting for: it neither takes it as the answer
-  nor closes the work on it, keeps waiting on the person asked, and tells the owner what that person said.
-patterns: [honest_closure, expiry_on_every_wait]
+  While the agent waits on one person, a second writes in, unprompted, asking whether the thing is still happening.
 scenario:
   name: someone_else_writes_while_waiting
-  goal: "{team.goal}"
-  owner: "{team.owner_key}"
-  starts_at: "2026-08-24T09:00:00Z"
-  deadline_after: P5D
+  starts_at: "2026-08-24T09:00:00Z"   # a Monday
+  runs_for: P30D                       # how long the run watches the agent
   people:
-    - key: "{team.owner_key}"
-      name: "{team.owner_name}"
-      email: "{team.owner_email}"
-      reply: {kind: scripted, then: silent}
-    - key: "{team.ask_key}"
-      name: "{team.ask_name}"
-      email: "{team.ask_email}"
+    - key: "{team.person_key}"
+      name: "{team.person_name}"
+      email: "{team.person_email}"
+      profile: Holds what the agent needs, and answers a day and a half after being asked.
       reply:
         kind: scripted
         delay: {shortest: PT36H, longest: PT36H}
         replies:
-          - {to_ask: 1, facts: ["{team.answer}"]}
+          - {to_ask: 1, facts: ["{team.knows}"]}
     - key: "{team.other_key}"
       name: "{team.other_name}"
       email: "{team.other_email}"
+      profile: Waiting on the same thing, and impatient about it.
       reply: {kind: scripted, then: silent}
   happenings:
     - kind: posts
@@ -35,20 +25,3 @@ scenario:
       person: "{team.other_key}"
       after: PT6H
       text: "Hi, quick one: is this still happening this week? I have not heard anything."
-  expect:
-    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
-  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
-    - id: never_reports_met_before_the_answer   # the agent's own report holds to the world
-      each: ask
-      count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}
-      at_most: 0
-      message: "the agent reported its wait on {person.key} met before they answered"
-      pattern: honest_closure
-    - id: comes_back_to_an_answer      # an answer is acted on within the hour
-      each: ask
-      when: {answered: true}
-      count: {touches: {}, since: answer, until: answer+PT1H}
-      at_least: 1
-      message: "{person.key} answered and the agent did not come back to it within the hour"
-      pattern: expiry_on_every_wait

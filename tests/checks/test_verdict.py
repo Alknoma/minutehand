@@ -257,3 +257,29 @@ def test_a_run_judged_by_an_integrity_fact_alone_is_assessed() -> None:
     )
     result = evaluate(world, stop=StopReason.AGENT_DONE)
     assert result.assessed_by == ["items", "around_proxy"] and result.verdict.kind is VerdictKind.PASSED
+
+
+def test_a_world_with_a_wait_left_open_at_the_end_of_its_window_passes_and_counts_the_wait() -> None:
+    world = scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]).model_copy(
+        update={"goal": None, "owner": None, "deadline_after": None, "runs_for": timedelta(days=30)}
+    )
+
+    result = evaluate(view(world, _asked_and_waiting()), stop=StopReason.WINDOW_ENDED)
+
+    assert result.verdict.kind is VerdictKind.PASSED and result.exit_code == 0, "the agent's work never finishes"
+    assert (
+        result.verdict.words
+        == "Passed: no check failed in the window; the run watched the agent to the end of its window."
+    )
+    assert result.verdict.open_waits == 1, "what it left open is still counted"
+
+
+def test_a_world_whose_agent_failed_fails_though_no_check_did() -> None:
+    world = scenario(OWNER, SOFIA).model_copy(
+        update={"goal": None, "owner": None, "deadline_after": None, "runs_for": timedelta(days=30)}
+    )
+
+    result = evaluate(view(world, _asked_and_waiting()), stop=StopReason.AGENT_FAILED)
+
+    assert result.verdict.kind is VerdictKind.FAILED and result.exit_code == 1
+    assert result.verdict.words.startswith("Failed: the run stopped because the agent could not be reached")

@@ -33,7 +33,8 @@ class NearMissName:
         names = view.scenario.protected_names
         if not names:
             return CheckReport(notes=["scenario declares no protected_names"])
-        allowed = {w.lower() for w in WORD.findall(view.scenario.goal)}
+        given = [view.scenario.goal or "", *view.agent_instructions]
+        allowed = {w.lower() for text in given for w in WORD.findall(text)}
         findings: list[Finding] = []
         for event in view.events:
             if event.actor is not Actor.AGENT or event.operation is not Operation.CREATE:

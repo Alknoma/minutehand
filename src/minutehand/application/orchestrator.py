@@ -541,14 +541,15 @@ class Orchestrator:
         driver = self._reach.for_reason(WakeReason.START)
 
         async def say_goal() -> None:
-            if provider is not None:
+            if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
         requests = [(driver, request)] if driver is not None else []
         return await self._wake(wake, WakeReason.START, say_goal, requests, [d for d, _ in requests])
 
     async def _loop(self) -> StopReason:
-        deadline = self._scenario.deadline
+        deadline = self._scenario.window_end
+        ended = StopReason.DEADLINE_PASSED if self._scenario.runs_for is None else StopReason.WINDOW_ENDED
         while True:
             await self._look()  # what waits on people now, before the clock moves past what they owe
             await self._schedule(self._record_new())
@@ -562,10 +563,12 @@ class Orchestrator:
             jump = next_jump(self._clock.now(), [p.due for p in items]) if waiting else None
             if jump is None:
                 await self._run_on_to(deadline)
-                return StopReason.NOTHING_PENDING
+                # a world-only run whose window was set watched to its end, however quiet the end was
+                quiet_to_the_end = self._scenario.runs_for is not None and not self._scenario.is_task
+                return StopReason.WINDOW_ENDED if quiet_to_the_end else StopReason.NOTHING_PENDING
             if deadline is not None and jump.now > deadline:
                 await self._run_on_to(deadline)
-                return StopReason.DEADLINE_PASSED
+                return ended
             await self._jump(jump.now)
             dispatched = self._dues.dispatch(jump.firing)
             for item in dispatched.withheld:
@@ -667,9 +670,10 @@ class Orchestrator:
         return True
 
     async def _run_on_to(self, deadline: datetime | None) -> None:
-        """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on
-        to the scenario's deadline, and a checkpoint there records the moment the run reached. Without it a run
-        would end where the agent stopped, and a wait it abandoned would never be seen to expire."""
+        """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on to
+        the end of the scenario's window (or an older scenario's deadline), and a checkpoint there records the moment
+        the run reached. Without it a run would end where the agent stopped, and a wait it abandoned would never be
+        seen to expire."""
         if deadline is None or self._clock.now() >= deadline:
             return
         await self._jump(deadline)
@@ -934,8 +938,8 @@ class Orchestrator:
         if failed:
             return StopReason.AGENT_FAILED
         self._checkpoint()
-        if done:
-            return StopReason.AGENT_DONE
+        if done and self._scenario.is_task:
+            return StopReason.AGENT_DONE  # only an older scenario's task ends on done: a world runs its window
         if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
@@ -1049,8 +1053,9 @@ class Orchestrator:
             await self._inboxes.look(self._store, self._clock)
 
     async def _say(self, provider: ProviderKey, text: str) -> None:
-        """The scenario's owner messages the agent: its goal, or a direction."""
-        message = PersonMessage(person=self._scenario.owner, text=text, at=self._clock.now())
+        """An older scenario's owner messages the agent: its goal, or a direction."""
+        sender = self._scenario.acting(None, "who sends the scenario's goal and directions (owner)")
+        message = PersonMessage(person=sender, text=text, at=self._clock.now())
         await self._pushes(provider).say(
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )

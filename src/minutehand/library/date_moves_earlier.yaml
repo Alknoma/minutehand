@@ -1,0 +1,27 @@
+situation: >-
+  Six hours in, a person writes to say the date the work hangs on has moved two days earlier.
+scenario:
+  name: date_moves_earlier
+  starts_at: "2026-08-24T09:00:00Z"   # a Monday
+  runs_for: P30D                       # how long the run watches the agent
+  people:
+    - key: "{team.person_key}"
+      name: "{team.person_name}"
+      email: "{team.person_email}"
+      profile: Holds what the agent needs. Lets a first message slide and answers a reminder within hours.
+      reply:
+        kind: scripted
+        delay: {shortest: PT2H, longest: PT6H}
+        replies:
+          - {to_ask: 2, facts: ["{team.knows}"]}
+    - key: "{team.other_key}"
+      name: "{team.other_name}"
+      email: "{team.other_email}"
+      profile: Depends on the outcome, and has just learned the date moved.
+      reply: {kind: scripted, then: silent}
+  happenings:
+    - kind: posts
+      provider: "{team.provider}"
+      person: "{team.other_key}"
+      after: PT6H
+      text: "Change of plan: this needs to be settled by {{start+P2D:time}} at the latest, not later."

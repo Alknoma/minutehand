@@ -63,14 +63,14 @@ def test_validate_reads_the_agent_file_as_a_run_fills_it(tmp_path: Path) -> None
     assert model is not None
 
 
-def test_run_all_hands_each_run_the_flags_that_record_model_calls_and_capture(tmp_path: Path) -> None:
+def test_run_all_hands_each_run_the_flags_that_tunnel_model_calls_and_capture(tmp_path: Path) -> None:
     args = _parser().parse_anywhere(
         [
             "run-all",
             str(tmp_path),
             "--agent",
             "agent.yaml",
-            "--record-model-calls",
+            "--tunnel-model-calls",
             "--model-host",
             "llm.internal",
             "--capture-unknown",
@@ -96,13 +96,15 @@ def test_run_all_hands_each_run_the_flags_that_record_model_calls_and_capture(tm
         "3",
         "--no-proxy",
         "db.local",
-        "--record-model-calls",
+        "--tunnel-model-calls",
         "--model-host",
         "llm.internal",
         "--capture-unknown=reads",
         "--",
         "x",
     ]
+    recorded = _passed_on(_parser().parse_anywhere(["run-all", str(tmp_path), "--agent", "agent.yaml"]))
+    assert "--tunnel-model-calls" not in recorded and "--record-model-calls" not in recorded, "recording is the default"
 
 
 def test_the_wake_and_push_waits_default_to_room_for_a_models_turn() -> None:

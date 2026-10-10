@@ -98,7 +98,9 @@ def test_worlds_under_one_label_are_one_case_with_one_timeline_one_person_and_on
     card = closed.result.effectiveness
     assert card.wakes == 2 and card.waits_opened == 1 and card.messages_to_people == 1
     assert [b.person for b in card.burden] == ["owen", "sofia", "nadia"], "Sofia is one person in both worlds"
-    assert closed.result.verdict.kind is VerdictKind.UNFINISHED, closed.result.verdict.words
+    # A case of worlds is a world, not a task: nothing failed, so it passed, with the wait it left open counted.
+    assert closed.result.verdict.kind is VerdictKind.PASSED, closed.result.verdict.words
+    assert closed.result.verdict.open_waits == 1
 
     outcome = session.load(state, case.case_id)
     assert outcome.record.worlds == [messaging.world_id, tracker.world_id]

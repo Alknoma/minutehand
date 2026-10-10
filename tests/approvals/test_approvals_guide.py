@@ -1,5 +1,5 @@
-"""The examples of docs/approvals.md: every file under examples/approvals loads with every load-time check, and the
-inbox, chat-button, email and approval-service patterns play end to end against the example agent (examples/approvals/agent.py), its people
+"""The examples of docs/approvals.md: every file under tests/agents/approvals loads with every load-time check, and the
+inbox, chat-button, email and approval-service patterns play end to end against the example agent (tests/agents/approvals/agent.py), its people
 written by the recipes' fake model, reaching the outcome the guide states. So do the two forks, the samples over
 decision timing, and the guide's queries over the runs they read."""
 
@@ -27,7 +27,7 @@ from tests.support.people import people_environment, people_model
 pytestmark = pytest.mark.timeout(240)
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLES = ROOT / "examples" / "approvals"
+EXAMPLES = ROOT / "tests" / "agents" / "approvals"
 AGENT = EXAMPLES / "agent.py"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 PORT = "127.0.0.1:8720"
@@ -178,12 +178,12 @@ async def test_inbox_rejected_fails_the_heedless_agent_that_orders_anyway(
     assert len(played.orders) == 1
 
 
-async def test_inbox_never_decided_is_chased_once_escalated_and_left_unfinished(
+async def test_inbox_never_decided_is_chased_once_escalated_and_left_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     played = await play("inbox", "never_decides.yaml", tmp_path, monkeypatch)
 
-    assert played.verdict is VerdictKind.UNFINISHED, played.failed
+    assert played.verdict is VerdictKind.PASSED, played.failed  # a world: what is left pending is counted
     assert played.orders == []
     assert sorted(played.items) == [("marta", "pending"), ("nadia", "pending")]
     assert [t.split("\n")[0] for t in to(played, NADIA)] == ["Reminder: PO-7731"]

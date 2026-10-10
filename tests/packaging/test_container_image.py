@@ -8,16 +8,16 @@ import subprocess
 
 import pytest
 
-from tests.packaging.conftest import EXAMPLE, checked, run, tool
+from tests.packaging.conftest import ROOT, checked, run, tool
 
 pytestmark = [pytest.mark.packaging, pytest.mark.timeout(900)]
 
 
 def _in_container(image: str, scenario: str, behaviour: str) -> subprocess.CompletedProcess[str]:
-    """`docker run` as the example's README gives it: examples/ mounted read-only, the agent started inside, and,
+    """`docker run` as the example's README gives it: the repository mounted read-only, the agent started inside, and,
     since Rosa's words are a model's, the recipes' stand-in model started beside it, as the README runs it offline."""
     script = (
-        "python ../recipes/fake_model.py >/dev/null & "
+        "python ../../../examples/recipes/fake_model.py >/dev/null & "
         "until python -c 'import socket; socket.create_connection((\"127.0.0.1\", 8790), 1)' 2>/dev/null; "
         "do sleep 0.2; done; "
         'exec minutehand run "$0" --agent agent.yaml -- python agent.py'
@@ -32,9 +32,9 @@ def _in_container(image: str, scenario: str, behaviour: str) -> subprocess.Compl
         *("--env", "MINUTEHAND_MODEL=people"),
         *("--env", "MINUTEHAND_MODEL_API_KEY=offline"),
         "--volume",
-        f"{EXAMPLE.parent}:/examples:ro",
+        f"{ROOT}:/repo:ro",
         "--workdir",
-        "/examples/follow_up",
+        "/repo/tests/agents/follow_up",
         "--entrypoint",
         "sh",
         f"{image}-example",
@@ -60,13 +60,13 @@ def test_the_image_runs_minutehand_as_a_user_other_than_root_and_serves_by_defau
 def test_the_image_passes_the_example_and_fails_the_forgetful_agent(image: str) -> None:
     passed = _in_container(image, "scenario.yaml", "diligent")
     assert passed.returncode == 0, f"{passed.stdout}\n{passed.stderr}"
-    assert "\n  Passed: no check failed, and the agent reported it was done.\n" in passed.stdout, passed.stdout
+    assert "\n  Passed: no check failed in the window;" in passed.stdout, passed.stdout
     assert "\nfail (" not in passed.stdout, passed.stdout
 
-    failed = _in_container(image, "scenario_silent.yaml", "forgetful")
+    failed = _in_container(image, "scenario_team_policy.yaml", "forgetful")  # the team's own rule: a follow-up is owed
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
     out = failed.stdout
     assert "\nfail (1)\n" in out, out
     found = out[out.index("\nfail (1)") : out.index("\nscorecard")]
-    assert "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later" in found
+    assert "follows_up_when_due: rosa was asked two days ago and no follow-up came" in found
     assert "pattern expiry_on_every_wait: An expiry on every wait." in found

@@ -68,6 +68,7 @@ class HealthKind(StrEnum):
     WAITS_ON_NOBODY = "waits_on_nobody"  # an item only a person can move, held pending on nobody
     OWED_UNBOOKED = "owed_unbooked"  # a reply or decision someone owes, with no moment booked for it
     MODEL_FAILED = "model_failed"  # a people model call that failed and was never answered after
+    SERVICE_FAILED = "service_failed"  # a declared service answered the agent with Minutehand's own failure (502)
     PUSH_FAILED = "push_failed"  # an event the world pushed that never reached the agent, retries and all
     BEYOND_FACTS = "beyond_facts"  # a person's model-written reply said what nothing they know supports
     WAITS_BY_DECLARATION = "waits_by_declaration"  # an item pending on someone the files declare never acts
@@ -81,6 +82,7 @@ INCOMPLETE = frozenset(
         HealthKind.WAITS_ON_NOBODY,
         HealthKind.OWED_UNBOOKED,
         HealthKind.MODEL_FAILED,
+        HealthKind.SERVICE_FAILED,
         HealthKind.PUSH_FAILED,
         HealthKind.BEYOND_FACTS,
     }
@@ -222,6 +224,18 @@ class Effectiveness(Model):
         "it (a message to anyone, a ticket, an item on another service; not its own memory), or to the run's end "
         "when there was none",
     )
+    changes_by_others: int = Field(
+        default=0, ge=0, description="Changes someone else made in the world: replies, decisions, ask-backs"
+    )
+    changes_never_seen: int = Field(default=0, ge=0, description="Of them, those the agent could never have known")
+    slowest_unseen: timedelta | None = Field(
+        default=None, description="The longest any change sat before the agent could know it (`domain.reactions`)"
+    )
+    slowest_unseen_change: str | None = Field(default=None, description="Which change that was")
+    slowest_to_act: timedelta | None = Field(
+        default=None, description="The longest from the agent seeing a change to its next move in the world"
+    )
+    slowest_to_act_change: str | None = Field(default=None, description="Which change that was")
     messages_to_people: int = Field(default=0, ge=0)
     messages_edited: int = Field(
         default=0,
@@ -292,6 +306,11 @@ class RunView(Model):
         default=[], description="What people said: every reply that landed, with who and when"
     )
     commitments: list[Commitment] | None = None
+    agent_instructions: list[str] = Field(
+        default=[],
+        description="Every distinct system prompt the agent gave its model, in the order it first gave each: its own "
+        "statement of its work (`application.model_calls.agent_instructions`); empty when no call of its was seen",
+    )
     model_calls: list[WakeModelCalls] | None = Field(
         default=None,
         description="Model calls per wake, from the agent's telemetry; None when the run received no span of a "

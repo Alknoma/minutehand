@@ -55,6 +55,7 @@ from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replayi
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
+from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.pushing import HttpPushes
@@ -83,7 +84,7 @@ from minutehand.application.inboxes import Inboxes
 from minutehand.application.items import provided_types, typed_items
 from minutehand.application.items import rhythm as declared_rhythm
 from minutehand.application.kept import KeptModel
-from minutehand.application.model_calls import is_model_call, model_call, per_wake
+from minutehand.application.model_calls import agent_instructions, is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.people import needs_model
 from minutehand.application.refusals import RunRefused, refuse_unheld
@@ -138,7 +139,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
-from minutehand.domain.items import TypedItem
+from minutehand.domain.items import ItemKind, TypedItem
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
@@ -170,6 +171,7 @@ RECORD = "record.json"
 RESULT = "result.json"
 SCENARIO = "scenario.json"
 AGENT = "agent.json"
+REPLAYED = "replayed.json"
 AGENT_LOG = "agent.log"
 
 CA_VARIABLES = (
@@ -243,6 +245,7 @@ async def play(
     listen: Listen | None = None,
     progress: Progress | None = None,
     seed: int | None = None,
+    replaying: Replaying | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -260,6 +263,9 @@ async def play(
 
     A scenario with no `starts_at` starts now: the instant is taken once, here, and every sample plays and
     records it, so a fork of any of them starts from the same moment.
+
+    `replaying` plays a finished run again (`replay`): its people's words, its pass-through hosts' answers and the
+    agent's own model calls answered from its record.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
@@ -279,8 +285,9 @@ async def play(
     services = _services(scenario, agent, registry)
     routes: dict[str, Running] = {}
     desk = desk_for(scenario, agent, model, undeclared=listen.capture_unknown is UnknownHosts.MODEL)
+    parent = replaying.run_id if replaying is not None else None
     capturing = (
-        capturing_for(agent, registry, state=state, model_hosts=listen.model_hosts)
+        capturing_for(agent, registry, state=state, parent=parent, model_hosts=listen.model_hosts)
         .with_emulators(routes)
         .with_services(desk)
     )
@@ -291,6 +298,9 @@ async def play(
         intercepting(routing, first[0], first[1], state, listen, capturing=capturing) as proxy,
         emulating(agent, proxy, listen, run_dir(state, first[0].run_id), telemetry, routes) as emulators,
     ):
+        if replaying is not None:
+            first[0].adopt_written(replaying.world)  # the people say what they said, without a model call
+            proxy.proxy.addon.model_replay = replaying.model
         for sample in range(samples):
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
@@ -307,6 +317,7 @@ async def play(
                 claims=_claims(registry, services),
                 rhythm=declared_rhythm(agent),
                 collections=declared_collections(agent),
+                messengers=declared_messengers(agent),
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -347,10 +358,84 @@ async def play(
                     desk=desk,
                 )
             write_recordings(directory, store.calls())
+            if replaying is not None:
+                (directory / REPLAYED).write_text(replaying.summary(), encoding="utf-8")
             outcomes.append(_keep(directory, record, scorer))
     for store in opened:
         store.close()  # the run is over: its write-ahead log is cut to nothing
     return outcomes
+
+
+@dataclass(frozen=True)
+class Replaying:
+    """A finished run being played again: its id, its world file (where its people's words are kept), and the
+    agent's model calls it recorded, answered in turn (`adapters.proxy.replay`)."""
+
+    run_id: str
+    world: Path
+    model: ModelReplay
+
+    def summary(self) -> str:
+        """`replayed.json`: what was replayed, and where the runs parted."""
+        return json.dumps(
+            {
+                "replay_of": self.run_id,
+                "model_calls_replayed": self.model.answered,
+                "parted": self.model.parted,
+                "live_from": self.model.live_from.isoformat() if self.model.live_from else None,
+            },
+            indent=2,
+        )
+
+
+def replayed(state: Path, run_id: str) -> dict[str, object] | None:
+    """What a replay answered from its source, and where they parted (`replayed.json`); None for any other run."""
+    path = run_dir(state, run_id) / REPLAYED
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+async def replay(
+    parent_run: str,
+    *,
+    state: Path,
+    command: Sequence[str] | None = None,
+    telemetry: Telemetry | None = None,
+    model: LanguageModel | None = None,
+    judge: bool = False,
+    listen: Listen | None = None,
+    progress: Progress | None = None,
+    live_from: datetime | None = None,
+) -> Outcome:
+    """Play a finished run again from its start, as a new run: its scenario as it played (start and seed), its
+    people's words as they said them, its pass-through hosts' answers, and each of the agent's model calls answered
+    with what the model answered then, so an agent that keeps its state in its own process rebuilds it exactly.
+
+    The agent's calls to its model are recorded on the wire (`Listen.record_model_calls`) for the replay to answer;
+    the first one the recording never saw, or the first from `live_from` on, goes to the model, and so does every
+    call after it: from there the run is played live. A finished run that recorded no model calls is replayed with
+    every call live.
+    """
+    parent = load(state, parent_run)
+    directory = run_dir(state, parent_run)
+    scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
+    agent = stored_agent(directory / AGENT)
+    with reading(state, parent_run) as kept:
+        recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from)
+    listen = (listen or Listen()).model_copy(update={"record_model_calls": True})
+    replaying = Replaying(parent_run, _root_dir(state, parent.record) / WORLD, recorded)
+    [outcome] = await play(
+        scenario,
+        agent,
+        state=state,
+        command=command,
+        telemetry=telemetry,
+        model=model,
+        judge=judge,
+        listen=listen,
+        progress=progress,
+        replaying=replaying,
+    )
+    return outcome
 
 
 async def fork(
@@ -409,6 +494,7 @@ async def fork(
         claims=_claims(registry, services),
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
+        messengers=declared_messengers(agent),
     )
     signing = signing_for(agent, changed.people)
 
@@ -527,6 +613,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
         claims=_Claims(registry, frozenset()),
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
+        messengers=declared_messengers(agent),
     )
     world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
     try:
@@ -1004,6 +1091,17 @@ def _claims(registry: Registry, services: Services) -> _Claims:
     return _Claims(registry, frozenset(p.manifest.key for p in services.providers))
 
 
+def declared_messengers(agent: AgentUnderTest) -> dict[ProviderKey, ItemKind]:
+    """Every send-only host the agent file declares whose sends are read as messages to people (`acknowledge` with a
+    `message` reading), as the kind of item its messages are: an email when the reading names a subject, a chat
+    message otherwise. Their messages are assessed as any provider's are."""
+    return {
+        d.key: ItemKind.EMAIL if d.message.subject else ItemKind.CHAT_MESSAGE
+        for d in agent.outbound
+        if isinstance(d, Acknowledge) and d.message is not None
+    }
+
+
 def declared_collections(agent: AgentUnderTest) -> list[DeclaredCollection]:
     """Every collection the agent file's `store` hosts declare, as the simulation's health names them."""
     return [
@@ -1031,8 +1129,10 @@ class _Judge:
         claims: _Claims | None = None,
         rhythm: timedelta | None = None,
         collections: Sequence[DeclaredCollection] = (),
+        messengers: Mapping[ProviderKey, ItemKind] | None = None,
     ) -> None:
         self._claims = claims
+        self._messengers = dict(messengers or {})
         self._rhythm = rhythm
         self._collections = list(collections)
         self._rules = list(rules)
@@ -1060,7 +1160,7 @@ class _Judge:
                 provider = self._claims.registry.provider(manifests[key])
                 if isinstance(provider, TypesItems):
                     typers[key] = provider
-        return typed_items(events, self._scenario, manifests, typers, world, world.calls())
+        return typed_items(events, self._scenario, manifests, typers, world, world.calls(), self._messengers)
 
     def view(self, record: RunRecord, world: Store) -> RunView:
         """What every check reads of the finished run."""
@@ -1076,6 +1176,7 @@ class _Judge:
             commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
+            agent_instructions=agent_instructions(spans),
             broken_calls=broken(calls),
             contract_breaks=contract_breaks(calls),
             dues=due_entries(world),
@@ -1089,7 +1190,7 @@ class _Judge:
             stop=record.stop,
             calls=calls,
             typed=self._typed(world),
-            item_types=provided_types(self._manifests()),
+            item_types=provided_types(self._manifests(), self._messengers),
             rhythm=self._rhythm,
             person_calls=world.person_calls(),
             collections=self._collections,
@@ -1367,8 +1468,9 @@ class Listen(Model):
     )
     telemetry_port: int = Field(default=0, ge=0, le=65535, description="The receiver's port; 0 lets the system pick")
     record_model_calls: bool = Field(
-        default=False,
-        description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span",
+        default=True,
+        description="Open the agent's calls to model APIs, send them on unchanged, and keep each as a span (for "
+        "`replay` and `model-calls`); False tunnels them unopened",
     )
     capture_unknown: UnknownHosts = Field(
         default=UnknownHosts.REFUSE,

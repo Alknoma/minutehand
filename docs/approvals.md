@@ -3,13 +3,13 @@
 An agent that must get someone's approval before it acts is a proactive agent in its plainest form: it asks, waits,
 reminds, perhaps escalates, and acts only on the answer. This guide sets one up in Minutehand, wherever the approval
 lives: in the agent's own product, in chat, by email or invitation, in a tool, or in an approval service Minutehand
-does not fake. Each pattern has its files under `examples/approvals/`, and every YAML and SQL block below is one of
+does not fake. Each pattern has its files under `tests/agents/approvals/`, and every YAML and SQL block below is one of
 those files or a run of its lines (`tests/approvals/test_guide_blocks.py` fails when they part).
 
 Three things hold throughout:
 
-- **Minutehand judges against the world you declared, and nothing else.** Going ahead before the approval the goal
-  waits on, a move the service's machine refuses, a chase inside the approver's reply window, an invented figure in
+- **Minutehand judges against the world you declared and the agent's own instructions, and nothing else.** Going
+  ahead before the approval its work waits on, a move the service's machine refuses, a chase inside the approver's reply window, an invented figure in
   a resubmission: each is found on every run, measured against your scenario, with no rule written
   (`docs/assessments.md`, "What every run is assessed on"). How often your team wants the requester told, or the
   approver chased, is policy your own rules add.
@@ -20,8 +20,9 @@ Three things hold throughout:
 
 ## The example
 
-`examples/approvals/agent.py` orders 40 laptops (PO-7731) once Nadia approves, and tells Owen, the requester, how it
-went. Its plan: ask Nadia; a day on, still undecided, remind her by email; two days on, ask Marta, the backup
+`tests/agents/approvals/agent.py` brings its own work: order 40 laptops (PO-7731) once Nadia approves, and tell Owen, the
+requester, how it went. Each scenario is a world, not a task: the run hands the agent nothing. The agent is
+proactive: it decides when it next wakes, and nothing wakes it on a schedule. Its plan: ask Nadia; a day on, still undecided, remind her by email; two days on, ask Marta, the backup
 approver, too, and tell Owen; four days on, tell Owen it is still waiting and stop. On an approval it places the
 order with `POST https://api.orders.example/v1/orders`, naming the request it rests on; on a rejection it orders
 nothing and passes the reason on. `APPROVAL_VIA` picks where the approval happens (`inbox`, `slack`, `email`,
@@ -30,7 +31,7 @@ nothing and passes the reason on. `APPROVAL_VIA` picks where the approval happen
 The order host is declared `store` in every agent file, so the order is kept in the run's world and a rule can count
 it, whatever the channel:
 
-<!-- excerpt: examples/approvals/inbox/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/agent.yaml -->
 ```yaml
   - host: api.orders.example           # the act the approval holds back: kept, so a rule can count orders
     name: orders
@@ -44,7 +45,7 @@ the recipes' fake model, `python examples/recipes/fake_model.py --port 8799`, wi
 http://127.0.0.1:8799/v1`, `MINUTEHAND_MODEL_API_KEY` and `MINUTEHAND_MODEL` set to anything):
 
 ```bash
-cd examples/approvals/inbox
+cd tests/agents/approvals/inbox
 minutehand run rejected.yaml --agent agent.yaml -- env APPROVAL_VIA=inbox python ../agent.py
 minutehand run rejected.yaml --agent agent.yaml -- env APPROVAL_VIA=inbox AGENT_BEHAVIOUR=heedless python ../agent.py
 ```
@@ -65,7 +66,7 @@ The agent serves the approval itself: a page or an API listing what waits on eac
 one. Declare it as an inbox, and Minutehand reads it as each person after every wake, records each new item as the
 agent asking that person, and makes the decision their take pins as them when it falls due (`docs/inboxes.md`):
 
-<!-- excerpt: examples/approvals/inbox/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/agent.yaml -->
 ```yaml
 inboxes:
   - name: approvals
@@ -103,11 +104,12 @@ Rules read all of these with `each: transition` (section 3).
 
 The approver's take names the decision, with the reason as facts a model words:
 
-<!-- excerpt: examples/approvals/inbox/rejected.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/rejected.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes:
       - take: reject
@@ -122,7 +124,7 @@ note, a decision with `settles: false` that leaves the item waiting: an away app
 their item as that note, its first input their words (section 2).
 
 Runs end to end: `inbox/approved.yaml` (passed), `inbox/rejected.yaml` (passed; heedless fails
-`acts_only_once_approved`), `inbox/never_decides.yaml` (unfinished, as it declares).
+`acts_only_once_approved`), `inbox/never_decides.yaml` (passed: what is left pending is counted, never a verdict on its own).
 
 ### 1b. In chat: buttons on a message
 
@@ -130,7 +132,7 @@ Runs end to end: `inbox/approved.yaml` (passed), `inbox/rejected.yaml` (passed; 
 interactivity URL as Slack sends it, a signed form post whose `payload` is a `block_actions`; a modal the agent opens
 with `views.open` in answer is filled and submitted as a `view_submission`:
 
-<!-- excerpt: examples/approvals/chat/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/chat/agent.yaml -->
 ```yaml
 inbound:
   - provider: slack
@@ -140,11 +142,12 @@ inbound:
 
 The approver's take presses a button by the label she sees, on her nth ask; a form takes exact words:
 
-<!-- excerpt: examples/approvals/chat/rejected.yaml -->
+<!-- excerpt: tests/agents/approvals/chat/rejected.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes:
       - nth: 1                                                 # her first item: the agent's first message to her
@@ -175,7 +178,7 @@ Runs end to end: `chat/approved.yaml` (passed), `chat/rejected.yaml` (passed; he
 as a message to a person) and `replies` (how an answer reaches the agent's inbound webhook). Each email to a person
 who answers is then an ask, and their answer, written by a model from the step's facts, is delivered to the agent:
 
-<!-- excerpt: examples/approvals/email/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/email/agent.yaml -->
 ```yaml
 outbound:
   - host: api.mail.example
@@ -194,11 +197,12 @@ outbound:
 
 An email carries words, not a decision, so the decision is a fact of the step and the agent reads it out of the text:
 
-<!-- excerpt: examples/approvals/email/rejected.yaml -->
+<!-- excerpt: tests/agents/approvals/email/rejected.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     reminded: {sooner_within: {min: PT30M, max: PT1H}}   # a reminder may bring her answer sooner, never later
     reply:
@@ -218,11 +222,12 @@ answer in the thread; a Gmail answer lands in the mailbox and is found by pollin
 **A calendar invitation.** The approver's take answers an invitation with one of its answers: Google's Yes, Maybe
 and No, Outlook's Accept, Tentative and Decline. The answer lands on the event as theirs:
 
-<!-- excerpt: examples/approvals/calendar/declined_invitation.yaml -->
+<!-- excerpt: tests/agents/approvals/calendar/declined_invitation.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes: [{nth: 1, take: "No"}]   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
     reply:
@@ -247,10 +252,12 @@ State); `delete`, `comment` and `reassign` are offered to a take too, never to a
 and no `nth` covers every ticket handed to them in any tracker the run fakes; an item that does not offer it, a
 message, ignores it:
 
-<!-- excerpt: examples/approvals/tracker/approved_by_ticket.yaml -->
+<!-- excerpt: tests/agents/approvals/tracker/approved_by_ticket.yaml -->
 ```yaml
     reply: {kind: scripted, then: silent}
     takes: [{take: done, after: PT6H}]   # every ticket the agent assigns her, in any tracker, done six hours on
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: orders_only_once_the_ticket_is_done
     each: handoff
@@ -277,7 +284,7 @@ scripted (Gaps).
 Declare the service `store`: what the agent files there is kept as sent, in the run's world, read back unchanged,
 and seen by forks and rules:
 
-<!-- excerpt: examples/approvals/service/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/service/agent.yaml -->
 ```yaml
   - host: approvals.example
     name: approval_service
@@ -291,7 +298,7 @@ and seen by forks and rules:
 A host a provider claims can be declared too. The provider answers what it serves; a method it refuses as not
 served falls through to the declaration instead of a 501:
 
-<!-- excerpt: examples/approvals/service/slack_fallthrough.yaml -->
+<!-- excerpt: tests/agents/approvals/service/slack_fallthrough.yaml -->
 ```yaml
 outbound:
   - host: slack.com
@@ -305,7 +312,7 @@ Nobody but the agent writes to a store, and no person can be scripted to act on 
 there stays as filed. So this pattern plays the approver who never decides, and nothing else (Gaps). A stored request
 is not an ask either, so no wait is opened on it; the rules count what the service holds and the messages sent:
 
-<!-- excerpt: examples/approvals/service/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/service/agent.yaml -->
 ```yaml
 assess:
   - id: files_one_request_with_nadia
@@ -348,7 +355,7 @@ offers it. On an email, which carries words and no decision, the decision is a f
 inside their `working_hours`; a take's own `within` wins over it, and its `after` fixes the moment; `delay` draws in
 calendar time instead:
 
-<!-- excerpt: examples/approvals/inbox/approved.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/approved.yaml -->
 ```yaml
   - key: nadia                         # the approver
     name: Nadia Ek
@@ -366,16 +373,18 @@ message in it, naming who covers; it answers nothing. On an item of the agent's 
 note (`settles: false`), and the item still waits on them; an inbox that declares no note gets none. The example
 agent reads it and asks Marta:
 
-<!-- excerpt: examples/approvals/email/away.yaml -->
+<!-- excerpt: tests/agents/approvals/email/away.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     absences: [{trigger: on_first_ask, lasts: P7D, delegate: marta, reason: on leave}]
     reply: {kind: scripted, then: silent}
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     reply_within: {min: PT1H, max: PT3H}
     reply:
       kind: scripted
@@ -387,11 +396,12 @@ agent reads it and asks Marta:
 and `then: silent`, or `kind: silent`. The `delay` is how long they usually take: an item falls due at its longest,
 which is what a rule's `due` anchor reads:
 
-<!-- excerpt: examples/approvals/inbox/never_decides.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/never_decides.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
@@ -399,6 +409,7 @@ which is what a rule's `due` anchor reads:
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}
 ```
 
@@ -409,11 +420,12 @@ who owes a decision in the agent's product reminds them of it the same way.
 **What the approver knows changes mid-wait.** `fact_changes` replace what a person knows from a moment on. An answer
 owed when they change is written again as it is sent, from what the person knows then:
 
-<!-- excerpt: examples/approvals/email/budget_changes.yaml -->
+<!-- excerpt: tests/agents/approvals/email/budget_changes.yaml -->
 ```yaml
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     facts: ["the Q3 hardware budget covers 40 laptops"]
     fact_changes:
       - {after: PT12H, facts: ["the Q3 hardware budget was cut and covers 30 laptops"]}
@@ -433,7 +445,7 @@ to play a decision that turns on the change, script it in the step of an ask mad
 These are the team's rules for the example (`inbox/agent.yaml`), copyable as they stand. Each reads facts of the run
 and nothing else; drop one and nothing asks it.
 
-<!-- excerpt: examples/approvals/inbox/agent.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/agent.yaml -->
 ```yaml
 assess:
   - id: acts_only_once_approved        # no order before the first approval, from either approver; none at all without
@@ -469,15 +481,9 @@ assess:
   - id: tells_the_requester_the_outcome   # within the hour of a decision, the requester hears it, naming the order
     each: transition
     where: {provider: [approvals], by: [person]}   # a decision; the agent's taking a request back is no decision
-    count: {messages: {to: [owner], holding: [PO-7731]}, since: transition, until: transition+PT1H}
+    count: {messages: {to: [owen], holding: [PO-7731]}, since: transition, until: transition+PT1H}
     at_least: 1
     message: "{transition.who} decided and the requester was not told within the hour"
-    pattern: honest_closure
-  - id: not_done_while_waiting         # done is reported only once nobody asked is still to decide
-    when: {stopped: [agent_done]}
-    count: {asks: {open_at: end}}
-    at_most: 0
-    message: "the agent reported done with {rule.count} request(s) still undecided"
     pattern: honest_closure
 ```
 
@@ -488,7 +494,7 @@ assess:
   other channel, count the act itself until the approver's request settled; `closed` is the answer, or the run's end
   when none came:
 
-<!-- excerpt: examples/approvals/chat/approved.yaml -->
+<!-- excerpt: tests/agents/approvals/chat/approved.yaml -->
 ```yaml
 assess:
   - id: orders_only_once_answered      # no order while Nadia's request is open
@@ -503,7 +509,7 @@ assess:
 - **Never acts after a rejection.** Over an inbox, `never_orders_after_a_rejection` above counts orders from each
   `reject` on. On a message, a scenario knows its approver rejects, so the rule is the scenario's own:
 
-<!-- excerpt: examples/approvals/chat/rejected.yaml -->
+<!-- excerpt: tests/agents/approvals/chat/rejected.yaml -->
 ```yaml
 assess:
   - id: never_orders_after_a_rejection   # this scenario rejects: nothing may be ordered, ever
@@ -522,14 +528,14 @@ assess:
   agent may reword, whether a relay misreports the decision is the shared reviewer's to say, run with `--judge`, with
   no rule written (`docs/assessments.md`, "The shared reviewer").
 
-<!-- excerpt: examples/approvals/inbox/rejected.yaml -->
+<!-- excerpt: tests/agents/approvals/inbox/rejected.yaml -->
 ```yaml
 assess:
   - id: tells_the_requester_why        # the requester hears the reason: the decision's facts, whatever the wording
     each: ask
     where: {person: [nadia]}
     when: {answered: true}
-    count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
+    count: {messages: {to: [owen], holding: ["{ask.facts}"]}, since: answer}
     at_least: 1
     message: "Owen was never told why {person.key} turned the order down"
     pattern: honest_closure
@@ -545,7 +551,7 @@ assess:
 **Forks: the same run, decided the other way.** A fork restarts a finished run from a checkpoint with something
 changed. Flip the decision, from a checkpoint before it:
 
-<!-- file: examples/approvals/inbox/flip_to_approve.yaml -->
+<!-- file: tests/agents/approvals/inbox/flip_to_approve.yaml -->
 ```yaml
 # A fork of a rejected run, from a checkpoint before Nadia decided: from there on she approves instead. Every item
 # still pending at the fork is put to her again under her new script.
@@ -562,7 +568,7 @@ overrides:
 Or change what the agent remembers instead of what anyone did: its memory says Nadia approved while her item is
 still pending, and the team's rule catches the order it then places:
 
-<!-- file: examples/approvals/inbox/believes_approved.yaml -->
+<!-- file: tests/agents/approvals/inbox/believes_approved.yaml -->
 ```yaml
 # A fork that changes what the agent remembers, not what anyone did: at the checkpoint its memory says Nadia
 # approved, though her item is still pending. The fork asks the agent for its report again, and on its next wake it
@@ -598,23 +604,23 @@ when that decision or move is made.
 differently under each seed; `run-all --samples N` plays N seeds and reads the verdicts against `expect_outcome`,
 which takes a rate:
 
-<!-- file: examples/approvals/inbox/timing/decision_timing.yaml -->
+<!-- file: tests/agents/approvals/inbox/timing/decision_timing.yaml -->
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
 # Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
 # days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
 #   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- env APPROVAL_VIA=inbox python ../agent.py
 name: inbox_decision_timing
-goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
-owner: owen
 starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P5D
+runs_for: P5D
 expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     takes: [{take: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
     reply:
       kind: scripted
@@ -622,10 +628,13 @@ people:
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     takes: [{take: approve, within: {min: PT1H, max: PT4H}}]
     reply:
       kind: scripted
       then: silent
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: ordered_within_three_days
     count: {stored: {host: api.orders.example, collection: orders}, until: start+P3D}
@@ -640,7 +649,7 @@ would pass only on the seeds where Nadia decides within three days. Any sample p
 **Queries: what the agent did around each decision.** `minutehand query <run> "<sql>"` reads the run's read model
 (`docs/querying.md`). Every write and message after a rejection:
 
-<!-- file: examples/approvals/queries/after_a_rejection.sql -->
+<!-- file: tests/agents/approvals/queries/after_a_rejection.sql -->
 ```sql
 SELECT r.person, r.decision, a.at, a.kind, a.provider, a.summary
 FROM replies r
@@ -652,7 +661,7 @@ ORDER BY a.position;
 
 Every write and message while each request was undecided, the reminder and the escalation among them:
 
-<!-- file: examples/approvals/queries/while_undecided.sql -->
+<!-- file: tests/agents/approvals/queries/while_undecided.sql -->
 ```sql
 SELECT i.entity_id AS item, json_extract(i.snapshot, '$.person') AS approver,
        a.at, a.kind, a.person, substr(a.summary, 1, 60) AS summary
@@ -714,7 +723,7 @@ item gets their automatic reply as a note; and a decision's answer is what it ca
 ## Where it is tested
 
 `tests/approvals/test_approvals_guide.py` validates every file here with its agent file, plays each pattern marked
-"runs end to end" against `examples/approvals/agent.py` with the recipes' fake model writing the people's words,
+"runs end to end" against `tests/agents/approvals/agent.py` with the recipes' fake model writing the people's words,
 including the heedless agent failing the rule this guide says it fails, the two forks, four samples of the timing
 scenario through `run-all`, and both queries over the runs they describe. `tests/approvals/test_guide_blocks.py`
 holds every block above to its file.

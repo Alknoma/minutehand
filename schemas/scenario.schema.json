@@ -1880,6 +1880,12 @@
           "title": "Name",
           "type": "string"
         },
+        "profile": {
+          "default": "",
+          "description": "Who this person is, in plain words: their role, what they care about and require, how and when they work and answer. The model that plays them acts from it; `facts` are what they know",
+          "title": "Profile",
+          "type": "string"
+        },
         "reminded": {
           "anyOf": [
             {
@@ -3777,6 +3783,7 @@
         "agent_done",
         "wake_limit",
         "deadline_passed",
+        "window_ended",
         "nothing_pending",
         "agent_failed",
         "closed",
@@ -4757,6 +4764,7 @@
         }
       ],
       "default": null,
+      "description": "Retired with `goal`: an older scenario's deadline, also read as its window when `runs_for` is not given",
       "title": "Deadline After"
     },
     "directions": {
@@ -4858,9 +4866,17 @@
       "type": "array"
     },
     "goal": {
-      "description": "The text handed to the agent, verbatim",
-      "title": "Goal",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so an older scenario still loads; when given, it is handed to the agent on its first wake, verbatim",
+      "title": "Goal"
     },
     "happenings": {
       "default": [],
@@ -4955,9 +4971,17 @@
       "type": "string"
     },
     "owner": {
-      "description": "Person.key of whoever gave the goal",
-      "title": "Owner",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Retired with `goal`: Person.key of whoever an older scenario says gave it. Nothing is special about this person",
+      "title": "Owner"
     },
     "people": {
       "items": {
@@ -4983,6 +5007,20 @@
       },
       "title": "Provider Seeds",
       "type": "array"
+    },
+    "runs_for": {
+      "anyOf": [
+        {
+          "format": "duration",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How much simulated time the run watches the agent for, from its start: a window, not a task. The agent keeps working the whole time; the run stops when the window ends",
+      "title": "Runs For"
     },
     "seed": {
       "anyOf": [
@@ -5057,8 +5095,6 @@
   },
   "required": [
     "name",
-    "goal",
-    "owner",
     "people"
   ],
   "title": "WrittenScenario",

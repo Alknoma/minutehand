@@ -49,6 +49,7 @@ from minutehand.domain.world import (
     PendingSnapshot,
     PendingStatus,
     PushSnapshot,
+    RecordedCall,
     ServiceItemSnapshot,
     ServiceRecordKind,
     ServiceRecordSnapshot,
@@ -86,6 +87,7 @@ def health(view: RunView) -> list[HealthFinding]:
         *_pending(view),
         *_waits_on_nobody(view),
         *_model_failures(view),
+        *_service_failures(view),
         *_pushes(view),
         *_beyond_facts(view),
         *_never_exercised(view),
@@ -299,6 +301,32 @@ def _model_failures(view: RunView) -> Iterator[HealthFinding]:
                 since=held.first.sim_time,
                 evidence=[held.first.seq],
             )
+
+
+def _service_failures(view: RunView) -> Iterator[HealthFinding]:
+    """Each declared service that answered the agent with Minutehand's own failure: a 502 holding the error it could
+    not answer past (`application.services`), never the service's own refusal. The agent was not answered as the
+    world declares, so whatever it did next is not its own to answer for."""
+    hosts = {s.host for s in view.scenario.services}
+    failed: dict[str, list[RecordedCall]] = {}
+    for call in view.calls or []:
+        x = call.exchange
+        if x.host not in hosts or x.status != 502 or not x.response_body:
+            continue
+        try:
+            said = json.loads(x.response_body)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(said, dict) and set(said) == {"error", "host"}:
+            failed.setdefault(x.host, []).append(call)
+    for host, calls in failed.items():
+        first = calls[0].exchange
+        yield _found(
+            HealthKind.SERVICE_FAILED,
+            f"the declared service {host} could not answer {len(calls)} of the agent's calls, from "
+            f"{first.method} {first.path} on: {json.loads(first.response_body or '{}').get('error')}",
+            since=calls[0].sim_time,
+        )
 
 
 def _pushes(view: RunView) -> Iterator[HealthFinding]:

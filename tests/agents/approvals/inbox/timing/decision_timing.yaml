@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
+# Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
+# days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
+#   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- env APPROVAL_VIA=inbox python ../agent.py
+name: inbox_decision_timing
+starts_at: "2026-08-24T09:00:00Z"
+runs_for: P5D
+expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    profile: Approves the team's purchases.
+    takes: [{take: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
+    reply:
+      kind: scripted
+      then: silent
+  - key: marta
+    name: Marta Holm
+    email: marta@example.com
+    profile: Covers approvals when Nadia is away.
+    takes: [{take: approve, within: {min: PT1H, max: PT4H}}]
+    reply:
+      kind: scripted
+      then: silent
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
+assess:
+  - id: ordered_within_three_days
+    count: {stored: {host: api.orders.example, collection: orders}, until: start+P3D}
+    at_least: 1
+    message: "nothing was ordered within three days of the request"

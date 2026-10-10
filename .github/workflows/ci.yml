@@ -118,7 +118,8 @@ jobs:
           SEED: ${{ github.run_id }}
 
   # examples/recipes: an agent per framework (LangGraph, the OpenAI Agents SDK, the Claude Agent SDK, Pydantic AI,
-  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model. The frameworks are
+  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model, and the proactive
+  # agent, whose wake decider is Pydantic AI. The frameworks are
   # the `recipes` dependency group, kept out of every other job; RECIPES_NODE_REQUIRED turns a missing node or a
   # failed `npm ci` from a skip into a failure.
   recipes:
@@ -138,7 +139,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       - run: uv sync --group recipes
-      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes
+      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes tests/proactive_agent
         env:
           RECIPES_NODE_REQUIRED: "1"
 
@@ -187,7 +188,7 @@ jobs:
       - run: uv run pytest -q -m docker tests/providers/slack/test_slack_redirected_container.py
 
   # What a user installs, as they would install it: the wheel in an environment with none of the
-  # dev dependencies, and the image, each running examples/follow_up end to end. Nothing is pushed.
+  # dev dependencies, and the image, each running tests/agents/follow_up end to end. Nothing is pushed.
   build:
     name: Package and image (install and run the example)
     runs-on: ubuntu-latest
@@ -245,13 +246,13 @@ jobs:
           test -n "$VERSION"
           "$RUNNER_TEMP/venv/bin/minutehand" --help
       - name: The example, with the installed command
-        working-directory: examples/follow_up
+        working-directory: tests/agents/follow_up
         env:
           AGENT_BEHAVIOUR: diligent
         run: |
           "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
           # Rosa's words are a model's: the recipes' stand-in writes them offline, as the example's README says.
-          "$RUNNER_TEMP/venv/bin/python" ../recipes/fake_model.py &
+          "$RUNNER_TEMP/venv/bin/python" ../../../examples/recipes/fake_model.py &
           until "$RUNNER_TEMP/venv/bin/python" -c 'import socket; socket.create_connection(("127.0.0.1", 8790), 1)' 2>/dev/null; do sleep 0.2; done
           export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
           "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \

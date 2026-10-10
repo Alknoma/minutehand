@@ -232,7 +232,7 @@ def merged(name: str, scenarios: Sequence[Scenario]) -> Scenario:
     return Scenario.model_validate(
         {
             "name": run_name(name),
-            "goal": "\n".join(goals),
+            "goal": "\n".join(goals) or None,
             "owner": first.owner,
             "starts_at": starts,
             "deadline_after": deadline - starts if deadline is not None else None,

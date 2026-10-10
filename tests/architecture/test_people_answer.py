@@ -8,16 +8,16 @@ nobody could answer a captured send: the run failed `relayed`, and the question 
 
 from __future__ import annotations
 
+from minutehand.domain.world import MessageSnapshot
 from tests.architecture.support import Rig
 
 
 def test_a_person_asked_by_email_answers_through_the_declared_webhook_and_the_wait_settles(rig: Rig) -> None:
-    done = rig.run("scenario.yaml")
+    done = rig.run("scenario.yaml", policy=False)
 
     assert done.code == 0, done.out + done.err[-2000:]
-    assert "Passed: no check failed, and the agent reported it was done." in done.out
+    assert "Passed: no check failed in the window" in done.out
     assert "waits opened: 1, still open at the end: 0" in done.out
-    assert "owen told what rosa said ('LH-2291'): met by the message to Owen Hart" in done.out
     replies = [(r["from_addr"], r["in_reply_to"]) for r in rig.memory(done.run_id, "replies").values()]
     # the thread is the id the email API answered the ask with, read back from the acknowledged answer
     asked = [str(r["message_id"]) for r in rig.memory(done.run_id, "sent").values() if r["kind"] == "ask"]
@@ -30,6 +30,16 @@ def test_a_person_asked_by_email_answers_through_the_declared_webhook_and_the_wa
             if e.actor.value == "person" and e.entity.provider == "mail" and e.entity.kind.value == "message"
         ]
     assert len(answer) == 1 and answer[0].after is not None
+    with rig.world(done.run_id) as world:
+        told = [
+            e
+            for e in world.events()
+            if e.actor.value == "agent"
+            and isinstance(e.after, MessageSnapshot)
+            and e.after.recipient_emails == ["owen@example.com"]
+            and "LH-2291" in e.after.text
+        ]
+    assert len(told) == 1, "Owen was told the booking reference Rosa's answer carried"
 
 
 def test_an_unanswered_email_question_opens_a_wait_that_is_followed_up(rig: Rig) -> None:

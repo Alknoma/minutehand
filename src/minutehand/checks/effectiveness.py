@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from minutehand.checks.facts import asks, writes
 from minutehand.checks.ledger import recipients
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, ObligationKind, PersonBurden, RunView
+from minutehand.domain.reactions import Reaction
+from minutehand.domain.reactions import reactions as reactions_of
 from minutehand.domain.world import (
     Actor,
     EntityRef,
@@ -16,6 +18,12 @@ from minutehand.domain.world import (
     Operation,
     WorldEvent,
 )
+
+
+def _named(reaction: Reaction) -> str:
+    change = reaction.change
+    who = change.who or change.by.value
+    return f"{who}'s {change.name} on {change.provider} {change.item.external_id}"
 
 
 def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime) -> Effectiveness:
@@ -36,6 +44,11 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
     sent = sum(b.messages for b in burden)
     edited, deleted = rewrites(view)
     asked, decided, pending = decisions(view)
+    timed = reactions_of(view.events, view.calls or [], [(w.sim_time, w.reason) for w in view.wakes])
+    unseen = [(r.unseen, r) for r in timed if r.unseen is not None]
+    to_act = [(r.to_act, r) for r in timed if r.to_act is not None]
+    slow_seen = max(unseen, default=None, key=lambda u: u[0])
+    slow_act = max(to_act, default=None, key=lambda u: u[0])
     return Effectiveness(
         expectations_met=met,
         expectations_total=len(view.scenario.expect),
@@ -44,6 +57,12 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         follow_ups_made=len(made),
         waits_settled=len(reactions),
         slowest_reaction=max(reactions, default=None),
+        changes_by_others=len(timed),
+        changes_never_seen=sum(1 for r in timed if r.seen_at is None),
+        slowest_unseen=slow_seen[0] if slow_seen else None,
+        slowest_unseen_change=_named(slow_seen[1]) if slow_seen else None,
+        slowest_to_act=slow_act[0] if slow_act else None,
+        slowest_to_act_change=_named(slow_act[1]) if slow_act else None,
         messages_to_people=sent,
         messages_edited=len(edited),
         messages_deleted=len(deleted),

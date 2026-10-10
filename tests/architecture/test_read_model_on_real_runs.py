@@ -35,9 +35,9 @@ from tests.support.people import MODEL as PEOPLE_MODEL
 from tests.support.people import people_environment
 
 ASK = "Hi Rosa, could you confirm the venue for the team offsite, please?"
-"""What the follow-up example asks Rosa (examples/follow_up/agent.py)."""
+"""What the follow-up example asks Rosa (tests/agents/follow_up/agent.py)."""
 ROSA_SAYS = "The lakeside hall, booked for the 14th."
-"""The one fact her scripted answer carries (examples/follow_up/scenario.yaml); the stand-in writes it as it is."""
+"""The one fact her scripted answer carries (tests/agents/follow_up/scenario.yaml); the stand-in writes it as it is."""
 REFERENCE_SAYS = "Yes, that is confirmed. The reference is RF-4410."
 PRICES = Prices(prices=[Price(model="planner-small", input_per_million=1.0, output_per_million=4.0)])
 DOCS = ROOT / "docs" / "querying.md"
@@ -66,7 +66,7 @@ class Played:
 
 @pytest.fixture(scope="module")
 def follow_up(tmp_path_factory: pytest.TempPathFactory) -> Played:
-    """examples/follow_up as its README and CI run it: diligent, Rosa answering after a day and a half."""
+    """tests/agents/follow_up as its README and CI run it: diligent, Rosa answering after a day and a half."""
     base = tmp_path_factory.mktemp("follow_up")
     port = free_port()
     agent = base / "agent.yaml"
@@ -202,9 +202,9 @@ def test_the_examples_findings_are_the_runs(follow_up: Played) -> None:
         {"check_id": f.check, "kind": f.kind.value, "message": f.message, "evidence": json.dumps(f.evidence)}
         for f in result.findings
     ]
-    assert result.findings, "the example's expectations are each reported met"
+    assert result.findings == [], "a world with no rule of its own, and an agent that did nothing wrong in it"
     [row] = follow_up.rows("SELECT verdict, stop FROM run")
-    assert row == {"verdict": result.verdict.kind.value, "stop": "agent_done"}
+    assert row == {"verdict": result.verdict.kind.value, "stop": "window_ended"}
 
 
 def test_the_example_read_with_the_installed_commands(follow_up: Played) -> None:
@@ -250,7 +250,10 @@ def test_the_reference_agents_follow_up_answer_and_report(reference: Played) -> 
         2,
     )
     assert (answer["from_person"], answer["text"], answer["answers_seq"]) == ("rosa", REFERENCE_SAYS, ask["seq"])
-    told = [m for m in said if m["to_people"] == '["owen"]' and "RF-4410" in str(m["text"])]
+    # Owen is whom the agent's own configuration reports to, not a person of this world: the email reaches no one
+    # the scenario declares, and is still the agent's message.
+    told = [m for m in said if m["from_actor"] == "agent" and "RF-4410" in str(m["text"])]
+    assert all(m["to_people"] == "[]" for m in told)
     assert len(told) == 1 and int(str(told[0]["seq"])) > int(str(answer["seq"]))
     assert reference.rows("SELECT wake, reason, woken_by, reported_status FROM wakes ORDER BY wake") == [
         {"wake": 1, "reason": "start", "woken_by": None, "reported_status": "idle"},

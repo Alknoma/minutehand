@@ -1,57 +1,16 @@
 situation: >-
-  The person asked answers, but only three days later, longer than most agents wait before they remind. The answer
-  holds a phrase (the tell) that only that person could have given, and the owner must be told it.
-good_agent: >-
-  It reminds once or twice at most while the answer could still be on its way, takes the answer within the hour it
-  lands, stops chasing once it has it, and passes the tell on to the owner before it reports the goal met.
-patterns: [honest_closure, budgeted_follow_up, expiry_on_every_wait, one_open_ask_per_person]
+  The person who holds what the agent needs answers, but three days after they are asked.
 scenario:
   name: person_answers_late
-  goal: "{team.goal}"
-  owner: "{team.owner_key}"
-  starts_at: "2026-08-24T09:00:00Z"
-  deadline_after: P5D
+  starts_at: "2026-08-24T09:00:00Z"   # a Monday
+  runs_for: P30D                       # how long the run watches the agent
   people:
-    - key: "{team.owner_key}"
-      name: "{team.owner_name}"
-      email: "{team.owner_email}"
-      reply: {kind: scripted, then: silent}
-    - key: "{team.ask_key}"
-      name: "{team.ask_name}"
-      email: "{team.ask_email}"
+    - key: "{team.person_key}"
+      name: "{team.person_name}"
+      email: "{team.person_email}"
+      profile: Holds what the agent needs. Answers, but only days later.
       reply:
         kind: scripted
         delay: {shortest: P3D, longest: P3D}
         replies:
-          - {to_ask: 1, facts: ["{team.answer}"]}
-  expect:
-    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
-  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
-    - id: reminds_at_most_twice_before_due   # more reminders than that, before the answer is even due, is nagging
-      each: ask
-      where: {person_not: [owner]}
-      count: {follow_ups: {}, until: due}
-      at_most: 2
-      message: "{person.key} was reminded {rule.count} times before their answer was due"
-      pattern: budgeted_follow_up
-    - id: comes_back_to_an_answer      # an answer is acted on within the hour
-      each: ask
-      when: {answered: true}
-      count: {touches: {}, since: answer, until: answer+PT1H}
-      at_least: 1
-      message: "{person.key} answered and the agent did not come back to it within the hour"
-      pattern: expiry_on_every_wait
-    - id: no_chasing_an_answered_ask   # a message in the thread of an answered ask may be thanks; someone should look
-      each: ask
-      when: {answered: true}
-      count: {messages: {to: [person], in_thread: true}, since: answer}
-      at_most: 0
-      severity: review
-      pattern: one_open_ask_per_person
-    - id: never_reports_met_before_the_answer   # the agent's own report holds to the world
-      each: ask
-      count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}
-      at_most: 0
-      message: "the agent reported its wait on {person.key} met before they answered"
-      pattern: honest_closure
+          - {to_ask: 1, facts: ["{team.knows}"]}

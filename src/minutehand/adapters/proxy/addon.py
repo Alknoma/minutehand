@@ -53,6 +53,7 @@ from minutehand.adapters.proxy.local import CALL_HEADER, GRPC_NOT_INSTALLED, Loc
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.redirected import Redirected
+from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
@@ -294,6 +295,8 @@ class ProxyAddon:
         )
         self.telemetry = telemetry
         self.record_model_calls = record_model_calls
+        # The run whose recording answers the agent's model calls (`replay.ModelReplay`): `minutehand replay` only.
+        self.model_replay: ModelReplay | None = None
         # Each captured call on its way to the real host, by flow id, until its answer has passed.
         self._passing: dict[str, _Passing] = {}
         # The streamed answer of each recorded call, chunk by chunk as it passed through, by flow id.
@@ -596,6 +599,8 @@ class ProxyAddon:
         policy = self.policy(host)
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):
             self._recorded.add(flow.id)
+        if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._replayed(flow, host):
+            return
         if policy is HostPolicy.EDIT:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             self._edit(flow, host)
@@ -811,6 +816,38 @@ class ProxyAddon:
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
         self._sockets.pop(flow.id, None)
+
+    def _replayed(self, flow: http.HTTPFlow, host: str) -> bool:
+        """A model call answered from the replayed run's recording, and kept as a span saying so; False when there
+        is no replay, or the runs have parted, and the call goes to the model."""
+        if self.model_replay is None:
+            return False
+        request = flow.request
+        world = self.worlds.keeping(host, None)
+        body, kind = request.get_content(strict=False) or b"", _first_header(request, "content-type") or ""
+        recorded = self.model_replay.answer(host, request.path, body, kind, world.clock.now())
+        if recorded is None:
+            return False
+        self._recorded.discard(flow.id)
+        flow.response = http.Response.make(recorded.status, recorded.body, {"content-type": recorded.content_type})
+        now = datetime.fromtimestamp(request.timestamp_start, UTC)  # real time, as a recorded call's span has it
+        exchanged = Exchanged(
+            host=host,
+            path=request.path,
+            status=recorded.status,
+            request_body=body,
+            request_type=kind,
+            response_body=recorded.body,
+            response_type=recorded.content_type,
+            traceparent=_first_header(request, TRACEPARENT),
+            started=now,
+            ended=now,
+            replayed_from=self.model_replay.source,
+        )
+        span = span_of(exchanged)
+        kept_in = self.worlds.keeping(host, span.trace_id if span.parent_span_id is not None else None)
+        kept_in.store.receive([span], source=SpanSource.WIRE)
+        return True
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """A recorded call answered as a stream reaches the agent as one: each chunk is passed on as it arrives

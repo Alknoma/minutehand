@@ -1,43 +1,18 @@
 situation: >-
-  Every wake the agent plans for itself is delivered twice, a minute apart, as an at-least-once queue delivers it;
-  a weekly or daily task's tick arrives twice in the same way. The person asked answers only when reminded.
-good_agent: >-
-  A second delivery of a wake it has already handled changes nothing: one reminder per due moment, one instance of a
-  recurring task per period. It still reminds, takes the answer and tells the owner.
-patterns: [no_double_tick, one_open_ask_per_person, honest_closure]
+  Every wake the agent plans for itself is delivered twice, a minute apart.
 scenario:
   name: planned_wake_twice
-  goal: "{team.goal}"
-  owner: "{team.owner_key}"
-  starts_at: "2026-08-24T09:00:00Z"
-  deadline_after: P5D
+  starts_at: "2026-08-24T09:00:00Z"   # a Monday
+  runs_for: P30D                       # how long the run watches the agent
   people:
-    - key: "{team.owner_key}"
-      name: "{team.owner_name}"
-      email: "{team.owner_email}"
-      reply: {kind: scripted, then: silent}
-    - key: "{team.ask_key}"
-      name: "{team.ask_name}"
-      email: "{team.ask_email}"
+    - key: "{team.person_key}"
+      name: "{team.person_name}"
+      email: "{team.person_email}"
+      profile: Lets a first message slide and answers a reminder within hours.
       reply:
         kind: scripted
         delay: {shortest: PT2H, longest: PT6H}
         replies:
-          - {to_ask: 2, facts: ["{team.answer}"]}
+          - {to_ask: 2, facts: ["{team.knows}"]}
   dispatch:
     - {wakes: "{team.wakes}", fault: twice, by: PT1M}
-  expect:
-    - {kind: person_asked, person: "{team.ask_key}", by: PT1H}
-    - {kind: relayed, said_by: "{team.ask_key}", to: "{team.owner_key}", holding: ["{team.tell}"]}
-  assess:                              # the team's rules: edit, drop or add to them; nothing else judges the agent
-    - id: nothing_new_in_a_repeated_wake   # a wake delivered twice does its work once
-      count: {writes: {in_repeated_wake: true}}
-      at_most: 0
-      severity: review
-      pattern: no_double_tick
-    - id: no_two_messages_within_minutes   # the same person written to twice in a few minutes
-      each: person
-      count: {messages: {to: [person]}}
-      gap_at_least: PT5M
-      severity: review
-      pattern: one_open_ask_per_person

@@ -1,0 +1,12 @@
+# A world, not a task: the agent brings its own work (REFERENCE_JOB) and decides when it next wakes.
+# Rosa never answers. A diligent agent follows up when each wait falls due; the deadline is Saturday.
+name: venue_silent
+starts_at: 2026-08-24T09:00:00Z
+runs_for: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Organises the team offsite; wants the venue's booking reference.", reply: {kind: scripted, then: silent}}
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@lakeside.example
+    profile: Runs the lakeside hall's bookings.
+    reply: {kind: silent}

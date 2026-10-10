@@ -29,7 +29,7 @@ OPTIONS = ClaudeAgentOptions(
 def wake(request):                                           # POST /wake
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
-        memory.goal = request["goal"]
+        memory.work = WORK
         run(now, "Nobody has been asked yet.")               # asyncio.run(ask_claude(situation)): one query()
         return
     for email, wait in list(memory.waits.items()):           # reason "due": whatever has passed its date
@@ -37,7 +37,7 @@ def wake(request):                                           # POST /wake
             run(now, f"No answer yet from {email}, expected by {wait.expected_by.isoformat()}. Follow-ups sent: {wait.asks - 1}.")
 
 def report():                                                # GET /report, after every wake
-    if memory.goal is None:
+    if memory.work is None:
         return {"status": "idle", "next_wake": None}
     if not memory.waits:
         return {"status": "done", "next_wake": None}
@@ -57,7 +57,7 @@ def report():                                                # GET /report, afte
 
 ## What it remembers
 
-The goal and the waits are kept in `minutehand.agent.store`, the one import that ties the agent to Minutehand:
+Its work and the waits are kept in `minutehand.agent.store`, the one import that ties the agent to Minutehand:
 `recall()` reads them into `Memory` before every wake, Slack event and report, and `keep()` writes them back, in one
 batch, after every wake and event (the `@remembering` handlers). In production the store passes to the backend
 `store.configure` names (`MemoryBackend()` here; `SqliteBackend(path)` keeps it across restarts). Under Minutehand it
@@ -72,12 +72,12 @@ waits_kept = store.collection("waits")  # person -> {"expected_by": ISO 8601, "a
 
 def recall() -> None:
     global memory
-    goal = store.get("goal")
+    work = store.get("work")
     waits = {
         email: Wait(datetime.fromisoformat(str(kept["expected_by"])), int(str(kept["asks"])))
         for email, kept in waits_kept.list()
     }
-    memory = Memory(goal=goal if isinstance(goal, str) else None, waits=waits)
+    memory = Memory(work=work if isinstance(work, str) else None, waits=waits)
 ```
 
 ## The model

@@ -2,11 +2,10 @@
 installed command against the two example agents and each of their behaviours: what each scenario catches, and what
 it lets through.
 
-The reference agent (examples/reference_agent) is filled in as its team would fill it: the goal it is built for, Owen
-as the owner, the venue's contact it emails as the person asked, and Nadia as the approver. The follow-up example
-(examples/follow_up) asks Rosa in Slack. Each cell is the exit code and the rules that failed: each scenario is
-judged only by its own `assess` rules and its expectations, as written out; `docs/scenarios.md` prints the same
-table.
+The reference agent (tests/agents/reference_agent) is filled in as its team would fill it: the venue's contact it emails as
+the person, and Nadia as the approver; its own work is in its own configuration. The follow-up example
+(tests/agents/follow_up) asks Rosa in Slack. Each scenario is a world with no rule of its own, so each cell is the exit
+code and the checks of the automatic assessment that failed; `docs/scenarios.md` prints the same table.
 """
 
 from __future__ import annotations
@@ -26,106 +25,96 @@ from tests.architecture.support import MINUTEHAND, ROOT, Rig, free_port
 from tests.support.people import people_environment
 
 REFERENCE_TEAM = TeamValues(
-    goal="Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.",
-    owner=Who.written("Owen Hart <owen@example.com>"),
-    ask=Who.written("Rosa Lind <rosa@lakeside.example>"),
+    person=Who.written("Rosa Lind <rosa@lakeside.example>"),
     other=Who.written("Nadia Ek <nadia@example.com>"),
+    knows="Yes, that is confirmed. The reference is RF-4410.",
     credential_env="REFERENCE_APPROVER_TOKEN",
 )
-FOLLOW_UP_TEAM = TeamValues(
-    goal="Confirm the venue for the team offsite with Rosa.",
-    owner=Who.written("Owen Hart <owen@example.com>"),
-    ask=Who.written("Rosa Lind <rosa@example.com>"),
-)
-FOLLOW_UP = ROOT / "examples" / "follow_up"
+FOLLOW_UP_TEAM = TeamValues(person=Who.written("Rosa Lind <rosa@example.com>"))
+FOLLOW_UP = ROOT / "tests" / "agents" / "follow_up"
 APPROVALS = ("approval_rejected", "approver_never_decides")
 """The scenarios that need the reference agent's approvals (REFERENCE_APPROVER, its inbox declared)."""
 
 NONE: frozenset[str] = frozenset()
-EXPECTATIONS = frozenset({"expectations"})
-NO_FOLLOW_UP = frozenset({"follows_up_when_due"})
-NAGGED = frozenset({"reminds_at_most_twice_before_due"})
-DONE_WHILE_WAITING = frozenset({"not_done_while_waiting"})
+DUPLICATE = frozenset({"duplicate"})
 
 REFERENCE: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
-    ("person_goes_quiet", "diligent"): (3, NONE),
-    ("person_goes_quiet", "forgetful"): (1, NO_FOLLOW_UP),
-    ("person_goes_quiet", "nagging"): (1, NAGGED),
-    ("person_goes_quiet", "liar"): (1, DONE_WHILE_WAITING),
+    ("approval_rejected", "diligent"): (1, DUPLICATE),
+    ("approval_rejected", "forgetful"): (0, NONE),
+    ("approval_rejected", "heedless"): (1, DUPLICATE),
+    ("approval_rejected", "liar"): (0, NONE),
+    ("approval_rejected", "nagging"): (1, DUPLICATE),
+    ("approver_never_decides", "diligent"): (1, DUPLICATE),
+    ("approver_never_decides", "forgetful"): (0, NONE),
+    ("approver_never_decides", "heedless"): (1, DUPLICATE),
+    ("approver_never_decides", "liar"): (0, NONE),
+    ("approver_never_decides", "nagging"): (1, DUPLICATE),
     ("person_answers_late", "diligent"): (0, NONE),
     ("person_answers_late", "forgetful"): (0, NONE),
-    ("person_answers_late", "nagging"): (1, NAGGED),
-    ("person_answers_late", "liar"): (1, EXPECTATIONS),
+    ("person_answers_late", "liar"): (0, NONE),
+    ("person_answers_late", "nagging"): (1, DUPLICATE),
     ("person_answers_when_reminded", "diligent"): (0, NONE),
-    ("person_answers_when_reminded", "forgetful"): (1, EXPECTATIONS),
+    ("person_answers_when_reminded", "forgetful"): (0, NONE),
+    ("person_answers_when_reminded", "liar"): (0, NONE),
     ("person_answers_when_reminded", "nagging"): (0, NONE),
-    ("person_answers_when_reminded", "liar"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "diligent"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "forgetful"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "nagging"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "liar"): (1, EXPECTATIONS),
-    ("approval_rejected", "diligent"): (0, NONE),
-    ("approval_rejected", "forgetful"): (0, NONE),
-    ("approval_rejected", "nagging"): (0, NONE),
-    ("approval_rejected", "liar"): (1, DONE_WHILE_WAITING),
-    ("approval_rejected", "heedless"): (1, frozenset({"acts_only_once_approved"})),
-    ("approver_never_decides", "diligent"): (3, NONE),
-    ("approver_never_decides", "forgetful"): (1, NO_FOLLOW_UP),
-    ("approver_never_decides", "nagging"): (3, NONE),
-    ("approver_never_decides", "liar"): (1, DONE_WHILE_WAITING),
-    ("approver_never_decides", "heedless"): (3, NONE),
-    ("deadline_moves_earlier", "diligent"): (1, EXPECTATIONS),
-    ("deadline_moves_earlier", "forgetful"): (1, EXPECTATIONS),
-    ("deadline_moves_earlier", "nagging"): (0, NONE),
-    ("deadline_moves_earlier", "liar"): (1, EXPECTATIONS),
-    ("planned_wake_late", "diligent"): (3, NONE),
-    ("planned_wake_late", "forgetful"): (1, NO_FOLLOW_UP),
-    ("planned_wake_late", "nagging"): (3, NONE),  # its rules judge lateness, not nagging
-    ("planned_wake_late", "liar"): (1, DONE_WHILE_WAITING),
-    ("planned_wake_dropped", "diligent"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "forgetful"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "nagging"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "liar"): (1, DONE_WHILE_WAITING),
+    ("person_away_with_delegate", "diligent"): (0, NONE),
+    ("person_away_with_delegate", "forgetful"): (0, NONE),
+    ("person_away_with_delegate", "liar"): (0, NONE),
+    ("person_away_with_delegate", "nagging"): (0, NONE),
+    ("person_goes_quiet", "diligent"): (1, DUPLICATE),
+    ("person_goes_quiet", "forgetful"): (0, NONE),
+    ("person_goes_quiet", "liar"): (0, NONE),
+    ("person_goes_quiet", "nagging"): (1, DUPLICATE),
+    ("planned_wake_dropped", "diligent"): (0, NONE),
+    ("planned_wake_dropped", "forgetful"): (0, NONE),
+    ("planned_wake_dropped", "liar"): (0, NONE),
+    ("planned_wake_dropped", "nagging"): (0, NONE),
+    ("planned_wake_late", "diligent"): (1, DUPLICATE),
+    ("planned_wake_late", "forgetful"): (0, NONE),
+    ("planned_wake_late", "liar"): (0, NONE),
+    ("planned_wake_late", "nagging"): (1, DUPLICATE),
     ("planned_wake_twice", "diligent"): (0, NONE),
-    ("planned_wake_twice", "forgetful"): (1, EXPECTATIONS),
+    ("planned_wake_twice", "forgetful"): (0, NONE),
+    ("planned_wake_twice", "liar"): (0, NONE),
     ("planned_wake_twice", "nagging"): (0, NONE),
-    ("planned_wake_twice", "liar"): (1, EXPECTATIONS),
 }
-"""(scenario, REFERENCE_BEHAVIOUR) -> (exit code, failed rules). `someone_else_writes_while_waiting` needs a
+"""(scenario, REFERENCE_BEHAVIOUR) -> (exit code, failed checks), judged by the automatic assessment alone: each
+scenario is a world, with no rule of its own. `someone_else_writes_while_waiting` and `date_moves_earlier` need a
 messaging provider, which the reference agent (email only) does not use."""
 
 FOLLOW_UP_CELLS: dict[tuple[str, str], tuple[int, frozenset[str]]] = {
-    ("person_goes_quiet", "diligent"): (3, NONE),  # one reminder by the time an answer is due is what the rule asks
-    ("person_goes_quiet", "forgetful"): (1, NO_FOLLOW_UP),
+    ("date_moves_earlier", "diligent"): (0, NONE),
+    ("date_moves_earlier", "forgetful"): (0, NONE),
     ("person_answers_late", "diligent"): (0, NONE),
     ("person_answers_late", "forgetful"): (0, NONE),
     ("person_answers_when_reminded", "diligent"): (0, NONE),
-    ("person_answers_when_reminded", "forgetful"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "diligent"): (1, EXPECTATIONS),
-    ("person_away_with_delegate", "forgetful"): (1, EXPECTATIONS),
-    ("deadline_moves_earlier", "diligent"): (1, EXPECTATIONS),
-    ("deadline_moves_earlier", "forgetful"): (1, EXPECTATIONS),
-    ("planned_wake_late", "diligent"): (3, NONE),
-    ("planned_wake_late", "forgetful"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "diligent"): (1, NO_FOLLOW_UP),
-    ("planned_wake_dropped", "forgetful"): (1, NO_FOLLOW_UP),
+    ("person_answers_when_reminded", "forgetful"): (0, NONE),
+    ("person_away_with_delegate", "diligent"): (0, NONE),
+    ("person_away_with_delegate", "forgetful"): (0, NONE),
+    ("person_goes_quiet", "diligent"): (0, NONE),
+    ("person_goes_quiet", "forgetful"): (0, NONE),
+    ("planned_wake_dropped", "diligent"): (0, NONE),
+    ("planned_wake_dropped", "forgetful"): (0, NONE),
+    ("planned_wake_late", "diligent"): (0, NONE),
+    ("planned_wake_late", "forgetful"): (0, NONE),
     ("planned_wake_twice", "diligent"): (0, NONE),
-    ("planned_wake_twice", "forgetful"): (1, EXPECTATIONS),
+    ("planned_wake_twice", "forgetful"): (0, NONE),
     ("someone_else_writes_while_waiting", "diligent"): (0, NONE),
     ("someone_else_writes_while_waiting", "forgetful"): (0, NONE),
 }
-"""(scenario, AGENT_BEHAVIOUR) -> (exit code, failed rules). The approval scenarios need an agent with an inbox."""
+"""(scenario, AGENT_BEHAVIOUR) -> (exit code, failed checks). The approval scenarios need an agent with an inbox."""
 
 
 def failed(state: Path, run_id: str) -> frozenset[str]:
-    return frozenset(f.check for f in session.load(state, run_id).result.findings if f.kind is FindingKind.FAIL)
+    found = session.load(state, run_id).result.findings
+    return frozenset(f.check for f in found if f.kind is FindingKind.FAIL)
 
 
 def test_every_library_scenario_is_run_against_both_examples() -> None:
     """A scenario added to the library without a row here would go unproven."""
     names = {e.name for e in entries()}
     assert {s for s, _ in REFERENCE} | {s for s, _ in FOLLOW_UP_CELLS} == names
-    assert {s for s, _ in REFERENCE} == names - {"someone_else_writes_while_waiting"}
+    assert {s for s, _ in REFERENCE} == names - {"someone_else_writes_while_waiting", "date_moves_earlier"}
     assert {s for s, _ in FOLLOW_UP_CELLS} == names - set(APPROVALS)
 
 
@@ -161,20 +150,3 @@ def test_the_follow_up_example_against_the_library(tmp_path: Path, name: str, be
     run_id = done.stdout.split()[1].rstrip(":")
     code, checks = FOLLOW_UP_CELLS[(name, behaviour)]
     assert (done.returncode, failed(state, run_id)) == (code, checks), done.stdout + done.stderr[-3000:]
-
-
-def test_a_late_scheduler_turns_a_plan_timed_to_the_due_moment_into_a_late_follow_up(
-    outside: object, tmp_path: Path
-) -> None:
-    """Rosa, silent, is due an answer 66 hours after she is asked. Planning the reminder for 60 hours is in time
-    while every wake comes when it was asked for; with the first delivered twelve hours late it is six hours past
-    the due moment. The default plan, 48 hours, survives the same lateness (the table above)."""
-    sixty = {"REFERENCE_FOLLOW_UP_HOURS": "60"}
-    ran = {}
-    for name in ("person_goes_quiet", "planned_wake_late"):
-        rig = Rig(tmp_path / name, outside.model, outside.search, str(outside.ca))  # type: ignore[attr-defined]
-        done = rig.run(str(write(entry(name), REFERENCE_TEAM, rig.base, replace=False)), env=sixty, policy=False)
-        ran[name] = (done.code, failed(rig.state, done.run_id), done.out)
-
-    assert ran["person_goes_quiet"][:2] == (3, NONE), ran["person_goes_quiet"][2]
-    assert ran["planned_wake_late"][:2] == (1, NO_FOLLOW_UP), ran["planned_wake_late"][2]

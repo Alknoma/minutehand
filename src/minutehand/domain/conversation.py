@@ -53,6 +53,7 @@ class Wrote(StrEnum):
     JUDGEMENT = "judgement"  # a judged check's verdict on something the scenario asks (`asked_about`)
     FACT_CHECK = "fact_check"  # whether a person's reply stays inside what they know, before it is sent
     REVIEW = "review"  # the shared reviewer's reading of one of the agent's effects (`checks/judged/review.py`)
+    UNDONE = "undone"  # the reviewer's reading of the whole window: work the agent's instructions give it, left undone
 
 
 class Side(StrEnum):
@@ -74,6 +75,7 @@ SIDE = {
     Wrote.JUDGEMENT: Side.JUDGE,
     Wrote.FACT_CHECK: Side.JUDGE,
     Wrote.REVIEW: Side.ASSESSOR,
+    Wrote.UNDONE: Side.ASSESSOR,
 }
 
 

@@ -62,7 +62,7 @@ What follows from that:
 
 ## The declaration
 
-The reference agent's own declaration (`examples/reference_agent/agent.yaml`):
+The reference agent's own declaration (`tests/agents/reference_agent/agent.yaml`):
 
 ```yaml
 inboxes:
@@ -208,7 +208,7 @@ their new behaviour: a decision planned before the fork that had not landed is p
 
 Whether going ahead without an approval fails a run is the team's rule, written in the scenario or the agent file
 over what the run recorded: each ask, and each decision as a transition. The reference agent's
-(`examples/reference_agent/agent.yaml`):
+(`tests/agents/reference_agent/agent.yaml`):
 
 ```yaml
   - id: acts_only_once_approved      # the booking reference reaches Owen only once whoever it asked has answered

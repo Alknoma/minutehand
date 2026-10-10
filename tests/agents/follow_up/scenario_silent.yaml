@@ -1,0 +1,20 @@
+# A world, not a task: the agent brings its own work and decides when it next wakes. Rosa never answers.
+name: offsite_venue_silent
+starts_at: "2026-08-24T09:00:00Z"
+runs_for: P14D
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Organises the team offsite; wants to hear which venue is booked.
+    reply:
+      kind: scripted
+      then: silent
+
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    profile: Runs the lakeside hall's bookings, and does not answer messages.
+    reply:
+      kind: silent

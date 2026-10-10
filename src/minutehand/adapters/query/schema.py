@@ -415,6 +415,33 @@ VIEWS: tuple[View, ...] = (
         ],
     ),
     View(
+        name="reactions",
+        description="Each change someone else made in the world (a reply, a decision, an ask-back), when the agent "
+        "could first know it, and when it acted on it: facts, not verdicts (`domain.reactions`). It could know a "
+        "change from a wake that carried it (a reply wakes it) or from its first read of the item answered 2xx after "
+        "it; a read that failed is no read. NULL where it never saw the change, or never acted after seeing it.",
+        order="change_seq",
+        columns=[
+            _c("change_seq", N, "The change (transitions.seq)"),
+            _c("at", T, f"When it was made; {TIME}"),
+            _c("provider", T, "The provider whose item it changed"),
+            _c("item_kind", T, "The item's kind"),
+            _c("item_id", T, "The item's id within its provider and kind"),
+            _c("change", T, "The move's name: reply, approve, ask_back, Start work"),
+            _c("to_state", T, "The state it reached"),
+            _c("actor", T, "person, or a declared service's system or timer"),
+            _c("who", T, "people.key of the person who made it"),
+            _c("seen_at", T, "When the agent could first know it; NULL: never"),
+            _c("seen_by", T, "wake (a reply woke it) or read (its own read showed it)"),
+            _c("seen_call_id", N, "The read that showed it (calls.call_id), when a read did"),
+            _c("unseen_seconds", R, "How long it sat unseen"),
+            _c("acted_seq", N, "The agent's first move in the world after it saw it (transitions.seq)"),
+            _c("acted_at", T, "When"),
+            _c("acted", T, "Which: its provider and the move's name"),
+            _c("to_act_seconds", R, "How long after seeing it the agent moved"),
+        ],
+    ),
+    View(
         name="items",
         description="Every item the people engine held pending on a person (docs/design-transitions.md): when it "
         "began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it "
@@ -441,7 +468,7 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="model_calls",
-        description="Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, "
+        description="Model calls: the agent's, from the telemetry it exported or the wire (recorded by default), "
         "and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. "
         "Cost only from prices the user declares.",
         order="at, span_id, person_call_id",
@@ -552,7 +579,7 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "kind",
                 T,
-                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, "
+                "responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, service_failed, push_failed, "
                 "waits_by_declaration, never_exercised or step_never_fired",
             ),
             _c("incomplete", N, "1 when it makes the run simulation_incomplete; 0 for coverage"),

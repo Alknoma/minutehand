@@ -1,0 +1,10 @@
+# A world, not a task: the agent brings its own work (REFERENCE_JOB) and decides when it next wakes.
+# Sixty days of a venue that never answers, followed up every 4.8 hours (REFERENCE_FOLLOW_UP_HOURS=4.8): three
+# hundred wakes. For measuring what a long run costs, not for judging the agent.
+name: venue_long
+starts_at: 2026-08-24T09:00:00Z
+runs_for: P60D
+max_wakes: 300
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Organises the team offsite; wants the venue's booking reference.", reply: {kind: scripted, then: silent}}
+  - {key: rosa, name: Rosa Lind, email: rosa@lakeside.example, profile: "Runs the lakeside hall's bookings.", reply: {kind: silent}}

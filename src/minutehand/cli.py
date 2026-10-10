@@ -4,7 +4,7 @@
                                                  {run.port} and {run.dir} in the agent file and the command are
                                                  filled once, as run-all fills them, when a command is given
     minutehand run-all <folder> --agent <agent.yaml> [--jobs N] [--samples N] [--seed S] [--state DIR] [--judge] [--json]
-                     [--record-model-calls] [--model-host HOST]... [--capture-unknown [MODE]] [--upstream-ca FILE]
+                     [--tunnel-model-calls] [--model-host HOST]... [--capture-unknown [MODE]] [--upstream-ca FILE]
                      [--proxy-host H] [--agent-proxy-host H] [--no-proxy H]... [--no-receive-telemetry] [-- <command...>]
                                                  every scenario in the folder, in parallel, each in a run of its own,
                                                  N times under seeds S, S+1, ...; {run.port} and {run.dir} in the agent
@@ -12,6 +12,13 @@
                                                  verdicts miss its expect_outcome, 2 when a run could not be performed
     minutehand findings <run_id> [--state DIR] [--json]
     minutehand fork <run_id> --at <seq> --changes <fork.yaml> [--seed S] [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
+    minutehand replay <run_id> [--live-from TIME] [--state DIR] [--judge] [--json] [PROXY] [-- <command...>]
+                                                 the run again from its start, as a new run: its people's words, its
+                                                 lookups and the agent's model calls answered from its record until
+                                                 the agent asks something new, or from TIME on; then live
+    minutehand model-calls <run_id> [--state DIR]
+                                                 the agent's model calls, one JSON line each in the OpenAI Batch API's
+                                                 shape (custom_id, method, url, body, response), with wake and time
     minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose|redirect] [--service NAME...]
                                                  the environment an agent Minutehand does not start needs
     minutehand runs [--state DIR]               every finished run, with what it costs on disk
@@ -20,7 +27,7 @@
     minutehand gc [--state DIR]                  remove stored bodies nothing refers to
     minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] [--state DIR]
     minutehand query --schema                    read-only SQL over a run's read model, and its views (docs/querying.md)
-    minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--json]
+    minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--item ID] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
                                                  it answers or follows up, and what followed ("action N" is a place
@@ -32,11 +39,10 @@
     minutehand mcp [--state DIR]                 the same over MCP, on stdio, for a coding agent
     minutehand view [--state DIR] [--port N] [--prices FILE]   the runs in a browser, on 127.0.0.1 only
     minutehand scenarios                         the scenario library: each scenario's name and situation
-    minutehand scenarios show <name>             what one is for, its checks and patterns, the values it takes
-    minutehand scenarios new <name>...|--all --goal TEXT --owner 'Name <email>' --ask 'Name <email>'
-                     [--answer TEXT --tell PHRASE] [--other 'Name <email>'] [--credential-env VAR]
-                     [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
-                                                 write library scenarios out with the team's values (docs/scenarios.md)
+    minutehand scenarios show <name>             the situation one puts the agent in, and the values it takes
+    minutehand scenarios new <name>...|--all --person 'Name <email>' [--other 'Name <email>'] [--knows TEXT]
+                     [--credential-env VAR] [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
+                                                 write library worlds out with the team's people (docs/scenarios.md)
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
                      [--model-host HOST]... [--record-model-calls]
@@ -49,9 +55,9 @@ reaches directly. --transparent-port N also listens for connections the agent's 
 iptables (`env --format redirect` prints the script), for a client that ignores HTTPS_PROXY. Beside the proxy, on the same host, an OTLP/HTTP receiver keeps the agent's own spans with
 the run: --telemetry-port (default: any free port), or --no-receive-telemetry to serve none. Spans the agent
 exports are passed on to wherever OTEL_EXPORTER_OTLP_ENDPOINT in Minutehand's own environment points.
---record-model-calls opens the agent's calls to model APIs and keeps each as a span, for an agent that
-exports nothing. --model-host HOST, repeated, names a model API besides the three public ones (a self-hosted
-model, another provider), so it is tunnelled, edited by a fork's PromptPatch or ModelSwap, or recorded. A host no provider claims is refused unless the agent file declares it under `outbound`
+The agent's calls to model APIs are opened and each kept as a span, byte for byte (`model-calls` writes them out,
+`replay` answers them again); --tunnel-model-calls passes them through unopened instead. --model-host HOST, repeated, names a model API besides the three public ones (a self-hosted
+model, another provider), so it is recorded, edited by a fork's PromptPatch or ModelSwap, or tunnelled. A host no provider claims is refused unless the agent file declares it under `outbound`
 (acknowledge, pass_through or replay); --capture-unknown passes every undeclared one through and keeps it, and
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
@@ -100,6 +106,7 @@ import tempfile
 import textwrap
 import traceback
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -136,6 +143,7 @@ from minutehand.application.forks import ForkAccount, scorecard_lines
 from minutehand.application.forks import described as fork_described
 from minutehand.application.library import NotInLibrary, entries, entry, write
 from minutehand.application.migrate import MigrationRefused, migrate
+from minutehand.application.model_export import batch_lines
 from minutehand.application.outbound import described, emulator_described, suggested
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import Restored
@@ -145,7 +153,7 @@ from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stab
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, RuleRead
-from minutehand.domain.library import DEFAULT_ANSWER, DEFAULT_TELL, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
+from minutehand.domain.library import DEFAULT_KNOWS, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
 from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
@@ -172,6 +180,7 @@ _STOPPED = {
     StopReason.AGENT_DONE: "the agent reported it was done",
     StopReason.WAKE_LIMIT: "its wake limit was reached",
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
+    StopReason.WINDOW_ENDED: "the clock reached the end of the scenario's window",
     StopReason.NOTHING_PENDING: "nothing more was due and the agent asked for no wake",
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
@@ -267,19 +276,41 @@ def _parser() -> _Parser:
         models(sub)
         capture(sub)
 
-    def models(sub: argparse.ArgumentParser) -> None:
+    def models(sub: argparse.ArgumentParser, *, recording: bool = True) -> None:
+        """The model flags: a run records the agent's model calls unless told to tunnel them; a standing proxy
+        (`serve`), whose worlds each say, tunnels them unless told to record."""
+        if not recording:
+            sub.add_argument(
+                "--record-model-calls",
+                action="store_true",
+                help="open every world's calls to model APIs, send them on unchanged and keep each as a span",
+            )
+            hosts(sub)
+            return
         sub.add_argument(
             "--record-model-calls",
             action="store_true",
-            help="open the agent's calls to model APIs, send them on unchanged and keep each as a span",
+            default=True,
+            help="open the agent's calls to model APIs, send them on unchanged and keep each as a span, for `replay` "
+            "and `model-calls`: the default",
         )
+        sub.add_argument(
+            "--tunnel-model-calls",
+            dest="record_model_calls",
+            action="store_false",
+            help="pass the agent's calls to model APIs through unopened: nothing of them is kept, and a replay calls "
+            "the model again",
+        )
+        hosts(sub)
+
+    def hosts(sub: argparse.ArgumentParser) -> None:
         sub.add_argument(
             "--model-host",
             action="append",
             default=[],
             metavar="HOST",
             help="a host that is a model API, besides api.openai.com, api.anthropic.com and "
-            "generativelanguage.googleapis.com: tunnelled, edited by a fork, or recorded with --record-model-calls",
+            "generativelanguage.googleapis.com: recorded, edited by a fork, or tunnelled with --tunnel-model-calls",
         )
 
     def capture(sub: argparse.ArgumentParser) -> None:
@@ -372,6 +403,30 @@ def _parser() -> _Parser:
     proxy(fork)
     state(fork)
 
+    replaying = commands.add_parser(
+        "replay",
+        help="play a finished run again from its start: its people, its lookups and the agent's model calls answered "
+        "from its record, until the agent asks something new",
+    )
+    replaying.add_argument("run_id")
+    replaying.add_argument(
+        "--live-from",
+        type=datetime.fromisoformat,
+        default=None,
+        metavar="TIME",
+        help="the simulated moment (ISO 8601) from which the agent's model calls go to the model, its state rebuilt",
+    )
+    replaying.add_argument("--judge", action="store_true", help="also run the checks a model judges")
+    replaying.add_argument("--json", action="store_true")
+    proxy(replaying)
+    state(replaying)
+
+    exported = commands.add_parser(
+        "model-calls", help="the agent's model calls in a run, one JSON line each, in the OpenAI Batch API's shape"
+    )
+    exported.add_argument("run_id")
+    state(exported)
+
     env = commands.add_parser(
         "env", help="print the environment an agent needs when Minutehand does not start it, then run without --"
     )
@@ -442,6 +497,9 @@ def _parser() -> _Parser:
     traced.add_argument("--from", dest="since", default=None, metavar="TIME", help="simulated time, ISO 8601")
     traced.add_argument("--to", dest="until", default=None, metavar="TIME", help="simulated time, ISO 8601")
     traced.add_argument("--wake", type=int, default=None)
+    traced.add_argument(
+        "--item", default=None, help="an item's id: the agent's acts naming it, and when others changed it"
+    )
     traced.add_argument("--json", action="store_true")
     priced(traced)
     state(traced)
@@ -476,7 +534,7 @@ def _parser() -> _Parser:
     served.add_argument(
         "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
     )
-    models(served)
+    models(served, recording=False)
     capture(served)
     state(served)
 
@@ -534,22 +592,15 @@ def _library_parser(library: argparse.ArgumentParser) -> None:
     new = actions.add_parser(LibraryAction.NEW.value, help="write library scenarios out, filled with the team's values")
     new.add_argument("names", nargs="*", metavar="name", help="the library scenarios to write (or --all)")
     new.add_argument("--all", action="store_true", help="write every library scenario")
-    new.add_argument("--goal", required=True, help="the goal handed to the agent, verbatim")
     new.add_argument(
-        "--owner", required=True, metavar="'NAME <EMAIL>'", help="who gives the goal and is told the outcome"
+        "--person", required=True, metavar="'NAME <EMAIL>'", help="the person of your world the situation is about"
     )
-    new.add_argument("--ask", required=True, metavar="'NAME <EMAIL>'", help="the person the agent must ask")
-    new.add_argument(
-        "--answer", default=None, help=f"what that person answers (default {DEFAULT_ANSWER!r}); give --tell with it"
-    )
-    new.add_argument(
-        "--tell", default=None, help=f"a phrase of the answer that must reach the owner (default {DEFAULT_TELL!r})"
-    )
+    new.add_argument("--knows", default=None, help=f"a fact that person holds (default {DEFAULT_KNOWS!r})")
     new.add_argument(
         "--other",
         default=f"{OTHER.name} <{OTHER.email}>",
         metavar="'NAME <EMAIL>'",
-        help="a second person: the delegate, the approver, someone who writes in (default %(default)s)",
+        help="a second person of your world: who covers, who decides, who writes in (default %(default)s)",
     )
     new.add_argument(
         "--credential-env",
@@ -637,7 +688,7 @@ def _main(args_in: list[str]) -> int:
     if args.command == "migrate":
         return _migrate(args.file, write=args.write)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
-    if command is not None and args.command not in ("run", "fork", "run-all"):
+    if command is not None and args.command not in ("run", "fork", "run-all", "replay"):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
         return 2
     try:
@@ -647,6 +698,13 @@ def _main(args_in: list[str]) -> int:
             return _fork(args, state, command)
         if args.command == "run-all":
             return _run_all(args, state, command)
+        if args.command == "replay":
+            return _replay(args, state, command)
+        if args.command == "model-calls":
+            with session.reading(state, args.run_id) as kept:
+                for line in batch_lines(kept.spans()):
+                    print(line)
+            return 0
         if args.command == "findings":
             return _findings(args, state)
         if args.command == "env":
@@ -779,12 +837,9 @@ def _first_sentence(text: str) -> str:
 
 def _shown(found: LibraryScenario) -> str:
     takes = {
-        "goal": "--goal",
-        "owner": "--owner",
-        "ask": "--ask",
+        "person": "--person",
         "other": "--other",
-        "answer": "--answer",
-        "tell": "--tell",
+        "knows": "--knows",
         "credential_env": "--credential-env",
         "provider": "--provider",
         "wakes": "--wakes",
@@ -795,11 +850,8 @@ def _shown(found: LibraryScenario) -> str:
             "",
             *textwrap.wrap(f"Situation: {found.situation}", 116),
             "",
-            *textwrap.wrap(f"A good agent: {found.good_agent}", 116),
-            "",
-            "assessed on: what the scenario declares, on every run (docs/assessments.md)",
-            f"rules: {', '.join(found.rules)} (optional team policy in the scenario's `assess`, yours to edit or delete)",
-            f"patterns: {', '.join(found.patterns)}",
+            "a world: it hands the agent no work; every run is assessed against the agent's own instructions and what "
+            "the scenario declares (docs/assessments.md)",
             f"takes: {' '.join(takes[u] for u in found.uses)}",
         ]
     )
@@ -809,30 +861,21 @@ def _new(args: argparse.Namespace) -> int:
     if args.all == bool(args.names):
         print("minutehand scenarios new: name the scenarios to write, or give --all", file=sys.stderr)
         return 2
-    if (args.answer is None) != (args.tell is None):
-        print(
-            "minutehand scenarios new: --answer and --tell go together: the tell is a phrase of the answer",
-            file=sys.stderr,
-        )
-        return 2
-    answered = {} if args.answer is None else {"answer": args.answer, "tell": args.tell}
     team = TeamValues(
-        goal=args.goal,
-        owner=Who.written(args.owner),
-        ask=Who.written(args.ask),
+        person=Who.written(args.person),
         other=Who.written(args.other),
         credential_env=args.credential_env,
         provider=args.provider,
         wakes=PlannedBy(args.wakes),
-        **answered,
+        **({} if args.knows is None else {"knows": args.knows}),
     )
     chosen = entries() if args.all else [entry(n) for n in args.names]
     for found in chosen:
         print(write(found, team, args.out, replace=args.force))
     print(
-        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>: every run is assessed "
-        "against what the scenario declares, with nothing more to write; its `assess` rules are optional team policy, "
-        "yours to edit or delete. minutehand validate <file> checks one without a run"
+        "\nrun one with: minutehand run <file> --agent <agent.yaml> -- <the agent's command>: the agent brings its own "
+        "work, and every run is assessed against its instructions and the world the scenario declares, with nothing "
+        "more to write. minutehand validate <file> checks one without a run"
     )
     return 0
 
@@ -1039,7 +1082,7 @@ def _passed_on(args: argparse.Namespace) -> list[str]:
     flags += ["--agent-proxy-host", args.agent_proxy_host] if args.agent_proxy_host else []
     flags += [word for host in args.no_proxy for word in ("--no-proxy", host)]
     flags += ["--no-receive-telemetry"] if args.no_receive_telemetry else []
-    flags += ["--record-model-calls"] if args.record_model_calls else []
+    flags += [] if args.record_model_calls else ["--tunnel-model-calls"]
     flags += [word for host in args.model_host for word in ("--model-host", host)]
     flags += [] if args.capture_unknown == UnknownHosts.REFUSE.value else [f"--capture-unknown={args.capture_unknown}"]
     flags += ["--upstream-ca", str(args.upstream_ca)] if args.upstream_ca is not None else []
@@ -1078,6 +1121,34 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
         if telemetry is not None:
             telemetry.shutdown()
     return _report(outcomes, state, as_json=args.json, sampled=changes.samples > 1)
+
+
+def _replay(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
+    telemetry = _telemetry()
+    try:
+        outcome = asyncio.run(
+            session.replay(
+                args.run_id,
+                state=state,
+                command=command,
+                telemetry=telemetry,
+                model=model_from_environment(),
+                judge=args.judge,
+                listen=_listen(args),
+                progress=_progress("replay"),
+                live_from=args.live_from,
+            )
+        )
+    finally:
+        if telemetry is not None:
+            telemetry.shutdown()
+    replayed = session.replayed(state, outcome.record.run_id)
+    if replayed is not None and not args.json:
+        parted = replayed.get("parted") or "never: every model call was answered from the record"
+        print(
+            f"replay of {args.run_id}: {replayed['model_calls_replayed']} model call(s) answered from it; parted {parted}"
+        )
+    return _report([outcome], state, as_json=args.json, sampled=False)
 
 
 def _findings(args: argparse.Namespace, state: Path) -> int:
@@ -1172,6 +1243,7 @@ def _read(args: argparse.Namespace, state: Path) -> int:
                     since=args.since,
                     until=args.until,
                     wake=args.wake,
+                    item=args.item,
                 )
                 found = trace(db, run_id, wanted)
                 print(

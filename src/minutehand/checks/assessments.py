@@ -235,7 +235,7 @@ class _Reader:
 
     def _key(self, who: str, subject: _Subject | None) -> str:
         if who == OWNER:
-            return self.view.scenario.owner
+            return self.view.scenario.owner or who  # with no owner declared, `owner` is the person keyed so
         if who == THIS_PERSON:
             assert subject is not None and subject.person is not None
             return subject.person.key

@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
+# The budget is cut twelve hours after Nadia is asked, while her answer is still owed. What she knows changes from
+# then on, and the answer she owes is worded again, as she sends it, from what she knows then; what it says is her
+# script's step, so she still approves the full order. A team that wants her to approve less scripts that.
+name: email_budget_changes
+starts_at: "2026-08-24T09:00:00Z"
+runs_for: P5D
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
+  - key: nadia
+    name: Nadia Ek
+    email: nadia@example.com
+    profile: Approves the team's purchases.
+    facts: ["the Q3 hardware budget covers 40 laptops"]
+    fact_changes:
+      - {after: PT12H, facts: ["the Q3 hardware budget was cut and covers 30 laptops"]}
+    reply_within: {min: PT20H, max: PT20H}
+    reply:
+      kind: scripted
+      replies: [{to_ask: 1, facts: ["I approve PO-7731"]}]
+      then: answers                    # once used, she answers further questions from what she knows then
+  - {key: marta, name: Marta Holm, email: marta@example.com, profile: "Covers approvals when Nadia is away.", reply: {kind: scripted, then: silent}}

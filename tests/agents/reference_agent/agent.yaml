@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
+# The reference agent: an API and a worker over one memory (store.py, minutehand.agent.store), started together by
+# run.py. Under Minutehand the memory is the run's, so a fork needs no hooks.
+# From this folder, with the outside world running (python outside.py prints its addresses):
+#   REFERENCE_MODEL_URL=https://model.localhost:<port> REFERENCE_SEARCH_URL=https://search.localhost:<port> \
+#   REFERENCE_EXTRA_CA=.outside/ca.pem \
+#   minutehand run scenario.yaml --agent agent.yaml --model-host model.localhost --upstream-ca .outside/ca.pem -- python run.py
+version: 1
+name: venue_booker
+
+goal:
+  kind: by_wake
+
+wakes:
+  - kind: reported
+    wake_url: http://127.0.0.1:8790/wake
+    report_url: http://127.0.0.1:8790/report
+
+outbound:
+  # Email: answered here and never sent. Each send is read as a message to the people it names, and a person
+  # who answers is delivered to the agent's inbound webhook, as its email provider's inbound parse would.
+  - host: api.mail.example
+    name: mail
+    kind: acknowledge
+    answer: {status: 202, json_body: {id: "{message_id}"}}
+    message:
+      recipients: ["personalizations[*].to[*].email"]
+      text: ["content[0].value"]
+      subject: [subject]
+    replies:
+      url: http://127.0.0.1:8790/inbound/email
+      body: {id: "{reply_id}", from: "{from}", text: "{text}", in_reply_to: "{in_reply_to}"}
+      thread: id
+      signing:
+        secret: {kind: generated, env: REFERENCE_MAIL_SECRET}
+        header: X-Mail-Signature
+        format: "sha256={hex}"
+  # The venue search: sent on to the real host, and both sides kept; a fork replays it.
+  - host: search.localhost
+    name: search
+    kind: pass_through
+
+# Approvals in the agent's own web app (REFERENCE_APPROVER set): read and decided as the approver, who signs in with
+# their `credential` (scenario_approved.yaml and the others give Nadia one). Nobody without a credential is read.
+inboxes:
+  - name: approvals
+    kind: http
+    as_person:
+      headers: {Authorization: "Bearer {person.credential}"}
+    pending:
+      request: {kind: template, url: "http://127.0.0.1:8790/approvals?approver={person.email}"}
+      items: "$.items[*]"
+      id: "$.id"
+      summary: "$.summary"
+      decisions: "$.actions"
+      paging: {next: "$.next", param: cursor}
+    decisions:
+      - name: approve
+        reads: approved
+        request:
+          kind: template
+          method: POST
+          url: "http://127.0.0.1:8790/approvals/{item.id}/decision"
+          body: {decision: approve}
+      - name: reject
+        reads: rejected
+        description: Turn the booking down, saying why
+        request:
+          kind: template
+          method: POST
+          url: "http://127.0.0.1:8790/approvals/{item.id}/decision"
+          body: {decision: reject, reason: "{input.reason}"}
+        inputs: [{name: reason, description: Why the booking is turned down}]

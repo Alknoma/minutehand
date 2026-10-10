@@ -379,6 +379,30 @@ Every move of an item's state, by anyone: the agent through a provider's API, a 
 | `content` | TEXT | What it carried, as a JSON object: a comment, the reasons |
 | `call_id` | INTEGER | The HTTP call that made it (calls.call_id); NULL when no call did |
 
+### `reactions`
+
+Each change someone else made in the world (a reply, a decision, an ask-back), when the agent could first know it, and when it acted on it: facts, not verdicts (`domain.reactions`). It could know a change from a wake that carried it (a reply wakes it) or from its first read of the item answered 2xx after it; a read that failed is no read. NULL where it never saw the change, or never acted after seeing it. Kept in the order `change_seq`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `change_seq` | INTEGER | The change (transitions.seq) |
+| `at` | TEXT | When it was made; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
+| `provider` | TEXT | The provider whose item it changed |
+| `item_kind` | TEXT | The item's kind |
+| `item_id` | TEXT | The item's id within its provider and kind |
+| `change` | TEXT | The move's name: reply, approve, ask_back, Start work |
+| `to_state` | TEXT | The state it reached |
+| `actor` | TEXT | person, or a declared service's system or timer |
+| `who` | TEXT | people.key of the person who made it |
+| `seen_at` | TEXT | When the agent could first know it; NULL: never |
+| `seen_by` | TEXT | wake (a reply woke it) or read (its own read showed it) |
+| `seen_call_id` | INTEGER | The read that showed it (calls.call_id), when a read did |
+| `unseen_seconds` | REAL | How long it sat unseen |
+| `acted_seq` | INTEGER | The agent's first move in the world after it saw it (transitions.seq) |
+| `acted_at` | TEXT | When |
+| `acted` | TEXT | Which: its provider and the move's name |
+| `to_act_seconds` | REAL | How long after seeing it the agent moved |
+
 ### `items`
 
 Every item the people engine held pending on a person (docs/design-transitions.md): when it began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it is pending on them again only once someone else moves it, as a row of its own. Kept in the order `pending_id`.
@@ -404,7 +428,7 @@ Every item the people engine held pending on a person (docs/design-transitions.m
 
 ### `model_calls`
 
-Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
+Model calls: the agent's, from the telemetry it exported or the wire (recorded by default), and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
@@ -471,7 +495,7 @@ The simulated world's health, kept apart from the agent's findings: what did not
 | Column | Type | What it holds |
 |---|---|---|
 | `health_id` | INTEGER | Numbered from 1, in the order the report lists them |
-| `kind` | TEXT | responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, push_failed, waits_by_declaration, never_exercised or step_never_fired |
+| `kind` | TEXT | responder_never_acts, waits_on_nobody, owed_unbooked, model_failed, service_failed, push_failed, waits_by_declaration, never_exercised or step_never_fired |
 | `incomplete` | INTEGER | 1 when it makes the run simulation_incomplete; 0 for coverage |
 | `words` | TEXT | What happened, in one sentence |
 | `person` | TEXT | people.key it is about; NULL when none |

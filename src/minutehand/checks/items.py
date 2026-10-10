@@ -242,8 +242,8 @@ class _Reader:
         wait. A person who declares `reminded` answers sooner for a follow-up, so chasing them is theirs to allow."""
         for o in self._asks():
             person = self.by_key.get(o.person or "")
-            if person is None or person.reminded is not None or o.patience is None:
-                continue
+            if person is None or person.reminded is not None or o.patience is None or not _declares_when(person):
+                continue  # with nothing declared of when they answer, no follow-up is early
             last = o.opened_at
             for seq in o.agent_touches:
                 t = self.by_seq.get(seq)
@@ -591,21 +591,37 @@ class _Reader:
                 [],
             )
 
-    def awaited(self) -> dict[str, list[str]]:
-        """For each declared service, the states of its machine the goal names, its first state aside: what the goal
-        waits on (`once it's approved` waits on `approved`). Read from the goal's words and the machine's names."""
-        goal = self.view.scenario.goal.casefold()
-        found: dict[str, list[str]] = {}
+    def work(self) -> list[tuple[str, str]]:
+        """What states the agent's work, each with where it says so: its own instructions to its model, and an older
+        scenario's goal."""
+        said = [("its instructions", text) for text in self.view.agent_instructions]
+        if self.view.scenario.goal is not None:
+            said.append(("the scenario's goal", self.view.scenario.goal))
+        return said
+
+    def awaited(self) -> dict[str, list[tuple[str, str, str]]]:
+        """For each declared service, the states of its machine the agent's work names, its first state aside: what
+        the work waits on (`once it's approved` waits on `approved`), each with where it was said and the words
+        around it. Read from the work's words and the machine's names."""
+        found: dict[str, list[tuple[str, str, str]]] = {}
+        work = self.work()
         for key in self.services:
             machine = machine_of(self.view, key)
             if machine is None:
                 continue
-            named = [
-                state
-                for state in machine.states
-                if state != machine.initial
-                and re.search(rf"\b{re.escape(state.casefold().replace('_', ' '))}\b", goal.replace("_", " "))
-            ]
+            named: list[tuple[str, str, str]] = []
+            for state in machine.states:
+                if state == machine.initial:
+                    continue
+                pattern = rf"\b{re.escape(state.casefold().replace('_', ' '))}\b"
+                for where, text in work:
+                    waiting = next(
+                        (said for said in _sentences(text) if re.search(pattern, said.casefold().replace("_", " "))),
+                        None,
+                    )
+                    if waiting is not None:
+                        named.append((state, where, waiting))
+                        break
             if named:
                 found[key] = named
         return found
@@ -626,11 +642,11 @@ class _Reader:
         awaited = self.awaited()
         if not awaited:
             return
-        goal = self.view.scenario.goal
         for t in self.mine:
             if t.operation is Operation.DELETE or not self.takes(t, ItemCheck.BEFORE_DECISION):
                 continue
-            for service, states in awaited.items():
+            for service, named in awaited.items():
+                states = [state for state, _, _ in named]
                 held = self._states_at(service, t.seq)
                 if any(state in states for state, _ in held.values()):
                     continue
@@ -638,12 +654,13 @@ class _Reader:
                     "; ".join(f"{service} {item} was {state}" for item, (state, _) in held.items())
                     or f"nothing was filed with {service} yet"
                 )
+                _, where, around = named[0]
                 yield _Found(
                     ItemCheck.BEFORE_DECISION,
                     t.kind,
                     f"{t.kind.value.replace('_', ' ')} {t.operation.value}d at {_when(t.at)} while no {service} item "
                     f"was {' or '.join(states)}: {stood}",
-                    f'the goal ("{_quote(goal, 160)[1:-1]}") waits on {" or ".join(states)}, a state of the service '
+                    f'{where} ("{_quote(around, 160)[1:-1]}") waits on {" or ".join(states)}, a state of the service '
                     f"{service}'s machine",
                     t.at,
                     [t.seq, *(seq for _, seq in held.values())],
@@ -656,7 +673,8 @@ class _Reader:
         end = max([e.sim_time for e in self.view.events], default=self.view.scenario.starts_at)
         if deadline is None or end < deadline:
             return
-        for service, states in self.awaited().items():
+        for service, named in self.awaited().items():
+            states = [state for state, _, _ in named]
             if never_decides(self.view.scenario, service):
                 continue  # nobody can decide: the simulation's health says so, and the agent could not have done it
             reached = [
@@ -672,7 +690,7 @@ class _Reader:
                 ItemCheck.DEADLINE_MISSED,
                 ItemKind.SERVICE_ITEM,
                 f"the deadline, {_when(deadline)}, came and no {service} item was {' or '.join(states)}: {stood}",
-                f"the scenario's deadline and the goal, which waits on {' or '.join(states)}",
+                f"the scenario's deadline and {named[0][1]}, which waits on {' or '.join(states)}",
                 deadline,
                 [seq for _, seq in held.values()],
                 [],
@@ -777,6 +795,15 @@ def _machine_words(view: RunView, service: str) -> str:
     return f" ({moves})"
 
 
+def _declares_when(person: Person) -> bool:
+    """Whether the scenario says when this person answers: their `reply_within`, or a `delay` their reply sets. A
+    reply model's default delay is Minutehand's, never the scenario's, so no follow-up is measured against it."""
+    if person.reply_within is not None:
+        return True
+    reply = person.reply
+    return "delay" in reply.model_fields_set if hasattr(reply, "delay") else False
+
+
 def _window_of(person: Person) -> str:
     if person.reply_within is not None:
         w = person.reply_within
@@ -786,6 +813,16 @@ def _window_of(person: Person) -> str:
 
 def _actor(event: WorldEvent) -> str:
     return event.actor.value
+
+
+WAITS = re.compile(r"\b(once|until|unless|only (?:when|if|after)|not before|after)\b", re.IGNORECASE)
+"""Words that make a sentence say what the work waits on: `only order once it's approved`."""
+
+
+def _sentences(text: str) -> list[str]:
+    """The sentences of `text` that say what the work waits on (`WAITS`): a state named only in describing a
+    service (`it may approve, reject or ask for more`) is not one the work waits on."""
+    return [said.strip() for said in re.split(r"(?<=[.!?])\s+|\n+", text) if said.strip() and WAITS.search(said)]
 
 
 def _quote(text: str, most: int = 120) -> str:

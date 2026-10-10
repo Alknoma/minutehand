@@ -1,4 +1,4 @@
-"""What the architecture tests share: the reference agent (examples/reference_agent), its outside world, and the
+"""What the architecture tests share: the reference agent (tests/agents/reference_agent), its outside world, and the
 `minutehand` command they drive it through.
 
 Every test here runs the agent as its own two processes, started by the agent's own `run.py`, and Minutehand as
@@ -30,7 +30,7 @@ from tests.ports import free_port
 from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENT_DIR = ROOT / "examples" / "reference_agent"
+AGENT_DIR = ROOT / "tests" / "agents" / "reference_agent"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 PY = sys.executable
 RUN = [PY, str(AGENT_DIR / "run.py")]
@@ -127,8 +127,8 @@ def agent_file(
     inbox: bool = False,
     policy: bool = True,
 ) -> Path:
-    """The reference agent's file, on `port`; with `policy`, judged by its team's rules as
-    examples/reference_agent/agent.yaml writes them; with `answered`, people can answer its email. No hooks: its
+    """The reference agent's file, on `port`; with `policy`, judged also by the example team's rules as
+    tests/agents/reference_agent/team_policy.yaml writes them; with `answered`, people can answer its email. No hooks: its
     memory is the run's (`minutehand.agent.store`)."""
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {
@@ -144,7 +144,7 @@ def agent_file(
             }
         ],
         "outbound": [mail, SEARCH],
-        "assess": yaml.safe_load((AGENT_DIR / "agent.yaml").read_text())["assess"] if policy else [],
+        "assess": yaml.safe_load((AGENT_DIR / "team_policy.yaml").read_text())["assess"] if policy else [],
     }
     if inbox:
         doc["inboxes"] = [approvals(port)]
@@ -267,6 +267,10 @@ def started(env: Mapping[str, str], port: int) -> Iterator[subprocess.Popen[byte
         while True:
             try:
                 get(f"http://127.0.0.1:{port}/healthz")
+                # Answered, and by this agent: one that could not bind the port has exited, and what answered is
+                # another test's server.
+                time.sleep(0.2)
+                assert process.poll() is None, f"the agent exited, and something else answers on port {port}"
                 break
             except OSError:
                 assert process.poll() is None, "the agent exited before it answered"

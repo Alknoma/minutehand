@@ -25,7 +25,7 @@ from tests.support.people import people_environment
 
 pytestmark = [pytest.mark.packaging, pytest.mark.timeout(900)]
 
-NO_FOLLOW_UP = "follows_up_when_due: rosa's answer was due and no follow-up came by an hour later"
+NO_FOLLOW_UP = "follows_up_when_due: rosa was asked two days ago and no follow-up came"
 PATTERN = "pattern expiry_on_every_wait: An expiry on every wait."
 
 
@@ -44,7 +44,7 @@ def test_uv_build_makes_an_sdist_and_a_wheel(dist: Dist) -> None:
         "README.md",
         "LICENSE.md",
         "src/minutehand/cli.py",
-        "examples/follow_up/agent.py",
+        "examples/proactive_agent/agent.py",
     } <= names
 
 
@@ -188,10 +188,13 @@ def test_the_installed_command_passes_the_example_and_fails_the_forgetful_agent(
 ) -> None:
     passed = _example(installed, "scenario.yaml", "diligent", tmp_path / "state")
     assert passed.returncode == 0, f"{passed.stdout}\n{passed.stderr}"
-    assert "\n  Passed: no check failed, and the agent reported it was done.\n" in passed.stdout
-    assert "\nfail (" not in passed.stdout and "owen told what rosa said ('lakeside hall'): met by" in passed.stdout
+    assert "\n  Passed: no check failed in the window; the run watched the agent to the end of its window.\n" in (
+        passed.stdout
+    )
+    assert "\nfail (" not in passed.stdout
 
-    failed = _example(installed, "scenario_silent.yaml", "forgetful", tmp_path / "state")
+    # the silent world with the team's own rule that a follow-up is owed (tests/agents/follow_up/scenario_team_policy.yaml)
+    failed = _example(installed, "scenario_team_policy.yaml", "forgetful", tmp_path / "state")
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
     out = failed.stdout
     assert "\nfail (1)\n" in out, out

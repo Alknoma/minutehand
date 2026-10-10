@@ -690,7 +690,10 @@ def bulleted(lines: Sequence[str]) -> str:
 
 
 def who_is(person: Person) -> str:
-    return f"{person.name}, {person.title}" if person.title else person.name
+    """Who the person is, as the model that plays them is told: their name and title, then their profile."""
+    named = f"{person.name}, {person.title}" if person.title else person.name
+    profile = person.profile.strip().rstrip(".")
+    return f"{named}. {profile}" if profile else named
 
 
 def believed_part(behaviour: Speaks, stale: list[str]) -> str:

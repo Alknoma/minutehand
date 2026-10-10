@@ -1,0 +1,28 @@
+# A world, not a task: the agent brings its own work (agent.py asks Rosa and tells Owen) and decides when it next
+# wakes. Rosa answers a day and a half after she is asked, before the agent's two-day follow-up would be due.
+name: offsite_venue
+starts_at: "2026-08-24T09:00:00Z"   # a Monday; the clock is simulated, so any date will do
+runs_for: P14D                      # how long the run watches the agent
+
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Organises the team offsite; wants to hear which venue is booked.
+    reply:                            # Owen reads what he is told and owes no answer: a script with no steps
+      kind: scripted                  # that says nothing more once used. (`silent` would make every message to
+      then: silent                    # him a question he leaves unanswered.)
+
+  - key: rosa
+    name: Rosa Lind
+    email: rosa@example.com
+    profile: Runs the lakeside hall's bookings; answers a day and a half after she is asked.
+    facts: ["The lakeside hall, booked for the 14th."]
+    reply:
+      kind: scripted
+      delay:
+        shortest: PT36H
+        longest: PT36H
+      replies:
+        - to_ask: 1                   # what her answer to the first message she gets says; a model writes the words
+          facts: ["The lakeside hall, booked for the 14th."]

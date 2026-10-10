@@ -1,31 +1,17 @@
-# Rosa never answers. The agent asks, follows up once when its date passes, and tells Owen when the second passes.
+# A world, not a task: the agent brings its own work (its WORK, in agent.py) and decides when it next wakes.
+# Rosa never answers.
 name: recipe_venue_silent
-goal: Confirm the venue for the team offsite with Rosa.
-owner: owen
-starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P14D
+starts_at: "2026-08-24T09:00:00Z"   # a Monday; the clock is simulated
+runs_for: P14D                      # how long the run watches the agent
 
 people:
   - key: owen
     name: Owen Hart
     email: owen@example.com
+    profile: Organises the team offsite; wants to hear which venue is booked.
     reply: {kind: scripted, then: silent}
   - key: rosa
     name: Rosa Lind
     email: rosa@example.com
+    profile: Runs the lakeside hall's bookings, and does not answer messages.
     reply: {kind: silent}
-
-expect:
-  - kind: person_asked
-    person: rosa
-
-# How the agent must behave, as this team sees it (docs/assessments.md): Minutehand judges nothing else.
-assess:
-  - id: follows_up_when_due          # an hour past the time an answer was due, the agent has followed up at least once
-    each: ask
-    where: {person_not: [owner]}
-    when: {open_at: due+PT1H}
-    count: {follow_ups: {}, since: ask+PT1H, until: due+PT1H}
-    at_least: 1
-    message: "{person.key}'s answer was due and no follow-up came by an hour later"
-    pattern: expiry_on_every_wait

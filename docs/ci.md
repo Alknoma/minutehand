@@ -93,29 +93,30 @@ Each scenario gets a port of its own and a folder of its own (`{run.port}`, `{ru
 command; `MINUTEHAND_RUN_PORT`, `MINUTEHAND_RUN_DIR` in the agent's environment). `minutehand run` fills them the
 same way, once, when it starts the agent's command (the folder is under `<state>/run-all/run/`); with no command to
 start, and in `env` and `doctor`, a file holding either is refused by name. `run-all` hands each of its runs
-`--record-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
+`--tunnel-model-calls`, `--model-host`, `--capture-unknown`, `--upstream-ca`, `--proxy-host`, `--agent-proxy-host`,
 `--no-proxy` and `--no-receive-telemetry` as given; each run takes free ports of its own. Each says the verdict it is written
-to reach (`expect_outcome: passed | failed | unfinished | not_judged`, default `passed`): a scenario whose point is
-that nobody answers may expect `unfinished`, and one that shows a known bug `failed`. `run-all` prints a line per
+to reach (`expect_outcome: passed | failed | unfinished | not_judged | simulation_incomplete`, default `passed`): one
+that shows a known bug may expect `failed`; `unfinished` is only an older scenario's, one that hands the agent a
+`goal`, since a scenario that is only a world watches the agent for `runs_for` and passes when nothing failed in it. `run-all` prints a line per
 scenario and a timeline per person, and exits 1 when any verdict differs from its scenario's, 2 when any run could
 not be performed, 0 otherwise. `--json` prints the same as data.
 
 **What a single run's exit code says.** `minutehand run` exits with its verdict: 0 passed, 1 a rule, an expectation
-or a check of the agent's own failed, 3 not finished, 4 Minutehand itself failed, 5 not judged, 6 simulation
+or a check of the agent's own failed, 3 not finished (an older scenario with a `goal` only), 4 Minutehand itself failed, 5 not judged, 6 simulation
 incomplete (the simulated world did not play as its files declare; the agent's verdict over what did happen is in the
 words). Every run is
 assessed against the world its files declare (`docs/assessments.md`), so a job gates on the scenario it plays with no
 rule written; rules add the team's own policy.
 
 The `action` job in `ci.yml` uses the action by its local path on a runner with nothing set up but the checkout,
-and runs the installed `minutehand --help`, `examples/follow_up` and the built image.
+and runs the installed `minutehand --help`, `tests/agents/follow_up` and the built image.
 
 ## Tiers
 
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `examples/follow_up` scenarios (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
+| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `tests/agents/follow_up` scenarios (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
 | **Mutation**: a mutation tester over `domain/`, the store and the checks, reporting what survives | Weekly | No, reported as a trend | Off. Not built. Today "seen to fail" is a claim in the pull request, checked by the reviewer. |

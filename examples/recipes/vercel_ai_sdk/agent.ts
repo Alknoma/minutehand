@@ -1,12 +1,15 @@
 // A Vercel AI SDK agent that asks a colleague in Slack, remembers when it expects an answer, and follows up once.
 //
+// It is proactive: it decides when it next wakes. Nothing wakes it on a schedule; its report names the moment it
+// wants waking next (`next_wake`), or none.
+//
 // Each wake or Slack event is one `generateText` call with three tools and a stop condition, the AI SDK's
 // tool loop. The tools write the waits into `memory` (`remember_wait`, `close_wait`), which is recalled from the
 // store (`minutehand-store.ts`) on every wake, event and report and kept back after; the report Minutehand asks for
 // after every wake reads it: `next_wake` is the earliest moment a wait is expected by. Under Minutehand the store is
 // the run's own memory, so a fork starts from what the agent remembered at its checkpoint.
 //
-//     POST /wake          {"now": ..., "reason": "start" | "due" | ..., "goal": ...}: run the agent on what is due
+//     POST /wake          {"now": ..., "reason": "start" | "due" | ...}: run the agent on what is due
 //     GET  /report        {"status": "idle" | "done", "next_wake": the earliest expected-by date, or null}
 //     POST /slack/events  Slack's Events API: a person's answer, run through the agent
 //
@@ -31,10 +34,12 @@ import { z } from "zod";
 
 import * as store from "./minutehand-store.ts";
 
-const OWNER = "owen@example.com"; // who gives the agent its goal
+const OWNER = "owen@example.com"; // whom it tells the outcome
+// Its work, as its own configuration says: the run hands it none.
+const WORK = "Confirm the venue for the team offsite with Rosa, and tell Owen what she said.";
 const ASK = "rosa@example.com"; // who knows the answer
 const SYSTEM =
-  "You carry one goal for its owner by asking a colleague in Slack. Whenever you ask, remember the wait with " +
+  "You keep your work moving by asking a colleague in Slack. Whenever you ask, remember the wait with " +
   "the date you expect an answer by. Follow up once; after that, tell the owner. When the answer comes, thank " +
   "the colleague, tell the owner what they said, and close the wait.";
 
@@ -48,13 +53,13 @@ const openai = createOpenAI({
 });
 
 type Wait = { expectedBy: Date; asks: number };
-// What the agent knows between runs: its goal and who owes it an answer by when. Recalled from the store before
+// What the agent knows between runs: its work and who owes it an answer by when. Recalled from the store before
 // each wake, event and report, and kept back after each wake and event.
-const memory: { goal: string | null; waits: Map<string, Wait> } = { goal: null, waits: new Map() };
+const memory: { work: string | null; waits: Map<string, Wait> } = { work: null, waits: new Map() };
 
 async function recall(): Promise<void> {
-  const goal = await store.get("goal");
-  memory.goal = typeof goal === "string" ? goal : null;
+  const work = await store.get("work");
+  memory.work = typeof work === "string" ? work : null;
   memory.waits = new Map();
   for (const [email, kept] of await store.list("", "waits")) {
     const wait = kept as { expected_by: string; asks: number };
@@ -63,7 +68,7 @@ async function recall(): Promise<void> {
 }
 
 async function keep(): Promise<void> {
-  const writes: store.Write[] = [{ op: "put", collection: "default", key: "goal", value: memory.goal }];
+  const writes: store.Write[] = [{ op: "put", collection: "default", key: "work", value: memory.work }];
   for (const [email] of await store.list("", "waits")) {
     if (!memory.waits.has(email)) writes.push({ op: "delete", collection: "waits", key: email });
   }
@@ -114,7 +119,7 @@ const tools = {
 };
 
 async function run(now: Date, happened: string): Promise<void> {
-  const situation = `It is now ${iso(now)}.\nGoal: ${memory.goal}\nOwner: ${OWNER}. Ask: ${ASK}.\n${happened}`;
+  const situation = `It is now ${iso(now)}.\nWork: ${memory.work}\nReport to: ${OWNER}. Ask: ${ASK}.\n${happened}`;
   const result = await generateText({
     model: openai.chat("gpt-4.1-mini"),
     instructions: SYSTEM,
@@ -134,10 +139,10 @@ function iso(moment: Date): string {
 
 // -- the Minutehand side: three endpoints ------------------------------------------------------------------------
 
-async function wake(request: { now: string; reason: string; goal?: string }): Promise<void> {
+async function wake(request: { now: string; reason: string }): Promise<void> {
   const now = new Date(request.now);
   if (request.reason === "start") {
-    memory.goal = request.goal ?? null;
+    memory.work = WORK;
     await run(now, "Nobody has been asked yet.");
     return;
   }
@@ -150,7 +155,7 @@ async function wake(request: { now: string; reason: string; goal?: string }): Pr
 }
 
 function report(): { status: string; next_wake: string | null } {
-  if (memory.goal === null) return { status: "idle", next_wake: null };
+  if (memory.work === null) return { status: "idle", next_wake: null };
   const dates = [...memory.waits.values()].map((w) => w.expectedBy.getTime());
   if (dates.length === 0) return { status: "done", next_wake: null };
   return { status: "idle", next_wake: iso(new Date(Math.min(...dates))) };

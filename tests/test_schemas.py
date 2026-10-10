@@ -15,7 +15,7 @@ from minutehand.application.files import FileKind, schema
 from minutehand.cli import main
 
 SCHEMAS = Path(__file__).parent.parent / "schemas"
-EXAMPLES = Path(__file__).parent.parent / "examples" / "reference_agent"
+EXAMPLES = Path(__file__).parent.parent / "tests" / "agents" / "reference_agent"
 
 
 @pytest.mark.parametrize("kind", list(FileKind))
@@ -37,7 +37,7 @@ def test_the_schema_command_prints_the_committed_schema(capsys: pytest.CaptureFi
 
 
 def test_every_reference_file_validates(capsys: pytest.CaptureFixture[str]) -> None:
-    files = sorted(str(p) for p in EXAMPLES.glob("*.yaml"))
+    files = sorted(str(p) for p in EXAMPLES.glob("*.yaml") if p.name != "team_policy.yaml")  # a list of rules alone
     assert main(["validate", *files]) == 0, capsys.readouterr().err
     out = capsys.readouterr().out
     assert f"{EXAMPLES / 'agent.yaml'}: a valid agent file" in out

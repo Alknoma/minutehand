@@ -1,0 +1,7 @@
+# A world, not a task: the agent brings its own work (agent.py files Rosa as a customer and checks she is listed)
+# and decides when it next wakes. Its payments calls go to an outside emulator the agent file declares.
+name: payments_example
+starts_at: 2026-08-24T09:00:00Z
+runs_for: PT6H
+people:
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Runs the shop's customer accounts.", reply: {kind: silent}}
