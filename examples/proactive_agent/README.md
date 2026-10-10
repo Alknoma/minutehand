@@ -1,8 +1,9 @@
 # A small proactive agent
 
-`agent.py` needs one thing: the cost centre for a purchase, from Sam. It asks him in Slack, follows up at most twice,
-a working day apart, and tells Owen the answer, or that Sam has not answered. Nothing hands it this work, and nothing
-wakes it on a schedule: it decides when it next wakes.
+`agent.py` gets answers from people and passes them on. Its work is its own: `work.json` lists each ask (who answers,
+the question, who is told), and the code names no one. It asks in Slack, follows up at most twice, a working day
+apart, and tells the answer on, or that none came. Nothing hands it this work, and nothing wakes it on a schedule: it
+decides when it next wakes.
 
 That decision is the only part that needs judgement, so it is the only part that uses a model, and it lives in its own
 small package, `wake/`:
@@ -15,6 +16,8 @@ small package, `wake/`:
 The rest of `agent.py` is plain code: ask, follow up, report. Its memory is `minutehand.agent.store`, a SQLite file in
 production and the run's own memory under Minutehand. A Slack event is only recorded; the agent acts on the wake it
 brings.
+
+The worlds are the people `work.json` names; the example's work asks Sam, in finance, for a cost centre and tells Owen.
 
 | World | What happens |
 |---|---|

@@ -1,13 +1,13 @@
-"""A small proactive agent: it needs the cost centre for a purchase from Sam, and tells Owen.
+"""A small proactive agent: it gets answers from people and passes them on.
 
-It asks Sam in Slack, follows up at most twice, a working day apart, and tells Owen the answer, or that Sam has not
-answered. Its work is its own (the run hands it none), and it is proactive: it decides when it next wakes. That one
-decision is the `wake` package: a Pydantic AI sub-agent proposes the moment, and plain code makes it safe. Everything
-else here is plain code.
+Its work is its own, a file it reads (AGENT_WORK, `work.json`): for each ask, who answers, the question, and who is
+told. It asks in Slack, follows up at most twice, a working day apart, and tells the answer on, or that none came. The
+run hands it nothing, and it is proactive: it decides when it next wakes. That one decision is the `wake` package: a
+Pydantic AI sub-agent proposes the moment, and plain code makes it safe. Everything else here is plain code.
 
     POST /wake          {"now": ..., "reason": ...}: it is now `now`; do what is due
     GET  /report        {"status": "idle", "next_wake": the wake package's moment, or null}
-    POST /slack/events  Sam wrote: recorded, and read on the wake his reply brings
+    POST /slack/events  someone wrote: recorded, and read on the wake their message brings
 
 Its memory is `minutehand.agent.store`: a SQLite file in production, the run's own memory under a run.
 
@@ -22,8 +22,10 @@ import socketserver
 import threading
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, TypeAdapter
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 from wake import Open, next_wake
@@ -31,10 +33,19 @@ from wake.guard import in_hours
 
 from minutehand.agent import store
 
-SAM, OWEN = "sam@example.com", "owen@example.com"
-PO = "PO-7731 (40 laptops for the new starters)"
-ANSWER_TAKES = timedelta(days=1)  # how long Sam is given before a follow-up
-FOLLOW_UPS = 2  # at most; then Owen is told
+ANSWER_TAKES = timedelta(days=1)  # how long a person is given before a follow-up
+FOLLOW_UPS = 2  # at most; then whoever asked to be told hears that there is no answer
+
+
+class Ask(BaseModel):
+    """One piece of the agent's own work: get an answer from someone, and pass it on."""
+
+    ask: str  # who answers, by email
+    question: str
+    tell: str  # who is told the answer, or that none came, by email
+
+
+ASKS = TypeAdapter(list[Ask]).validate_json(Path(os.environ.get("AGENT_WORK", "work.json")).read_bytes())
 
 PORT = int(os.environ.get("AGENT_PORT") or os.environ.get("MINUTEHAND_RUN_PORT") or "8740")
 SECRET = os.environ.get("AGENT_SLACK_SIGNING_SECRET", "")
@@ -44,6 +55,7 @@ last_wake: list[datetime] = []
 
 
 def remembered() -> dict[str, Any]:
+    """Each ask's progress, by its place in the work: when it was asked, last followed up, how often, how it ended."""
     found = store.get("work")
     return found if isinstance(found, dict) else {}
 
@@ -55,40 +67,46 @@ def say(email: str, text: str) -> None:
 
 
 def open_items(work: dict[str, Any]) -> list[Open]:
-    """What it is waiting on: Sam's answer, until he gives it or Owen is told he has not."""
-    if "asked_at" not in work or "answer" in work or work.get("told") == "stuck":
-        return []
-    last = datetime.fromisoformat(str(work.get("last_contact", work["asked_at"])))
-    due = in_hours(last + ANSWER_TAKES)
-    return [
-        Open(
-            what=f"Sam's answer: the cost centre for {PO}", since=datetime.fromisoformat(str(work["asked_at"])), due=due
-        )
-    ]
+    """What it is waiting on: each answer asked for and not yet given, until the asker is told none came."""
+    found = []
+    for n, ask in enumerate(ASKS):
+        done = work.get("asks", {}).get(str(n), {})
+        if "asked_at" in done and "ended" not in done:
+            due = in_hours(datetime.fromisoformat(done["last_contact"]) + ANSWER_TAKES)
+            since = datetime.fromisoformat(done["asked_at"])
+            found.append(Open(what=f"{ask.ask}'s answer to: {ask.question}", since=since, due=due))
+    return found
 
 
 def wake(now: datetime) -> None:
     with lock:
         last_wake.append(now)
         work = remembered()
-        if "asked_at" not in work:
-            say(SAM, f"Hi Sam, could you tell me the cost centre for {PO}?")
-            work |= {"asked_at": now.isoformat(), "last_contact": now.isoformat(), "follow_ups": 0}
-        for said in work.pop("inbox", []) or []:  # what Sam wrote since the last wake
-            if said["from"] == SAM and "answer" not in work:
-                work["answer"] = said["text"]
-                say(OWEN, f"Sam answered about {PO}: {said['text']}")
-                work["told"] = "answer"
-        due = open_items(work)
-        if due and now >= due[0].due:
-            follow_ups = int(work.get("follow_ups", 0))
-            if follow_ups < FOLLOW_UPS:
-                asked = str(work["asked_at"])[:10]
-                say(SAM, f"Following up ({follow_ups + 1}) on my question of {asked}: the cost centre for {PO}?")
-                work |= {"last_contact": now.isoformat(), "follow_ups": follow_ups + 1}
-            else:
-                say(OWEN, f"Sam has not answered about the cost centre for {PO}, after {FOLLOW_UPS} follow-ups.")
-                work["told"] = "stuck"
+        progress: dict[str, dict[str, Any]] = work.setdefault("asks", {})
+        inbox = work.pop("inbox", None) or []  # what people wrote since the last wake
+        for n, ask in enumerate(ASKS):
+            done = progress.setdefault(str(n), {})
+            if "asked_at" not in done:
+                say(ask.ask, ask.question)
+                done |= {"asked_at": now.isoformat(), "last_contact": now.isoformat(), "follow_ups": 0}
+                continue
+            if "ended" in done:
+                continue
+            answer = next((said["text"] for said in inbox if said["from"] == ask.ask), None)
+            if answer is not None:
+                say(ask.tell, f'{ask.ask} answered "{ask.question}": {answer}')
+                done["ended"] = "answered"
+            elif now >= in_hours(datetime.fromisoformat(done["last_contact"]) + ANSWER_TAKES):
+                if done["follow_ups"] < FOLLOW_UPS:
+                    nth = done["follow_ups"] + 1  # each follow-up says which it is: none repeats the one before
+                    say(
+                        ask.ask,
+                        f"Following up ({nth} of {FOLLOW_UPS}) on my question of {done['asked_at'][:10]}: {ask.question}",
+                    )
+                    done |= {"last_contact": now.isoformat(), "follow_ups": done["follow_ups"] + 1}
+                else:
+                    say(ask.tell, f'No answer from {ask.ask} to "{ask.question}" after {FOLLOW_UPS} follow-ups.')
+                    done["ended"] = "no answer"
         store.put("work", work)
 
 

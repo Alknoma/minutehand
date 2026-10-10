@@ -22,7 +22,7 @@ from wake.guard import guarded
 class Open(BaseModel):
     """One thing the agent is waiting on."""
 
-    what: str = Field(description="What it waits for: 'Sam's answer: the cost centre for PO-7731'")
+    what: str = Field(description="What it waits for: someone's answer to a question")
     since: datetime = Field(description="When it began to wait")
     due: datetime = Field(description="The earliest it may act on it again: chase, look again, give up")
 

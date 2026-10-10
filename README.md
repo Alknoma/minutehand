@@ -34,8 +34,9 @@ yet.
 
 ## Quick start
 
-The example is a small proactive agent (`examples/proactive_agent`): it needs a cost centre from Sam, asks him in
-Slack, follows up at most twice, and tells Owen. Its one decision about time, when to wake next, is its own small
+The example is a small proactive agent (`examples/proactive_agent`): it gets answers from people and passes them on.
+Its work is its own file, `work.json` (here: a cost centre from Sam, for Owen); it asks in Slack, follows up at most
+twice, and tells the answer on. Its one decision about time, when to wake next, is its own small
 package (`wake/`): a Pydantic AI sub-agent proposes the moment, and plain code holds it to the rules (never before an
 answer can be due, never in the past, always in working hours, never no wake while something is open). Clone the
 repository for its files:
