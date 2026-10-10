@@ -22,7 +22,6 @@ KEY = os.environ.get("AGENT_MODEL_API_KEY", "")
 def _ask(task: str, shown: str) -> dict[str, Any]:
     body = {
         "model": MODEL,
-        "temperature": 0,
         "messages": [{"role": "system", "content": INSTRUCTIONS}, {"role": "user", "content": f"{task}\n\n{shown}"}],
     }
     answer = httpx.post(f"{BASE}/chat/completions", json=body, headers={"authorization": f"Bearer {KEY}"}, timeout=120)

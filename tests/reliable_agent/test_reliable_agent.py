@@ -37,10 +37,10 @@ class Played:
     blocked: list[str]
 
 
-def play(world: str, tmp_path: Path, *, reckless: bool) -> Played:
+def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False) -> Played:
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
     state = tmp_path / "state"
-    with agent_model(reckless=reckless) as url:
+    with agent_model(reckless=reckless, flaky=flaky) as url:
         done = subprocess.run(
             [str(MINUTEHAND), "run", f"worlds/{world}.yaml", "--agent", "agent.yaml", "--state", str(state), "--",
              sys.executable, str(EXAMPLE / "agent.py")],
@@ -117,3 +117,13 @@ def test_when_finance_never_answers_it_chases_twice_a_working_day_apart_then_tel
     assert [to for to, _ in played.said] == [SAM, SAM, SAM, OWEN], "the ask, two follow-ups, then Owen told"
     assert len({text for to, text in played.said if to == SAM}) == 3, "each follow-up says something new"
     assert played.moves == [] and played.orders == 0, "nothing filed without a cost centre"
+
+
+def test_a_model_down_for_a_while_ends_wakes_cleanly_and_the_agent_tries_again_until_it_is_back(
+    tmp_path: Path,
+) -> None:
+    played = play("approved", tmp_path, reckless=False, flaky=True)
+
+    assert played.verdict is VerdictKind.PASSED and played.failed == [], "the run is not stopped by its model failing"
+    assert [to for to, _ in played.said] == [SAM, OWEN] and played.orders == 1, "the same outcome, a little later"
+    assert any(b.startswith("model or service failed") for b in played.blocked)

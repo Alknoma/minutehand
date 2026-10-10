@@ -134,35 +134,49 @@ def act(move: Move, state: State, now: datetime) -> None:
 
 
 def wake(now: datetime) -> None:
+    """Do what is due now. A model that fails ends the wake, never the agent: what it had done stays done, nothing
+    half-done is sent, and the planner wakes it again shortly to try once more."""
     with lock:
         LAST_WAKE.append(now)
         state = load()
+        state.retry_at = None
         for name, fact in ledger.configured().items():
             state.facts.setdefault(name, fact)
-        for said in state.inbox:  # what people wrote since the last wake
-            for about, wait in list(state.waits.items()):
-                if wait.person == said["from"] and ledger.heard(
-                    state, about, model.extract(about, said["text"]), said["text"], f"{said['from']} at {said['at']}"
-                ):
-                    del state.waits[about]
-        state.inbox = []
-        if state.request and state.order is None and now >= datetime.fromisoformat(state.request.next_check):
-            read_request(state, now)
-        for _ in range(MOST_MOVES):
-            menu = legal(state, now)
-            if not menu:
-                break
-            move = None
-            for _ in range(2):  # a pick off the menu is refused and asked once more
-                picked = model.choose(menu, state, now.isoformat())
-                move = next((m for m in menu if m.purpose == picked), None)
-                if move is not None:
+        try:
+            read_inbox(state)
+            if state.request and state.order is None and now >= datetime.fromisoformat(state.request.next_check):
+                read_request(state, now)
+            for _ in range(MOST_MOVES):
+                menu = legal(state, now)
+                if not menu:
                     break
-                state.blocked.append(f"not on the menu: {picked!r}")
-            if move is None:
-                break
-            act(move, state, now)
+                move = None
+                for _ in range(2):  # a pick off the menu is refused and asked once more
+                    picked = model.choose(menu, state, now.isoformat())
+                    move = next((m for m in menu if m.purpose == picked), None)
+                    if move is not None:
+                        break
+                    state.blocked.append(f"not on the menu: {picked!r}")
+                if move is None:
+                    break
+                act(move, state, now)
+        except httpx.HTTPError as failed:
+            state.blocked.append(f"model or service failed at {now.isoformat()}: {type(failed).__name__}")
+            state.retry_at = planner.in_hours(now + planner.RETRY).isoformat()
         save(state)
+
+
+def read_inbox(state: State) -> None:
+    """What people wrote since the last wake: each value it brings kept if their words hold it, and each message read
+    only once it is, so a model that fails leaves it to be read on the next wake."""
+    while state.inbox:
+        said = state.inbox[0]
+        for about, wait in list(state.waits.items()):
+            if wait.person == said["from"] and ledger.heard(
+                state, about, model.extract(about, said["text"]), said["text"], f"{said['from']} at {said['at']}"
+            ):
+                del state.waits[about]
+        state.inbox.pop(0)
 
 
 LAST_WAKE: list[datetime] = []

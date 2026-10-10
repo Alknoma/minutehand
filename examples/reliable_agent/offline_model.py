@@ -3,6 +3,7 @@ agent runs with no model account:
 
     python offline_model.py            # careful, on 127.0.0.1:8792
     python offline_model.py reckless   # the trial's mistakes, on purpose
+    python offline_model.py flaky      # its first few calls fail, as an API down for a while
     export AGENT_MODEL_BASE_URL=http://127.0.0.1:8792 AGENT_MODEL_API_KEY=offline
 
 It answers by fixed rules, in two moods. `careful` picks the first move offered and writes only the facts it is shown. `reckless` makes the trial's
@@ -46,12 +47,23 @@ def _answer(prompt: str, reckless: bool, picks: list[int]) -> dict[str, object]:
     return {}
 
 
-def _server(reckless: bool, port: int) -> ThreadingHTTPServer:
+FLAKY_FAILURES = 3
+"""How many of its first calls the flaky mood fails, as a model API down for a while would."""
+
+
+def _server(reckless: bool, port: int, *, flaky: bool = False) -> ThreadingHTTPServer:
     picks = [0]
+    calls = [0]
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            calls[0] += 1
+            if flaky and calls[0] <= FLAKY_FAILURES:
+                self.send_response(500)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
             prompt = body["messages"][-1]["content"]
             content = json.dumps(_answer(prompt, reckless, picks))
             raw = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]}).encode()
@@ -68,9 +80,9 @@ def _server(reckless: bool, port: int) -> ThreadingHTTPServer:
 
 
 @contextmanager
-def agent_model(*, reckless: bool = False) -> Iterator[str]:
+def agent_model(*, reckless: bool = False, flaky: bool = False) -> Iterator[str]:
     """A server on a free port for as long as the block runs: its base URL, for AGENT_MODEL_BASE_URL."""
-    server = _server(reckless, 0)
+    server = _server(reckless, 0, flaky=flaky)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
@@ -82,4 +94,4 @@ if __name__ == "__main__":
     import sys
 
     mood = sys.argv[1] if len(sys.argv) > 1 else "careful"
-    _server(mood == "reckless", 8792).serve_forever()
+    _server(mood == "reckless", 8792, flaky=mood == "flaky").serve_forever()

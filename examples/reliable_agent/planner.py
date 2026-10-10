@@ -18,6 +18,7 @@ from work import WORK
 
 ANSWER_TAKES = timedelta(days=1)  # how long a person is given to answer, in working time, before the agent looks again
 FIRST_CHECK = timedelta(hours=1)  # the first look at a request the service holds
+RETRY = timedelta(minutes=15)  # a wake whose model failed is tried again this much later
 LONGEST_CHECK = timedelta(hours=4)  # and the longest: a decision it cannot be told of is seen within half a day
 
 
@@ -61,5 +62,7 @@ def next_wake(state: State, now: datetime | None = None) -> datetime | None:
     ]
     if state.request is not None and state.request.status in ("pending", "needs_info") and state.order is None:
         moments.append(datetime.fromisoformat(state.request.next_check))
+    if state.retry_at is not None:
+        moments.append(datetime.fromisoformat(state.retry_at))
     later = [m for m in moments if now is None or m > now]
     return min(later) if later else None

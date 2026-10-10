@@ -159,6 +159,9 @@ class OpenAICompatible:
         self._url = base_url.rstrip("/") + "/chat/completions"
         self.__key = api_key
         self._timeout = timeout
+        self._default_temperature: set[str] = set()
+        """Models that take only their own default temperature, as their API said when one was sent: it is left out
+        of every later request to them."""
 
     def __repr__(self) -> str:
         return f"OpenAICompatible({self._url!r}, model_id={self.model_id!r})"
@@ -176,6 +179,8 @@ class OpenAICompatible:
         said += [_Said(role=_role(m.speaker), content=m.text) for m in messages]
         response_format = _ResponseFormat(json_schema=_JsonSchema(name=answer.__name__, schema_=strict_schema(answer)))
         named = model or self.model_id
+        if named in self._default_temperature:
+            temperature = None
         spent = _Spent()
         content = await self._complete(
             _Request(model=named, messages=said, response_format=response_format, temperature=temperature), spent
@@ -216,6 +221,9 @@ class OpenAICompatible:
         except httpx.HTTPError as e:
             raise ModelFailed(f"{self._url} could not be reached: {type(e).__name__}: {self._scrub(str(e))}") from None
         if not response.is_success:
+            if request.temperature is not None and _refuses_temperature(response):
+                self._default_temperature.add(request.model)
+                return await self._complete(request.model_copy(update={"temperature": None}), spent)
             raise ModelFailed(f"{self._url} answered {response.status_code}: {self._scrub(response.text)}")
         try:
             completion = _Completion.model_validate_json(response.content)
@@ -234,6 +242,18 @@ class OpenAICompatible:
     def _scrub(self, text: str) -> str:
         """Text from the far end, cut short and with the key taken out: some services echo a key they refuse."""
         return text[:_ERROR_CHARS].replace(self.__key, "[the API key]")
+
+
+def _refuses_temperature(response: httpx.Response) -> bool:
+    """A 400 refusing the request's temperature, as OpenAI words it: the model takes only its default
+    (`{"error": {"param": "temperature", "code": "unsupported_value"}}`)."""
+    if response.status_code != 400:
+        return False
+    try:
+        error = response.json().get("error", {})
+    except ValueError:
+        return False
+    return isinstance(error, dict) and error.get("param") == "temperature"
 
 
 def _errors(error: ValidationError) -> str:
