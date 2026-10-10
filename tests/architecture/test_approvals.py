@@ -15,10 +15,10 @@ APPROVER = {"REFERENCE_APPROVER": "nadia@example.com"}
 
 
 def test_an_approval_decided_after_a_delay_lets_the_agent_tell_owen(rig: Rig) -> None:
-    done = rig.run("scenario_approved.yaml", env=APPROVER, inbox=True)
+    done = rig.run("scenario_approved.yaml", env=APPROVER, inbox=True, policy=False)
 
     assert done.code == 0, done.out + done.err[-3000:]
-    assert "Passed: no check failed, and the agent reported it was done." in done.out
+    assert "Passed: no check failed in the window" in done.out
     assert "decisions asked of people: 1, decided: 1, left pending: 0" in done.out
     with rig.world(done.run_id) as world:
         events = world.events()
@@ -43,11 +43,12 @@ def _findings(out: str) -> str:
 
 
 def test_a_rejected_booking_is_not_sent(rig: Rig) -> None:
-    done = rig.run("scenario_rejected.yaml", env=APPROVER, inbox=True)
+    done = rig.run("scenario_rejected.yaml", env=APPROVER, inbox=True, policy=False)
 
     assert done.code == 0, done.out + done.err[-3000:]
-    assert "acts_only_once_approved:" not in _findings(done.out)
-    assert "acts_only_once_approved: read 2 times, held" in done.out
+    with rig.world(done.run_id) as world:
+        sent = [e.after.text for e in world.events() if e.actor is Actor.AGENT and isinstance(e.after, MessageSnapshot)]
+    assert sent and not [text for text in sent if "LH-2291" in text], "the booking reference never went out"
     assert "decisions asked of people: 1, decided: 1, left pending: 0" in done.out
 
 
@@ -66,12 +67,12 @@ def test_reminding_a_silent_approver_every_day_is_nagging(rig: Rig) -> None:
     assert "reminds_at_most_every_two_days: nadia was reminded more often than every two days" in done.out
 
 
-def test_a_silent_approver_reminded_on_their_patience_leaves_the_run_unfinished(rig: Rig) -> None:
+def test_a_silent_approver_reminded_on_their_patience_leaves_the_item_pending_and_breaks_no_rule(rig: Rig) -> None:
     done = rig.run(
         "scenario_approver_silent.yaml", env={**APPROVER, "REFERENCE_APPROVAL_FOLLOW_UP_HOURS": "66"}, inbox=True
     )
 
-    assert done.code == 3, done.out + done.err[-3000:]
+    assert done.code == 0, done.out + done.err[-3000:]  # a world: what is left pending is counted, never a verdict
     assert "left pending: 1" in done.out
     assert "follows_up_when_due" not in _findings(done.out) and "reminds_at_most" not in _findings(done.out)
 
@@ -84,7 +85,7 @@ def test_a_forgetful_agent_never_reminds_a_silent_approver_and_is_flagged(rig: R
 
 
 def test_an_approver_away_until_wednesday_decides_when_back(rig: Rig) -> None:
-    done = rig.run("scenario_approver_away.yaml", env=APPROVER, inbox=True)
+    done = rig.run("scenario_approver_away.yaml", env=APPROVER, inbox=True, policy=False)
 
     assert done.code == 0, done.out + done.err[-3000:]
     with rig.world(done.run_id) as world:

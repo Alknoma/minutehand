@@ -272,3 +272,14 @@ def test_a_world_with_a_wait_left_open_at_the_end_of_its_window_passes_and_count
         == "Passed: no check failed in the window; the run watched the agent to the end of its window."
     )
     assert result.verdict.open_waits == 1, "what it left open is still counted"
+
+
+def test_a_world_whose_agent_failed_fails_though_no_check_did() -> None:
+    world = scenario(OWNER, SOFIA).model_copy(
+        update={"goal": None, "owner": None, "deadline_after": None, "runs_for": timedelta(days=30)}
+    )
+
+    result = evaluate(view(world, _asked_and_waiting()), stop=StopReason.AGENT_FAILED)
+
+    assert result.verdict.kind is VerdictKind.FAILED and result.exit_code == 1
+    assert result.verdict.words.startswith("Failed: the run stopped because the agent could not be reached")

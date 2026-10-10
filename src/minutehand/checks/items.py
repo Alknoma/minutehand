@@ -242,8 +242,8 @@ class _Reader:
         wait. A person who declares `reminded` answers sooner for a follow-up, so chasing them is theirs to allow."""
         for o in self._asks():
             person = self.by_key.get(o.person or "")
-            if person is None or person.reminded is not None or o.patience is None:
-                continue
+            if person is None or person.reminded is not None or o.patience is None or not _declares_when(person):
+                continue  # with nothing declared of when they answer, no follow-up is early
             last = o.opened_at
             for seq in o.agent_touches:
                 t = self.by_seq.get(seq)
@@ -793,6 +793,15 @@ def _machine_words(view: RunView, service: str) -> str:
         return ""
     moves = "; ".join(f"{t.name}: {', '.join(t.from_)} -> {t.to} by {t.by.value}" for t in machine.transitions)
     return f" ({moves})"
+
+
+def _declares_when(person: Person) -> bool:
+    """Whether the scenario says when this person answers: their `reply_within`, or a `delay` their reply sets. A
+    reply model's default delay is Minutehand's, never the scenario's, so no follow-up is measured against it."""
+    if person.reply_within is not None:
+        return True
+    reply = person.reply
+    return "delay" in reply.model_fields_set if hasattr(reply, "delay") else False
 
 
 def _window_of(person: Person) -> str:

@@ -285,9 +285,9 @@ class AgentUnderTest(Model):
     )
     assess: list[Rule] = Field(
         default=[],
-        description="The team's own rules for judging the agent, over the facts of each run (`docs/assessments.md`). "
-        "A scenario may replace one by its id, add its own, or switch one off (`Scenario.assess_off`). Nothing else "
-        "judges how the agent behaves",
+        description="Optional team policy: rules over the facts of each run (`docs/assessments.md`), for what the "
+        "world and the agent's own instructions cannot imply. Every run is assessed without them. A scenario may "
+        "replace one by its id, add its own, or switch one off (`Scenario.assess_off`)",
     )
     fail_on_integrity: list[IntegrityCheck] = Field(
         default=[],

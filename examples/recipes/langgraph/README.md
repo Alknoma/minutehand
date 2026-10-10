@@ -1,7 +1,7 @@
 # LangGraph
 
 `agent.py` is a LangGraph graph of the usual shape (a chat model with tools bound, a `ToolNode`, `tools_condition`
-between them) behind three endpoints Minutehand calls, with the goal and the waits kept between wakes in
+between them) behind three endpoints Minutehand calls, with its work and the waits kept between wakes in
 `minutehand.agent.store`. `../README.md` describes the
 agent and the contract all five recipes share.
 
@@ -11,37 +11,37 @@ agent and the contract all five recipes share.
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     waits: Annotated[dict[str, Wait | None], merge_waits]  # person -> {expected_by, asks}; None removes one
-    goal: str
+    work: str
 
 
 store.configure(store.MemoryBackend())  # production: this process; under Minutehand: the run's memory
 waits_kept = store.collection("waits")
 
 
-def run(goal, waits, text):  # one run of the graph from the store, and the waits it ends with written back
-    ended = graph.invoke({"messages": [HumanMessage(text)], "goal": goal, "waits": waits})
+def run(work, waits, text):  # one run of the graph from the store, and the waits it ends with written back
+    ended = graph.invoke({"messages": [HumanMessage(text)], "work": work, "waits": waits})
     with store.batch() as kept:
-        kept.put("goal", goal)
+        kept.put("work", work)
         ...  # each wait in ended["waits"] put, each one gone deleted, collection="waits"
 
 
 def wake(request):  # POST /wake
     now = datetime.fromisoformat(request["now"])
     if request["reason"] == "start":
-        run(request["goal"], {}, situation(now, request["goal"], "Nobody has been asked yet."))
+        run(WORK, {}, situation(now, WORK, "Nobody has been asked yet."))
         return
-    goal, waits = recalled()  # the goal and the waits, as the store holds them now
+    work, waits = recalled()  # its work and the waits, as the store holds them now
     for email, wait in waits.items():  # reason "due": whatever has passed its date
         if datetime.fromisoformat(wait["expected_by"]) <= now:
             overdue = (
                 f"No answer yet from {email}, expected by {wait['expected_by']}. Follow-ups sent: {wait['asks'] - 1}."
             )
-            run(goal, recalled()[1], situation(now, goal, overdue))
+            run(work, recalled()[1], situation(now, work, overdue))
 
 
 def report():  # GET /report, after every wake
-    goal, waits = recalled()
-    if goal is None:
+    work, waits = recalled()
+    if work is None:
         return {"status": "idle", "next_wake": None}
     dates = [datetime.fromisoformat(w["expected_by"]) for w in waits.values() if w is not None]
     if not dates:
@@ -49,7 +49,7 @@ def report():  # GET /report, after every wake
     return {"status": "idle", "next_wake": min(dates).isoformat()}
 ```
 
-- **The wake handler** runs the compiled graph once per wake, from the goal and the waits the store holds, and
+- **The wake handler** runs the compiled graph once per wake, from its work and the waits the store holds, and
   writes the waits it ends with back in one batch. A Slack event from a person the agent waits on runs it the same
   way (`message`). There is no checkpointer: what the agent remembers between wakes is in the store, so under
   Minutehand it is the run's own memory and a fork from any checkpoint starts from what the agent remembered there,

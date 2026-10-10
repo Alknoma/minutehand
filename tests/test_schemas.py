@@ -37,7 +37,7 @@ def test_the_schema_command_prints_the_committed_schema(capsys: pytest.CaptureFi
 
 
 def test_every_reference_file_validates(capsys: pytest.CaptureFixture[str]) -> None:
-    files = sorted(str(p) for p in EXAMPLES.glob("*.yaml"))
+    files = sorted(str(p) for p in EXAMPLES.glob("*.yaml") if p.name != "team_policy.yaml")  # a list of rules alone
     assert main(["validate", *files]) == 0, capsys.readouterr().err
     out = capsys.readouterr().out
     assert f"{EXAMPLES / 'agent.yaml'}: a valid agent file" in out

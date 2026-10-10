@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (REFERENCE_JOB) and decides when it next wakes.
 # Nadia is away until Wednesday evening and approves when she is back.
 name: venue_approver_away
-goal: Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.
-owner: owen
 starts_at: 2026-08-24T09:00:00Z      # a Monday
-deadline_after: P5D
+runs_for: P5D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Organises the team offsite; wants the venue's booking reference.", reply: {kind: scripted, then: silent}}
   - key: rosa
     name: Rosa Lind
     email: rosa@lakeside.example
+    profile: Runs the lakeside hall's bookings.
     reply:
       kind: scripted
       delay: {shortest: PT20H, longest: P2D}
@@ -18,6 +18,7 @@ people:
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's spending in the agent's web app.
     credential: {kind: generated, env: REFERENCE_APPROVER_TOKEN}   # how she signs in to the agent's web app
     absences: [{lasts: P2DT10H, reason: on leave}]
     reply:
@@ -25,6 +26,3 @@ people:
       delay: {shortest: PT2H, longest: P1D}
       replies: []
     takes: [{take: approve}]
-expect:
-  - {kind: person_asked, person: rosa, by: PT1H}
-  - {kind: relayed, said_by: rosa, to: owen, holding: [LH-2291]}

@@ -369,8 +369,13 @@ def restore_account(restored: Restored) -> RestoreAccount:
 
 
 def scorecard_lines(card: Effectiveness) -> list[ScoreLine]:
+    expected = (
+        [ScoreLine(label="expectations met", value=f"{card.expectations_met} of {card.expectations_total}")]
+        if card.expectations_total
+        else []  # a world declares none
+    )
     lines = [
-        ScoreLine(label="expectations met", value=f"{card.expectations_met} of {card.expectations_total}"),
+        *expected,
         ScoreLine(label="waits opened", value=f"{card.waits_opened}, still open at the end: {card.waits_open_at_end}"),
         ScoreLine(label="follow-ups made", value=str(card.follow_ups_made)),
         ScoreLine(label="wakes", value=f"{card.wakes}, of which changed nothing: {card.idle_wakes}"),

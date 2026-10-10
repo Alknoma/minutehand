@@ -8,8 +8,8 @@ those files or a run of its lines (`tests/approvals/test_guide_blocks.py` fails 
 
 Three things hold throughout:
 
-- **Minutehand judges against the world you declared, and nothing else.** Going ahead before the approval the goal
-  waits on, a move the service's machine refuses, a chase inside the approver's reply window, an invented figure in
+- **Minutehand judges against the world you declared and the agent's own instructions, and nothing else.** Going
+  ahead before the approval its work waits on, a move the service's machine refuses, a chase inside the approver's reply window, an invented figure in
   a resubmission: each is found on every run, measured against your scenario, with no rule written
   (`docs/assessments.md`, "What every run is assessed on"). How often your team wants the requester told, or the
   approver chased, is policy your own rules add.
@@ -20,8 +20,9 @@ Three things hold throughout:
 
 ## The example
 
-`examples/approvals/agent.py` orders 40 laptops (PO-7731) once Nadia approves, and tells Owen, the requester, how it
-went. Its plan: ask Nadia; a day on, still undecided, remind her by email; two days on, ask Marta, the backup
+`examples/approvals/agent.py` brings its own work: order 40 laptops (PO-7731) once Nadia approves, and tell Owen, the
+requester, how it went. Each scenario is a world, not a task: the run hands the agent nothing. The agent is
+proactive: it decides when it next wakes, and nothing wakes it on a schedule. Its plan: ask Nadia; a day on, still undecided, remind her by email; two days on, ask Marta, the backup
 approver, too, and tell Owen; four days on, tell Owen it is still waiting and stop. On an approval it places the
 order with `POST https://api.orders.example/v1/orders`, naming the request it rests on; on a rejection it orders
 nothing and passes the reason on. `APPROVAL_VIA` picks where the approval happens (`inbox`, `slack`, `email`,
@@ -108,6 +109,7 @@ The approver's take names the decision, with the reason as facts a model words:
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes:
       - take: reject
@@ -122,7 +124,7 @@ note, a decision with `settles: false` that leaves the item waiting: an away app
 their item as that note, its first input their words (section 2).
 
 Runs end to end: `inbox/approved.yaml` (passed), `inbox/rejected.yaml` (passed; heedless fails
-`acts_only_once_approved`), `inbox/never_decides.yaml` (unfinished, as it declares).
+`acts_only_once_approved`), `inbox/never_decides.yaml` (passed: what is left pending is counted, never a verdict on its own).
 
 ### 1b. In chat: buttons on a message
 
@@ -145,6 +147,7 @@ The approver's take presses a button by the label she sees, on her nth ask; a fo
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes:
       - nth: 1                                                 # her first item: the agent's first message to her
@@ -199,6 +202,7 @@ An email carries words, not a decision, so the decision is a fact of the step an
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     reminded: {sooner_within: {min: PT30M, max: PT1H}}   # a reminder may bring her answer sooner, never later
     reply:
@@ -223,6 +227,7 @@ and No, Outlook's Accept, Tentative and Decline. The answer lands on the event a
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     takes: [{nth: 1, take: "No"}]   # Google offers Yes, Maybe and No; Outlook Accept, Tentative and Decline
     reply:
@@ -251,6 +256,8 @@ message, ignores it:
 ```yaml
     reply: {kind: scripted, then: silent}
     takes: [{take: done, after: PT6H}]   # every ticket the agent assigns her, in any tracker, done six hours on
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: orders_only_once_the_ticket_is_done
     each: handoff
@@ -371,11 +378,13 @@ agent reads it and asks Marta:
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     absences: [{trigger: on_first_ask, lasts: P7D, delegate: marta, reason: on leave}]
     reply: {kind: scripted, then: silent}
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     reply_within: {min: PT1H, max: PT3H}
     reply:
       kind: scripted
@@ -392,6 +401,7 @@ which is what a rule's `due` anchor reads:
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply:
       kind: scripted
       delay: {shortest: PT2H, longest: P1D}   # how long she usually takes: the item falls due after a day
@@ -399,6 +409,7 @@ which is what a rule's `due` anchor reads:
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     reply: {kind: scripted, delay: {shortest: PT2H, longest: P1D}, then: silent}
 ```
 
@@ -414,6 +425,7 @@ owed when they change is written again as it is sent, from what the person knows
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     facts: ["the Q3 hardware budget covers 40 laptops"]
     fact_changes:
       - {after: PT12H, facts: ["the Q3 hardware budget was cut and covers 30 laptops"]}
@@ -469,15 +481,9 @@ assess:
   - id: tells_the_requester_the_outcome   # within the hour of a decision, the requester hears it, naming the order
     each: transition
     where: {provider: [approvals], by: [person]}   # a decision; the agent's taking a request back is no decision
-    count: {messages: {to: [owner], holding: [PO-7731]}, since: transition, until: transition+PT1H}
+    count: {messages: {to: [owen], holding: [PO-7731]}, since: transition, until: transition+PT1H}
     at_least: 1
     message: "{transition.who} decided and the requester was not told within the hour"
-    pattern: honest_closure
-  - id: not_done_while_waiting         # done is reported only once nobody asked is still to decide
-    when: {stopped: [agent_done]}
-    count: {asks: {open_at: end}}
-    at_most: 0
-    message: "the agent reported done with {rule.count} request(s) still undecided"
     pattern: honest_closure
 ```
 
@@ -529,7 +535,7 @@ assess:
     each: ask
     where: {person: [nadia]}
     when: {answered: true}
-    count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
+    count: {messages: {to: [owen], holding: ["{ask.facts}"]}, since: answer}
     at_least: 1
     message: "Owen was never told why {person.key} turned the order down"
     pattern: honest_closure
@@ -601,20 +607,20 @@ which takes a rate:
 <!-- file: examples/approvals/inbox/timing/decision_timing.yaml -->
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
 # Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
 # days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
 #   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- env APPROVAL_VIA=inbox python ../agent.py
 name: inbox_decision_timing
-goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
-owner: owen
 starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P5D
+runs_for: P5D
 expect_outcome: {passed: ">= 0.9"}     # of the samples, at least this share must pass
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     takes: [{take: approve, within: {min: PT1H, max: P5D}}]   # when, drawn per seed
     reply:
       kind: scripted
@@ -622,10 +628,13 @@ people:
   - key: marta
     name: Marta Holm
     email: marta@example.com
+    profile: Covers approvals when Nadia is away.
     takes: [{take: approve, within: {min: PT1H, max: PT4H}}]
     reply:
       kind: scripted
       then: silent
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: ordered_within_three_days
     count: {stored: {host: api.orders.example, collection: orders}, until: start+P3D}

@@ -1,19 +1,17 @@
+# A world, not a task: the agent brings its own work (REFERENCE_JOB) and decides when it next wakes.
 # The same job, judged only on whether Rosa was asked: what the verdict alone says about an agent that claims
 # it is done.
 name: venue_lenient
-goal: Get a venue confirmed for the team's offsite on Friday, and tell Owen its booking reference.
-owner: owen
 starts_at: 2026-08-24T09:00:00Z
-deadline_after: P4D
+runs_for: P4D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Organises the team offsite; wants the venue's booking reference.", reply: {kind: scripted, then: silent}}
   - key: rosa
     name: Rosa Lind
     email: rosa@lakeside.example
+    profile: Runs the lakeside hall's bookings.
     reply:
       kind: scripted
       delay: {shortest: PT20H, longest: P2D}
       replies:
         - {to_ask: 1, facts: ["Yes, Lakeside Hall is free on Friday. Your booking reference is LH-2291."]}
-expect:
-  - {kind: person_asked, person: rosa, by: PT1H}

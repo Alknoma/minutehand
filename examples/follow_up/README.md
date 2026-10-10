@@ -1,28 +1,31 @@
 # Follow up
 
-A small agent, `agent.py`, gets a goal: confirm the venue for the team offsite with Rosa. It asks Rosa in
-Slack, waits two days, follows up once if she has not answered, and emails Owen, who gave it the goal, when
-she does. It is an ordinary program: a web server from the standard library and the stock `slack_sdk`.
-Its one line of Minutehand is what it remembers (its status, its next wake, whether it followed up, Rosa's
-answer), kept in `minutehand.agent.store`: a SQLite file (`AGENT_DB`, default `follow_up.db`) in production, and
-the run's own memory under Minutehand, so every run starts empty and a fork from any checkpoint starts from what
-the agent remembered there, with nothing to snapshot or restore.
+A small proactive agent, `agent.py`, brings its own work: confirm the venue for the team offsite with Rosa, and tell
+Owen. It asks Rosa in Slack, and **decides when it next wakes**: two days on, to follow up once if she has not
+answered. Nothing wakes it on a schedule; after every wake it reports the moment it wants waking next, or none. When
+she answers it thanks her and emails Owen. It is an ordinary program: a web server from the standard library and the
+stock `slack_sdk`. Its one line of Minutehand is what it remembers (its status, its next wake, whether it followed
+up, Rosa's answer), kept in `minutehand.agent.store`: a SQLite file (`AGENT_DB`, default `follow_up.db`) in
+production, and the run's own memory under Minutehand, so a fork from any checkpoint starts from what the agent
+remembered there, with nothing to snapshot or restore.
 
-Minutehand starts it, plays a fortnight of simulated time in a few seconds against a fake Slack, and
-judges the run by the rules the scenarios declare: what must be true at the end (`expect:`), and how the agent
-must behave on the way (`assess:`, `docs/assessments.md`). Those rules are this example's; yours may differ.
+Each scenario is a world, not a task: Rosa and Owen, who they are, how Rosa answers, and how long to watch the agent
+(`runs_for`). The run hands the agent no work. Minutehand starts it, plays a fortnight of simulated time in a few
+seconds against a fake Slack, and assesses every message it sends, automatically, against its own instructions and
+that world (`docs/assessments.md`), with nothing more to write.
 
 | File | What it is |
 |---|---|
-| `agent.py` | The agent. `AGENT_BEHAVIOUR=forgetful` makes it ask once and never follow up. |
+| `agent.py` | The agent. `AGENT_BEHAVIOUR=forgetful` makes it ask once and never wake again. |
 | `agent.yaml` | Where Minutehand reaches it: the wake and report endpoints, where Slack pushes messages, and the two hosts it calls that are not faked (`outbound`). |
-| `scenario.yaml` | Rosa answers 36 hours after she is asked. Owen is told the outcome and owes no answer. |
-| `scenario_silent.yaml` | Rosa never answers. Its rule `follows_up_when_due` says the agent must follow her up within the hour of when her answer was due. |
+| `scenario.yaml` | A world where Rosa answers 36 hours after she is asked. |
+| `scenario_silent.yaml` | A world where Rosa never answers. |
+| `scenario_team_policy.yaml` | The silent world with one rule of a team's own: a follow-up is owed two days on. An example of optional policy. |
 
 The agent needs `slack_sdk` and `minutehand` (for `minutehand.agent`, which imports only the standard library)
-in the Python that runs it. Rosa's words are a model's, written from the facts her script gives her, so Minutehand
-needs a model for its people (`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, and `MINUTEHAND_MODEL_BASE_URL` for a
-service other than OpenAI's); offline, run the recipes' stand-in, which answers by fixed rules:
+in the Python that runs it. Rosa's words are a model's, written from her profile and facts, so Minutehand needs a
+model for its people (`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, and `MINUTEHAND_MODEL_BASE_URL` for a service
+other than OpenAI's); offline, run the recipes' stand-in, which answers by fixed rules:
 
 ```bash
 python ../recipes/fake_model.py &
@@ -35,40 +38,33 @@ export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=peopl
 minutehand run scenario.yaml --agent agent.yaml -- python agent.py
 ```
 
-Minutehand starts `python agent.py`, points its Slack calls at the fake Slack, and wakes it with the goal.
-The agent asks Rosa. A day and a half later, simulated, Rosa answers; the agent thanks her, emails Owen and
-reports that it is done.
+Minutehand starts `python agent.py`, points its Slack calls at the fake Slack, and wakes it: "it is now Monday
+09:00; go". The agent asks Rosa and names its next wake, two days on. A day and a half later, simulated, Rosa
+answers; the agent thanks her, emails Owen, and names no next wake. The world runs on to the end of the window.
 
 ```
-run 054b98ac4e29: offsite_venue
-  Passed: no check failed, and the agent reported it was done.
-  stopped at 2026-08-25 21:00 UTC (simulated) because the agent reported it was done
+run d56acb3f5d75: offsite_venue (seed 64972089)
+  Passed: no check failed in the window; the run watched the agent to the end of its window.
+  stopped at 2026-09-07 09:00 UTC (simulated) because the clock reached the end of the scenario's window
   providers the agent called: slack
 
 outbound calls
   api.mail.example: 1 call, acknowledged, never sent
 
-informational (3)
-  expectations: rosa asked: met by the message to Rosa Lind (seq 17): “Hi Rosa, could you confirm the venue for the team offsite, please?”; the message to Rosa Lind (seq 21): “Thank you!”
-  expectations: owen asked mentioning ['confirmed']: met by the message to Owen Hart (seq 22): “Offsite venue The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
-  expectations: owen told what rosa said ('lakeside hall'): met by the message to Owen Hart (seq 22): “Offsite venue The offsite venue is confirmed: The lakeside hall, booked for the 14th.”
+no findings
 
 scorecard
-  expectations met: 3 of 3
-  ...
+  waits opened: 1, still open at the end: 0
+  follow-ups made: 0
+  wakes: 2, of which changed nothing: 0
+  messages to people: 3, edited in place: 0, deleted: 0
+  failed checks: 0
 ```
 
-Each expectation that held quotes what met it, so a pass that rests on the wrong message shows: "Rosa asked"
-is met by the question and also by the thank-you. The third expectation, `relayed`, holds only because the
-note to Owen carries "lakeside hall", a phrase that only Rosa's answer holds.
-
-The command exits 0: nothing failed, and the agent said it was done. The scorecard counts one wait, Rosa's answer, and none open at the end:
-the thank-you to Rosa and the email to Owen asked nothing, because nobody would answer them.
-
-The email to Owen went to `api.mail.example`, which no fake answers. `agent.yaml` declares it `acknowledge`:
-it never left the machine, was answered 202, and was read by the paths under `message` as an email from the
-agent to Owen, which is how "owen told what rosa said" is met by it. Without the declaration the call would
-be refused with 502, and the agent would fail its wake. See `docs/capture.md`.
+The email to Owen went to `api.mail.example`, which no fake answers. `agent.yaml` declares it `acknowledge`: it
+never left the machine, was answered 202, and was read by the paths under `message` as an email from the agent to
+Owen, and assessed as one. Without the declaration the call would be refused with 502, and the agent would fail its
+wake. See `docs/capture.md`.
 
 ## 1a. The agent looks the venue up
 
@@ -81,23 +77,19 @@ declared `pass_through`: the search goes to the real host, and the request and i
 run (`minutehand view` shows both under "Outbound calls"). `places.example` stands for whatever search your
 agent uses; `tests/e2e/test_example_capture.py` runs this with a local server in its place.
 
-## 2. Rosa never answers, and the agent forgets
+## 2. Rosa never answers
 
 ```bash
-AGENT_BEHAVIOUR=forgetful minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
+minutehand run scenario_silent.yaml --agent agent.yaml -- python agent.py
 ```
 
-The forgetful agent asks Rosa once and asks to be woken never again. Rosa says nothing. Nobody comes back
-to her, and the job sits waiting until the scenario's two weeks run out.
-
-The command exits 1, with one failed finding from the scenario's rule `follows_up_when_due`: Rosa's answer
-was due and no follow-up came within the hour. The rule names its pattern, so the report also names the design
-that prevents it: give every wait a date by which you expect an answer, and wake on that date.
-
-That a follow-up is owed, and when, is this scenario's rule, not Minutehand's. Leave `assess:` out of
-`scenario_silent.yaml` and the run is still assessed against what the scenario declares (`docs/assessments.md`):
-a chase inside Rosa's reply window, or the same words twice, would be found; a follow-up nobody sent is not, since
-the world declares no rule that one is owed.
+The agent asks Rosa, wakes when it said it would, follows her up once, and names no wake after that. The run
+passes: nothing it sent contradicts the world, repeats itself, or comes before a time the world declares for Rosa's
+answer (her profile says she does not answer; it declares no time). Run it forgetful
+(`AGENT_BEHAVIOUR=forgetful`) and it passes too: a follow-up nobody sent is no fact of the world. Whether one is
+owed is the agent's own instructions' to say, which the reviewer reads with `--judge` and a capable model; a team
+that wants it as a hard rule writes it in `assess:` (`docs/assessments.md`), as `scenario_team_policy.yaml` does: run
+forgetful against it and the run fails, naming the rule.
 
 ## Afterwards
 

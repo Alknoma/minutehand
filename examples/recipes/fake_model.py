@@ -10,8 +10,8 @@ agents describe, served over the two wire formats the frameworks speak:
 Each recipe's agent writes one situation per turn, in plain sentences, and the rules read them:
 
     It is now 2026-08-24T09:00:00+00:00.
-    Goal: Confirm the venue for the team offsite with Rosa.
-    Owner: owen@example.com. Ask: rosa@example.com.
+    Work: Confirm the venue for the team offsite with Rosa, and tell Owen what she said.
+    Report to: owen@example.com. Ask: rosa@example.com.
     and one of
         Nobody has been asked yet.
         No answer yet from rosa@example.com, expected by 2026-08-26T09:00:00+00:00. Follow-ups sent: 0.
@@ -98,11 +98,11 @@ def _found(pattern: str, text: str) -> str:
 def decide(situation: str) -> list[Call]:
     """The tool calls a careful agent makes in this situation."""
     now = datetime.fromisoformat(_found(r"It is now (\S+?)\.?(?:\s|$)", situation))
-    goal = _found(r"Goal: (.+)", situation)
-    owner = _found(r"Owner: (\S+@\S+)\.(?:\s|$)", situation)
+    work = _found(r"Work: (.+)", situation)
+    owner = _found(r"Report to: (\S+@\S+)\.(?:\s|$)", situation)
     person = _found(r"Ask: (\S+@\S+)\.(?:\s|$)", situation)
     expected_by = (now + WAIT).isoformat()
-    question = f"Hello! I am working on this for {owner}: {goal} Could you help, please?"
+    question = f"Hello! I am working on this for {owner}: {work} Could you help, please?"
     if "Nobody has been asked yet." in situation:
         return [
             Call("send_slack_message", {"email": person, "text": question}),
@@ -114,7 +114,7 @@ def decide(situation: str) -> list[Call]:
             Call("send_slack_message", {"email": answered.group(1), "text": "Thank you!"}),
             Call(
                 "send_slack_message",
-                {"email": owner, "text": f"Confirmed: {goal} {answered.group(1)} says: {answered.group(2).strip()}"},
+                {"email": owner, "text": f"Confirmed: {work} {answered.group(1)} says: {answered.group(2).strip()}"},
             ),
             Call("close_wait", {"email": answered.group(1)}),
         ]
@@ -125,7 +125,7 @@ def decide(situation: str) -> list[Call]:
         ]
     return [
         Call(
-            "send_slack_message", {"email": owner, "text": f"No answer from {person}, even after a follow-up: {goal}"}
+            "send_slack_message", {"email": owner, "text": f"No answer from {person}, even after a follow-up: {work}"}
         ),
         Call("close_wait", {"email": person}),
     ]
@@ -404,7 +404,7 @@ def review_answer(shown: str) -> dict[str, object]:
                 "kind": "violation",
                 "name": "invented_fact",
                 "against": "nothing the agent was given holds " + said,
-                "rationale": f"It states {said}, which is not in the goal, the conversation or what the agent read.",
+                "rationale": f"It states {said}, which is not in its instructions, the conversation or what the agent read.",
             }
         )
     waiting = re.search(r"^- (\S+ \S+): state (\S+); only a person can move it next", given, re.MULTILINE)

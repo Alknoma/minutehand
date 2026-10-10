@@ -1,5 +1,6 @@
 """A ten-line stand-in for an agent: each wake it files a customer with the payments API and asks for its list,
-through whatever proxy its environment names. It knows nothing of Minutehand or of the emulator answering it."""
+through whatever proxy its environment names. It knows nothing of Minutehand or of the emulator answering it. It
+decides when it next wakes (an hour on, each time): nothing wakes it on a schedule."""
 
 import json
 import os

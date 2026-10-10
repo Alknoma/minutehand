@@ -1,16 +1,16 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
+# A world, not a task: the agent brings its own work (approvals/agent.py) and decides when it next wakes.
 # Nadia answers the agent's email: she rejects the order and says why. Her decision and her reason are facts; a model
 # writes her words, so the agent reads a decision out of text.
 name: email_rejected
-goal: Order 40 laptops for the new starters (PO-7731) once Nadia approves it, and tell Owen how it went.
-owner: owen
 starts_at: "2026-08-24T09:00:00Z"
-deadline_after: P5D
+runs_for: P5D
 people:
-  - {key: owen, name: Owen Hart, email: owen@example.com, reply: {kind: scripted, then: silent}}
+  - {key: owen, name: Owen Hart, email: owen@example.com, profile: "Asked for the laptops; wants to hear how the order went.", reply: {kind: scripted, then: silent}}
   - key: nadia
     name: Nadia Ek
     email: nadia@example.com
+    profile: Approves the team's purchases.
     reply_within: {min: PT2H, max: PT6H}
     reminded: {sooner_within: {min: PT30M, max: PT1H}}   # a reminder may bring her answer sooner, never later
     reply:
@@ -19,7 +19,9 @@ people:
         - to_ask: 1
           facts: ["I reject PO-7731", "the Q3 hardware budget is spent"]
       then: silent
-  - {key: marta, name: Marta Holm, email: marta@example.com, reply: {kind: scripted, then: silent}}
+  - {key: marta, name: Marta Holm, email: marta@example.com, profile: "Covers approvals when Nadia is away.", reply: {kind: scripted, then: silent}}
+# Optional team policy (docs/assessments.md): this scripted agent gives no model instructions the run can read,
+# so what waits on Nadia's decision is this team's rule to write.
 assess:
   - id: never_orders_after_a_rejection
     count: {stored: {host: api.orders.example, collection: orders}}
@@ -30,7 +32,7 @@ assess:
     each: ask
     where: {person: [nadia]}
     when: {answered: true}
-    count: {messages: {to: [owner], holding: ["{ask.facts}"]}, since: answer}
+    count: {messages: {to: [owen], holding: ["{ask.facts}"]}, since: answer}
     at_least: 1
     message: "Owen was never told why {person.key} turned the order down"
     pattern: honest_closure

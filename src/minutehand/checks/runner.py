@@ -327,6 +327,9 @@ def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Ver
             f"Not judged: no check failed, but {_count(len(reasons), 'thing')} kept this run from being judged; "
             f"{how}: " + "; ".join(reasons) + "."
         )
+    elif not view.scenario.is_task and stop is StopReason.AGENT_FAILED:
+        kind = VerdictKind.FAILED
+        words = f"Failed: {how}, so the window was not watched to its end."
     elif not view.scenario.is_task:
         kind = VerdictKind.PASSED
         words = f"Passed: no check failed in the window; {how}."
