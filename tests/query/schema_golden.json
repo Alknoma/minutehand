@@ -216,6 +216,25 @@
       "content TEXT",
       "call_id INTEGER"
     ],
+    "reactions": [
+      "change_seq INTEGER",
+      "at TEXT",
+      "provider TEXT",
+      "item_kind TEXT",
+      "item_id TEXT",
+      "change TEXT",
+      "to_state TEXT",
+      "actor TEXT",
+      "who TEXT",
+      "seen_at TEXT",
+      "seen_by TEXT",
+      "seen_call_id INTEGER",
+      "unseen_seconds REAL",
+      "acted_seq INTEGER",
+      "acted_at TEXT",
+      "acted TEXT",
+      "to_act_seconds REAL"
+    ],
     "items": [
       "pending_id TEXT",
       "person TEXT",

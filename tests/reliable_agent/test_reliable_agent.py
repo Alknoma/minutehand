@@ -16,6 +16,7 @@ import pytest
 
 from examples.reliable_agent.offline_model import agent_model
 from minutehand import session
+from minutehand.adapters.query import reader as read_model
 from minutehand.application.memory import memory_of
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.world import Actor, MessageSnapshot, StoredSnapshot, TransitionSnapshot
@@ -35,16 +36,25 @@ class Played:
     moves: list[tuple[str, str]]  # (name, to_state) of every move on the approval request
     orders: int
     blocked: list[str]
+    unseen: dict[str, float]  # each of the approver's decisions, and how many seconds it sat before the agent knew
 
 
-def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False, wordy: bool = False) -> Played:
-    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
+def play(
+    world: str,
+    tmp_path: Path,
+    *,
+    reckless: bool,
+    flaky: bool = False,
+    wordy: bool = False,
+    env: dict[str, str] | None = None,
+) -> Played:
+    base = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")} | people_environment()
     state = tmp_path / "state"
     with agent_model(reckless=reckless, flaky=flaky, wordy=wordy) as url:
         done = subprocess.run(
             [str(MINUTEHAND), "run", f"worlds/{world}.yaml", "--agent", "agent.yaml", "--state", str(state), "--",
              sys.executable, str(EXAMPLE / "agent.py")],
-            cwd=EXAMPLE, env=env | {"AGENT_MODEL_BASE_URL": url, "AGENT_MODEL_API_KEY": "test"},
+            cwd=EXAMPLE, env=base | (env or {}) | {"AGENT_MODEL_BASE_URL": url, "AGENT_MODEL_API_KEY": "test"},
             capture_output=True, text=True, timeout=600,
         )  # fmt: skip
     assert done.returncode in (0, 1), done.stdout + done.stderr[-3000:]
@@ -60,6 +70,10 @@ def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False, wor
     moves = [(e.after.name, e.after.to_state) for e in events if isinstance(e.after, TransitionSnapshot)]
     orders = sum(1 for e in events if isinstance(e.after, StoredSnapshot) and e.actor is Actor.AGENT)
     remembered = json.loads(memory_of(events)[("default", "state")])
+    with read_model.open_model(state, run_id) as db:
+        timed = read_model.query(
+            db, "SELECT change, unseen_seconds FROM reactions WHERE provider = 'approvals' ORDER BY change_seq"
+        ).rows
     return Played(
         verdict=outcome.result.verdict.kind,
         failed=[f.check for f in outcome.result.findings if f.kind.value == "fail"],
@@ -67,6 +81,7 @@ def play(world: str, tmp_path: Path, *, reckless: bool, flaky: bool = False, wor
         moves=moves,
         orders=orders,
         blocked=remembered["blocked"],
+        unseen={str(change): float(seconds or 0) for change, seconds in timed},
     )
 
 
@@ -137,3 +152,12 @@ def test_a_model_that_names_a_move_by_its_description_still_moves_the_work_on(tm
 
     assert played.verdict is VerdictKind.PASSED
     assert [to for to, _ in played.said] == [SAM, OWEN] and played.orders == 1
+
+
+def test_told_of_each_decision_it_knows_at_once_and_polling_alone_it_still_gets_there(tmp_path: Path) -> None:
+    pushed = play("asks_back", tmp_path / "pushed", reckless=False)
+    polled = play("asks_back", tmp_path / "polled", reckless=False, env={"AGENT_APPROVAL_CALLBACK": "off"})
+
+    assert pushed.unseen == {"ask_back": 0.0, "approve": 0.0}, "each decision woke it"
+    assert polled.orders == 1 and polled.verdict is VerdictKind.PASSED, "reading alone, it still got there"
+    assert polled.unseen["approve"] > 0, "found only on its next read"

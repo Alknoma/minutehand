@@ -128,8 +128,10 @@ def _said(value: JsonValue) -> str:
 
 def shape_of(value: JsonValue) -> JsonValue:
     """The shape one answer fixes for every later answer to its route: each object has exactly the fields it has
-    here, each of the type it has here; a list's items take the shape of its first item, and an empty list's are
-    left open; a field that is null here may later hold anything."""
+    here, each of the type it has here; a list's items take the fields all of them have between them, none of them
+    required (a few items cannot say which of their fields a later one may leave out: a list of responses may hold an
+    ask-back with a note and an approval without one), and an empty list's are left open; a field that is null here
+    may later hold anything."""
     kind = _type_of(value)
     if kind == "null":
         return {}
@@ -143,10 +145,58 @@ def shape_of(value: JsonValue) -> JsonValue:
         }
     if kind == "array":
         assert isinstance(value, list)
-        return {"type": "array", "items": shape_of(value[0])} if value else {"type": "array"}
+        if not value:
+            return {"type": "array"}
+        items = shape_of(value[0])
+        for item in value[1:]:
+            items = _merged(items, shape_of(item))
+        return {"type": "array", "items": _optional(items)}
     if kind == "integer":  # enum-lint: exempt JSON Schema's own type names
         return {"type": "number"}
     return {"type": kind}
+
+
+def _optional(shape: JsonValue) -> JsonValue:
+    """The shape with no field of any object in it required."""
+    if not isinstance(shape, dict):
+        return shape
+    found: dict[str, JsonValue] = {k: v for k, v in shape.items() if k != "required"}
+    if isinstance(found.get("properties"), dict):
+        properties = found["properties"]
+        assert isinstance(properties, dict)
+        found["properties"] = {k: _optional(v) for k, v in properties.items()}
+    if "items" in found:
+        found["items"] = _optional(found["items"])
+    if shape.get("type") == "object":
+        found["required"] = []
+    return found
+
+
+def _merged(one: JsonValue, other: JsonValue) -> JsonValue:
+    """The shape two items of one list share: objects with every field either has, required where both have it, and
+    the fields both have merged in turn; the same type kept; anything else left open."""
+    if one == other:
+        return one
+    if not (isinstance(one, dict) and isinstance(other, dict)) or one.get("type") != other.get("type"):
+        return {}
+    if one.get("type") == "object":
+        mine, theirs = one.get("properties"), other.get("properties")
+        assert isinstance(mine, dict) and isinstance(theirs, dict)
+        properties = {
+            k: _merged(mine[k], theirs[k]) if k in mine and k in theirs else mine.get(k, theirs.get(k))
+            for k in {**mine, **theirs}
+        }
+        required_one, required_other = one.get("required"), other.get("required")
+        assert isinstance(required_one, list) and isinstance(required_other, list)
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": [k for k in required_one if k in required_other],
+            "additionalProperties": False,
+        }
+    if one.get("type") == "array":
+        return {"type": "array", "items": _merged(one.get("items", {}), other.get("items", {}))}
+    return one
 
 
 def values_at(value: JsonValue, path: str) -> list[JsonValue]:

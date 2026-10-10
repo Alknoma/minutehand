@@ -20,6 +20,9 @@ NOW = datetime(2026, 8, 27, 11, 0, tzinfo=UTC)  # a Thursday, in working hours
 
 @pytest.fixture
 def agent() -> Iterator[ModuleType]:
+    names = ("agent", "state", "planner", "moves", "ledger", "sender", "model", "work")
+    for name in names:  # another example's `agent` or `model` may be loaded under the same name
+        sys.modules.pop(name, None)
     sys.path.insert(0, str(EXAMPLE))
     try:
         import agent as module  # the example's own modules, by their names
@@ -30,7 +33,7 @@ def agent() -> Iterator[ModuleType]:
         yield module
     finally:
         sys.path.remove(str(EXAMPLE))
-        for name in ("agent", "state", "planner", "moves", "ledger", "sender", "model", "work"):
+        for name in names:
             sys.modules.pop(name, None)
 
 

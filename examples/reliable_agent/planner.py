@@ -18,6 +18,7 @@ from work import WORK
 
 ANSWER_TAKES = timedelta(days=1)  # how long a person is given to answer, in working time, before the agent looks again
 FIRST_CHECK = timedelta(hours=1)  # the first look at a request the service holds
+SAFETY_NET = timedelta(days=1)  # how often a service that pushes is read anyway
 RETRY = timedelta(minutes=15)  # a wake whose model failed is tried again this much later
 LONGEST_CHECK = timedelta(hours=4)  # and the longest: a decision it cannot be told of is seen within half a day
 
@@ -44,8 +45,12 @@ def expected_by(asked: datetime) -> datetime:
     return in_hours(due)
 
 
-def next_check(read: datetime, unchanged_reads: int) -> datetime:
-    """When to read a held request again: an hour on, doubling while it does not change, to four hours at most."""
+def next_check(read: datetime, unchanged_reads: int, *, pushes: bool = False) -> datetime:
+    """When to read a held request again: an hour on, doubling while it does not change, to four hours at most. A
+    service that tells the agent of each decision is read once a working day, as a safety net for a push that never
+    came."""
+    if pushes:
+        return in_hours(read + SAFETY_NET)
     wait = min(FIRST_CHECK * (2**unchanged_reads), LONGEST_CHECK)
     return in_hours(read + wait)
 

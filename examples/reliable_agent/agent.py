@@ -27,7 +27,7 @@ import os
 import socketserver
 import threading
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -47,6 +47,9 @@ PORT = int(os.environ.get("AGENT_PORT") or os.environ.get("MINUTEHAND_RUN_PORT")
 """Where it listens: AGENT_PORT, else the port Minutehand gives a run's agent, else 8730. Never a bare PORT, which a
 machine may hold for something else."""
 SECRET = os.environ.get("AGENT_SLACK_SIGNING_SECRET", "")
+CALLBACK = os.environ.get("AGENT_APPROVAL_CALLBACK", "on") != "off"
+"""Whether it asks the approvals service to tell it of each decision (a callback in the request it files). With it, a
+decision wakes the agent at once and its reads are only a safety net; without it, it can only find out by reading."""
 MOST_MOVES = 8  # in one wake: a model that keeps choosing is stopped
 slack = WebClient(token=os.environ.get("AGENT_SLACK_TOKEN", "xoxb-reliable-agent"))
 lock = threading.Lock()
@@ -93,10 +96,11 @@ def read_request(state: State, now: datetime) -> None:
         id=state.request.id,
         status=status,
         read_at=now.isoformat(),
-        next_check=planner.next_check(now, unchanged).isoformat(),
+        next_check=planner.next_check(now, unchanged, pushes=state.request.pushes).isoformat(),
         unchanged_reads=unchanged,
         asks_for=asks,
         asked_back=asked_back,
+        pushes=state.request.pushes,
     )
 
 
@@ -118,19 +122,22 @@ def act(move: Move, state: State, now: datetime) -> None:
             "amount": WORK.budget,
             "cost_centre": state.facts["cost_centre"]["value"],
         }
+        if CALLBACK:
+            body["callback_url"] = f"http://127.0.0.1:{PORT}/approvals/events"
         filed = call("POST", f"{WORK.approvals}/v1/requests", body)
         state.request = Request(
+            pushes=CALLBACK,
             id=str(filed["id"]),
             status=str(filed.get("status", "pending")),
             read_at=stamp,
-            next_check=planner.next_check(now, 0).isoformat(),
+            next_check=planner.next_check(now, 0, pushes=CALLBACK).isoformat(),
         )
     elif move.name == "resubmit" and state.request is not None:
         body = {a: state.facts[a]["value"] for a in state.request.asks_for}
         call("POST", f"{WORK.approvals}/v1/requests/{state.request.id}/resubmit", body)
         state.sent[move.purpose] = stamp
         state.request.status, state.request.unchanged_reads = "pending", 0
-        state.request.next_check = planner.next_check(now, 0).isoformat()
+        state.request.next_check = planner.next_check(now, 0, pushes=state.request.pushes).isoformat()
     elif move.name == "order" and state.request is not None:
         read_request(state, now)  # the order rests on the request as it stands now, not as it stood
         if state.request.status != "approved":
@@ -204,6 +211,11 @@ def read_inbox(state: State) -> None:
     only once it is, so a model that fails leaves it to be read on the next wake."""
     while state.inbox:
         said = state.inbox[0]
+        if said["from"] == "approvals":  # a decision was made: the request is read now, not on its next look
+            if state.request is not None:
+                state.request.next_check = datetime.min.replace(tzinfo=UTC).isoformat()
+            state.inbox.pop(0)
+            continue
         for about, wait in list(state.waits.items()):
             if wait.person == said["from"] and ledger.heard(
                 state, about, model.extract(about, said["text"]), said["text"], f"{said['from']} at {said['at']}"
@@ -248,6 +260,12 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers.get("content-length", "0")))
         if self.path == "/wake":
             wake(datetime.fromisoformat(json.loads(raw)["now"]))
+            self._answer(200, {})
+        elif self.path == "/approvals/events":  # the service telling it a decision was made: read on the wake it brings
+            with lock:
+                state = load()
+                state.inbox.append({"from": "approvals", "text": raw.decode(errors="replace"), "at": ""})
+                save(state)
             self._answer(200, {})
         elif self.path == "/slack/events":
             if SECRET and not SignatureVerifier(SECRET).is_valid_request(raw, dict(self.headers)):

@@ -34,6 +34,7 @@ class Request:
     unchanged_reads: int = 0
     asks_for: list[str] = field(default_factory=list)  # what an ask-back wants: "quote", "cost_centre"
     asked_back: int = 0  # how many times the approver has asked back
+    pushes: bool = False  # the service tells the agent of each decision: its reads are only a safety net
 
 
 @dataclass
