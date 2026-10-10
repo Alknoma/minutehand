@@ -118,7 +118,8 @@ jobs:
           SEED: ${{ github.run_id }}
 
   # examples/recipes: an agent per framework (LangGraph, the OpenAI Agents SDK, the Claude Agent SDK, Pydantic AI,
-  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model. The frameworks are
+  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model, and the proactive
+  # agent, whose wake decider is Pydantic AI. The frameworks are
   # the `recipes` dependency group, kept out of every other job; RECIPES_NODE_REQUIRED turns a missing node or a
   # failed `npm ci` from a skip into a failure.
   recipes:
@@ -138,7 +139,7 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       - run: uv sync --group recipes
-      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes
+      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes tests/proactive_agent
         env:
           RECIPES_NODE_REQUIRED: "1"
 

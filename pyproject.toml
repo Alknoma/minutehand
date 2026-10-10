@@ -143,7 +143,7 @@ markers = [
     "packaging: builds and installs the package and the image; needs a package index and Docker; run with -m packaging",
     "benchmark: measures the store's bytes on disk and its times over three large synthetic runs; minutes, not seconds; run with -m benchmark -s",
     "browser: drives the viewer's page in headless Chromium (Playwright) on fixture runs; needs `uv run playwright install chromium` (or a Chrome on this machine); run with -m browser",
-    "recipes: runs examples/recipes, an agent per framework, through both scenarios; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
+    "recipes: runs examples/recipes, an agent per framework, through both scenarios, and examples/proactive_agent; needs uv sync --group recipes, and node and npm for the Node one; run with -m recipes",
     "docker: runs a downloaded open-source emulator in a container named minutehand-ext-*; needs Docker; run with -m docker",
     "own_ca: the proxy CA this test's proxy makes is its own, never a copy of the worker's (tests/conftest.py); for a test about the CA itself",
     "conformance: one property of docs/conformance.md held against one provider through its vendor API, the control API and the world's record; runs by default",

@@ -34,33 +34,35 @@ yet.
 
 ## Quick start
 
-The example is a reliable proactive agent (`examples/reliable_agent`): it runs a purchase on its own, from asking finance
-for a cost centre to ordering once the approval comes through, built so the usual failures of an agent left to work
-for weeks cannot happen. Clone the repository for its files:
+The example is a small proactive agent (`examples/proactive_agent`): it needs a cost centre from Sam, asks him in
+Slack, follows up at most twice, and tells Owen. Its one decision about time, when to wake next, is its own small
+package (`wake/`): a Pydantic AI sub-agent proposes the moment, and plain code holds it to the rules (never before an
+answer can be due, never in the past, always in working hours, never no wake while something is open). Clone the
+repository for its files:
 
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
-cd minutehand/examples/reliable_agent
-python3 -m venv .venv && .venv/bin/pip install slack_sdk httpx minutehand
+cd minutehand/examples/proactive_agent
+python3 -m venv .venv && .venv/bin/pip install minutehand slack_sdk pydantic-ai-slim[openai]
 
-# Offline, two stand-ins answer by fixed rules: one plays its people and the approvals service, one is its own model.
-# With accounts, set MINUTEHAND_MODEL* and AGENT_MODEL* to any OpenAI-compatible API instead.
+# Offline: a stand-in plays Sam and Owen, and AGENT_MODEL=test leaves each wake to the guard.
+# With accounts, set MINUTEHAND_MODEL* for the people, and AGENT_MODEL=openai:<model> with OPENAI_API_KEY.
 .venv/bin/python ../recipes/fake_model.py &
-.venv/bin/python offline_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
-export AGENT_MODEL_BASE_URL=http://127.0.0.1:8792 AGENT_MODEL_API_KEY=offline
+export AGENT_MODEL=test
 
-minutehand run worlds/asks_back.yaml --agent agent.yaml -- .venv/bin/python agent.py
-# two simulated weeks in seconds: the approver asks back for a quote only the requester has; the agent asks him for it
-# instead of making one up, resubmits his words, and orders once she approves
+minutehand run worlds/quiet.yaml --agent agent.yaml -- .venv/bin/python agent.py
+# two simulated weeks in seconds: Sam never answers; the agent follows up a working day apart, twice, tells Owen,
+# and stops
 
 minutehand runs                  # every run, one line each
 minutehand findings <run_id>     # a run's findings again, and the checkpoints it can be forked from
+minutehand trace <run_id>        # what the agent did, in order
 minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```
 
 Each run takes a few seconds. Runs are kept in `.minutehand/` in the folder you ran them from. The example's
-`README.md` says what each part of the agent is for and what it does in each world.
+`README.md` says how the agent decides when to wake.
 
 To try your own agent, write two files. The agent file says how Minutehand reaches it: how it is woken, the events
 it receives, its own systems to keep inside the run (`minutehand schema agent` prints its JSON Schema). The scenario
