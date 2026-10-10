@@ -24,7 +24,7 @@ from tests.ports import free_port
 from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / "examples" / "follow_up"
+EXAMPLE = ROOT / "tests" / "agents" / "follow_up"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 COMMAND = ["sh", "-c", f"PORT={{run.port}} RUN_DIR={{run.dir}} exec {sys.executable} {EXAMPLE / 'agent.py'}"]
 NEVER_FOLLOW_UP = [{"id": "never_follows_up", "each": "ask", "count": {"follow_ups": {}}, "at_most": 0}]
@@ -102,7 +102,7 @@ def test_run_all_exits_1_when_a_verdict_differs_from_the_one_its_scenario_expect
 
 def _templated_agent(folder: Path, *, also: str = "") -> Path:
     """The reference agent's file with every port it names, its inbox's among them, written as `{run.port}`."""
-    text = (ROOT / "examples" / "reference_agent" / "agent.yaml").read_text()
+    text = (ROOT / "tests" / "agents" / "reference_agent" / "agent.yaml").read_text()
     for port in sorted(set(re.findall(r"127\.0\.0\.1:(\d+)", text))):
         text = text.replace(f"127.0.0.1:{port}", "127.0.0.1:{run.port}")
     agent = folder / "agent.yaml"

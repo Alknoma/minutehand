@@ -163,7 +163,7 @@ Go binaries and needs root on macOS; and polling the agent's sockets misses a ca
 
 ## Checked by hand
 
-The follow-up example (`examples/follow_up`) was run this way on 2026-10-07: the agent in a `python:3.13-slim`
+The follow-up example (`tests/agents/follow_up`) was run this way on 2026-10-07: the agent in a `python:3.13-slim`
 container with `slack_sdk`, listening on `0.0.0.0:8700` and published on the same port, its agent file's secret
 changed to `from_env`, started with Compose and the override above. The run passed exactly as it does with the
 agent on the host. Started again with `docker run --env-file` holding the same variables, the container had

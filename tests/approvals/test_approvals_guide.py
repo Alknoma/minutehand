@@ -1,5 +1,5 @@
-"""The examples of docs/approvals.md: every file under examples/approvals loads with every load-time check, and the
-inbox, chat-button, email and approval-service patterns play end to end against the example agent (examples/approvals/agent.py), its people
+"""The examples of docs/approvals.md: every file under tests/agents/approvals loads with every load-time check, and the
+inbox, chat-button, email and approval-service patterns play end to end against the example agent (tests/agents/approvals/agent.py), its people
 written by the recipes' fake model, reaching the outcome the guide states. So do the two forks, the samples over
 decision timing, and the guide's queries over the runs they read."""
 
@@ -27,7 +27,7 @@ from tests.support.people import people_environment, people_model
 pytestmark = pytest.mark.timeout(240)
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLES = ROOT / "examples" / "approvals"
+EXAMPLES = ROOT / "tests" / "agents" / "approvals"
 AGENT = EXAMPLES / "agent.py"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 PORT = "127.0.0.1:8720"

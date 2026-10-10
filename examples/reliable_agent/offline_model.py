@@ -1,5 +1,11 @@
-"""A stand-in for the reliable agent's own model, an OpenAI-compatible chat-completions server on 127.0.0.1, in two
-moods. `careful` picks the first move offered and writes only the facts it is shown. `reckless` makes the trial's
+"""A stand-in for the reliable agent's own model, an OpenAI-compatible chat-completions server on 127.0.0.1, so the
+agent runs with no model account:
+
+    python offline_model.py            # careful, on 127.0.0.1:8792
+    python offline_model.py reckless   # the trial's mistakes, on purpose
+    export AGENT_MODEL_BASE_URL=http://127.0.0.1:8792 AGENT_MODEL_API_KEY=offline
+
+It answers by fixed rules, in two moods. `careful` picks the first move offered and writes only the facts it is shown. `reckless` makes the trial's
 mistakes on purpose: it first asks to order whatever is offered, and writes a per-unit price nobody gave it into
 every message. The agent's structure, not the model, keeps either from doing harm."""
 
@@ -40,9 +46,7 @@ def _answer(prompt: str, reckless: bool, picks: list[int]) -> dict[str, object]:
     return {}
 
 
-@contextmanager
-def agent_model(*, reckless: bool = False) -> Iterator[str]:
-    """The server's base URL, for AGENT_MODEL_BASE_URL."""
+def _server(reckless: bool, port: int) -> ThreadingHTTPServer:
     picks = [0]
 
     class Handler(BaseHTTPRequestHandler):
@@ -60,9 +64,22 @@ def agent_model(*, reckless: bool = False) -> Iterator[str]:
         def log_message(self, format: str, *args: object) -> None:
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
+
+@contextmanager
+def agent_model(*, reckless: bool = False) -> Iterator[str]:
+    """A server on a free port for as long as the block runs: its base URL, for AGENT_MODEL_BASE_URL."""
+    server = _server(reckless, 0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield f"http://127.0.0.1:{server.server_address[1]}"
     finally:
         server.shutdown()
+
+
+if __name__ == "__main__":
+    import sys
+
+    mood = sys.argv[1] if len(sys.argv) > 1 else "careful"
+    _server(mood == "reckless", 8792).serve_forever()

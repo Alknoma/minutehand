@@ -1,4 +1,4 @@
-"""What the architecture tests share: the reference agent (examples/reference_agent), its outside world, and the
+"""What the architecture tests share: the reference agent (tests/agents/reference_agent), its outside world, and the
 `minutehand` command they drive it through.
 
 Every test here runs the agent as its own two processes, started by the agent's own `run.py`, and Minutehand as
@@ -30,7 +30,7 @@ from tests.ports import free_port
 from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENT_DIR = ROOT / "examples" / "reference_agent"
+AGENT_DIR = ROOT / "tests" / "agents" / "reference_agent"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 PY = sys.executable
 RUN = [PY, str(AGENT_DIR / "run.py")]
@@ -128,7 +128,7 @@ def agent_file(
     policy: bool = True,
 ) -> Path:
     """The reference agent's file, on `port`; with `policy`, judged also by the example team's rules as
-    examples/reference_agent/team_policy.yaml writes them; with `answered`, people can answer its email. No hooks: its
+    tests/agents/reference_agent/team_policy.yaml writes them; with `answered`, people can answer its email. No hooks: its
     memory is the run's (`minutehand.agent.store`)."""
     mail = {**MAIL, "replies": replies(port, secret)} if answered else dict(MAIL)
     doc = {

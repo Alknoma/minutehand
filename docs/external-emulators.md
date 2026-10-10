@@ -8,7 +8,7 @@ change to the agent and none to Minutehand. Built and tested: `domain/emulator.p
 
 ## The declaration
 
-The worked example, `examples/external_emulator/`, forwards the payments API to
+The worked example, `tests/agents/external_emulator/`, forwards the payments API to
 [stripe-mock](https://github.com/stripe/stripe-mock), downloaded as it is:
 
 ```yaml
@@ -35,7 +35,7 @@ server, started with the first world that declares it and shared by every world 
 declaring a running name otherwise is refused 409.
 
 ```bash
-cd examples/external_emulator
+cd tests/agents/external_emulator
 minutehand run scenario.yaml --agent agent.yaml      # agent.py is a ten-line stand-in for an agent
 ```
 

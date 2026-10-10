@@ -15,7 +15,7 @@ import pytest
 from minutehand import session
 from minutehand.domain.world import CallOutcome
 
-EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "external_emulator"
+EXAMPLE = Path(__file__).resolve().parents[2] / "tests" / "agents" / "external_emulator"
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 CONTAINER = "minutehand-ext-stripe"
 

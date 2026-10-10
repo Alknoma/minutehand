@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from examples.reliable_agent.offline_model import agent_model
 from minutehand import session
 from minutehand.application.memory import memory_of
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.world import Actor, MessageSnapshot, StoredSnapshot, TransitionSnapshot
-from tests.reliable_agent.agent_model import agent_model
 from tests.support.people import people_environment
 
 ROOT = Path(__file__).resolve().parents[2]

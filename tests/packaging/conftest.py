@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE = ROOT / "examples" / "follow_up"
+EXAMPLE = ROOT / "tests" / "agents" / "follow_up"
 VERSION: str = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 TWINE = "twine==7.0.0"
 """The checker PyPI's own upload docs name; pinned so a release checks what this suite checked."""

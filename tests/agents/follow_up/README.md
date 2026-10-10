@@ -28,7 +28,7 @@ model for its people (`MINUTEHAND_MODEL`, `MINUTEHAND_MODEL_API_KEY`, and `MINUT
 other than OpenAI's); offline, run the recipes' stand-in, which answers by fixed rules:
 
 ```bash
-python ../recipes/fake_model.py &
+python ../../../examples/recipes/fake_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
 ```
 
@@ -123,6 +123,6 @@ The image runs the same commands; mount this folder and start the agent inside i
 
 ```bash
 docker build --target example -t minutehand-example .
-docker run --rm -v "$PWD/examples:/examples:ro" -w /examples/follow_up \
+docker run --rm -v "$PWD:/repo:ro" -w /repo/tests/agents/follow_up \
   minutehand-example run scenario.yaml --agent agent.yaml -- python agent.py
 ```

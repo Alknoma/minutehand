@@ -109,14 +109,14 @@ assessed against the world its files declare (`docs/assessments.md`), so a job g
 rule written; rules add the team's own policy.
 
 The `action` job in `ci.yml` uses the action by its local path on a runner with nothing set up but the checkout,
-and runs the installed `minutehand --help`, `examples/follow_up` and the built image.
+and runs the installed `minutehand --help`, `tests/agents/follow_up` and the built image.
 
 ## Tiers
 
 | Tier | When | Required | State |
 |---|---|---|---|
 | **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
-| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `examples/follow_up` scenarios (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
+| **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help` and both `tests/agents/follow_up` scenarios (exit 0, and exit 1 with the scenario's rule `follows_up_when_due` and its pattern); the image is built (not pushed) and runs both scenarios with the example agent started inside it. `tests/packaging`, marked `packaging` and left out of the default run | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
 | **Mutation**: a mutation tester over `domain/`, the store and the checks, reporting what survives | Weekly | No, reported as a trend | Off. Not built. Today "seen to fail" is a claim in the pull request, checked by the reviewer. |

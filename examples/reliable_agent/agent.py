@@ -49,9 +49,17 @@ slack = WebClient(token=os.environ.get("AGENT_SLACK_TOKEN", "xoxb-reliable-agent
 lock = threading.Lock()
 
 
+def _said(answer: object, *path: str) -> str:
+    """A value out of a Slack answer: its data, key by key."""
+    found = getattr(answer, "data", answer)
+    for key in path:
+        found = found[key] if isinstance(found, dict) else None
+    return str(found)
+
+
 def deliver(email: str, text: str) -> None:
-    user = slack.users_lookupByEmail(email=email)["user"]["id"]
-    channel = slack.conversations_open(users=[user])["channel"]["id"]
+    user = _said(slack.users_lookupByEmail(email=email), "user", "id")
+    channel = _said(slack.conversations_open(users=[user]), "channel", "id")
     slack.chat_postMessage(channel=channel, text=text)
 
 
@@ -169,7 +177,7 @@ def report() -> dict[str, object]:
 def heard(event: dict[str, object]) -> None:
     if event.get("type") != "message" or event.get("bot_id") or not event.get("user"):
         return
-    email = slack.users_info(user=str(event["user"]))["user"]["profile"]["email"]
+    email = _said(slack.users_info(user=str(event["user"])), "user", "profile", "email")
     at = datetime.fromtimestamp(float(str(event.get("ts", "0")))).isoformat()
     with lock:
         state = load()
@@ -207,7 +215,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._answer(404)
 
-    def log_message(self, *args: object) -> None:
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
 

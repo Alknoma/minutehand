@@ -2,9 +2,9 @@
 installed command against the two example agents and each of their behaviours: what each scenario catches, and what
 it lets through.
 
-The reference agent (examples/reference_agent) is filled in as its team would fill it: the venue's contact it emails as
+The reference agent (tests/agents/reference_agent) is filled in as its team would fill it: the venue's contact it emails as
 the person, and Nadia as the approver; its own work is in its own configuration. The follow-up example
-(examples/follow_up) asks Rosa in Slack. Each scenario is a world with no rule of its own, so each cell is the exit
+(tests/agents/follow_up) asks Rosa in Slack. Each scenario is a world with no rule of its own, so each cell is the exit
 code and the checks of the automatic assessment that failed; `docs/scenarios.md` prints the same table.
 """
 
@@ -31,7 +31,7 @@ REFERENCE_TEAM = TeamValues(
     credential_env="REFERENCE_APPROVER_TOKEN",
 )
 FOLLOW_UP_TEAM = TeamValues(person=Who.written("Rosa Lind <rosa@example.com>"))
-FOLLOW_UP = ROOT / "examples" / "follow_up"
+FOLLOW_UP = ROOT / "tests" / "agents" / "follow_up"
 APPROVALS = ("approval_rejected", "approver_never_decides")
 """The scenarios that need the reference agent's approvals (REFERENCE_APPROVER, its inbox declared)."""
 

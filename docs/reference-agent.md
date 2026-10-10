@@ -1,6 +1,6 @@
 # The reference agent
 
-`examples/reference_agent/` is a small product built the way real proactive agents are, used to prove that
+`tests/agents/reference_agent/` is a small product built the way real proactive agents are, used to prove that
 Minutehand's core holds on something realistic, with no provider at all. It is also the worked example to copy
 when wiring your own agent in.
 
@@ -35,7 +35,7 @@ play it.
 Every HTTP server in the example skips `http.server`'s reverse DNS lookup of this machine's name, which takes over 30 seconds on some Macs; copy that `server_bind` if you build on the standard library.
 
 ```bash
-cd examples/reference_agent
+cd tests/agents/reference_agent
 python outside.py --dir .outside &                       # prints the model and search addresses
 export REFERENCE_MODEL_URL=https://model.localhost:<port> REFERENCE_SEARCH_URL=https://search.localhost:<port>
 export REFERENCE_EXTRA_CA=.outside/ca.pem                # the agent reaches the tunnelled model API directly

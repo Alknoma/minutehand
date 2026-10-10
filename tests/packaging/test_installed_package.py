@@ -44,7 +44,7 @@ def test_uv_build_makes_an_sdist_and_a_wheel(dist: Dist) -> None:
         "README.md",
         "LICENSE.md",
         "src/minutehand/cli.py",
-        "examples/follow_up/agent.py",
+        "examples/reliable_agent/agent.py",
     } <= names
 
 
@@ -193,7 +193,7 @@ def test_the_installed_command_passes_the_example_and_fails_the_forgetful_agent(
     )
     assert "\nfail (" not in passed.stdout
 
-    # the silent world with the team's own rule that a follow-up is owed (examples/follow_up/scenario_team_policy.yaml)
+    # the silent world with the team's own rule that a follow-up is owed (tests/agents/follow_up/scenario_team_policy.yaml)
     failed = _example(installed, "scenario_team_policy.yaml", "forgetful", tmp_path / "state")
     assert failed.returncode == 1, f"{failed.stdout}\n{failed.stderr}"
     out = failed.stdout

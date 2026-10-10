@@ -129,7 +129,7 @@ they have (`tests/architecture/test_library.py`, 60 runs, about 25 seconds with 
 with no rule of its own, so each cell is what the automatic assessment alone failed (exit code and check), with no
 model configured for the reviewer: 0 passed, 1 failed.
 
-The reference agent (`examples/reference_agent`, email through its own mail API; `REFERENCE_BEHAVIOUR`), filled with
+The reference agent (`tests/agents/reference_agent`, email through its own mail API; `REFERENCE_BEHAVIOUR`), filled with
 the venue's contact `Rosa Lind <rosa@lakeside.example>` as the person and `Nadia Ek <nadia@example.com>` as the other
 (the approver, with `REFERENCE_APPROVER` set and its inbox declared). Its own work is in its configuration
 (`REFERENCE_JOB`):
@@ -146,7 +146,7 @@ the venue's contact `Rosa Lind <rosa@lakeside.example>` as the person and `Nadia
 | `planned_wake_dropped` | 0 | 0 | 0 | 0 |  |
 | `planned_wake_twice` | 0 | 0 | 0 | 0 |  |
 
-The follow-up example (`examples/follow_up`, Slack; `AGENT_BEHAVIOUR`), filled with `Rosa Lind <rosa@example.com>`,
+The follow-up example (`tests/agents/follow_up`, Slack; `AGENT_BEHAVIOUR`), filled with `Rosa Lind <rosa@example.com>`,
 the person its code names:
 
 | Scenario | diligent | forgetful |

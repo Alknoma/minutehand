@@ -159,6 +159,7 @@ filterwarnings = [
 venvPath = "."
 venv = ".venv"
 include = ["src", "lints", "tests", "scripts"]
+exclude = ["tests/agents"]  # the agents the tests run: programs of their own, as examples/ is
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 
