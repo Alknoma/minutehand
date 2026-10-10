@@ -170,6 +170,8 @@ async def test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_
             scenario(answers(after=timedelta(hours=36))), agent, state=state, command=launched.command, listen=listen
         )
         assert launched.state(state, parent.record.run_id)["looked_up"] == ['{"received": 1}', '{"received": 2}']
+        # The fork reads the parent's lookups from its log, the one timestamped record: the export goes unread.
+        (state / "runs" / parent.record.run_id / "captured.jsonl").unlink()
         after_first_wake = next(p for p in session.fork_points(state, parent.record.run_id) if p.wake == 1)
         changes = Fork(parent_run=parent.record.run_id, at_seq=after_first_wake.seq)
         [child] = await session.fork(
