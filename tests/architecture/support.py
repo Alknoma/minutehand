@@ -267,6 +267,10 @@ def started(env: Mapping[str, str], port: int) -> Iterator[subprocess.Popen[byte
         while True:
             try:
                 get(f"http://127.0.0.1:{port}/healthz")
+                # Answered, and by this agent: one that could not bind the port has exited, and what answered is
+                # another test's server.
+                time.sleep(0.2)
+                assert process.poll() is None, f"the agent exited, and something else answers on port {port}"
                 break
             except OSError:
                 assert process.poll() is None, "the agent exited before it answered"
