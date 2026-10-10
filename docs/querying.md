@@ -428,7 +428,7 @@ Every item the people engine held pending on a person (docs/design-transitions.m
 
 ### `model_calls`
 
-Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
+Model calls: the agent's, from the telemetry it exported or the wire (recorded by default), and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. Cost only from prices the user declares. Kept in the order `at, span_id, person_call_id`.
 
 | Column | Type | What it holds |
 |---|---|---|

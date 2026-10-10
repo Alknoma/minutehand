@@ -468,7 +468,7 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="model_calls",
-        description="Model calls: the agent's, from the telemetry it exported or the wire with --record-model-calls, "
+        description="Model calls: the agent's, from the telemetry it exported or the wire (recorded by default), "
         "and the ones Minutehand made: to write what people say and declared services answer, and to judge the run. "
         "Cost only from prices the user declares.",
         order="at, span_id, person_call_id",

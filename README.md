@@ -59,6 +59,8 @@ minutehand run worlds/quiet.yaml --agent agent.yaml -- .venv/bin/python agent.py
 minutehand runs                  # every run, one line each
 minutehand findings <run_id>     # a run's findings again, and the checkpoints it can be forked from
 minutehand trace <run_id>        # what the agent did, in order
+minutehand replay <run_id> -- .venv/bin/python agent.py   # the run again, its model's answers from the record
+minutehand model-calls <run_id>  # the agent's model calls, as OpenAI Batch API lines
 minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```
 
