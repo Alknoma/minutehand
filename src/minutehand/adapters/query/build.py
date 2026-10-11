@@ -396,7 +396,7 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
                 "wrote": None,
                 "wrote_seqs": _json(list(wrote[s.span.span_id])) if s.span.span_id in wrote else "[]",
                 "replayed": None,
-                "failure": None,
+                "failure": call.failure,
                 "cache_read_tokens": call.cache_read_tokens,
                 "cache_creation_tokens": call.cache_creation_tokens,
                 "uncached_input_tokens": call.uncached_input_tokens,

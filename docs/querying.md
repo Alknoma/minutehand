@@ -452,7 +452,7 @@ Model calls: the agent's, from the telemetry it exported or the wire (recorded b
 | `wrote` | TEXT | For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or service_answer; for a judge's: judgement or fact_check; for the assessor's: review |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
-| `failure` | TEXT | Why a person's call failed |
+| `failure` | TEXT | Why the call failed: a person's call, or the agent's as its span says (an error answer, an error status) |
 | `cache_read_tokens` | INTEGER | Of input_tokens, those read from the prompt cache; NULL when not reported |
 | `cache_creation_tokens` | INTEGER | Of input_tokens, those written to the prompt cache (Anthropic); NULL when not reported |
 | `uncached_input_tokens` | INTEGER | Of input_tokens, those billed at the base input rate: input_tokens less both cached counts |

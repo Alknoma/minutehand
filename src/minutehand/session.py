@@ -87,6 +87,7 @@ from minutehand.application.kept import KeptModel
 from minutehand.application.model_calls import agent_instructions, is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.people import needs_model
+from minutehand.application.program import PROGRAM_RECORD, AgentProgram, program_changes, program_of
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
 from minutehand.application.restore import Progress, Restored
@@ -219,6 +220,32 @@ class ForkPoint(Model):
     agent: AgentState
 
 
+class Checkpoints(Model):
+    """What `checkpoints --json` prints: a run's checkpoints, and whether a fork can start at each."""
+
+    run_id: str
+    checkpoints: list[ForkPoint]
+
+
+class ListedRun(Model):
+    """One run as `runs --json` prints it."""
+
+    run_id: str
+    scenario: str
+    stop: StopReason
+    failed: int = Field(ge=0, description="Findings of kind fail")
+    worlds: list[str] = Field(description="A case's worlds, scored as one run; empty for a run of its own")
+    fork: ForkAccount | None = Field(description="Where it split from its parent and what it changed; None if no fork")
+    checkpoints: list[ForkPoint]
+    usage: RunUsage
+
+
+class Runs(Model):
+    """What `runs --json` prints: every finished run, as `runs` lists them."""
+
+    runs: list[ListedRun]
+
+
 class Played(Model):
     """What `run`, `fork` and `findings` print with --json: one shape, so a script reads any of them the same way.
     `findings` prints the one run asked for; `stability` is set only for several samples."""
@@ -338,7 +365,7 @@ async def play(
                 | own_files.environment()
             )
             reach = reach_for(agent, env=env)
-            async with _agent_process(command, env, agent, directory / AGENT_LOG):
+            async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state):
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
@@ -538,7 +565,7 @@ async def fork(
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
-            async with _agent_process(command, env, agent, log, started=False) as own:
+            async with _agent_process(command, env, agent, log, state=state, started=False) as own:
                 records = await fork_run(
                     fork=changes,
                     parent=parent.record,
@@ -710,6 +737,12 @@ def restore_of(state: Path, run_id: str) -> Restored | None:
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def program_record(state: Path, run_id: str) -> AgentProgram | None:
+    """The agent's program as the run started it. None when Minutehand did not start it."""
+    path = run_dir(state, run_id) / PROGRAM_RECORD
+    return AgentProgram.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
 def fork_of(state: Path, run_id: str) -> Fork | None:
     """What a fork was asked to change, as kept with it. None for a run that was not forked."""
     path = run_dir(state, run_id) / FORK_RECORD
@@ -756,6 +789,10 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
         return held[-1] if held else None
 
     restored = restore_of(state, run_id)
+    reprogrammed = program_changes(program_record(state, entry.parent_run), program_record(state, run_id))
+    said = summary(asked, parent_scenario) if asked is not None else "Rerun; what it changed was not kept"
+    if reprogrammed:
+        said = "; ".join(reprogrammed if asked is None or not asked.overrides else [said, *reprogrammed])
     outcome: Outcomes | None = None
     if entry.finished and find(state, entry.parent_run).finished:
         outcome = outcomes(
@@ -777,11 +814,19 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
         changes=[
             change_words(o, parent_scenario, ticket_before=ticket_before(o), models_before=models)
             for o in (asked.overrides if asked is not None else [])
-        ],
-        summary=summary(asked, parent_scenario) if asked is not None else "Rerun; what it changed was not kept",
+        ]
+        + reprogrammed,
+        summary=said,
         restore=restore_account(restored) if restored is not None else None,
         outcome=outcome,
     )
+
+
+def failed_model_calls(state: Path, run_id: str) -> tuple[int, list[str]]:
+    """How many model calls the run holds of the agent's, and why each that failed did (`ModelCall.failure`)."""
+    with reading(state, run_id) as world:
+        calls = [model_call(s) for s in world.spans() if is_model_call(s)]
+    return len(calls), [c.failure for c in calls if c.failure is not None]
 
 
 def checkpoints_of(state: Path, run_id: str) -> list[ForkPoint]:
@@ -1911,13 +1956,16 @@ async def _agent_process(
     agent: AgentUnderTest,
     log: Path,
     *,
+    state: Path,
     started: bool = True,
 ) -> AsyncIterator[_Program | None]:
     """The agent's program, started before the block unless `started` is False (a fork starts it itself, once its
-    run exists), and stopped after it."""
+    run exists), and stopped after it. What program it is is kept beside the run's log (`application.program`)."""
     if not command:
         yield None
         return
+    kept = program_of(command, Path.cwd(), state)
+    (log.parent / PROGRAM_RECORD).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
     program = _Program(command, env, agent, log)
     try:
         if started:

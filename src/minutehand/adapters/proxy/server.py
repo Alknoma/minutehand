@@ -145,6 +145,10 @@ class Proxy:
         master.addons.add(*default_addons())
         master.addons.add(self.addon, self.base_urls)  # in this order: a base-URL answer is rewritten after it is kept
         master.options.update(
+            # Who may reach the proxy is decided by the address it listens on. mitmproxy's default refuses a client
+            # with a public address, which is how Docker Desktop behind a VPN presents a published port's host
+            # connections: every call was dropped unanswered. Nothing undeclared is relayed, so it is no open proxy.
+            block_global=False,
             connection_strategy="lazy",
             upstream_cert=False,
             ssl_verify_upstream_trusted_ca=str(self._upstream_ca) if self._upstream_ca is not None else None,

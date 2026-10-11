@@ -80,7 +80,6 @@ from minutehand.adapters.web.responses import (
     WakesResponse,
     explained,
 )
-from minutehand.application.forks import summary
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
 from minutehand.checks.runner import RunResult, view_of
@@ -396,9 +395,8 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
     after_wake: int | None = None
     changed: str | None = None
     account = session.fork_account(state, entry.run_id) if entry.parent_run is not None else None
-    if entry.parent_run is not None:
-        asked = session.fork_of(state, entry.run_id)
-        changed = summary(asked, session.scenario_of(state, entry.parent_run)) if asked is not None else None
+    if account is not None and session.fork_of(state, entry.run_id) is not None:
+        changed = account.summary
     if entry.forked_at is not None:
         with session.reading(state, entry.run_id) as world:
             after_wake = next(
