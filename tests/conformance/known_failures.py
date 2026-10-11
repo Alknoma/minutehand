@@ -410,13 +410,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "slack",
         Property.ACCOUNTS,
-        "bot",
-        'SlackRefused: conversations.open: cannot_dm_bot (200 {"ok":false,"error":"cannot_dm_bot"})',
-    ),
-    Known("slack", Property.ACCOUNTS, "member", "signs in: AssertionError signed in as ava, answered as 'agent'"),
-    Known(
-        "slack",
-        Property.ACCOUNTS,
         "no_email",
         "the shared seed model cannot declare a no_email account: 1 validation error for Seed",
     ),
@@ -438,7 +431,6 @@ KNOWN: tuple[Known, ...] = (
         "person_without_email",
         "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
     ),
-    Known("slack", Property.SEEDED, "sign_in", "the sign-in seeded for sofia answers as 'agent'"),
     Known(
         "youtrack",
         Property.ACCOUNTS,

@@ -152,6 +152,11 @@ def workspaces_of(scenario: Scenario) -> list[tuple[wire.SlackWorkspace, list[Pe
             tokens=w.tokens,
             oauth_code=w.oauth_code,
             position=position,
+            user_tokens={
+                s.credential: state.user_id(s.person, w.team_id)
+                for s in scenario.sign_ins
+                if s.provider == MANIFEST.key and s.person is not None and any(p.key == s.person for p in people)
+            },
         )
         found.append((workspace, people))
     return found

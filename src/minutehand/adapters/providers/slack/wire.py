@@ -415,6 +415,11 @@ class SlackWorkspace(Model):
     )
     oauth_code: str | None = Field(default=None, description="The install code `oauth.v2.access` answers it for")
     position: int = Field(default=0, description="Its place among the world's workspaces; the first is 0")
+    user_tokens: dict[str, str] = Field(
+        default={},
+        description="A user token (`xoxp-`) the scenario's sign-ins give a person, to that person's user id: a call "
+        "with it is the person's, as Slack answers a user token as its user",
+    )
 
 
 class SlackAwayStretch(Model):
@@ -1182,7 +1187,7 @@ class AuthTest(Ok):
     user: str
     team_id: str
     user_id: str
-    bot_id: str
+    bot_id: str | None = Field(default=None, description="The app's bot; absent for a user token")
     is_enterprise_install: bool = False
 
 

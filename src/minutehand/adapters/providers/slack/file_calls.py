@@ -247,8 +247,8 @@ class FileCalls(MessageCalls):
                 permalink=(
                     f"https://{self._world.team.domain}.slack.com/files/{self._world.bot}/{upload.file}/{upload.filename}"
                 ),
-                bot_id=self._world.team.bot_id,
-                bot_user_id=self._world.bot,
+                bot_id=self._world.team.bot_id if self._world.is_app else None,
+                bot_user_id=self._world.bot if self._world.is_app else None,
                 alt_txt=upload.alt_txt,
             )
             self._world.write(
