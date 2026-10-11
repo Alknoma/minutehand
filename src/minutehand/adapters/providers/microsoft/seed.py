@@ -303,18 +303,19 @@ def _history(
     thread: str | None,
     seconds: dict[int, int],
 ) -> None:
-    """Each post and its replies; `seconds` counts the seeded messages already given each second, so a message's id
-    is its second and its place among the scenario's posts of that second: the same wherever seeding starts in the
-    log, and unmoved by anything seeded after it. A seeded post is before the start, so no minted id (the start or
-    later) can be one of these."""
+    """Each post and its replies. A message's id is Teams', the moment in epoch milliseconds: its millisecond, or the
+    next one the scenario's earlier posts left free (`seconds` holds those taken), so it is the same wherever seeding
+    starts in the log and unmoved by anything seeded after it. A minted id skips any held."""
     for post in posts:
         author = users[post.by]
         at = start - post.ago
-        second = int(at.timestamp())
-        seconds[second] = seconds[second] + 1 if second in seconds else 1
+        moment = int(at.timestamp() * 1000)
+        while moment in seconds:
+            moment += 1
+        seconds[moment] = 1
         activity = wire.Activity(
             type=wire.ActivityType.MESSAGE,
-            id=f"{second}{seconds[second]:06d}",
+            id=str(moment),
             timestamp=graph_time(at),
             serviceUrl=SERVICE_URL,
             sender=wire.ChannelAccount(id=author.mri, name=author.user.displayName, aadObjectId=author.user.id),

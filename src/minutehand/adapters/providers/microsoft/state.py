@@ -533,9 +533,14 @@ class MicrosoftWorld:
         return [(s.seq, wire.parse(wire.Activity, s.body)) for s in self._pages(EntityKind.MESSAGE, conversation)]
 
     def next_activity_id(self, clock: Clock) -> str:
-        """Teams' message id: the moment in milliseconds, here the simulated second and the next event's seq, so two
-        messages in one instant are still distinct and ordered."""
-        return f"{int(clock.now().timestamp())}{self.next_seq():06d}"
+        """Teams' message id: the moment it was sent in epoch milliseconds, 13 digits
+        (https://learn.microsoft.com/en-us/graph/api/resources/chatmessage). A run's clock stands still between
+        events, so a message sent in a millisecond an earlier one, live or deleted, already holds takes the next free
+        one: ids stay distinct and in the order sent."""
+        candidate = int(clock.now().timestamp() * 1000)
+        while self.store.versions(message_ref(str(candidate))):
+            candidate += 1
+        return str(candidate)
 
     # ------------------------------------------------------------------ files
 

@@ -232,12 +232,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "microsoft",
-        Property.IDS,
-        "documented_format",
-        "message #launch Original post: '1788246000000001' does not match ^\\d{13}$",
-    ),
-    Known(
-        "microsoft",
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         'VendorRefused: GET /servicePrincipals(appId=\'<uuid>\'): 400 {"error":{"code":"BadRequest","message":"Resource not found for the segment \'servicePrincipals(appId=\'<uuid>\')\'.","innerE',
