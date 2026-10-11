@@ -45,7 +45,7 @@
                                                  write library worlds out with the team's people (docs/scenarios.md)
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
-                     [--model-host HOST]... [--record-model-calls]
+                     [--model-host HOST]... [--tunnel-model-calls]
                                                  a standing proxy with a control API, for test suites (docs/serve.md)
 
 PROXY is where the proxy listens and how the agent reaches it: --proxy-host (default 127.0.0.1; 0.0.0.0 for
@@ -282,17 +282,9 @@ def _parser() -> _Parser:
         models(sub)
         capture(sub)
 
-    def models(sub: argparse.ArgumentParser, *, recording: bool = True) -> None:
-        """The model flags: a run records the agent's model calls unless told to tunnel them; a standing proxy
-        (`serve`), whose worlds each say, tunnels them unless told to record."""
-        if not recording:
-            sub.add_argument(
-                "--record-model-calls",
-                action="store_true",
-                help="open every world's calls to model APIs, send them on unchanged and keep each as a span",
-            )
-            hosts(sub)
-            return
+    def models(sub: argparse.ArgumentParser) -> None:
+        """The model flags: the agent's model calls are recorded unless told to tunnel them, by a run and by a
+        standing proxy (`serve`) alike."""
         sub.add_argument(
             "--record-model-calls",
             action="store_true",
@@ -540,7 +532,7 @@ def _parser() -> _Parser:
     served.add_argument(
         "--keep", type=int, default=standing.DEFAULT_KEEP, help="closed worlds kept; older ones are removed"
     )
-    models(served, recording=False)
+    models(served)
     capture(served)
     state(served)
 

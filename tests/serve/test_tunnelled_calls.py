@@ -43,6 +43,7 @@ def _served(tmp_path: Path, authority: Authority, **options: object) -> Iterator
             "telemetry_port": 0,
             "receive_telemetry": False,
             "upstream_ca": authority.ca_cert,
+            "record_model_calls": False,
             **options,
         }
     )
@@ -91,7 +92,9 @@ async def test_a_model_host_no_world_declares_is_kept_in_the_lobby_and_is_not_un
 
 async def test_a_model_host_a_world_declares_is_recorded_in_that_world(tmp_path: Path, authority: Authority) -> None:
     with _served(tmp_path, authority) as client:
-        declaring = spec("tunnel-key-two").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]})
+        declaring = spec("tunnel-key-two").model_copy(
+            update={"model_hosts": [ModelHost(host=MODEL_HOST, record=False)]}
+        )
         world = client.create_world(declaring)
         other = client.create_world(spec("tunnel-key-three"))
         async with model_api(authority) as upstream:

@@ -135,7 +135,7 @@ async def test_model_traffic_of_a_cases_world_is_the_cases_not_the_worlds(
     served: Served, state: Path, authority: Authority
 ) -> None:
     client = served.client
-    declaring = spec("xoxb-case-model").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]})
+    declaring = spec("xoxb-case-model").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST, record=False)]})
     case = open_case(client, "with a model", [declaring, _tracker("asana-case-model")])
     proxy = client.environment()["HTTPS_PROXY"]
     trust = ssl.create_default_context(cafile=str(authority.ca_cert))

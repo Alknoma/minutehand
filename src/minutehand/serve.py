@@ -13,9 +13,9 @@ default world, when one is open; else none: it is refused with 502 and kept in t
 and in the lobby when none did.
 
 A model API is decided by its host before its call is opened, so it is never decided per world by credentials:
-the three public ones and every `--model-host` are model hosts for every world, tunnelled, or opened and kept as
-spans under `--record-model-calls`. A world may declare more (`CreateWorld.model_hosts`), each tunnelled or
-recorded as it says; such a host belongs to that world while it is open. A recorded call is kept in the world
+the three public ones and every `--model-host` are model hosts for every world, opened and kept as spans, or
+tunnelled under `--tunnel-model-calls`. A world may declare more (`CreateWorld.model_hosts`), each recorded or
+tunnelled as it says; such a host belongs to that world while it is open. A recorded call is kept in the world
 that declared its host, else in the world whose calls carried its trace, else in the lobby.
 
 Each world is a run in the state directory, so `minutehand findings`, `view` and the MCP tools read it:
@@ -174,10 +174,10 @@ class ServeOptions(Model):
     model_hosts: list[str] = Field(
         default=[],
         description="Model APIs besides api.openai.com, api.anthropic.com and generativelanguage.googleapis.com, "
-        "for every world: tunnelled, or recorded with `record_model_calls`",
+        "for every world: recorded, or tunnelled when `record_model_calls` is false",
     )
     record_model_calls: bool = Field(
-        default=False, description="Open every world's calls to model APIs, send them on unchanged, keep each as a span"
+        default=True, description="Open every world's calls to model APIs, send them on unchanged, keep each as a span"
     )
 
 

@@ -9,25 +9,19 @@
     GET /api/runs/{run_id}                  the scenario, the record once finished, the checkpoints, and for a
                                             fork what it changed and how it differs from its parent
     GET /api/runs/{run_id}/wakes
-    GET /api/runs/{run_id}/events           the world's log, without the run loop's own checkpoints
-    GET /api/runs/{run_id}/calls            every HTTP call the proxy recorded
     GET /api/runs/{run_id}/obligations      what the world was waiting on (`checks.ledger`), and when each fell due
     GET /api/runs/{run_id}/findings         each with its pattern, once the run is checked
     GET /api/runs/{run_id}/scorecard
-    GET /api/runs/{run_id}/model-calls      for each event a finding cites: the agent's spans and model call
-    GET /api/runs/{run_id}/messages         every message sent, rewritten or deleted, to whom, what it said
-    GET /api/runs/{run_id}/model-traffic    every model call by step, what message each wrote, and the model
-                                            hosts reached on tunnels never opened, one line per host
     GET /api/runs/{run_id}/model-calls/{span_id}   one model call: what it was asked and answered, what it wrote
-    GET /api/runs/{run_id}/steps            each wake or step's real-time extent and how much it holds
     GET /api/runs/{run_id}/steps/{step}/spans      the agent's spans placed in one step, for a waterfall
 
 A case (standing worlds opened under one case label) is one run here: its worlds are read as one log and are not
 listed on their own, and a standing world no call reached (a probe) is not listed.
-    GET /api/runs/{run_id}/traces/{trace_id}   the agent's spans of one trace, as the run received them
 
 What the page reads to draw a run of any length (`reading.py`); the paths marked (read model) are rows of the run's
-read model (`adapters/query`, `docs/querying.md`), so the page and `minutehand query` show the same facts:
+read model (`adapters/query`, `docs/querying.md`), so the page and `minutehand query` show the same facts, and the
+messages the timeline, an event's conversation and the people view show are the read model's `messages`. The run's
+whole log, its calls, its messages and its model calls as lists are `minutehand query`'s, not the page's:
     GET /api/runs/{run_id}/timeline         every mark of the run, compact and sorted, in lanes, with the findings
                                             placed where they happened: the page bins them itself
     GET /api/runs/{run_id}/events/{seq}     one event whole: the version before it, its call, its thread, its writer
@@ -52,7 +46,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 
 import uvicorn
@@ -71,15 +64,9 @@ from minutehand.adapters.web.responses import (
     AssessmentsResponse,
     BatchesResponse,
     CallRowsResponse,
-    CallsResponse,
     DrawnWait,
-    EventsResponse,
     FindingsResponse,
-    HostTraffic,
-    MessagesResponse,
     ModelCallResponse,
-    ModelCallsResponse,
-    ModelTrafficResponse,
     ObligationsResponse,
     Refusal,
     RunResponse,
@@ -88,26 +75,20 @@ from minutehand.adapters.web.responses import (
     ScorecardResponse,
     SpanBar,
     SpanResponse,
-    StepActivity,
     StepSpansResponse,
-    StepsResponse,
     TimelineResponse,
-    TraceResponse,
-    TrafficCall,
     WakesResponse,
     explained,
 )
-from minutehand.application.checkpoint import CHECKPOINT
 from minutehand.application.forks import summary
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
-from minutehand.application.steps import STEP
 from minutehand.checks.runner import RunResult, view_of
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import SpanSource
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot
+from minutehand.domain.world import Actor, MessageSnapshot
 from minutehand.ports.store import Store
 from minutehand.session import Logged
 
@@ -170,24 +151,6 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
         with session.reading(state, run_id) as world:
             return _json(WakesResponse(wakes=session.wakes_of(state, run_id, world)))
 
-    def events(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            return _json(
-                EventsResponse(
-                    events=[
-                        e
-                        for e in world.events()
-                        if e.entity not in (CHECKPOINT, STEP)
-                        and e.entity.kind
-                        not in (EntityKind.DUE, EntityKind.PENDING, EntityKind.MEMORY, EntityKind.NEXT_WAKE)
-                    ]
-                )
-            )
-
-    def calls(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            return _json(CallsResponse(calls=world.calls()))
-
     def obligations(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
         with session.reading(state, run_id) as world:
@@ -232,94 +195,6 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
         if not session.find(state, run_id).finished:
             return _json(ScorecardResponse(scorecard=None))
         return _json(ScorecardResponse(scorecard=session.load(state, run_id).result.effectiveness))
-
-    def model_calls(run_id: str) -> Response:
-        cited = (
-            {seq for f in session.load(state, run_id).result.findings for seq in f.evidence}
-            if session.find(state, run_id).finished
-            else set()
-        )
-        with session.reading(state, run_id) as world:
-            return _json(
-                ModelCallsResponse(
-                    received=len(world.spans()),
-                    forward_failures=world.forward_failures(),
-                    events=[trace_of(e, world) for e in world.events() if e.seq in cited],
-                )
-            )
-
-    def messages(run_id: str) -> Response:
-        scenario = session.scenario_of(state, run_id)
-        with session.reading(state, run_id) as world:
-            return _json(MessagesResponse(messages=reading.message_lines(world.events(), scenario, world)))
-
-    def model_traffic(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            wrote = _writers(world)
-            calls = [
-                TrafficCall(
-                    span_id=c.span_id,
-                    trace_id=c.trace_id,
-                    step=s.wake,
-                    started=c.started,
-                    ended=c.ended,
-                    model=c.model,
-                    input_tokens=c.input_tokens,
-                    output_tokens=c.output_tokens,
-                    wrote=[seq for seq, _ in wrote[c.span_id]] if c.span_id in wrote else [],
-                    joined_by=wrote[c.span_id][0][1] if c.span_id in wrote else None,
-                )
-                for s in sorted(world.spans(), key=lambda s: s.span.start)
-                if is_model_call(s)
-                for c in [model_call(s)]
-            ]
-            hosts: dict[str, HostTraffic] = {}
-            connections: dict[str, set[str]] = {}
-            for call in world.calls():
-                tunnel = call.exchange.tunnelled
-                if tunnel is None:
-                    continue
-                host = call.exchange.host
-                had = (
-                    hosts[host]
-                    if host in hosts
-                    else HostTraffic(host=host, calls=0, connections=0, bytes_sent=0, bytes_received=0)
-                )
-                connections.setdefault(host, set()).add(tunnel.connection)
-                hosts[host] = had.model_copy(
-                    update={
-                        "calls": had.calls + 1,
-                        "connections": len(connections[host]),
-                        "bytes_sent": had.bytes_sent + tunnel.bytes_sent,
-                        "bytes_received": had.bytes_received + tunnel.bytes_received,
-                    }
-                )
-        return _json(ModelTrafficResponse(calls=calls, hosts=list(hosts.values())))
-
-    def steps(run_id: str) -> Response:
-        with session.reading(state, run_id) as world:
-            events = [e for e in world.events() if e.entity not in (CHECKPOINT, STEP)]
-            spans = world.spans()
-        moments: dict[int, list[datetime]] = {}
-        for event in events:
-            moments.setdefault(event.wake, []).append(event.wall_time)
-        for stored in spans:
-            moments.setdefault(stored.wake, []).extend((stored.span.start, stored.span.end))
-        return _json(
-            StepsResponse(
-                steps=[
-                    StepActivity(
-                        step=step,
-                        began=min(moments[step]),
-                        ended=max(moments[step]),
-                        events=sum(1 for e in events if e.wake == step),
-                        spans=sum(1 for s in spans if s.wake == step),
-                        model_calls=sum(1 for s in spans if s.wake == step and is_model_call(s)),
-                    )
-                    for step in sorted(moments)
-                ]
-            )
-        )
 
     def step_spans(request: Request) -> Response:
         run_id, step = request.path_params["run_id"], request.path_params["step"]
@@ -367,15 +242,6 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
         except RunRefused as e:
             return _json(Refusal(error=str(e)), status=404)
 
-    def trace(request: Request) -> Response:
-        run_id, trace_id = request.path_params["run_id"], request.path_params["trace_id"]
-        assert isinstance(run_id, str) and isinstance(trace_id, str)
-        try:
-            with session.reading(state, run_id) as world:
-                return _json(TraceResponse(trace_id=trace_id, spans=world.spans(trace_id=trace_id.lower())))
-        except RunRefused as e:
-            return _json(Refusal(error=str(e)), status=404)
-
     built: dict[tuple[str, int], TimelineResponse] = {}
 
     def result_of(run_id: str) -> RunResult | None:
@@ -387,7 +253,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
             key = (run_id, world.head())
             if result is not None and key in built:
                 return _json(built[key])
-            drawn = reading.timeline(state, run_id, world, result)
+            drawn = reading.timeline(model(run_id), state, run_id, world, result)
         if result is not None:
             built[key] = drawn
             while len(built) > KEEP:
@@ -401,7 +267,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
             scenario = session.scenario_of(state, run_id)
             result = result_of(run_id)
             with session.reading(state, run_id) as world:
-                found = reading.event_detail(world, seq, scenario, result)
+                found = reading.event_detail(model(run_id), world, seq, scenario, result)
         except RunRefused as e:
             return _json(Refusal(error=str(e)), status=404)
         if found is None:
@@ -449,7 +315,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
     def people(run_id: str) -> Response:
         scenario = session.scenario_of(state, run_id)
         with session.reading(state, run_id) as world:
-            return _json(reading.people(world, scenario))
+            return _json(reading.people(model(run_id), world, scenario))
 
     def assessments(run_id: str) -> Response:
         answer: AssessmentsResponse = reading.assessments(state, run_id)
@@ -488,18 +354,11 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
             Route("/api/runs", runs),
             Route("/api/runs/{run_id}", one_run(run)),
             Route("/api/runs/{run_id}/wakes", one_run(wakes)),
-            Route("/api/runs/{run_id}/events", one_run(events)),
-            Route("/api/runs/{run_id}/calls", one_run(calls)),
             Route("/api/runs/{run_id}/obligations", one_run(obligations)),
             Route("/api/runs/{run_id}/findings", one_run(findings)),
             Route("/api/runs/{run_id}/scorecard", one_run(scorecard)),
-            Route("/api/runs/{run_id}/model-calls", one_run(model_calls)),
-            Route("/api/runs/{run_id}/messages", one_run(messages)),
-            Route("/api/runs/{run_id}/model-traffic", one_run(model_traffic)),
             Route("/api/runs/{run_id}/model-calls/{span_id}", one_model_call),
-            Route("/api/runs/{run_id}/steps", one_run(steps)),
             Route("/api/runs/{run_id}/steps/{step:int}/spans", step_spans),
-            Route("/api/runs/{run_id}/traces/{trace_id}", trace),
             Route("/api/runs/{run_id}/timeline", one_run(timeline)),
             Route("/api/runs/{run_id}/events/{seq:int}", one_event),
             Route("/api/runs/{run_id}/call-rows", one_run(call_rows)),
