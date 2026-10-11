@@ -307,7 +307,7 @@ as a batch output line has it (`response.status_code`, `response.body`), with `m
 people's words as they said them (no model call), the pass-through hosts' answers as `in_forks: replay` gives them,
 and each of the agent's model calls answered with what its model answered then. An agent that keeps its state only
 in its own process (a conversation, a plan) rebuilds it exactly, which a fork cannot give it: a fork starts the agent
-at the checkpoint with only its memory (`minutehand.agent.store`).
+at the checkpoint with only its memory (`minutehand.agent.store`), and refuses an agent holding more.
 
 A call is matched by host, path and body as recorded; alike calls are answered in the order they were made. The
 first call the recording never saw is where the runs part, and that call and every one after it go to the model:
@@ -329,6 +329,7 @@ A fork shares its parent's log up to the checkpoint, and with it every call the 
 | `pass_through`, `in_forks: replay` (**the default**) | Answered from the parent's recording of the same call, the parent's calls after the fork first; on a miss, sent to the real host and kept | A fork is a comparison: it should differ from its parent only by what it changed. A search that answers differently a day later would be a second change nobody asked for |
 | `pass_through`, `in_forks: pass_through` | Sent to the real host again | When the point of the fork is to see today's answer |
 | `replay` | From its own source, as declared | |
+| The agent's model calls (recorded on the wire) | Answered with the parent's recorded answers after the checkpoint, in turn, until the first call the parent never made (a patched prompt, new code asking otherwise); that call and every later one go to the model. `replayed.json` says how many were answered and where they parted | The same reason: the fork shows what its change did, not a model answering differently the second time |
 
 `test_a_fork_replays_its_parents_lookups_by_default_and_calls_the_real_host_when_told_to` runs both.
 
@@ -346,7 +347,6 @@ A replay's `{kind: run}` names a closed world or run under the server's state di
   declarations to add for any host nobody declared (`RunRecord.outbound`).
 - The viewer: an "Outbound calls" lane on the timeline (a replayed call hollow, a refused one red) and a list,
   each call opening to its redacted request and answer, a replayed one marked "REPLAYED from a recording".
-- MCP: `list_outbound_calls(run_id)`; `show_evidence` gives each cited event's call its `captured` detail.
 - Minutehand's own OpenTelemetry: one `SpanKind.CLIENT` span per captured call, `<method> <host>`, in the
   caller's trace when it sent a `traceparent`, with the mode and what answered it; never a body, whatever
   `MINUTEHAND_EXPORT_BODIES` says.

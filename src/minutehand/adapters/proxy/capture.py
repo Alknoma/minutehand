@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
@@ -666,28 +666,42 @@ def refuse_claimed(declared: Sequence[Declaration], registry: Registry, model_ho
 
 
 def replaying_for(
-    declared: Sequence[Declaration], *, state: Path, parent: str | None = None, after_wake: int = 0
+    declared: Sequence[Declaration],
+    *,
+    state: Path,
+    parent: str | None = None,
+    after_wake: int = 0,
+    calls_of: Callable[[str], Sequence[RecordedCall]] | None = None,
 ) -> dict[str, Replaying]:
     """The recordings each replaying host reads: a `Replay` its declared source, and in a fork of `parent` taken
     after wake `after_wake`, a `PassThrough` whose `in_forks` says replay, the parent's own recordings, missing
     through to the real host. The fork shares the parent's calls up to that wake, so the parent's later calls
-    answer first: the fork's first lookup after the fork is answered as the parent's first lookup after it was."""
+    answer first: the fork's first lookup after the fork is answered as the parent's first lookup after it was.
+
+    A run's recordings are read from its own log when `calls_of` reads one (`session`): the timestamped record is
+    the one source, and `captured.jsonl` only its export, for recordings kept in a directory of their own."""
+
+    def of_run(run: str, named: str) -> Recordings:
+        if calls_of is None:
+            return Recordings.read(state / "runs" / run, source=named)
+        return Recordings(source=named, calls=[c for c in calls_of(run) if c.exchange.captured is not None])
+
     found: dict[str, Replaying] = {}
     for declaration in declared:
         if isinstance(declaration, Replay):
             source = declaration.source
             if isinstance(source, RecordedRun):
-                directory, named = state / "runs" / source.run, f"run {source.run}"
+                recordings = of_run(source.run, f"run {source.run}")
             else:
-                directory, named = Path(source.directory), f"recordings in {source.directory}"
+                recordings = Recordings.read(Path(source.directory), source=f"recordings in {source.directory}")
             found[declaration.host] = Replaying(
-                Recordings.read(directory, source=named),
+                recordings,
                 list(declaration.ignore_query),
                 list(declaration.ignore_body),
                 declaration.on_miss,
             )
         elif isinstance(declaration, PassThrough) and parent is not None and declaration.in_forks is InForks.REPLAY:
-            recorded = Recordings.read(state / "runs" / parent, source=f"parent run {parent}")
+            recorded = of_run(parent, f"parent run {parent}")
             later = [c for c in recorded.calls if c.wake > after_wake]
             shared = [c for c in recorded.calls if c.wake <= after_wake]
             found[declaration.host] = Replaying(

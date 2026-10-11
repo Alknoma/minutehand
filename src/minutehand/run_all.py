@@ -44,13 +44,13 @@ from minutehand.application.files import (
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import ExpectedOutcome, Model, OutcomeRate, Scenario, derived_seed
-from minutehand.domain.templates import RUN_DIR, RUN_PORT
+from minutehand.domain.templates import RUN_DIR, RUN_DIR_VARIABLE, RUN_PORT, RUN_PORT_VARIABLE
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
 
 PORT = RUN_PORT
 DIR = RUN_DIR
-PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
-DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
+PORT_VARIABLE = RUN_PORT_VARIABLE
+DIR_VARIABLE = RUN_DIR_VARIABLE
 CA = "ca"
 """The proxy's CA folder under the state directory, as `session` names it."""
 BATCHES = "run-all"

@@ -377,7 +377,7 @@ Over the wire: `CreateWorld.case` on each world, `POST /v1/cases/{case_id}/steps
   "What every run is assessed on") whether or not it declares a rule. A standing world is opened without an agent
   file, so only the scenario's own rules add to that, and no rhythm is declared to time reactions against. A check
   that needs the agent's wakes, over a world with no step, makes it `not_judged`, exit 5, listed in the verdict.
-- **Probes.** A standing world no call reached is not listed by `minutehand runs`, `list_runs` or the viewer.
+- **Probes.** A standing world no call reached is not listed by `minutehand runs` or the viewer.
 
 ## Each world is a run
 

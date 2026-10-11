@@ -1,5 +1,5 @@
 """The read model on real runs played by the installed `minutehand run`, read back with `minutehand query`, `trace` and
-`explain` and the MCP tool `query_run`: the follow-up example asking Rosa in Slack, its people written by the
+`explain`: the follow-up example asking Rosa in Slack, its people written by the
 recipes' stand-in model, and the reference agent on the library's `person_answers_late`, emailing, following up and
 with its model calls recorded on the wire. What each view says is held against what the agent did and against the
 run's own record, and every query docs/querying.md offers is run on both."""
@@ -15,11 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session
 
 from minutehand import session
-from minutehand.adapters.mcp.results import QueryAnswer
-from minutehand.adapters.mcp.server import build
 from minutehand.adapters.query.reader import Record, open_model, query
 from minutehand.application.checkpoint import checkpoints
 from minutehand.application.library import entry, write
@@ -30,7 +27,6 @@ from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.architecture.support import MINUTEHAND, ROOT, Rig, free_port
 from tests.architecture.test_library import FOLLOW_UP, REFERENCE_TEAM
-from tests.mcp.test_mcp_tools import call
 from tests.support.people import MODEL as PEOPLE_MODEL
 from tests.support.people import people_environment
 
@@ -223,18 +219,6 @@ def test_the_example_read_with_the_installed_commands(follow_up: Played) -> None
     assert [a["summary"] for a in explained["after"] if a["kind"] == "message"] == ["Thank you!"]
     text = follow_up.cli("explain", follow_up.run_id, str(ask["seq"]))
     assert f"  reply: rosa at 2026-08-25T21:00:00.000Z: {ROSA_SAYS} (model, reply 1)" in text.splitlines()
-
-
-async def test_the_example_read_over_mcp(follow_up: Played) -> None:
-    async with create_connected_server_and_client_session(build(follow_up.state)) as client:
-        found = await call(
-            client,
-            "query_run",
-            QueryAnswer,
-            run_id=follow_up.run_id,
-            sql="SELECT person, written_by, text FROM replies",
-        )
-    assert found.rows == [["rosa", "model", ROSA_SAYS]]
 
 
 def test_the_reference_agents_follow_up_answer_and_report(reference: Played) -> None:

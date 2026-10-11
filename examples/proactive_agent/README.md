@@ -14,8 +14,8 @@ small package, `wake/`:
 | `wake/guard.py` | The rules every wake keeps, whatever the decider proposed: nothing open, no wake; something open, always a wake; never before an answer can be due; never in the past; always in working hours (a weekend is skipped). If the decider proposes nothing, or fails, the earliest due moment is used. |
 
 The rest of `agent.py` is plain code: ask, follow up, report. Its memory is `minutehand.agent.store`, a SQLite file in
-production and the run's own memory under Minutehand. A Slack event is only recorded; the agent acts on the wake it
-brings.
+production and the run's own memory under Minutehand. Everything it knows between wakes is there, even the time of its last wake, so a restarted agent (a
+fork from a checkpoint) is the agent it was. A Slack event is only recorded; the agent acts on the wake it brings.
 
 The worlds are the people `work.json` names; the example's work asks Sam, in finance, for a cost centre and tells Owen.
 

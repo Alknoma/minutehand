@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from minutehand import cli, session
-from minutehand.adapters.mcp.results import RunListing
 from minutehand.adapters.web.responses import RunResponse, RunsResponse
 from minutehand.application.forks import DivergenceKind, Record, described
 from minutehand.application.restore import Verification
@@ -24,7 +23,6 @@ from minutehand.domain.scenario import Silent
 from minutehand.domain.telemetry import Attribute, Placement, ReceivedSpan, SpanSource, StoredSpan, StringValue
 from minutehand.domain.world import Actor, Exchange, RecordedCall
 from tests.e2e.support import ANSWER, T0, agent_under_test, answers, scenario
-from tests.mcp.test_mcp_tools import call, connected
 from tests.web.test_viewer_api import client, read
 
 
@@ -92,12 +90,6 @@ async def test_a_fork_says_where_it_split_what_it_changed_how_its_agent_was_veri
     cli.main(["runs", "--state", str(state)])
     listing = capsys.readouterr().out
     assert "after wake 1" in listing and "deadline +3.0 days" in listing and "Sofia Romano follows a script" in listing
-
-    async with connected(state) as mcp:
-        runs = await call(mcp, "list_runs", RunListing)
-    accounts = {r.run_id: r.fork for r in runs.runs}
-    assert accounts[parent] is None
-    assert accounts[answered] == fork
 
 
 def test_a_persons_reply_from_a_fork_is_the_first_change_in_the_world_that_differs() -> None:

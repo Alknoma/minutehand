@@ -30,7 +30,7 @@ Value = str | int | float | None
 Record = dict[str, Value]
 
 MAX_ROWS = 1000
-"""The most rows one page of `query_run` answers."""
+"""The most rows one page of a query answers."""
 SECONDS = 30.0
 """How long one statement may run before it is stopped."""
 CELL = 120
@@ -92,7 +92,7 @@ _built: OrderedDict[tuple[object, ...], bytes] = OrderedDict()
 
 def open_model(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Connection:
     """The read model of a run, locked to reading. Built once per state of the run's files and kept for the next
-    reader in this process (a page of `query_run` after another)."""
+    reader in this process (one page of a query after another)."""
     key = (str(state.resolve()), run_id, (prices or Prices()).model_dump_json(), *_stamp(state, run_id))
     if key in _built:
         _built.move_to_end(key)

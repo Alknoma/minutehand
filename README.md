@@ -124,7 +124,7 @@ minutehand explain <run> <seq>             # what led to one event, and what fol
 minutehand query --schema                  # every view and column
 ```
 
-The same are MCP tools (`query_run`, `schema`, `trace`, `explain`). `docs/querying.md` documents every column, how
+Over MCP (`minutehand mcp`) every command is the tool of the same name. `docs/querying.md` documents every column, how
 the views stay stable, and a dozen ready-made queries.
 
 ## Status

@@ -2,7 +2,9 @@
 list, and posts the whole list to Sam in Slack. Restarted, it would forget; replayed, it rebuilds the list from the
 recorded answers (`minutehand replay`). It wakes once a day.
 
-    MODEL_URL  its model's chat completions URL;  PORT  where it listens"""
+    MODEL_URL  its model's chat completions URL;  PORT  where it listens
+    IN_MEMORY  set: it keeps its notes and its last wake in its memory (`minutehand.agent.store`) instead, so a fork
+               from a checkpoint restores it"""
 
 from __future__ import annotations
 
@@ -16,14 +18,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 from slack_sdk import WebClient
 
+from minutehand.agent import store
+
 notes: list[str] = []
 last: list[datetime] = []
+IN_MEMORY = bool(os.environ.get("IN_MEMORY"))
+
+
+def _load() -> None:
+    if IN_MEMORY:
+        notes[:] = store.get("notes") or []
+        last[:] = [datetime.fromisoformat(w) for w in store.get("last") or []]
+
+
+def _save() -> None:
+    if IN_MEMORY:
+        store.put("notes", list(notes))
+        store.put("last", [w.isoformat() for w in last])
+
+
 lock = threading.Lock()
 slack = WebClient(token="xoxb-remembers")
 
 
 def wake(now: datetime) -> None:
     with lock:
+        _load()
         last.append(now)
         asked = {
             "model": "model-luna",
@@ -34,6 +54,7 @@ def wake(now: datetime) -> None:
         user = slack.users_lookupByEmail(email="sam@example.com")["user"]["id"]
         channel = slack.conversations_open(users=[user])["channel"]["id"]
         slack.chat_postMessage(channel=channel, text=" | ".join(notes))
+        _save()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -47,6 +68,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         with lock:
+            _load()
             due = (last[-1] + timedelta(days=1)).isoformat() if last else None
         self._answer({"status": "idle", "next_wake": due})
 

@@ -16,6 +16,7 @@ from minutehand import session
 from minutehand.application.files import load_agent, load_scenario
 from minutehand.application.model_export import batch_lines
 from minutehand.domain.agent import Reported
+from minutehand.domain.experiment import Fork
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.e2e.support import free_port
 from tests.proxy.upstream import Answer, Authority, make_authority, model_api
@@ -36,6 +37,7 @@ async def _play(
     says: str,
     replay_of: str | None = None,
     live_from: datetime | None = None,
+    fork_at: int | None = None,
 ) -> tuple[str, list[str], int]:
     """The run's id, what the agent posted at each wake, and how many calls reached the model. A replay plays the
     agent file its run kept, so every play of a test listens on the test's one port."""
@@ -49,7 +51,11 @@ async def _play(
     async with model_api(authority, _said(says)) as model:
         monkeypatch.setenv("PORT", str(port))
         monkeypatch.setenv("MODEL_URL", f"https://localhost:{model.port}/v1/chat/completions")
-        if replay_of is None:
+        if fork_at is not None and replay_of is not None:
+            [outcome] = await session.fork(
+                replay_of, Fork(parent_run=replay_of, at_seq=fork_at), state=state, command=command, listen=listen
+            )
+        elif replay_of is None:
             [outcome] = await session.play(
                 load_scenario(AGENT / "scenario.yaml"), agent, state=state, command=command, listen=listen
             )
@@ -102,3 +108,26 @@ async def test_the_model_calls_are_written_out_as_openai_batch_lines(
         "body": {"object": "chat.completion", "choices": [{"message": {"role": "assistant", "content": "then"}}]},
     }
     assert [line["minutehand"]["at"][:10] for line in lines] == ["2026-08-24", "2026-08-25", "2026-08-26"]
+
+
+async def test_a_fork_from_a_checkpoint_has_its_parents_model_answers_until_the_agent_asks_something_new(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rewound to the checkpoint after the first wake and played on, the agent's model calls after it are answered
+    as its parent's model answered them: the fork differs from its parent only by what it changed."""
+    monkeypatch.setenv("IN_MEMORY", "1")
+    authority = make_authority(tmp_path / "upstream-ca")
+    first, posted, _ = await _play(tmp_path, monkeypatch, authority, "then")
+    after_first_wake = next(p for p in session.fork_points(tmp_path / "state", first) if p.wake == 1)
+
+    forked, onward, reached = await _play(
+        tmp_path, monkeypatch, authority, "now", replay_of=first, fork_at=after_first_wake.seq
+    )
+
+    assert onward == posted and reached == 0, "the parent's answers, not the model's new ones"
+    assert session.replayed(tmp_path / "state", forked) == {
+        "replay_of": first,
+        "model_calls_replayed": 2,
+        "parted": None,
+        "live_from": None,
+    }

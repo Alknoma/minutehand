@@ -599,11 +599,12 @@ class ProxyAddon:
         policy = self.policy(host)
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):
             self._recorded.add(flow.id)
+        if policy is HostPolicy.EDIT:
+            self._edit(flow, host)  # a recording answers only the request as edited: a changed prompt reaches the model
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._replayed(flow, host):
             return
         if policy is HostPolicy.EDIT:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
-            self._edit(flow, host)
             return
         if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"

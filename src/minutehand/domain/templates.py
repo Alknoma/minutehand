@@ -34,6 +34,11 @@ RUN_FILLED = (RUN_PORT, RUN_DIR)
 `minutehand run` once per invocation and `run-all` once per scenario (`minutehand.run_all`). Any other reader of an
 agent file (`env`, `doctor`, `run` with no command) refuses a file that still holds one."""
 
+RUN_PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
+RUN_DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
+"""What `{run.port}` and `{run.dir}` were filled with, as the agent's command is told: kept with each run, so a fork
+or a replay starts the agent listening, and keeping its files, where the run's agent file says it does."""
+
 PERSON = ("person.key", "person.email", "person.name", "person.credential")
 
 

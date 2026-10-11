@@ -225,6 +225,12 @@ class _Parser(argparse.ArgumentParser):
         return argparse.Namespace(**{**vars(parsed), **vars(own)})
 
 
+TAKES_COMMAND = "takes_command"
+"""Set on a command that takes a program after `--`: the agent's, or the MCP server's for `mcp-relay`."""
+OVER_MCP = "over_mcp"
+"""False on a command `minutehand mcp` does not serve; every other command is its tool of the same name."""
+
+
 def _parser() -> _Parser:
     parser = _Parser(prog="minutehand", description="Simulated days for a proactive agent.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {minutehand.__version__}")
@@ -580,6 +586,10 @@ def _parser() -> _Parser:
     priced(view)
     state(view)
     _library_parser(commands.add_parser("scenarios", help="the scenario library: list it, or write scenarios out"))
+    for name in ("run", "run-all", "fork", "replay", "doctor", "mcp-relay"):
+        commands.choices[name].set_defaults(**{TAKES_COMMAND: True})
+    for name in ("mcp", "mcp-relay", "serve", "view"):  # each serves until stopped: no call returns from them
+        commands.choices[name].set_defaults(**{OVER_MCP: False})
     return parser
 
 
@@ -688,7 +698,7 @@ def _main(args_in: list[str]) -> int:
     if args.command == "migrate":
         return _migrate(args.file, write=args.write)
     state: Path = args.state or Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
-    if command is not None and args.command not in ("run", "fork", "run-all", "replay"):
+    if command is not None and not getattr(args, TAKES_COMMAND, False):
         print(f"minutehand {args.command}: takes no agent command", file=sys.stderr)
         return 2
     try:
