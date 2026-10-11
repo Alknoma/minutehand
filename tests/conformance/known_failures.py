@@ -266,24 +266,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.SEEDED,
-        "channel_archived",
-        "fact-channel was seeded archived; the API shows private=False archived=False topic='' purpose='', ['owen@example.com', 'sofia@example.com']",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "channel_private",
-        "fact-channel was seeded private; the API shows private=False archived=False topic='' purpose='', ['owen@example.com', 'sofia@example.com']",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "channel_purpose",
-        "fact-channel was seeded with a purpose; the API shows private=False archived=False topic='' purpose='', ['owen@example.com', 'sofia@example.com']",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
         "document_file",
         "'Fact document' was seeded a file; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
     ),

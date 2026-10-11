@@ -391,6 +391,9 @@ class TeamsGraph:
         return wire.GraphChannel(
             id=channel.graph_id,
             displayName=channel.display_name or "General",
+            description=channel.description,
+            membershipType="private" if channel.private else "standard",
+            isArchived=channel.archived,
             createdDateTime=channel.created,
             webUrl=f"https://teams.microsoft.com/l/channel/{channel.graph_id}",
             tenantId=channel.tenant_id,
@@ -758,6 +761,11 @@ class TeamsGraph:
                 "for migration only"
             )
         user = self._user(claims.oid)
+        if conversation.archived:
+            raise NotServed(
+                "a message posted to an archived channel: channel-archive says users can't send new messages to it, "
+                "and documents no answer"
+            )
         if user.user.id not in conversation.members:
             raise NotServed("a message posted where the user is no member: Graph's answer is not documented")
         try:

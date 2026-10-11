@@ -195,6 +195,9 @@ class ConversationRecord(Model):
     members: list[str]
     bot_installed: bool
     created: str
+    description: str | None = Field(default=None, description="A channel's description")
+    private: bool = Field(default=False, description="A private channel: members a subset of the team's")
+    archived: bool = Field(default=False, description="An archived channel: read-only, still listed")
 
 
 class ActionRecord(Model):

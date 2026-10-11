@@ -545,6 +545,7 @@ class GraphChannel(Aliased):
     displayName: str
     description: str | None = None
     membershipType: Literal["standard", "private", "shared"] = "standard"
+    isArchived: bool = False
     createdDateTime: str
     webUrl: str
     tenantId: str

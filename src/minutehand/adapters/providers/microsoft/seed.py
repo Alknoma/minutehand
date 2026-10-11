@@ -373,6 +373,9 @@ def _channel(
             members=members,
             bot_installed=seeded.agent_member,
             created=stamp,
+            description=seeded.purpose or None,
+            private=seeded.private,
+            archived=seeded.archived,
         )
     if len(members) == 1:
         existing = world.personal_with(members[0], directory.tenant_id)
