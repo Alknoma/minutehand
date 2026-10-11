@@ -62,6 +62,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     item_ref,
     item_text,
+    neutral_title,
     permission_ref,
     site_ref,
     tombstone_ref,
@@ -101,6 +102,25 @@ def refuse_unread(asked: wire.SentItem | wire.CopyRequest | wire.MoveRequest) ->
     names = sorted(str(n) for n in (asked.model_extra or {}))
     if names:
         raise NotServed(f"the driveItem properties {', '.join(names)}: they would not be kept as sent")
+
+
+ROLES = {
+    AccessRole.READER: ["read"],
+    AccessRole.WRITER: ["write"],
+    AccessRole.ORGANIZER: ["owner"],
+}
+"""Graph's roles for each access a scenario gives: read, write and owner
+(https://learn.microsoft.com/en-us/graph/api/driveitem-invite). It has no commenter, so a commenter is refused."""
+
+
+def graph_roles(role: AccessRole, what: str) -> list[str]:
+    """The roles Graph grants for `role`; refused by name for one it has none for."""
+    if role not in ROLES:
+        raise ValueError(
+            f"Microsoft cannot hold {what} as {role.value}: Graph's sharing roles are read, write and owner "
+            "(https://learn.microsoft.com/en-us/graph/api/driveitem-invite)"
+        )
+    return ROLES[role]
 
 
 def mime_of(name: str) -> str:
@@ -538,7 +558,7 @@ class Files:
             operation=Operation.CREATE,
             actor=actor,
             parent=PERMISSION_PARENT.format(item=stored.item.id),
-            after=GrantSnapshot(document=stored.item.name, to=email, role=_role(roles)),
+            after=GrantSnapshot(document=neutral_title(stored.item.name), to=email, role=_role(roles)),
         )
         return permission
 

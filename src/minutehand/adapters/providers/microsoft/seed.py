@@ -29,7 +29,7 @@ from pydantic import Field
 from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.cards import message_actions
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
-from minutehand.adapters.providers.microsoft.graph_files import Files, item_id, mime_of
+from minutehand.adapters.providers.microsoft.graph_files import Files, graph_roles, item_id, mime_of
 from minutehand.adapters.providers.microsoft.graph_mail import Composed, Mail, outlook_id, recipient_of
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
@@ -656,6 +656,15 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
         made = made.model_copy(update={"item": made.item.model_copy(update={"lastModifiedBy": changed_by})})
         world.write_item(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
         world.write_seeded(position, document.title, made.item.id)
+        for access in document.shared_with:
+            roles = graph_roles(access.role, f"{document.title!r}'s shared_with {access.person}")
+            target = world.person(access.person) if access.person is not None else None
+            if target is None:
+                raise ValueError(
+                    f"the Microsoft seed shares {document.title!r} (shared_with) with {access.person}, no user of "
+                    "the tenant: Graph invites a user by email"
+                )
+            written.share(made, target.user.mail or target.user.userPrincipalName, roles, actor=Actor.SCENARIO)
 
 
 def _file_of(document: SeededDocument) -> tuple[str, bytes]:
