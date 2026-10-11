@@ -1389,7 +1389,7 @@ class Fork(Model):
 
 - `adapters/proxy/edit.py` knows three wire shapes that carry a system prompt: OpenAI chat completions (`messages[0]` with role `system` or `developer`), OpenAI responses (`instructions`), Anthropic messages (`system`). A body no edit applies to goes on byte for byte. Edits match the request as the agent sent it, so a model swap cannot change which prompt patches apply.
 - `CallMatch` picks which of an agent's several prompts a patch applies to (`host`, `model`, `system_contains`). How reliably `system_contains` singles one out in a real agent is untested.
-- A fork never replays the agent's model calls: a patch changes the request and the real model answers it. `minutehand replay` does, from the run's start (`docs/capture.md`, "Replaying a whole run"). They are recorded on the wire by default; `--tunnel-model-calls` passes them through unopened.
+- A fork answers the agent's model calls after its checkpoint with its parent's recorded answers, until the agent asks something its parent did not; a patch changes the request, so the real model answers it. `minutehand replay` does the same from the run's start (`docs/capture.md`). They are recorded on the wire by default; `--tunnel-model-calls` passes them through unopened.
 - Patching means the proxy opens model traffic it otherwise only tunnels, so it sees prompts and the API key. Locally that stays on the developer's machine. Hosted, it is a trust decision for the customer.
 - `Routing.apply` sets the edits for the run about to play; one run plays at a time through one proxy.
 
