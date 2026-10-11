@@ -639,12 +639,11 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
         if document.provider != MANIFEST.key:
             continue
         folder = root
-        if document.folder is not None:
-            found = next((c for c in world.children(root.item.id) if c.item.name == document.folder), None)
+        for step in [s for s in (document.folder or "").split("/") if s]:  # a path is folders within folders
+            found = next((c for c in world.children(folder.item.id) if c.item.name == step), None)
             if found is None:
-                made = files.new_item(library, root, document.folder, folder=True, content=b"", by=owner)
-                world.write_item(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
-                found = made
+                found = files.new_item(library, folder, step, folder=True, content=b"", by=owner)
+                world.write_item(found, operation=Operation.CREATE, actor=Actor.SCENARIO)
             folder = found
         name = document.title if "." in document.title else f"{document.title}.docx"
         content = docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()

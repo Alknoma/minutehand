@@ -93,7 +93,7 @@ async def test_document_read_versioned_renamed_notified_and_deleted(
         before = len(webhook.notifications)
         renamed = await person_does(tenant, "sofia", "Vendor Plan", Renamed(to="Vendor Plan (final)"))
         assert (renamed.actor, renamed.operation) == (Actor.PERSON, Operation.UPDATE)
-        assert isinstance(renamed.after, DocumentSnapshot) and renamed.after.title == "Vendor Plan (final).docx"
+        assert isinstance(renamed.after, DocumentSnapshot) and renamed.after.title == "Vendor Plan (final)"
         [notice] = webhook.notifications[before:]
         assert notice["value"][0]["clientState"] == "the-service-secret"
         assert notice["value"][0]["subscriptionId"] == subscribed.json()["id"]

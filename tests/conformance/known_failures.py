@@ -227,12 +227,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.FAMILY,
-        "documents",
-        "the document's first neutral change is [('create', {'title': 'Lifecycle doc.docx', 'text': '', 'parent': 'None', 'owner': 'Agent', 'space': 'C89C8622814 Team', 'mime': 'application",
-    ),
-    Known(
-        "microsoft",
-        Property.FAMILY,
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
     ),
@@ -272,12 +266,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.SEEDED,
-        "document_folder",
-        "the world's neutral view holds 0 documents titled 'Fact document'",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
         "document_last_editor",
         "seeded last changed by mila 3 days before the start; the API: None at 2026-09-01 09:00:00+00:00",
     ),
@@ -294,12 +282,6 @@ KNOWN: tuple[Known, ...] = (
         Property.SEEDED,
         "document_spreadsheet",
         "'Fact document' was seeded a spreadsheet; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "document_text",
-        "the world's neutral view holds 0 documents titled 'Fact document'",
     ),
     Known(
         "microsoft",

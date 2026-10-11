@@ -320,6 +320,17 @@ def post_ref(key: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"post:{key}")
 
 
+OFFICE_EXTENSIONS = (".docx", ".xlsx", ".pptx")
+"""The extensions of Word, Excel and PowerPoint documents: a document named `Plan.docx` is titled `Plan` in Office,
+as a native document of any other provider is titled without one."""
+
+
+def neutral_title(name: str) -> str:
+    """A drive item's title as the neutral record keeps it: its name, less an Office document's extension."""
+    lowered = name.lower()
+    return next((name[: -len(e)] for e in OFFICE_EXTENSIONS if lowered.endswith(e) and len(name) > len(e)), name)
+
+
 def reaction_ref(activity: str, oid: str, reaction: str) -> EntityRef:
     """One user's reaction of one type to a message: a user may react to it with more than one type."""
     return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}:{reaction}")
@@ -553,8 +564,10 @@ class MicrosoftWorld:
         return self.store.versions(item_ref(item))
 
     def write_item(self, stored: wire.StoredItem, *, operation: Operation, actor: Actor) -> WorldEvent:
+        above = self.item(stored.item.parentReference.id) if stored.item.parentReference.id else None
         snapshot = DocumentSnapshot(
-            title=stored.item.name,
+            title=neutral_title(stored.item.name),
+            parent=above.item.name if above is not None and above.item.root is None else None,
             mime_type=stored.item.file.mimeType if stored.item.file is not None else None,
             text=item_text(stored) or None,
             last_edited_by=self._editor(stored.item.lastModifiedBy),
