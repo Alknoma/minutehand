@@ -337,9 +337,16 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
+    numbers = state.person_numbers([extra.logins.get(p.key, p.key) for p in scenario.people])
     accounts += [
-        user(f"1-{n + 1}", extra.logins.get(p.key, p.key), p.name, p.email, banned=p.account is Account.DEACTIVATED)
-        for n, p in enumerate(scenario.people)
+        user(
+            f"1-{numbers[extra.logins.get(p.key, p.key)]}",
+            extra.logins.get(p.key, p.key),
+            p.name,
+            p.email,
+            banned=p.account is Account.DEACTIVATED,
+        )
+        for p in scenario.people
     ]
     accounts += [
         user(f"1-{state.EXTRA_USERS + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
@@ -503,6 +510,15 @@ def _project_fields(
     return made
 
 
+def _identity(ticket: SeededTicket, youtrack: YouTrackWorld, home: wire.StoredProject) -> tuple[str, ...]:
+    """What a seeded ticket is: its key, or its project, title and how many issues of that title seeding made there
+    before it."""
+    if ticket.key is not None:
+        return ("key", ticket.key)
+    before = [i for i in youtrack.issues(home.id) if i.summary == ticket.title and i.seededFrom is not None]
+    return (home.name, ticket.title, str(len(before)))
+
+
 def _seed_issue(
     youtrack: YouTrackWorld,
     home: wire.StoredProject,
@@ -514,8 +530,9 @@ def _seed_issue(
     start: datetime,
     labels: list[str],
 ) -> wire.StoredIssue:
-    """The issue seeded from `Scenario.tickets[position]`: its id from its position and title, its tags' from their
-    names, its comments' from its id and their place on it, so none moves when more is seeded."""
+    """The issue seeded from `Scenario.tickets[position]`: its id from what the ticket is (its key, or its project,
+    title and place among tickets of that title), its tags' from their names, its comments' from its id and their
+    place on it, so none moves when more is seeded or a ticket is listed before it."""
     at = state.millis(start - detail.created_ago)
     number = youtrack.next_number(home.id)
     values: dict[str, wire.FieldValue] = {f.id: f.defaultValue for f in home.fields if f.defaultValue is not None}
@@ -546,7 +563,7 @@ def _seed_issue(
             youtrack.write_tag(tag, actor=Actor.SCENARIO)
         tags.append(tag.id)
     issue = wire.StoredIssue(
-        id=state.seeded_id(2, str(position), home.name, ticket.title, taken=youtrack.taken),
+        id=state.seeded_id(2, *_identity(ticket, youtrack, home), taken=youtrack.taken),
         idReadable=f"{home.shortName}-{number}",
         numberInProject=number,
         project=home.id,

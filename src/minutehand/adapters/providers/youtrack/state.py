@@ -83,6 +83,35 @@ SEEDED = 100_000_000
 _SEEDED_SPAN = 900_000_000
 EXTRA_USERS = 10_000
 """The number of the first user the YouTrack seed adds beyond the agent and the scenario's people."""
+
+
+def person_numbers(logins: list[str]) -> dict[str, int]:
+    """Each scenario person's user number, from their login: never from where they sit among the scenario's people,
+    so a person listed before them moves nothing. Between 1 (the agent is 0) and `EXTRA_USERS`; two that land on one
+    number are told apart in the order of their logins, not of the list."""
+    room = EXTRA_USERS - 1
+    if len(logins) > room:
+        raise ValueError(f"a YouTrack seed holds at most {room} people")
+    taken: set[int] = set()
+    found: dict[str, int] = {}
+    for login in sorted(logins, key=lambda name: (_person_digest(name, room), name)):
+        n = _person_digest(login, room)
+        while n in taken:
+            n = (n + 1) % room
+        taken.add(n)
+        found[login] = n + 1
+    return found
+
+
+def person_id(login: str, logins: list[str]) -> str:
+    """The user id of the scenario person with `login`, among the scenario's people's `logins`."""
+    return f"1-{person_numbers(logins)[login]}"
+
+
+def _person_digest(login: str, room: int) -> int:
+    return int(hashlib.sha256(f"youtrack person\x1f{login.lower()}".encode()).hexdigest(), 16) % room
+
+
 DESCRIBED_PROJECTS = 1_000
 """The number of the first project the YouTrack seed describes; a project only seeded tickets name counts from 0."""
 DESCRIBED_FIELDS = 1_000_000

@@ -274,7 +274,7 @@ def _tomas() -> Person:
 async def test_a_persons_transition_is_sent_to_the_webhook_and_the_agent_hears_of_it(
     hooked: Site, receiver: Receiver
 ) -> None:
-    ref = issue_ref("1000")
+    ref = issue_ref(hooked.seeded(0))
     assert hooked.provider.heard_of(ref, _tomas(), hooked.store, hooked.clock) is True
     moved = await hooked.provider.apply(
         ref, "Start work", Actor.PERSON, _tomas(), json.dumps({"comment": "On it"}), hooked.store, hooked.clock
@@ -288,13 +288,15 @@ async def test_a_persons_transition_is_sent_to_the_webhook_and_the_agent_hears_o
 
 
 async def test_the_agent_does_not_hear_of_a_move_no_webhook_is_sent(site: Site) -> None:
-    assert site.provider.heard_of(issue_ref("1000"), _tomas(), site.store, site.clock) is False
+    assert site.provider.heard_of(issue_ref(site.seeded(0)), _tomas(), site.store, site.clock) is False
 
 
 async def test_the_agent_does_not_hear_of_a_move_the_webhooks_filter_leaves_out(
     tmp_path: Path, receiver: Receiver
 ) -> None:
     async for site in _site(tmp_path, [{"url": receiver.url, "jql": "project = FIELD"}]):
-        assert site.provider.heard_of(issue_ref("1000"), _tomas(), site.store, site.clock) is False
-        await site.provider.apply(issue_ref("1000"), "Start work", Actor.PERSON, _tomas(), "{}", site.store, site.clock)
+        assert site.provider.heard_of(issue_ref(site.seeded(0)), _tomas(), site.store, site.clock) is False
+        await site.provider.apply(
+            issue_ref(site.seeded(0)), "Start work", Actor.PERSON, _tomas(), "{}", site.store, site.clock
+        )
         assert receiver.bodies == []

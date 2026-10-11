@@ -35,7 +35,8 @@ async def test_a_worklog_is_kept_as_sent_and_read_back_by_id_and_in_the_issues_l
     assert made["timeSpentSeconds"] == 5400 and made["timeSpent"] == "1h 30m"
     assert made["started"] == STARTED and made["comment"] == comment
     assert made["author"]["accountId"] == AGENT and made["updateAuthor"]["accountId"] == AGENT
-    assert made["issueId"] == "1000" and made["self"] == f"{API}/issue/1000/worklog/{made['id']}"
+    first = site.seeded(0)
+    assert made["issueId"] == first and made["self"] == f"{API}/issue/{first}/worklog/{made['id']}"
     assert made["created"] == made["updated"] == "2026-08-24T10:50:03.000+0000"
 
     assert ok(await site.http.get(f"{LOG}/{made['id']}")) == made
@@ -107,7 +108,7 @@ async def test_adjust_estimate_manual_without_reduce_by_is_refused_400(site: Sit
 async def test_an_issue_without_estimates_has_none_to_adjust_and_auto_leaves_it_so(site: Site) -> None:
     made = ok(await site.http.post(f"{API}/issue/LAUNCH-2/worklog", json={"started": STARTED, "timeSpent": "1h"}), 201)
     issue = ok(await site.http.get(f"{API}/issue/LAUNCH-2", params={"fields": "timetracking"}))
-    assert made["issueId"] == "1001"
+    assert made["issueId"] == site.seeded(1)
     assert issue["fields"]["timetracking"] == {"timeSpent": "1h", "timeSpentSeconds": 3600}
 
 

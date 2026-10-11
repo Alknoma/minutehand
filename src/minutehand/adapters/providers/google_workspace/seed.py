@@ -154,7 +154,7 @@ def _seed_document(
         if document.kind is DocumentKind.FILE
         else None
     )
-    file_id = state.seeded_file_id(ordinal + state.SEEDED_FOLDER_DEPTH, parent.file.id, document.title)
+    file_id = state.seeded_file_id(parent.file.id, document.title)
     content: wire.Content | None
     if document.kind is DocumentKind.DOCUMENT:
         mime, content = wire.DOCUMENT, docs.from_markdown(file_id, document.text)
@@ -232,10 +232,10 @@ def seed(scenario: Scenario, world: Store) -> None:
         drive.keep_credential(state.secret_digest(sign_in.credential), credential, operation=Operation.CREATE)
 
     spaces: dict[str, wire.StoredFile] = {}
-    for position, space in enumerate(scenario.spaces):
+    for space in scenario.spaces:
         if space.provider != MANIFEST.key:
             continue
-        drive_id = state.seeded_drive_id(position, space.name)
+        drive_id = state.seeded_drive_id(space.name)
         drive.write_drive(wire.SharedDrive(id=drive_id, name=space.name, createdTime=stamp), actor=Actor.SCENARIO)
         root = folder_file(
             drive_id, space.name, parent=None, owner=None, drive_id=drive_id, stamp=stamp, version=state.SEEDED_VERSION

@@ -159,6 +159,10 @@ class Site:
     """Signed in as the agent, with Basic, at the site's own host."""
     proxy: Proxy
 
+    def seeded(self, position: int) -> str:
+        """The id of the issue seeded from the scenario's `position`-th Jira ticket."""
+        return next(i.id for i in self.jira.every_issue() if i.seededFrom == position)
+
     @property
     def jira(self) -> JiraWorld:
         return JiraWorld(self.store)

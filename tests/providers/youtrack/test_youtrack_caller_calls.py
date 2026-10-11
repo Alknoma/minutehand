@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import httpx
 
+from minutehand.adapters.providers.youtrack import state as _yt_state
 from minutehand.domain.world import Actor, Operation
 from tests.providers.youtrack.caller_world import CLIENT_ID, TOMAS_TOKEN, as_user
 from tests.providers.youtrack.youtrack_instance import Instance, entities, entity, millis_now, named, refusal
@@ -21,7 +22,12 @@ SEARCH_FIELDS = (
 USER_FIELDS = "id,login,email,fullName,avatarUrl,banned"
 PROJECT_FIELDS = "id,shortName,name,description,leader(id,login,fullName),customFields(field(id,name),bundle(values(id,name,ordinal)))"
 LAUNCH, OPS = "0-1000", "0-1001"
-AGENT, IRIS, TOMAS, NOOR, VENDOR = "1-0", "1-1", "1-2", "1-3", "1-10000"
+AGENT, VENDOR = "1-0", "1-10000"
+IRIS, TOMAS, NOOR = (
+    _yt_state.person_id("iris", ["iris", "tomas", "noor"]),
+    _yt_state.person_id("tomas", ["iris", "tomas", "noor"]),
+    _yt_state.person_id("noor", ["iris", "tomas", "noor"]),
+)
 
 
 async def field_id(yt: httpx.AsyncClient, issue: str, name: str) -> str:

@@ -42,6 +42,10 @@ class Editor:
     def now(self) -> datetime:
         return self._clock.now()
 
+    def file_upload(self, upload_id: str) -> wire.StoredFileUpload | None:
+        upload = self.world.file_upload(upload_id)
+        return upload if upload is not None and upload.workspace == self.workspace else None
+
     def user_name(self, user_id: str) -> str | None:
         user = self.world.user(user_id)
         return user.name if user is not None and user.workspace == self.workspace else None

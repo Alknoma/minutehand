@@ -38,6 +38,7 @@ Nothing here is held between calls: every read is a query of the store.
 from __future__ import annotations
 
 import base64
+import hashlib
 from collections.abc import Iterator, Sequence
 
 from minutehand.adapters.providers.jira import wire
@@ -94,8 +95,28 @@ def ticket_project_id(n: int) -> str:
     return _bounded(TICKET_PROJECTS, n, SEEDED_ISSUES - TICKET_PROJECTS, "projects named only by tickets")
 
 
-def seeded_issue_id(position: int) -> str:
-    return _bounded(SEEDED_ISSUES, position, 9000, "tickets")
+SEEDED_ISSUE_ROOM = 9000
+
+
+def seeded_issue_ids(identities: list[str]) -> dict[str, str]:
+    """Each seeded issue's id, by what it is (its key, or its project, title and place among tickets of that title):
+    from a digest of that, never from where it sits among the scenario's tickets, so a ticket listed before it moves
+    nothing. Two that land on one number are told apart in the order of what they are, not of the list."""
+    if len(identities) > SEEDED_ISSUE_ROOM:
+        raise ValueError(f"a Jira seed holds at most {SEEDED_ISSUE_ROOM} tickets")
+    taken: set[int] = set()
+    found: dict[str, str] = {}
+    for identity in sorted(identities, key=lambda i: (_digest_number(i), i)):
+        n = _digest_number(identity)
+        while n in taken:
+            n = (n + 1) % SEEDED_ISSUE_ROOM
+        taken.add(n)
+        found[identity] = str(SEEDED_ISSUES + n)
+    return found
+
+
+def _digest_number(identity: str) -> int:
+    return int(hashlib.sha256(f"jira issue\x1f{identity}".encode()).hexdigest(), 16) % SEEDED_ISSUE_ROOM
 
 
 def seeded_link_id(n: int) -> str:

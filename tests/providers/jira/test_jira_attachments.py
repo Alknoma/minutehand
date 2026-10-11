@@ -98,13 +98,13 @@ async def test_deleting_an_attachment_removes_its_metadata_and_its_bytes(site: S
 async def test_an_upload_without_the_no_check_header_is_refused_501_and_stores_nothing(site: Site) -> None:
     answer = await site.http.post(UPLOAD, files={"file": ("a.txt", b"x", "text/plain")})
     assert "X-Atlassian-Token: no-check" in refused(answer, 501)["errorMessages"][0]
-    assert site.jira.attachments("1000") == []
+    assert site.jira.attachments(site.seeded(0)) == []
 
 
 async def test_a_part_not_named_file_is_refused_501_naming_it(site: Site) -> None:
     answer = await site.http.post(UPLOAD, headers=NO_CHECK, files={"upload": ("a.txt", b"x", "text/plain")})
     assert "the multipart parameter 'upload'" in refused(answer, 501)["errorMessages"][0]
-    assert site.jira.attachments("1000") == []
+    assert site.jira.attachments(site.seeded(0)) == []
 
 
 async def test_an_upload_that_is_not_multipart_is_refused_501(site: Site) -> None:
@@ -116,7 +116,7 @@ async def test_more_than_sixty_files_in_one_upload_are_refused_413(site: Site) -
     sent = [("file", (f"{n}.txt", b"x", "text/plain")) for n in range(61)]
     answer = await site.http.post(UPLOAD, headers=NO_CHECK, files=sent)
     assert refused(answer, 413)["errorMessages"] == ["more than 60 files are requested to be uploaded."]
-    assert site.jira.attachments("1000") == []
+    assert site.jira.attachments(site.seeded(0)) == []
     sixty = await site.http.post(UPLOAD, headers=NO_CHECK, files=sent[:60])
     assert len(ok(sixty)) == 60
 

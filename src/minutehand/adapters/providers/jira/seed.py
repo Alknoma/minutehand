@@ -26,7 +26,7 @@ from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.state import (
     JiraWorld,
-    seeded_issue_id,
+    seeded_issue_ids,
     seeded_link_id,
     seeded_project_id,
     ticket_project_id,
@@ -601,12 +601,23 @@ def seed(scenario: Scenario, world: Store) -> None:
             raise ValueError(f"the Jira seed describes {detail.ticket!r}, which is the key of no seeded Jira ticket")
     by_key: dict[str, wire.StoredIssue] = {}
     commented: dict[str, int] = {}
+    mine = [t for t in scenario.tickets if t.provider == MANIFEST.key]
+
+    def identity(ticket: SeededTicket) -> str:
+        if ticket.key is not None:
+            return f"key\x1f{ticket.key}"
+        alike = [t for t in mine if (t.project, t.title) == (ticket.project, ticket.title)]
+        return f"{ticket.project}\x1f{ticket.title}\x1f{next(i for i, t in enumerate(alike) if t is ticket)}"
+
+    ids = seeded_issue_ids([identity(t) for t in mine])
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         found = next((i for i in spec.issues if i.ticket == ticket.key), None) if ticket.key is not None else None
         detail = found or SeededIssue(ticket=ticket.key or "")
-        made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position)
+        made = _issue(
+            desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position, ids[identity(ticket)]
+        )
         for n, comment in enumerate(ticket.comments):
             desk.comment(made, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at,
                          actor=Actor.SCENARIO, seeded=n)  # fmt: skip
@@ -647,6 +658,7 @@ def _issue(
     who: Callable[[str], str],
     earlier: dict[str, wire.StoredIssue],
     position: int,
+    issue_id: str,
 ) -> wire.StoredIssue:
     jira = desk.world
     issue_type = next((t for t in site.issueTypes if t.name.lower() == detail.issue_type.lower()), None)
@@ -699,7 +711,7 @@ def _issue(
     ]
     number = jira.next_number(project.id)
     issue = wire.StoredIssue(
-        id=seeded_issue_id(position),
+        id=issue_id,
         key=f"{project.key}-{number}",
         project=project.id,
         issuetype=issue_type.id,

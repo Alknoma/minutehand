@@ -20,29 +20,4 @@ class Known:
     observed: str
 
 
-KNOWN: tuple[Known, ...] = (
-    Known(
-        "google_workspace",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        "in a seed listing one more first, document Original doc: 1F00000000000099875f5ee919c73f -> 1F00000000000199875f5ee919c73f",
-    ),
-    Known(
-        "jira",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        "in a seed listing one more first, ticket Original one: 1000 -> 1001",
-    ),
-    Known(
-        "notion",
-        Property.RECORD,
-        "binary_upload_and_download",
-        'VendorRefused: create a file upload: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
-    ),
-    Known(
-        "youtrack",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        "in a seed listing one more first, person mila@example.com: 1-3 -> 1-4",
-    ),
-)
+KNOWN: tuple[Known, ...] = ()

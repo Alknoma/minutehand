@@ -157,11 +157,12 @@ def test_a_shared_drive_a_sign_in_and_a_fault_land(tmp_path: Path) -> None:
 
 
 def test_seeded_files_list_before_what_is_made_later_and_never_share_an_id_with_it() -> None:
-    seeded = [state.seeded_file_id(n, "x") for n in (0, 99, 100, 999_999)]
+    seeded = [state.seeded_file_id("root", name) for name in ("a", "b", "c", "Plan")]
     minted = [state.file_id(seq) for seq in (1, 2, 99_999_999)]
-    assert seeded == sorted(seeded) and max(seeded) < min(minted)
+    assert max(seeded) < min(minted) and len(set(seeded)) == len(seeded)
     assert not set(seeded) & set(minted)
-    assert state.seeded_drive_id(3, "Ops") != state.drive_id(3) and len(state.seeded_drive_id(3, "Ops")) == 19
+    assert state.seeded_file_id("root", "Plan") == state.seeded_file_id("root", "Plan"), "the same file, the same id"
+    assert state.seeded_drive_id("Ops") != state.drive_id(3) and len(state.seeded_drive_id("Ops")) == 19
 
 
 def test_a_document_whose_title_is_seeded_already_is_refused(tmp_path: Path) -> None:
