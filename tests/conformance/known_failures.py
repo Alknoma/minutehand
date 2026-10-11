@@ -42,19 +42,6 @@ KNOWN: tuple[Known, ...] = (
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, document Original doc: 1F00000000000099875f5ee919c73f -> 1F00000000000199875f5ee919c73f",
     ),
-    Known("google_workspace", Property.PEOPLE_ACT, "happening_moved", "the API shows the folder None"),
-    Known(
-        "google_workspace",
-        Property.SEEDED,
-        "document_file",
-        "the world's neutral text of 'Fact document' lacks ['fact,csv']: ''",
-    ),
-    Known(
-        "google_workspace",
-        Property.SEEDED,
-        "document_folder",
-        "seeded in Fact/Nested, the neutral view's parent is None",
-    ),
     Known(
         "jira",
         Property.IDS,

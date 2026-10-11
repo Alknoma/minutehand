@@ -46,6 +46,7 @@ from minutehand.domain.world import (
     GrantSnapshot,
     Operation,
     RecordSnapshot,
+    Snapshot,
     Stored,
     WorldEvent,
 )
@@ -167,10 +168,13 @@ def record_ref(external_id: str) -> EntityRef:
     return _ref(EntityKind.RECORD, external_id)
 
 
-def snapshot(stored: wire.StoredFile, *, space: str | None = None) -> DocumentSnapshot:
+def snapshot(
+    stored: wire.StoredFile, *, space: str | None = None, parent: str | None = None, blob: bytes | None = None
+) -> DocumentSnapshot:
     """The file as every document provider tells it: title, type, its text where Drive holds it as text (a Doc, a
-    deck, a sheet), who last changed it and who owns it, by email, and `space`, the name of the shared drive it is
-    in (None in its owner's My Drive, where a shared drive owns nothing and a file is owned by a person)."""
+    deck, a sheet, a text file's bytes), the folder it sits in (`parent`, None at the top of its drive), who last
+    changed it and who owns it, by email, and `space`, the name of the shared drive it is in (None in its owner's My
+    Drive, where a shared drive owns nothing and a file is owned by a person)."""
     editor = stored.file.lastModifyingUser
     owners = stored.file.owners or []
     return DocumentSnapshot(
@@ -178,7 +182,8 @@ def snapshot(stored: wire.StoredFile, *, space: str | None = None) -> DocumentSn
         space=space,
         title=stored.file.name,
         mime_type=stored.file.mimeType,
-        text=readable_text(stored) or None,
+        text=readable_text(stored, blob) or None,
+        parent=parent,
         last_edited_by=(editor.emailAddress or editor.displayName) if editor is not None else None,
         last_edited_at=datetime.fromisoformat(stored.file.modifiedTime.replace("Z", "+00:00")),
     )
@@ -308,7 +313,22 @@ class DriveWorld:
         return stored.file.trashed or any(above.file.trashed for above in self.ancestors(stored))
 
     def write_file(self, stored: wire.StoredFile, *, operation: Operation, actor: Actor) -> WorldEvent:
+        """A file as it now stands. A drive's root (My Drive, a shared drive's top) is no document anyone made: it is
+        kept as Drive's own record; any other file is a document, its folder named unless it sits at the top."""
         parents = stored.file.parents
+        above = self.file(parents[0]) if parents else None
+        folder = above.file.name if above is not None and above.file.parents is not None else None
+        content = stored.content
+        blob = (
+            self.blob(content)
+            if isinstance(content, wire.BlobRef) and stored.file.mimeType.startswith("text/")
+            else None
+        )
+        after: Snapshot = (
+            snapshot(stored, space=self._space(stored), parent=folder, blob=blob)
+            if parents is not None
+            else RecordSnapshot(resource="drive root", text=stored.file.name)
+        )
         return self._store.apply(
             Change(
                 entity=file_ref(stored.file.id),
@@ -316,7 +336,7 @@ class DriveWorld:
                 actor=actor,
                 body=wire.dump(stored),
                 parent=parents[0] if parents else None,
-                after=snapshot(stored, space=self._space(stored)),
+                after=after,
             )
         )
 
@@ -393,12 +413,16 @@ class DriveWorld:
         )
 
     def role(self, email: str, stored: wire.StoredFile, *, searching: bool = False) -> str | None:
-        """The most the user may do with the file: its owner, a member of its shared drive, or a grantee on it
-        or a folder above it. None: the file is not theirs to see. `searching` leaves out a grant to anyone
+        """The most the user may do with the file: its owner, the owner of a folder above it, a member of its
+        shared drive, or a grantee on it or a folder above it. None: the file is not theirs to see. `searching` leaves out a grant to anyone
         that does not allow discovery, which opens a file but does not put it in a search."""
         best: str | None = None
         if any(owner.emailAddress == email for owner in stored.file.owners or []):
             best = "owner"
+        elif any(o.emailAddress == email for above in self.ancestors(stored) for o in above.file.owners or []):
+            # A folder's permissions are inherited by the items in it, so whoever owns a folder above the file can
+            # still reach it when someone else made it there (https://developers.google.com/drive/api/guides/manage-sharing).
+            best = "writer"
         domain = email.rsplit("@", 1)[-1].lower()
         for holder in [stored, *self.ancestors(stored)]:
             for grant in self.grants(holder.file.id):
