@@ -1166,6 +1166,7 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
                 session.fork_points(state, args.run_id),
                 session.restore_of(state, args.run_id),
                 session.fork_account(state, args.run_id),
+                session.failed_model_calls(state, args.run_id),
             )
         )
     return outcome.result.exit_code
@@ -1367,6 +1368,7 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
                     session.fork_points(state, o.record.run_id),
                     session.restore_of(state, o.record.run_id),
                     session.fork_account(state, o.record.run_id),
+                    session.failed_model_calls(state, o.record.run_id),
                 )
                 for o in outcomes
             )
@@ -1376,7 +1378,13 @@ def _report(outcomes: list[Outcome], state: Path, *, as_json: bool, sampled: boo
     return exit_code([o.result for o in outcomes])
 
 
-def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | None, account: ForkAccount | None) -> str:
+def _describe(
+    outcome: Outcome,
+    points: list[ForkPoint],
+    restored: Restored | None,
+    account: ForkAccount | None,
+    failed_calls: tuple[int, list[str]] = (0, []),
+) -> str:
     record, result = outcome.record, outcome.result
     lines = [f"run {record.run_id}: {record.scenario} (seed {record.seed})", f"  {result.verdict.words}"]
     if restored is not None:
@@ -1394,6 +1402,10 @@ def _describe(outcome: Outcome, points: list[ForkPoint], restored: Restored | No
             "scenario, or declare the agent's rhythm (`tick` in the agent file) so the deadline sizes it"
         )
     lines.append(f"  providers the agent called: {', '.join(record.providers) or 'none'}")
+    made, failed = failed_calls
+    if failed:
+        lines.append(f"  the agent's model calls that failed: {len(failed)} of {made}")
+        lines += [f"    {why}" for why in dict.fromkeys(failed)]
     if record.outbound:
         lines.append("\noutbound calls")
         lines += [f"  {described(use)}" for use in record.outbound]

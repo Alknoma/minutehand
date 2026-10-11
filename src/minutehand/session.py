@@ -822,6 +822,13 @@ def fork_account(state: Path, run_id: str) -> ForkAccount | None:
     )
 
 
+def failed_model_calls(state: Path, run_id: str) -> tuple[int, list[str]]:
+    """How many model calls the run holds of the agent's, and why each that failed did (`ModelCall.failure`)."""
+    with reading(state, run_id) as world:
+        calls = [model_call(s) for s in world.spans() if is_model_call(s)]
+    return len(calls), [c.failure for c in calls if c.failure is not None]
+
+
 def checkpoints_of(state: Path, run_id: str) -> list[ForkPoint]:
     """Every checkpoint of a run, and whether a fork can be taken from it."""
     return fork_points(state, run_id)

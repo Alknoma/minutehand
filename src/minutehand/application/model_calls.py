@@ -29,7 +29,7 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.domain.checks import WakeModelCalls
 from minutehand.domain.scenario import Model
-from minutehand.domain.telemetry import AttributeValue, IntValue, SpanSource, StoredSpan, StringValue
+from minutehand.domain.telemetry import AttributeValue, IntValue, SpanSource, SpanStatus, StoredSpan, StringValue
 from minutehand.domain.world import MessageSnapshot, WorldEvent
 from minutehand.ports.store import Store
 
@@ -72,6 +72,11 @@ class ModelCall(Model):
     )
     cache_creation_tokens: int | None = Field(
         default=None, description="gen_ai.usage.cache_creation.input_tokens: of the input, written to the prompt cache"
+    )
+    failure: str | None = Field(
+        default=None,
+        description="Why the call failed: the model API's error answer as recorded on the wire, or the error the "
+        "agent's span reports (`error.type`, an error status); None when it was answered",
     )
 
     @property
@@ -173,7 +178,27 @@ def model_call(stored: StoredSpan, logged: list[StoredSpan] | None = None) -> Mo
         output_tokens=_count(_first(stored, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens")),
         cache_read_tokens=_count(span.attribute("gen_ai.usage.cache_read.input_tokens")),
         cache_creation_tokens=_count(span.attribute("gen_ai.usage.cache_creation.input_tokens")),
+        failure=_failure(stored),
     )
+
+
+def _failure(stored: StoredSpan) -> str | None:
+    """Why a model call failed, as its span says; None when nothing says it did."""
+    span = stored.span
+    code = span.attribute("http.response.status_code")
+    status = int(code.value) if isinstance(code, StringValue) and code.value.isdigit() else _count(code)
+    if status is not None and status >= 400:
+        said = _text(span.attribute("minutehand.response.body"))
+        try:
+            error = json.loads(said or "")["error"]
+            message = error["message"] if isinstance(error, dict) else error
+        except (ValueError, KeyError, TypeError):
+            message = None
+        return f"answered {status}" + (f": {message}" if isinstance(message, str) and message else "")
+    error_type = _text(span.attribute("error.type"))
+    if error_type is not None or span.status is SpanStatus.ERROR:
+        return "; ".join(p for p in (error_type, span.status_message) if p) or "the span reports an error"
+    return None
 
 
 def caller_of(traceparent: str | None) -> tuple[str, str] | None:

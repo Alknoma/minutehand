@@ -11,7 +11,7 @@ Pydantic AI sub-agent proposes the moment, and plain code makes it safe. Everyth
 
 Its memory is `minutehand.agent.store`: a SQLite file in production, the run's own memory under a run.
 
-    AGENT_MODEL=openai:gpt-6-luna OPENAI_API_KEY=... AGENT_PORT=8740 python agent.py
+    AGENT_MODEL=openai-responses:gpt-6-luna OPENAI_API_KEY=... AGENT_PORT=8740 python agent.py
 """
 
 from __future__ import annotations

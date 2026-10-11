@@ -4,8 +4,10 @@ It is told each open thing (what the agent waits for, since when, and when it ma
 moment and why. It can weigh what code cannot: a person who usually answers in the afternoon, two things due close
 together. It decides nothing alone: `guard.guarded` holds its proposal to the rules.
 
-The model is AGENT_MODEL, any model Pydantic AI names ("openai:gpt-6-luna", with OPENAI_API_KEY and
-OPENAI_BASE_URL), or "test" for a stand-in that proposes nothing, so the guard's fallback decides."""
+The model is AGENT_MODEL, any model Pydantic AI names ("openai-responses:gpt-6-luna", with OPENAI_API_KEY and
+OPENAI_BASE_URL), or "test" for a stand-in that proposes nothing, so the guard's fallback decides. Luna answers
+a tool call only through OpenAI's Responses API: "openai:gpt-6-luna" (Chat Completions) is refused with 400 on
+every call, and the guard's fallback then decides every wake."""
 
 from __future__ import annotations
 
