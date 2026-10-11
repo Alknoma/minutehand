@@ -33,11 +33,13 @@ from minutehand.adapters.providers.github import history, wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Person, Scenario
+from minutehand.domain.scenario import Account, Person, Scenario
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
-LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$"
+LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:\[bot\])?$"
+"""A login: letters, digits and single hyphens, and `[bot]` after a GitHub App's bot's."""
+BOT_SUFFIX = "[bot]"
 """GitHub's rule for a login: letters, digits and single inner hyphens, at most 39 characters."""
 REPOSITORY_NAME = r"^[A-Za-z0-9._-]{1,100}$"
 
@@ -443,17 +445,25 @@ def _people(scenario: Scenario) -> dict[str, Person]:
 
 def _user(user: SeedUser, people: dict[str, Person], created: str) -> wire.StoredAccount:
     name, email = user.name, None
+    bot = user.login.endswith(BOT_SUFFIX)
     if user.person is not None:
         if user.person not in people:
             raise ValueError(f"GitHub user {user.login} is person {user.person}, who is nobody in the scenario")
-        name, email = people[user.person].name, people[user.person].email
+        person = people[user.person]
+        if (person.account is Account.BOT) != bot:
+            raise ValueError(
+                f"github: {person.key} is {'' if bot else 'not '}seeded a bot, and the login {user.login} says otherwise: "
+                "a bot account on GitHub is a GitHub App's, its login ending [bot]"
+            )
+        name, email = person.name, None if bot else person.email
+    kind = wire.AccountType.BOT if bot else wire.AccountType.USER
     return wire.StoredAccount(
-        login=user.login, id=number(user.login), type=wire.AccountType.USER, name=name, email=email, created_at=created
+        login=user.login, id=number(user.login), type=kind, name=name, email=email, created_at=created
     )
 
 
 def _login(account: wire.StoredAccount) -> str | None:
-    return account.login if account.type is wire.AccountType.USER else None
+    return account.login if account.type is not wire.AccountType.ORGANIZATION else None
 
 
 def _name(account: wire.StoredAccount, where: str) -> str:

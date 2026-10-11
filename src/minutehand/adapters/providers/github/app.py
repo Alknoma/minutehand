@@ -104,6 +104,14 @@ def _raw(file: wire.StoredFile) -> bytes:
     return base64.b64decode(file.content)
 
 
+def _defaults_only(request: Request, *names: str) -> None:
+    """Query parameters served at their default, `all`, only: any other value is refused by name."""
+    for name in names:
+        value = param(request, name)
+        if value is not None and value != "all":
+            raise NotServed(f"the parameter {name}={value!r}: only its default, all, is served")
+
+
 class GitHubApi:
     def __init__(
         self, store: Store, clock: Clock, pusher: Pusher | None = None, background: Background | None = None
@@ -413,8 +421,12 @@ class GitHubApi:
         if account is None:
             raise wire.requires_authentication()
         self.world.saw(state.account_ref(account.login), Operation.READ)
+        return as_json(self._public(account))
+
+    def _public(self, account: wire.StoredAccount) -> wire.UserOut:
+        """An account in the description's `public-user` view, as `GET /user` and `GET /users/{username}` give it."""
         owned = [r for r in self.world.repositories() if r.owner.lower() == account.login.lower() and not r.private]
-        out = wire.UserOut(
+        return wire.UserOut(
             **self.account_out(account.login).model_dump(),
             name=account.name,
             email=account.email,
@@ -422,7 +434,54 @@ class GitHubApi:
             created_at=account.created_at,
             updated_at=account.created_at,
         )
-        return as_json(out)
+
+    async def get_user(self, request: Request, caller: Caller) -> Answered:
+        """`GET /users/{username}`: any account by its login, in the public view; one that is not there is 404."""
+        account = self.world.account(request.path_params["username"])
+        if account is None:
+            raise wire.not_found("/users/users#get-a-user")
+        self.world.saw(state.account_ref(account.login), Operation.READ)
+        return as_json(self._public(account))
+
+    def _organization(self, request: Request, section: str) -> wire.StoredAccount:
+        found = self.world.account(request.path_params["org"])
+        if found is None or found.type is not wire.AccountType.ORGANIZATION:
+            raise wire.not_found(section)
+        return found
+
+    async def org_members(self, request: Request, caller: Caller) -> Answered:
+        """`GET /orgs/{org}/members`: concealed and public members to a member, public ones to anyone else. A
+        membership is concealed until its member makes it public, which nothing in the world does, so a caller who
+        is no member is answered none (https://docs.github.com/en/rest/orgs/members#list-organization-members)."""
+        organization = self._organization(request, "/orgs/members#list-organization-members")
+        _defaults_only(request, "filter", "role")
+        member = caller.account is not None and caller.account.login.lower() in {
+            m.lower() for m in organization.members
+        }
+        listed = [a for a in (self.world.account(m) for m in organization.members) if a is not None] if member else []
+        start, end, links = paged(request, len(listed))
+        self.world.saw(state.account_ref(organization.login), Operation.SEARCH)
+        return as_json([self.account_out(a.login) for a in listed[start:end]], headers=links)
+
+    async def outside_collaborators(self, request: Request, caller: Caller) -> Answered:
+        """`GET /orgs/{org}/outside_collaborators`: who collaborates on one of the organization's repositories and
+        is no member of it (https://docs.github.com/en/rest/orgs/outside-collaborators)."""
+        organization = self._organization(
+            request, "/orgs/outside-collaborators#list-outside-collaborators-for-an-organization"
+        )
+        _defaults_only(request, "filter")
+        members = {m.lower() for m in organization.members}
+        logins = dict.fromkeys(
+            c.login
+            for r in self.world.repositories()
+            if r.owner.lower() == organization.login.lower()
+            for c in r.collaborators
+            if c.login.lower() not in members
+        )
+        listed = [a for a in (self.world.account(login) for login in logins) if a is not None]
+        start, end, links = paged(request, len(listed))
+        self.world.saw(state.account_ref(organization.login), Operation.SEARCH)
+        return as_json([self.account_out(a.login) for a in listed[start:end]], headers=links)
 
     async def user_repos(self, request: Request, caller: Caller) -> Answered:
         account = caller.account
@@ -833,6 +892,9 @@ def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None]
     table: list[tuple[str, str, Handler]] = [
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
+        ("/users/{username}", "GET", api.get_user),
+        ("/orgs/{org}/members", "GET", api.org_members),
+        ("/orgs/{org}/outside_collaborators", "GET", api.outside_collaborators),
         ("/repos/{owner}/{repo}", "GET", api.repository),
         ("/repos/{owner}/{repo}/languages", "GET", api.languages),
         ("/repos/{owner}/{repo}/branches", "GET", api.branches),

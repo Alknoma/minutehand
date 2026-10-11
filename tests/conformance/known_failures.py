@@ -85,48 +85,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "github",
-        Property.IDS,
-        "documented_format",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.LISTING,
-        "people",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.RECORD,
-        "every_call_kept_once_in_order_verbatim",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.SEEDED,
-        "person_bot",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.SEEDED,
-        "person_guest",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
-        Property.SEEDED,
-        "person_name_and_email",
-        'VendorRefused: list organization members: 501 {"message":"minutehand\'s github fake does not implement GET /orgs/launch-team/members: it is not among the calls this provider serves (its README\'s table)"',
-    ),
-    Known(
-        "github",
         Property.SEEDED,
         "person_without_email",
         "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for CreateWorld / seed.people.3.email / Field required [type=missing, i",

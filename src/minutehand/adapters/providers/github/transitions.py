@@ -44,7 +44,7 @@ def account_of(world: GitHubWorld, person: Person) -> wire.StoredAccount | None:
         (
             a
             for a in world.accounts()
-            if a.type is wire.AccountType.USER and (a.email or "").lower() == person.email.lower()
+            if a.type is not wire.AccountType.ORGANIZATION and (a.email or "").lower() == person.email.lower()
         ),
         None,
     )

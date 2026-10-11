@@ -99,7 +99,7 @@ class Tracker:
         found: list[str] = []
         for login in logins:
             account = self._api.world.account(login)
-            if account is None or account.type is not wire.AccountType.USER:
+            if account is None or account.type is wire.AccountType.ORGANIZATION:
                 raise NotServed(f"assigning {login}, who is not a user of this GitHub")
             if account.login not in found:
                 found.append(account.login)
