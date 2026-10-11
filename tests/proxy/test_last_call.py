@@ -41,5 +41,7 @@ async def test_a_client_with_a_public_address_is_served(
 
     async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca"):
         visitor = Client(peername=("172.67.69.88", 50000), sockname=("172.17.0.2", 8080))
-        ctx.master.addons.get("block").client_connected(visitor)
+        block = ctx.master.addons.get("block")
+        assert block is not None
+        block.client_connected(visitor)
     assert visitor.error is None
