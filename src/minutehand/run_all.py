@@ -233,7 +233,7 @@ async def play_all(
     passed_on: list[str] | None = None,
 ) -> Batch:
     """Every scenario in `folder`, `samples` times each under seeds counted up from `seed`, at most `jobs` runs at
-    a time; `passed_on`, flags each `minutehand run` takes as they are (`--record-model-calls`, the proxy's host)."""
+    a time; `passed_on`, flags each `minutehand run` takes as they are (`--tunnel-model-calls`, the proxy's host)."""
     if samples < 1:
         raise FileRefused(f"run-all needs at least one sample of each scenario, not {samples}")
     found = scenarios_in(folder)

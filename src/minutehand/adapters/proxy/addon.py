@@ -585,9 +585,11 @@ class ProxyAddon:
         return HostPolicy.RECORD if policy is HostPolicy.TUNNEL and self._records(host) else policy
 
     def _records(self, host: str) -> bool:
-        """Whether a model call to `host` is kept as a span: every one, under `record_model_calls`, or one to a
-        model host a world declared with `record`."""
-        return self.record_model_calls or self.routing.records(host)
+        """Whether a model call to `host` is kept as a span: as the world that declared the host says, else as
+        `record_model_calls` says."""
+        if self.routing.declared(host) is not None:
+            return self.routing.records(host)
+        return self.record_model_calls
 
     async def request(self, flow: http.HTTPFlow) -> None:
         if flow.response is not None:
