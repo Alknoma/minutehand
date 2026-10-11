@@ -86,16 +86,20 @@ async def test_run_findings_and_a_fork_from_a_checkpoint_over_mcp(
         )  # fmt: skip
         [parent] = json.loads(str(ran["stdout"]))["outcomes"]
         failed = {f["check"] for f in parent["result"]["findings"]}
-        checkpoints = await call(client, "checkpoints", run_id=parent["record"]["run_id"])
-        after_first_wake = next(line for line in str(checkpoints["stdout"]).splitlines() if "after wake 1" in line)
+        checkpoints = await call(client, "checkpoints", run_id=parent["record"]["run_id"], json=True)
+        listed = json.loads(str(checkpoints["stdout"]))["checkpoints"]
+        after_first_wake = next(p["seq"] for p in listed if p["wake"] == 1 and p["agent"]["kind"] == "remembered")
         forked = await call(
-            client, "fork", run_id=parent["record"]["run_id"], at=int(after_first_wake.split()[1].rstrip(",")),
+            client, "fork", run_id=parent["record"]["run_id"], at=after_first_wake,
             changes=str(tmp_path / "fork.yaml"), json=True, command=launched.command,
         )  # fmt: skip
         [child] = json.loads(str(forked["stdout"]))["outcomes"]
-        runs = await call(client, "runs")
+        runs = json.loads(str((await call(client, "runs", json=True))["stdout"]))["runs"]
 
     assert "follows_up_when_due" in failed
     assert "follows_up_when_due" not in {f["check"] for f in child["result"]["findings"]}
     assert child["record"]["parent_run"] == parent["record"]["run_id"]
-    assert parent["record"]["run_id"] in str(runs["stdout"]) and child["record"]["run_id"] in str(runs["stdout"])
+    by_id = {r["run_id"]: r for r in runs}
+    assert set(by_id) == {parent["record"]["run_id"], child["record"]["run_id"]}
+    fork = by_id[child["record"]["run_id"]]["fork"]
+    assert (fork["parent_run"], fork["at_seq"]) == (parent["record"]["run_id"], after_first_wake)

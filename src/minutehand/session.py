@@ -219,6 +219,32 @@ class ForkPoint(Model):
     agent: AgentState
 
 
+class Checkpoints(Model):
+    """What `checkpoints --json` prints: a run's checkpoints, and whether a fork can start at each."""
+
+    run_id: str
+    checkpoints: list[ForkPoint]
+
+
+class ListedRun(Model):
+    """One run as `runs --json` prints it."""
+
+    run_id: str
+    scenario: str
+    stop: StopReason
+    failed: int = Field(ge=0, description="Findings of kind fail")
+    worlds: list[str] = Field(description="A case's worlds, scored as one run; empty for a run of its own")
+    fork: ForkAccount | None = Field(description="Where it split from its parent and what it changed; None if no fork")
+    checkpoints: list[ForkPoint]
+    usage: RunUsage
+
+
+class Runs(Model):
+    """What `runs --json` prints: every finished run, as `runs` lists them."""
+
+    runs: list[ListedRun]
+
+
 class Played(Model):
     """What `run`, `fork` and `findings` print with --json: one shape, so a script reads any of them the same way.
     `findings` prints the one run asked for; `stability` is set only for several samples."""

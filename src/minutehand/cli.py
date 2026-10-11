@@ -21,8 +21,8 @@
                                                  shape (custom_id, method, url, body, response), with wake and time
     minutehand env --agent <agent.yaml> --proxy-port N [PROXY] [--format shell|compose|redirect] [--service NAME...]
                                                  the environment an agent Minutehand does not start needs
-    minutehand runs [--state DIR]               every finished run, with what it costs on disk
-    minutehand checkpoints <run_id> [--state DIR]
+    minutehand runs [--json] [--state DIR]      every finished run, with what it costs on disk
+    minutehand checkpoints <run_id> [--json] [--state DIR]
                                                  a run's checkpoints, and whether a fork can start at each
     minutehand gc [--state DIR]                  remove stored bodies nothing refers to
     minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] [--state DIR]
@@ -456,10 +456,12 @@ def _parser() -> _Parser:
     state(env)
 
     listing = commands.add_parser("runs", help="every finished run, with what it costs on disk")
+    listing.add_argument("--json", action="store_true", help="print `session.Runs`")
     state(listing)
 
     kept = commands.add_parser("checkpoints", help="a run's checkpoints, and whether a fork can start at each")
     kept.add_argument("run_id")
+    kept.add_argument("--json", action="store_true", help="print `session.Checkpoints`")
     state(kept)
 
     swept = commands.add_parser("gc", help="remove stored bodies nothing refers to")
@@ -718,14 +720,14 @@ def _main(args_in: list[str]) -> int:
         if args.command == "serve":
             return _serve(args, state)
         if args.command == "checkpoints":
-            return _checkpoints(state, args.run_id)
+            return _checkpoints(state, args.run_id, as_json=args.json)
         if args.command == "gc":
             return _gc(state)
         if args.command in ("query", "trace", "explain"):
             return _read(args, state)
         if args.command == "rm":
             return _rm(state, args.run_ids)
-        return _runs(state)
+        return _runs(state, as_json=args.json)
     except (RunRefused, FileRefused, ModelFailed, OSError) as e:
         print(f"minutehand: the run could not be performed: {e}", file=sys.stderr)
         return 2
@@ -1169,8 +1171,24 @@ def _findings(args: argparse.Namespace, state: Path) -> int:
     return outcome.result.exit_code
 
 
-def _runs(state: Path) -> int:
+def _runs(state: Path, *, as_json: bool = False) -> int:
     found = session.listed(state)
+    if as_json:
+        listed = [
+            session.ListedRun(
+                run_id=o.record.run_id,
+                scenario=o.record.scenario,
+                stop=o.record.stop,
+                failed=sum(1 for f in o.result.findings if f.kind is FindingKind.FAIL),
+                worlds=list(o.record.worlds),
+                fork=session.fork_account(state, o.record.run_id),
+                checkpoints=session.fork_points(state, o.record.run_id),
+                usage=session.usage_of(state, o.record.run_id),
+            )
+            for o in found
+        ]
+        print(session.Runs(runs=listed).model_dump_json(indent=2))
+        return 0
     if not found:
         print(f"no runs under {state}")
         return 0
@@ -1199,8 +1217,11 @@ def _size(count: int) -> str:
     return f"{count} bytes"
 
 
-def _checkpoints(state: Path, run_id: str) -> int:
+def _checkpoints(state: Path, run_id: str, *, as_json: bool = False) -> int:
     found = session.checkpoints_of(state, run_id)
+    if as_json:
+        print(session.Checkpoints(run_id=run_id, checkpoints=found).model_dump_json(indent=2))
+        return 0
     if not found:
         print(f"run {run_id} has no checkpoints")
         return 0
