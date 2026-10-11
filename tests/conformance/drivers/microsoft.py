@@ -801,6 +801,12 @@ class MicrosoftDriver(Driver):
     provider: ClassVar[str] = PROVIDER
     session: ClassVar[type[Session]] = MicrosoftSession
     absent: ClassVar[Mapping[str, str]] = {
+        "messaging.agent_reacts": "the agent is an app, and Graph's setReaction lists Application permissions as "
+        "not supported (https://learn.microsoft.com/en-us/graph/api/chatmessage-setreaction); people react, and the "
+        "message lists their reactions",
+        "messaging.direct_threads": "a Teams chat has no reply threads: replies to a message are a channel's "
+        "(https://learn.microsoft.com/en-us/graph/api/chatmessage-post-replies), and a chat message is replied to "
+        "with a new message",
         "accounts.bot": "Graph lists users at /users and an app or bot is a service principal, never a user, so no "
         "account the listing answers is a bot (https://learn.microsoft.com/en-us/graph/api/resources/user)",
         "messaging.topic": "a Teams channel has a displayName and a description and no topic; only a group chat "

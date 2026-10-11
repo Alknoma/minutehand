@@ -117,6 +117,11 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}"),
         ("GET", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies"),
         ("POST", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies"),
+        *(("POST", f"{_CHANNEL}/messages/{{chatMessage-id}}/{action}") for action in ("setReaction", "unsetReaction")),
+        *(
+            ("POST", f"{_CHANNEL}/messages/{{chatMessage-id}}/replies/{{chatMessage-id1}}/{action}")
+            for action in ("setReaction", "unsetReaction")
+        ),
         ("GET", "/chats"),
         ("POST", "/chats"),
         ("GET", "/chats/{chat-id}"),
@@ -125,6 +130,10 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/chats/{chat-id}/messages/delta()"),
         ("POST", "/chats/{chat-id}/messages"),
         ("GET", "/chats/{chat-id}/messages/{chatMessage-id}"),
+        *(
+            ("POST", f"/chats/{{chat-id}}/messages/{{chatMessage-id}}/{action}")
+            for action in ("setReaction", "unsetReaction")
+        ),
         ("GET", "/sites"),
         ("GET", "/sites/{site-id}"),
         ("GET", "/sites/{site-id}/drive"),

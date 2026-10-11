@@ -317,8 +317,14 @@ def post_ref(key: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"post:{key}")
 
 
-def reaction_ref(activity: str, oid: str) -> EntityRef:
-    return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}")
+def reaction_ref(activity: str, oid: str, reaction: str) -> EntityRef:
+    """One user's reaction of one type to a message: a user may react to it with more than one type."""
+    return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}:{reaction}")
+
+
+def reactions_of(activity: str) -> str:
+    """The parent every reaction to a message is kept under."""
+    return f"reactions:{activity}"
 
 
 def event_ref(event: str) -> EntityRef:
@@ -376,6 +382,13 @@ class MicrosoftWorld:
             if len(page) < _SCAN:
                 return
             after = page[-1].entity.external_id
+
+    def reactions(self, activity: str) -> list[tuple[str, wire.Reaction, datetime]]:
+        """Each reaction a message holds, oldest first: who reacted (their object id), the reaction, and when."""
+        return [
+            (s.entity.external_id.split(":")[2], wire.parse(wire.Reaction, s.body), s.sim_time)
+            for s in self._pages(EntityKind.RECORD, reactions_of(activity))
+        ]
 
     def _all(self, model: type[wire.M], kind: EntityKind, parent: str) -> list[wire.M]:
         return [wire.parse(model, s.body) for s in self._pages(kind, parent)]

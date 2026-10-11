@@ -233,18 +233,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.FAMILY,
-        "messages_in_a_channel",
-        'VendorRefused: POST /teams/<uuid>/channels/19%3Afd63656c101954db8978628cec4f181c%40thread.tacv2/messages/1788253200000024/setReaction: documented 204, answered: 403 {"error":{"code',
-    ),
-    Known(
-        "microsoft",
-        Property.FAMILY,
-        "messages_in_a_direct_conversation",
-        'VendorRefused: POST /chats/19%3A<uuid>_<uuid>%40unq.gbl.spaces/messages/1788253200000025/setReaction: documented 204, answered: 403 {"error":{"code":"Forbidden","message":"Sending ',
-    ),
-    Known(
-        "microsoft",
-        Property.FAMILY,
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
     ),
@@ -266,7 +254,6 @@ KNOWN: tuple[Known, ...] = (
         "happening_opens_agent",
         "refused without naming microsoft: Teams pushes nothing to a bot when a person opens its app; this happening has no Teams form",
     ),
-    Known("microsoft", Property.PEOPLE_ACT, "happening_reacts", "the API shows the reactions ()"),
     Known(
         "microsoft", Property.PEOPLE_ACT, "happening_shared", "shared mila commenter: {'mila@example.com': 'reader'}"
     ),
@@ -418,12 +405,6 @@ KNOWN: tuple[Known, ...] = (
         Property.FAMILY,
         "same_as_microsoft_messages_in_a_channel",
         "microsoft cannot complete the lifecycle, so slack cannot be compared with it: POST /teams/<uuid>/channels/19%3Ac741879c406c5172ac0c440396e8ffbb%40thread.tacv2/messages/178825320000",
-    ),
-    Known(
-        "slack",
-        Property.FAMILY,
-        "same_as_microsoft_messages_in_a_direct_conversation",
-        "microsoft cannot complete the lifecycle, so slack cannot be compared with it: POST /chats/19%3A<uuid>_<uuid>%40unq.gbl.spaces/messages/1788253200000025/setReaction: documented 204,",
     ),
     Known(
         "slack",

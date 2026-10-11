@@ -186,7 +186,7 @@ def _messages(where: str) -> Callable[[Session, Driver, Callable[[str, object], 
         first = session.post(channel, "lifecycle hello")
         session.reply(channel, first, "lifecycle reply")
         session.edit(channel, first, "lifecycle hello, edited")
-        if not absent(driver, "messaging.react", record):
+        if not absent(driver, "messaging.react", record) and not absent(driver, "messaging.agent_reacts", record):
             session.react(channel, first, "thumbsup")
         session.delete_message(channel, first)
         texts = [m.text for m in session.history(channel)]
@@ -265,7 +265,7 @@ LIFECYCLES = {
             Family.MESSAGING,
             _messages("direct"),
             _message_rule,
-            ("messaging.direct", "messaging.edit"),
+            ("messaging.direct", "messaging.edit", "messaging.direct_threads"),
         ),
         Lifecycle("documents", Family.DOCUMENTS, _documents, _document_rule),
     ]

@@ -47,12 +47,14 @@ from minutehand.adapters.providers.microsoft.state import (
     derived_uuid,
     graph_time,
     message_ref,
+    reaction_ref,
+    reactions_of,
     team_ref,
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import conversation_watch, notify
 from minutehand.domain.errors import NotServed
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 20
@@ -100,6 +102,20 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
     ]
     team = world.team(conversation.team_id) if conversation.team_id is not None else None
     channel = conversation.type is wire.ConversationType.CHANNEL
+    reactions = [
+        wire.ChatMessageReaction(
+            reactionType=reaction.type,
+            createdDateTime=graph_time(at),
+            user=wire.IdentitySet(
+                user=wire.Identity(
+                    id=oid,
+                    displayName=reactor.user.displayName if (reactor := world.user(oid)) is not None else None,
+                    userIdentityType="aadUser",
+                )
+            ),
+        )
+        for oid, reaction, at in world.reactions(activity.id)
+    ]
     text = activity.text or ""
     for n, mention in enumerate(wire.mentions(activity)):
         text = text.replace(
@@ -124,7 +140,7 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
             body=posted.body,
             attachments=posted.attachments,
             mentions=posted.mentions,
-            reactions=[],
+            reactions=reactions,
             webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
         )
     return wire.ChatMessage(
@@ -142,7 +158,7 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
         body=wire.ItemBody(content=text),
         attachments=attachments,
         mentions=mentions,
-        reactions=[],
+        reactions=reactions,
         webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
     )
 
@@ -499,6 +515,8 @@ class TeamsGraph:
         channel = conversation.type is wire.ConversationType.CHANNEL
         every = self._world.messages(conversation.id)
         roots = [m for m in every if not channel or m.replyToId is None]
+        if request.method == "POST" and rest[-1:] in (["setReaction"], ["unsetReaction"]):
+            return await self._react(request, conversation, rest, every)
         if request.method == "POST":
             return await self._post(request, conversation, rest, every, context)
         if rest in (["delta"], ["delta()"]):
@@ -657,6 +675,48 @@ class TeamsGraph:
         return made
 
     # ------------------------------------------------------------------ messages, posted
+
+    async def _react(
+        self, request: Request, conversation: ConversationRecord, rest: list[str], every: list[wire.Activity]
+    ) -> Response:
+        """The signed-in user's reaction set on, or taken off, a message or a channel message's reply
+        (chatmessage-setreaction, chatmessage-unsetreaction): 204, and the message lists it."""
+        channel = conversation.type is wire.ConversationType.CHANNEL
+        target = rest[:-1]
+        if len(target) == 3 and target[1] == "replies" and channel:
+            found = next((m for m in every if m.id == target[2] and m.replyToId == target[0]), None)
+        elif len(target) == 1:
+            found = next((m for m in every if m.id == target[0]), None)
+        else:
+            raise NotServed(f"POST on '{'/'.join(rest)}'")
+        if found is None:
+            raise not_found(target[-1])
+        claims = graph_caller(request, self._world)
+        if claims.oid is None:
+            raise NotServed(
+                f"{rest[-1]} with no signed-in user: its page lists application permissions as not supported, and "
+                "documents no answer"
+            )
+        user = self._user(claims.oid)
+        try:
+            asked = wire.read(wire.SetReaction, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
+        entity = reaction_ref(found.id, user.user.id, asked.reactionType)
+        if rest[-1] == "setReaction":
+            self._world.write(
+                entity,
+                wire.Reaction(type=asked.reactionType),
+                operation=Operation.UPDATE if self._world.store.get(entity) is not None else Operation.CREATE,
+                actor=Actor.AGENT,
+                parent=reactions_of(found.id),
+                after=RecordSnapshot(resource="reaction", text=asked.reactionType),
+            )
+        elif self._world.store.get(entity) is not None:
+            self._world.remove(entity, actor=Actor.AGENT, parent=reactions_of(found.id))
+        return Response(status_code=204)
 
     async def _post(
         self,

@@ -41,6 +41,7 @@ from minutehand.adapters.providers.microsoft.state import (
     message_ref,
     post_ref,
     reaction_ref,
+    reactions_of,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import conversation_watch, notify
 from minutehand.adapters.providers.microsoft.wire import TokenUse
@@ -407,11 +408,11 @@ class People:
     async def react(self, user: UserRecord, activity_id: str, reaction: str, target: InboundTarget) -> None:
         conversation, current = self.located(activity_id)
         self.world.write(
-            reaction_ref(activity_id, user.user.id),
+            reaction_ref(activity_id, user.user.id, reaction),
             wire.Reaction(type=reaction),
             operation=Operation.CREATE,
             actor=Actor.PERSON,
-            parent=f"reactions:{activity_id}",
+            parent=reactions_of(activity_id),
             after=RecordSnapshot(resource="reaction", text=reaction),
         )
         reacted = self._activity(

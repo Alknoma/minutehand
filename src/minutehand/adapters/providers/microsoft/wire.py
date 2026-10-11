@@ -590,6 +590,12 @@ class ChatMessageReaction(Aliased):
     user: IdentitySet
 
 
+class SetReaction(Aliased):
+    """The body of chatmessage-setreaction and -unsetreaction: the reaction, as unicode."""
+
+    reactionType: str = Field(min_length=1)
+
+
 class ChatMessage(Aliased):
     id: str
     replyToId: str | None = None
