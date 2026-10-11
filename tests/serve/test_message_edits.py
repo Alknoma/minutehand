@@ -10,16 +10,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from starlette.testclient import TestClient
 
-from minutehand.adapters.web.app import create_app
-from minutehand.adapters.web.responses import MessageChange, MessagesResponse
 from minutehand.application.forks import scorecard_lines
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
 from minutehand.testing.background import serve_in_background
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenWorld
 from tests.serve.support import Served, answer, dm, spec
+from tests.support.read_model import listed, rows
 
 
 @pytest.fixture(scope="module")
@@ -64,11 +62,10 @@ def test_a_rewrite_and_a_delete_carry_what_the_message_said_and_are_counted(serv
     [line] = [x for x in scorecard_lines(card) if x.label == "messages to people"]
     assert line.value == "2, edited in place: 1, deleted: 1"
 
-    with TestClient(create_app(state)) as viewer:
-        page = MessagesResponse.model_validate_json(viewer.get(f"/api/runs/{world.world_id}/messages").content)
-    assert [(m.change, m.to, m.text, m.before) for m in page.messages] == [
-        (MessageChange.SENT, ["Sofia Romano"], "Is the venue booked?", None),
-        (MessageChange.EDITED, ["Sofia Romano"], "Is the venue for Thursday booked?", "Is the venue booked?"),
-        (MessageChange.SENT, ["Sofia Romano"], "Ignore that last one.", None),
-        (MessageChange.DELETED, ["Sofia Romano"], "Ignore that last one.", None),
+    found = rows(state, world.world_id, "SELECT change, to_people, text, text_before FROM messages ORDER BY seq")
+    assert [(m["change"], listed(m["to_people"]), m["text"], m["text_before"]) for m in found] == [
+        ("sent", ["sofia"], "Is the venue booked?", None),
+        ("edited", ["sofia"], "Is the venue for Thursday booked?", "Is the venue booked?"),
+        ("sent", ["sofia"], "Ignore that last one.", None),
+        ("deleted", ["sofia"], "Ignore that last one.", None),
     ]

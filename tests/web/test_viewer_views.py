@@ -24,7 +24,6 @@ from minutehand.adapters.web.responses import (
     BatchesResponse,
     CallDetail,
     CallRowsResponse,
-    CallsResponse,
     DispatchResponse,
     EventDetail,
     FindingsResponse,
@@ -84,7 +83,7 @@ async def test_the_timeline_puts_each_mark_in_its_lane_in_time_order_and_each_fi
     async with client(state) as c:
         drawn = await read(c, f"/api/runs/{parent}/timeline", TimelineResponse)
         findings = await read(c, f"/api/runs/{parent}/findings", FindingsResponse)
-        calls = await read(c, f"/api/runs/{parent}/calls", CallsResponse)
+        calls = await read(c, f"/api/runs/{parent}/call-rows", CallRowsResponse)
 
     m = drawn.marks
     assert len({len(m.sim), len(m.sim_end), len(m.real), len(m.real_end), len(m.lane), len(m.kind), len(m.ref)}) == 1

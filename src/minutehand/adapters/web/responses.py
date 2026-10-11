@@ -7,7 +7,7 @@ from enum import StrEnum
 from pydantic import AwareDatetime, Field
 
 from minutehand.application.forks import ForkAccount
-from minutehand.application.model_calls import EventTrace, JoinedBy, ModelCall
+from minutehand.application.model_calls import JoinedBy, ModelCall
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.assessments import Rule
@@ -17,7 +17,7 @@ from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import DispatchFault, Model, Scenario
-from minutehand.domain.telemetry import ForwardFailure, SpanStatus, StoredSpan
+from minutehand.domain.telemetry import SpanStatus, StoredSpan
 from minutehand.domain.world import Actor, CallOutcome, CaptureMode, Operation, RecordedCall, Snapshot, WorldEvent
 from minutehand.session import ForkPoint
 
@@ -99,58 +99,6 @@ class MessageLine(Model):
     )
 
 
-class MessagesResponse(Model):
-    messages: list[MessageLine] = Field(description="Every message created, edited or deleted, in record order")
-
-
-class TrafficCall(Model):
-    """One model call the run holds a span of."""
-
-    span_id: str
-    trace_id: str
-    step: int = Field(description="The wake or step it is placed in")
-    started: AwareDatetime = Field(description="Real time")
-    ended: AwareDatetime = Field(description="Real time: with `started`, how long the model took to answer")
-    model: str | None
-    input_tokens: int | None
-    output_tokens: int | None
-    wrote: list[int] = Field(description="Seqs of the messages it is joined to as their writer")
-    joined_by: JoinedBy | None = Field(description="How it was joined to the first of them")
-
-
-class HostTraffic(Model):
-    """The calls to one model host relayed unopened on tunnels: counted, never read."""
-
-    host: str
-    calls: int = Field(ge=0, description="Bursts on its tunnels")
-    connections: int = Field(ge=0)
-    bytes_sent: int = Field(ge=0)
-    bytes_received: int = Field(ge=0)
-
-
-class ModelTrafficResponse(Model):
-    calls: list[TrafficCall] = Field(description="Every model call a span was received or recorded of, by start")
-    hosts: list[HostTraffic] = Field(description="Model hosts reached on tunnels never opened, one line each")
-
-
-class StepActivity(Model):
-    """What one wake or step of the run did in real time, as far as its record and the agent's spans show it."""
-
-    step: int = Field(ge=0, description="The wake or step its events and spans are placed in; 0 is setup")
-    began: AwareDatetime = Field(description="Real time: the earliest event written or span started in it")
-    ended: AwareDatetime = Field(description="Real time: the latest event written or span ended in it")
-    events: int = Field(ge=0, description="Events of the world's log placed in it, reads included")
-    spans: int = Field(ge=0, description="Spans of the agent's telemetry placed in it")
-    model_calls: int = Field(ge=0, description="Of those spans, the calls to a model")
-
-
-class StepsResponse(Model):
-    steps: list[StepActivity] = Field(
-        description="Every wake or step that holds an event or a span, by number; a step whose record says it "
-        "happened and that holds neither is not listed"
-    )
-
-
 class SpanBar(Model):
     """One span of the agent's telemetry, without its attributes: what a waterfall draws."""
 
@@ -177,14 +125,6 @@ class ModelCallResponse(Model):
 
 class WakesResponse(Model):
     wakes: list[WakeRecord]
-
-
-class EventsResponse(Model):
-    events: list[WorldEvent] = Field(description="Every change and read, without the run loop's own checkpoints")
-
-
-class CallsResponse(Model):
-    calls: list[RecordedCall]
 
 
 class DrawnWait(Model):
@@ -223,22 +163,6 @@ class FindingsResponse(Model):
 
 class ScorecardResponse(Model):
     scorecard: Effectiveness | None = Field(description="None until the run finishes")
-
-
-class TraceResponse(Model):
-    trace_id: str
-    spans: list[StoredSpan] = Field(description="The agent's spans of this trace the run received, as they arrived")
-
-
-class ModelCallsResponse(Model):
-    received: int = Field(description="Spans of the agent's own telemetry the run received; 0 means none")
-    forward_failures: list[ForwardFailure] = Field(
-        description="Payloads that could not be passed on to where the agent's telemetry went before"
-    )
-    events: list[EventTrace] = Field(
-        description="For each event a finding cites, the agent's spans behind it and the model call that led to it; "
-        "empty until the run finishes"
-    )
 
 
 class Refusal(Model):
