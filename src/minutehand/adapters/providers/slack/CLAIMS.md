@@ -178,3 +178,4 @@ check Slack makes and this stack does not test:
   events `file_created`, `file_public` and `file_change` are not sent.
 - **A button inside a modal** is not a press a scenario can play, so the trigger `views.push` wants comes from a
   `view_submission`; the page names no other source than "an interaction within the existing modal".
+| A person seeded with no email is a member whose profile has none | documented | `tests/conformance` (`person_without_email`, `no_email`) | https://docs.slack.dev/reference/objects/user-object |

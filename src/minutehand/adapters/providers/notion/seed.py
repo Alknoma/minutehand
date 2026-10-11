@@ -388,14 +388,17 @@ def _seed_workspace(
         person = people[key]
         notion.write_user(
             wire.StoredUser(
-                id=person_id(ws, person.email),
+                id=person_id(ws, person.held_email("notion", "a Notion person user is identified by their email")),
                 workspace=ws,
                 type=wire.UserType.PERSON,
                 name=person.name,
                 email=person.email,
             )
         )
-    by_person = {k: person_id(ws, people[k].email) for k in members}
+    by_person = {
+        k: person_id(ws, people[k].held_email("notion", "a Notion person user is identified by their email"))
+        for k in members
+    }
     creator = by_person[owner.key] if owner.key in by_person else next(iter(by_person.values()), ws)
 
     for integration in workspace.integrations:

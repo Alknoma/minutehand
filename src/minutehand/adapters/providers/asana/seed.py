@@ -308,7 +308,7 @@ class _Seeding:
                     gid=WORKSPACE_GID,
                     name=self.seed.workspace.name,
                     is_organization=self.seed.workspace.organization,
-                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
+                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people if p.email}),
                     premium=self.seed.workspace.premium,
                     unpaginated_limit=self.seed.workspace.unpaginated_limit,
                     status=self._status(),
@@ -353,7 +353,7 @@ class _Seeding:
                 wire.AsanaUser(
                     gid=state.user_gid(person.key),
                     name=person.name,
-                    email=person.email,
+                    email=person.held_email("asana", "every Asana account signs in by its email address"),
                     removed=person.account is Account.DEACTIVATED,
                     guest=person.account is Account.GUEST,
                 ),

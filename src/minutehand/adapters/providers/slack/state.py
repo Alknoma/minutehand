@@ -513,7 +513,8 @@ class SlackWorld:
         found = self.body(away_ref(user), wire.SlackAway)
         if found is None:
             return None
-        asked = first_ask(found.email, self._store.events()) if any(s.on_first_ask for s in found.stretches) else None
+        on_ask = found.email is not None and any(s.on_first_ask for s in found.stretches)
+        asked = first_ask(found.email, self._store.events()) if on_ask and found.email is not None else None
         for stretch in found.stretches:
             span = placed(
                 from_start=None if stretch.on_first_ask else datetime.fromtimestamp(found.starts_at, UTC),

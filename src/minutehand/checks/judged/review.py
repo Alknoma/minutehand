@@ -138,7 +138,7 @@ def _at(moment: datetime) -> str:
 def shown_to_reviewer(view: RunView, effect: TypedItem) -> str:
     """Everything the reviewer is shown for one effect, as plain text in sections."""
     scenario = view.scenario
-    by_email = {p.email.casefold(): p for p in scenario.people}
+    by_email = {p.email.casefold(): p for p in scenario.people if p.email}
     parts: list[str] = []
     head: list[str] = []
     if view.agent_instructions:

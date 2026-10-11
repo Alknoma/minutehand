@@ -254,7 +254,7 @@ def _change(event: WorldEvent, before: str | None, text: str) -> MessageChange |
 def message_lines(events: Sequence[WorldEvent], scenario: Scenario, world: Store | None = None) -> list[MessageLine]:
     """Every message sent, rewritten or deleted, and every item in the agent's own product, as a person reads the
     record. With `world`, each of the agent's is joined to the model call that wrote it (a read of its spans each)."""
-    names = {p.email: p.name for p in scenario.people}
+    names = {p.email: p.name for p in scenario.people if p.email}
     said: dict[EntityRef, str] = {}
     lines: list[MessageLine] = []
     for event in events:

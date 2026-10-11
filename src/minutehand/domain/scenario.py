@@ -287,7 +287,7 @@ class Account(StrEnum):
 class Person(Model):
     key: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     name: str
-    email: str
+    email: str | None = Field(default=None, description="None for an account that has none")
     title: str | None = None
     profile: str = Field(
         default="",
@@ -340,6 +340,12 @@ class Person(Model):
                 if change.stale_facts is not None:
                     stale = list(change.stale_facts)
         return facts, stale
+
+    def held_email(self, provider: str, why: str) -> str:
+        """The person's email, where every account of `provider` has one; refused by name for a person with none."""
+        if self.email is None:
+            raise ValueError(f"{provider} cannot hold {self.key}, who has no email: {why}")
+        return self.email
 
 
 class TicketState(StrEnum):

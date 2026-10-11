@@ -225,10 +225,10 @@ class _At:
 
 
 def _graph_user(person: Person, directory: Directory) -> wire.GraphUser:
-    local = person.email.split("@")[0]
+    local = (person.email or person.key).split("@")[0]
     guest = person.account is Account.GUEST
     upn = (
-        f"{person.email.replace('@', '_')}#EXT#@{directory.tenant_domain}"
+        f"{(person.email or person.key).replace('@', '_')}#EXT#@{directory.tenant_domain}"
         if guest
         else f"{local}@{directory.tenant_domain}"
     )

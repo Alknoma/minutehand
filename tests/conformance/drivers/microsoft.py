@@ -893,7 +893,8 @@ class MicrosoftDriver(Driver):
         found = self._people[world.name][person]
         if "account" in found and found["account"] == "bot":
             return None
-        return str(found["email"])
+        # A person with no email signs in by the name the tenant gives them: their key at its domain.
+        return str(found["email"]) if "email" in found else f"{person}@{directory(world.name).tenant_domain}"
 
     def faults(self) -> list[FaultCase]:
         # No Microsoft client library is a dev dependency (no msgraph-sdk, no msal, no botbuilder): each fault is

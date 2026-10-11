@@ -469,9 +469,10 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
     }
     for person in scenario.people:
-        accounts[person.key] = wire.StoredUser(
-            accountId=account_id(person.email), displayName=person.name, emailAddress=person.email
+        email = person.held_email(
+            "jira", "an Atlassian account signs in by its email address; one shown without an email has hidden it"
         )
+        accounts[person.key] = wire.StoredUser(accountId=account_id(email), displayName=person.name, emailAddress=email)
     for extra in spec.accounts:
         email = extra.email or f"{extra.key}@{spec.site}.invalid"
         accounts[extra.key] = wire.StoredUser(

@@ -124,7 +124,9 @@ def workspace_seed(scenario: Scenario) -> WorkspaceSeed:
 
 def user_of(person: Person) -> wire.DriveUser:
     return wire.DriveUser(
-        displayName=person.name, emailAddress=person.email, permissionId=state.permission_id(person.email)
+        displayName=person.name,
+        emailAddress=person.held_email(MANIFEST.key, "a Google account is its email address"),
+        permissionId=state.permission_id(person.held_email(MANIFEST.key, "a Google account is its email address")),
     )
 
 
@@ -215,9 +217,17 @@ def seed(scenario: Scenario, world: Store) -> None:
     default = people[
         scenario.acting(own.unknown_credentials_act_as, "an unknown credential acts as (unknown_credentials_act_as)")
     ]
-    drive.keep_credential(state.ANY_CREDENTIAL, wire.Credential(email=default.email), operation=Operation.CREATE)
+    drive.keep_credential(
+        state.ANY_CREDENTIAL,
+        wire.Credential(email=default.held_email(MANIFEST.key, "a Google account is its email address")),
+        operation=Operation.CREATE,
+    )
     for sign_in in sign_ins:
-        email = people[sign_in.person].email if sign_in.person is not None else sign_in.credential
+        email = (
+            people[sign_in.person].held_email(MANIFEST.key, "a Google account is its email address")
+            if sign_in.person is not None
+            else sign_in.credential
+        )
         credential = wire.Credential(email=email, service_account="@" in sign_in.credential)
         drive.keep_credential(state.secret_digest(sign_in.credential), credential, operation=Operation.CREATE)
 
@@ -259,7 +269,10 @@ def seed(scenario: Scenario, world: Store) -> None:
     calendars = CalendarWorld(world)
     for person in scenario.people:
         zone = person.working_hours.timezone if person.working_hours is not None else "UTC"
-        calendars.keep_calendar(CalendarRecord(id=person.email, timeZone=zone), actor=Actor.SCENARIO)
+        calendars.keep_calendar(
+            CalendarRecord(id=person.held_email(MANIFEST.key, "a Google account is its email address"), timeZone=zone),
+            actor=Actor.SCENARIO,
+        )
     _seed_emails(own.emails, scenario, MailWorld(world))
     _seed_events(own.events, scenario, calendars)
     write_faults(drive, own.faults, start)
@@ -307,7 +320,7 @@ def _address(name: str, people: dict[str, Person], what: str) -> tuple[str, str]
         return "", name
     if name not in people:
         raise ValueError(f"{what} names {name!r}, who is not a person in the scenario; they are {', '.join(people)}")
-    return people[name].name, people[name].email
+    return people[name].name, people[name].held_email(MANIFEST.key, "a Google account is its email address")
 
 
 def _seed_emails(emails: list[SeededEmail], scenario: Scenario, mailboxes: MailWorld) -> None:
@@ -366,11 +379,12 @@ def _seed_events(events: list[SeededEvent], scenario: Scenario, calendars: Calen
                     responseStatus=guest.response,
                 )
             )
-        me = calendar_wire.Actor(email=organizer.email, displayName=organizer.name)
+        organized = organizer.held_email(MANIFEST.key, "a Google account is its email address")
+        me = calendar_wire.Actor(email=organized, displayName=organizer.name)
         event = calendar_wire.StoredEvent(
             etag=f'"{n}"',
             id=event_id,
-            htmlLink=html_link(event_id, organizer.email),
+            htmlLink=html_link(event_id, organized),
             created=stamp,
             updated=stamp,
             summary=seeded.summary,

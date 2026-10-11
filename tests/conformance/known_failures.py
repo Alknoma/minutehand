@@ -29,18 +29,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known("asana", Property.SEEDED, "sign_in", "NotImplementedError: AsanaDriver has no sign-in"),
     Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
-    Known(
-        "github",
-        Property.ACCOUNTS,
-        "no_email",
-        "the shared seed model cannot declare a no_email account: 1 validation error for CreateWorld",
-    ),
-    Known(
-        "github",
-        Property.SEEDED,
-        "person_without_email",
-        "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for CreateWorld / seed.people.3.email / Field required [type=missing, i",
-    ),
     Known("github", Property.SEEDED, "sign_in", "NotImplementedError: GitHubDriver has no sign-in"),
     Known(
         "google_workspace",
@@ -69,12 +57,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "jira",
-        Property.ACCOUNTS,
-        "no_email",
-        "the shared seed model cannot declare a no_email account: 1 validation error for CreateWorld",
-    ),
-    Known(
-        "jira",
         Property.FAMILY,
         "same_as_asana_tickets",
         'asana cannot complete the lifecycle, so jira cannot be compared with it: link two tasks: 404 {"errors": [{"message": "No matching route for request", "help": "For more information ',
@@ -97,24 +79,12 @@ KNOWN: tuple[Known, ...] = (
         "person_deactivated",
         "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",
     ),
-    Known(
-        "jira",
-        Property.SEEDED,
-        "person_without_email",
-        "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for CreateWorld / seed.people.3.email / Field required [type=missing, i",
-    ),
     Known("jira", Property.SEEDED, "sign_in", "NotImplementedError: JiraDriver has no sign-in"),
     Known(
         "jira",
         Property.SEEDED,
         "ticket_title_body_project",
         "the neutral view holds body 'First line, ünïcode.\\nSecond line with <angle brackets> & ampersand.', project 'LAUNCH'; seeded in project 'Launch'",
-    ),
-    Known(
-        "microsoft",
-        Property.ACCOUNTS,
-        "no_email",
-        "the shared seed model cannot declare a no_email account: 1 validation error for Seed",
     ),
     Known(
         "microsoft",
@@ -127,12 +97,6 @@ KNOWN: tuple[Known, ...] = (
         Property.FAMILY,
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "person_without_email",
-        "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
     ),
     Known("microsoft", Property.SEEDED, "sign_in", "NotImplementedError: MicrosoftDriver has no sign-in"),
     Known(
@@ -193,27 +157,9 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "slack",
-        Property.ACCOUNTS,
-        "no_email",
-        "the shared seed model cannot declare a no_email account: 1 validation error for Seed",
-    ),
-    Known(
-        "slack",
         Property.FAMILY,
         "same_as_microsoft_messages_in_a_channel",
         "microsoft cannot complete the lifecycle, so slack cannot be compared with it: POST /teams/<uuid>/channels/19%3Ac741879c406c5172ac0c440396e8ffbb%40thread.tacv2/messages/178825320000",
-    ),
-    Known(
-        "slack",
-        Property.SEEDED,
-        "person_without_email",
-        "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
-    ),
-    Known(
-        "youtrack",
-        Property.ACCOUNTS,
-        "no_email",
-        "the shared seed model cannot declare a no_email account: 1 validation error for Seed",
     ),
     Known(
         "youtrack",
@@ -238,12 +184,6 @@ KNOWN: tuple[Known, ...] = (
         Property.SEEDED,
         "person_deactivated",
         "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",
-    ),
-    Known(
-        "youtrack",
-        Property.SEEDED,
-        "person_without_email",
-        "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
     ),
     Known("youtrack", Property.SEEDED, "sign_in", "NotImplementedError: YouTrackDriver has no sign-in"),
     Known(

@@ -419,6 +419,8 @@ class JiraDriver(Driver):
     provider = PROVIDER
     session = JiraSession
     absent = {
+        "accounts.no_email": "An Atlassian account signs in by its email address; one the API shows without an email has "
+        "hidden it (profile visibility), and still has one, so no Jira account exists without one.",
         "accounts.title": "A Jira Cloud user object carries no job title: the REST v3 user has an accountId, a "
         "display name, an email, an account type, avatars, a time zone and whether it is active, nothing more.",
         "accounts.guest": "A Jira Cloud user says nothing of being a guest: its accountType is atlassian, app or "

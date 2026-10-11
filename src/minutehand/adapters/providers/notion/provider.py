@@ -69,7 +69,11 @@ class NotionProvider:
         found = NotionWorld(world).page(page)
         if found is None:
             return
-        email = next(p.email for p in scenario.people if p.key == happening.person)
+        email = next(
+            p.held_email("notion", "a Notion person user is identified by their email")
+            for p in scenario.people
+            if p.key == happening.person
+        )
         editor, user = _as_person(page, email, world, clock)
         action = happening.action
         if isinstance(action, Edited):
@@ -129,7 +133,9 @@ class NotionProvider:
             u
             for w in notion.workspaces()
             for u in notion.users(w.id)
-            if u.type is wire.UserType.PERSON and (u.email or "").lower() == person.email.lower()
+            if u.type is wire.UserType.PERSON
+            and person.email is not None
+            and (u.email or "").lower() == person.email.lower()
         ]
         if not members:
             raise ValueError(f"{person.key} is not a member of any Notion workspace")

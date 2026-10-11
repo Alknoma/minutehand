@@ -165,7 +165,7 @@ class HttpInboxReach:
     def _values(self, person: Person, clock: Clock) -> dict[str, str]:
         return {
             "person.key": person.key,
-            "person.email": person.email,
+            "person.email": person.email or "",
             "person.name": person.name,
             "person.credential": self._credentials[person.key] if person.key in self._credentials else "",
             "clock.now": clock.now().isoformat(),

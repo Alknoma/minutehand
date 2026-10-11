@@ -435,7 +435,7 @@ class SlackAway(Model):
     """Minutehand's own: a person's absences, read against the run's clock whenever their profile is."""
 
     user: str
-    email: str
+    email: str | None
     starts_at: int = Field(description="The scenario's start, epoch seconds")
     stretches: list[SlackAwayStretch]
 

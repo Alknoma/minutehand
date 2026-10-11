@@ -98,7 +98,7 @@ class AsanaProvider:
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
         """Every task assigned to the person that is neither done nor cancelled, as they read it in Asana."""
         asana = AsanaWorld(world)
-        user = asana.user_by_email(person.email)
+        user = asana.user_by_email(person.held_email("asana", "every Asana account signs in by its email address"))
         if user is None:
             return []
         return [

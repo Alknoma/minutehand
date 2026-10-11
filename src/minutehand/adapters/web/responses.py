@@ -513,7 +513,7 @@ class ConversationLine(Model):
 class PersonActivity(Model):
     key: str
     name: str
-    email: str
+    email: str | None
     conversation: list[ConversationLine]
     replies: list[ReplyLine]
     model_calls: list[PersonCallLine]

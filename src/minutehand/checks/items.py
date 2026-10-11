@@ -176,7 +176,7 @@ def _finding(found: _Found) -> Finding:
 class _Reader:
     def __init__(self, view: RunView) -> None:
         self.view = view
-        self.by_email = {p.email.casefold(): p for p in view.scenario.people}
+        self.by_email = {p.email.casefold(): p for p in view.scenario.people if p.email}
         self.by_key = {p.key: p for p in view.scenario.people}
         self.typed = view.typed
         self.by_seq = {t.seq: t for t in view.typed}
