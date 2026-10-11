@@ -29,6 +29,7 @@ from tests.providers.asana.rich_workspace import (
     REFRESH_TOKEN,
     ROADMAP,
     STATUS_FIELD,
+    SUBTASK,
     THROTTLED_AFTER,
     THROTTLED_FOR,
     UNUSED,
@@ -195,7 +196,7 @@ async def test_a_tag_or_parent_that_names_nothing_is_refused(agent: httpx.AsyncC
     assert error(await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {}}), 400) == "parent: Missing input"
     itself = await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": INCIDENT}})
     assert unserved(itself).startswith("a parent that is the task itself or one of its subtasks")
-    sub = state.task_gid(1)
+    sub = SUBTASK
     under = await agent.post(f"/tasks/{INCIDENT}/setParent", json={"data": {"parent": sub}})
     assert unserved(under).startswith("a parent that is the task itself or one of its subtasks")
     assert unserved(await agent.put(f"/tasks/{INCIDENT}", json={"data": {"parent": sub}})).startswith(

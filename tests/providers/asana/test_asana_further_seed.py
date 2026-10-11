@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from minutehand.adapters.providers.asana import state
+from minutehand.adapters.providers.asana.seed import gid_at, story_gid_at
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -122,10 +123,10 @@ def test_an_added_asana_task_with_its_details_lands_after_the_seeded_ones(tmp_pa
             directory=tmp_path,
             scratch=_scratch,
         )
-        task = state.task_gid(2)
+        task = gid_at(world.scenario, 2)
         stories = [s.entity.external_id for s in world.store.children("asana", EntityKind.COMMENT, task, after=None,
                                                                          limit=10)]  # fmt: skip
-        assert stories == [state.story_gid(2, 0)]
+        assert stories == [story_gid_at(world.scenario, 2, 0)]
 
 
 def test_a_person_added_to_an_open_asana_world_moves_no_seeded_story(tmp_path: Path) -> None:
@@ -137,8 +138,8 @@ def test_a_person_added_to_an_open_asana_world_moves_no_seeded_story(tmp_path: P
         world.extend(people=[ivy], directory=tmp_path, scratch=_scratch)
         after = _held(world.store)
         assert set(before) <= set(after)
-        first = state.task_gid(0)
+        first = gid_at(world.scenario, 0)
         stories = [s.entity.external_id for s in world.store.children("asana", EntityKind.COMMENT, first, after=None,
                                                                          limit=10)]  # fmt: skip
-        assert stories == [state.story_gid(0, 0), state.story_gid(0, 1)]
+        assert stories == [story_gid_at(world.scenario, 0, 0), story_gid_at(world.scenario, 0, 1)]
         assert ("record", state.user_gid("ivy")) in {(k.value, i) for k, i in after}

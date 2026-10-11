@@ -104,20 +104,32 @@ def workspace_membership_gid(user: str, workspace: str) -> str:
     return _derived("11", "workspace_membership", user, workspace)
 
 
-def task_gid(position: int) -> str:
-    """A seeded task's gid, from its ticket's position among the scenario's asana tickets: below every gid the
-    API mints, and in the scenario's order, as tasks made before the run would be."""
-    return str(_SEEDED_TASKS + position)
+_SEEDED_SPAN = 5_000_000_000_000
+"""How many gids each seeded kind has (tasks from `_SEEDED_TASKS`, stories from `_SEEDED_STORIES`): all below every
+gid the API mints."""
 
 
-def story_gid(task_position: int, position: int) -> str:
-    """A seeded story's gid, from its task's position among the scenario's asana tickets and its own place among
-    that task's seeded stories: never from where seeding reached in the log, so a person or ticket added to an open
-    world moves none. Every one sits below every gid the API mints, so a task's stories list seeded ones first, in
-    the order the scenario gives them, then those written while the world runs, even at the same instant."""
+def task_number(*identity: str) -> int:
+    """A seeded task's number, from what the ticket is (its key, or its project, title and place among tickets of
+    that title), never from where it sits among the scenario's tickets: a ticket listed before it moves nothing."""
+    return int(hashlib.sha256("\x1f".join(("task", *identity)).encode()).hexdigest(), 16) % (
+        _SEEDED_SPAN // STORIES_PER_TASK
+    )
+
+
+def task_gid(number: int) -> str:
+    """A seeded task's gid, from its `task_number`: below every gid the API mints."""
+    return str(_SEEDED_TASKS + number)
+
+
+def story_gid(task: int, position: int) -> str:
+    """A seeded story's gid, from its task's `task_number` and its own place among that task's seeded stories: never
+    from where seeding reached in the log, so a person or ticket added to an open world moves none. Every one sits
+    below every gid the API mints, so a task's stories list seeded ones first, in the order the scenario gives them,
+    then those written while the world runs, even at the same instant."""
     if position >= STORIES_PER_TASK:
         raise ValueError(f"a seeded asana task holds at most {STORIES_PER_TASK} stories")
-    return str(_SEEDED_STORIES + task_position * STORIES_PER_TASK + position)
+    return str(_SEEDED_STORIES + task * STORIES_PER_TASK + position)
 
 
 def project_gid(name: str) -> str:
@@ -325,11 +337,11 @@ class AsanaWorld:
         return None if stored is None else wire.parse(wire.AsanaTask, stored.body)
 
     def tasks(self) -> list[wire.AsanaTask]:
-        """Every live task in the workspace, by gid."""
+        """Every live task in the workspace, in the order they were made: by when, then by gid (minted in order)."""
         found: list[wire.AsanaTask] = []
         for parent in [*(p.gid for p in self.projects()), WORKSPACE_GID]:
             found += [wire.parse(wire.AsanaTask, s.body) for s in self._pages(EntityKind.TICKET, parent)]
-        return sorted(found, key=lambda t: t.gid)
+        return sorted(found, key=lambda t: (t.created_at, int(t.gid)))
 
     def project_tasks(self, project: str) -> list[wire.AsanaTask]:
         """A project's tasks, including those whose first project is another one."""

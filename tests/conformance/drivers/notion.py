@@ -202,7 +202,9 @@ class NotionSession(Documents):
         ):  # fmt: skip
             response = self._http.request(method, path, json=body, params=query)
             ok(what, response)
-            answered.append(response.text)
+            # `request_id` names the request, new for each one (https://developers.notion.com/reference/intro), not
+            # anything the workspace holds.
+            answered.append(json.dumps({k: v for k, v in response.json().items() if k != "request_id"}))
         return "\n".join(answered)
 
     def change(self, label: str) -> None:

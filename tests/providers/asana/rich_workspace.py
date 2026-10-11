@@ -17,7 +17,7 @@ import pytest
 
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.provider import build
-from minutehand.adapters.providers.asana.seed import AsanaSeed
+from minutehand.adapters.providers.asana.seed import AsanaSeed, gid_at
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.scenario import Person, ProviderSeed, Scenario, SeededTicket, TicketState
@@ -120,10 +120,10 @@ STATUS_FIELD = state.field_gid("Status")
 PRIORITY = state.field_gid("Priority")
 POINTS = state.field_gid("Story Points")
 UNUSED = state.field_gid("Unused")
-INCIDENT = state.task_gid(0)
-SUBTASK = state.task_gid(1)
-OLD = state.task_gid(2)
-PRICING = state.task_gid(3)
+INCIDENT = gid_at(SCENARIO, 0)
+SUBTASK = gid_at(SCENARIO, 1)
+OLD = gid_at(SCENARIO, 2)
+PRICING = gid_at(SCENARIO, 3)
 
 
 def option(field: str, name: str) -> str:

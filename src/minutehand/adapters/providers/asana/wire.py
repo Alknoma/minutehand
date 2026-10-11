@@ -1894,7 +1894,12 @@ def page(
         if len(items) > unpaginated_limit:
             raise bad("The result is too large. You should use pagination (may require specifying a workspace)!")
         return items, None
-    rest = items if offset is None else [i for i in items if int(i.gid) > int(decode_offset(offset))]
+    if offset is None:
+        rest = list(items)
+    else:  # the page after the item the offset names, in the list's own order
+        after = decode_offset(offset)
+        seen = next((n for n, i in enumerate(items) if i.gid == after), None)
+        rest = [i for i in items if int(i.gid) > int(after)] if seen is None else list(items[seen + 1 :])
     chosen = rest[:limit]
     if len(rest) <= limit:
         return chosen, None

@@ -22,12 +22,6 @@ class Known:
 
 KNOWN: tuple[Known, ...] = (
     Known(
-        "asana",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        "in a seed listing one more first, ticket Original one: 1190000000000000 -> 1190000000000001",
-    ),
-    Known(
         "google_workspace",
         Property.IDS,
         "stable_under_additions_and_reordering",
@@ -44,12 +38,6 @@ KNOWN: tuple[Known, ...] = (
         Property.RECORD,
         "binary_upload_and_download",
         'VendorRefused: create a file upload: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
-    ),
-    Known(
-        "notion",
-        Property.TIME,
-        "new_things_carry_the_worlds_clock",
-        "advancing the clock changed what the vendor answers for what was there",
     ),
     Known(
         "youtrack",
