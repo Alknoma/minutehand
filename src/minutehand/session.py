@@ -515,6 +515,12 @@ async def fork(
     ):
         scorer.receiver = proxy.receiver
         proxy.hold()  # until the child is mounted, the agent's memory is not the parent's at its end
+        # The agent's model calls after the checkpoint answered as the parent's model answered them, until the agent
+        # asks something the parent did not: a fork differs from its parent by its changes, not by a model's mood.
+        with reading(state, parent_run) as parent_kept:
+            after = [s for s in parent_kept.spans() if s.wake > forked_after]
+        model_replay = ModelReplay.of(parent_run, after)
+        proxy.proxy.addon.model_replay = model_replay
         own_files = OwnDatabases(agent, run_dir(state, child_id))
         scorer.own_files = own_files
         env = (
@@ -570,6 +576,7 @@ async def fork(
     for record in records:
         child = run_dir(state, record.run_id)
         _write_inputs(child, changed, agent)
+        (child / REPLAYED).write_text(Replaying(parent_run, world, model_replay).summary(), encoding="utf-8")
         with reading(state, record.run_id) as written:
             write_recordings(child, written.calls())
         outcomes.append(_keep(child, record, scorer))
