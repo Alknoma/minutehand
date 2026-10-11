@@ -14,13 +14,11 @@ import httpx
 import pytest
 import yaml
 
-from minutehand.adapters.mcp.results import FindingList
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import FindingsResponse, RunsResponse
 from minutehand.domain.run import StopReason, VerdictKind
 from minutehand.domain.scenario import PersonAsked
 from tests.e2e.support import agent_under_test, answers, scenario
-from tests.mcp.test_mcp_tools import call, connected
 
 MINUTEHAND = Path(sys.executable).parent / "minutehand"
 CUT_OFF = (
@@ -79,10 +77,6 @@ async def test_a_run_cut_off_at_its_wake_limit_with_a_wait_open_is_not_finished_
     assert findings.verdict is not None and findings.verdict.words == CUT_OFF
     assert findings.verdict.stop is StopReason.WAKE_LIMIT
     assert [r.verdict for r in listed.runs] == [VerdictKind.UNFINISHED]
-
-    async with connected(state) as client:
-        listing = await call(client, "list_findings", FindingList, run_id=run_id)
-    assert listing.verdict.kind is VerdictKind.UNFINISHED and listing.verdict.words == CUT_OFF
 
     again = subprocess.run(
         [str(MINUTEHAND), "findings", run_id, "--state", str(state)],

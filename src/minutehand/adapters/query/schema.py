@@ -1,5 +1,5 @@
 """The read model of a run: every view, every column, what each holds. This is the contract `minutehand query`,
-`trace`, `explain` and the MCP tools `query_run` and `schema` answer to, and `docs/querying.md` documents.
+`trace` and `explain` answer to, over MCP too, and `docs/querying.md` documents.
 
 A view's name, its columns, their order and their types are fixed for one `VERSION`. Removing or renaming a column,
 changing its type or what it holds, or removing a view, is a new `VERSION`; adding a view or a column at the end of
@@ -537,7 +537,7 @@ VIEWS: tuple[View, ...] = (
         "run's integrity checks.",
         order="finding_id",
         columns=[
-            _c("finding_id", N, "Numbered from 1, as list_findings numbers them"),
+            _c("finding_id", N, "Numbered from 1, as `findings` numbers them"),
             _c("check_id", T, "The check, or the team's rule by its id"),
             _c("kind", T, "fail, review or informational"),
             _c("severity", T, "error, warning or information"),

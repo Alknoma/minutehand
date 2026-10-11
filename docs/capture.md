@@ -346,7 +346,6 @@ A replay's `{kind: run}` names a closed world or run under the server's state di
   declarations to add for any host nobody declared (`RunRecord.outbound`).
 - The viewer: an "Outbound calls" lane on the timeline (a replayed call hollow, a refused one red) and a list,
   each call opening to its redacted request and answer, a replayed one marked "REPLAYED from a recording".
-- MCP: `list_outbound_calls(run_id)`; `show_evidence` gives each cited event's call its `captured` detail.
 - Minutehand's own OpenTelemetry: one `SpanKind.CLIENT` span per captured call, `<method> <host>`, in the
   caller's trace when it sent a `traceparent`, with the mode and what answered it; never a body, whatever
   `MINUTEHAND_EXPORT_BODIES` says.

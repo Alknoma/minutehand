@@ -18,8 +18,8 @@ minutehand explain <run> <seq>                    # one event: what led to it an
 minutehand query <run> --export run.sqlite        # the read model as a file of its own, for any SQLite client
 ```
 
-`<run>` is a run's id, a fork's id, or the start of exactly one. Over MCP (`minutehand mcp`) the same are the tools
-`schema`, `query_run` (a page of at most 1,000 rows, with `offset` and `next_offset`), `trace` and `explain`.
+`<run>` is a run's id, a fork's id, or the start of exactly one. Over MCP (`minutehand mcp`) each is the tool of the same
+name.
 `trace` is a filter over `actions`, and `explain` a handful of queries over the views below, so what they say is
 what your own SQL over the same views finds.
 
@@ -57,7 +57,7 @@ the built read model as a plain SQLite file, which any client reads with no Minu
 - **Time.** Every simulated and real moment is UTC text, `2026-08-24T10:00:00.000Z`: milliseconds always, so text
   order is time order. Compare as text, or with `julianday()`: `(julianday(b) - julianday(a)) * 24` is hours.
   `recipients.local_time` is the one exception: the person's own clock, with its offset.
-- **Seq.** `seq` is an event's place in the world's log, the same number `findings`, `show_evidence` and the viewer
+- **Seq.** `seq` is an event's place in the world's log, the same number `findings`, `explain` and the viewer
   use. A fork shares its parent's seqs up to `run.forked_at_seq`.
 - **JSON.** Columns holding JSON (`to_people`, `evidence`, `facts`, `attributes`, `snapshot`, bodies) are read with
   SQLite's `json_each()` and `json_extract()`.
@@ -463,7 +463,7 @@ Every finding the run's checks raised: the assessment of the agent's effects aga
 
 | Column | Type | What it holds |
 |---|---|---|
-| `finding_id` | INTEGER | Numbered from 1, as list_findings numbers them |
+| `finding_id` | INTEGER | Numbered from 1, as `findings` numbers them |
 | `check_id` | TEXT | The check, or the team's rule by its id |
 | `kind` | TEXT | fail, review or informational |
 | `severity` | TEXT | error, warning or information |

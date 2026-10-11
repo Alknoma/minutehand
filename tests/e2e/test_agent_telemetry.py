@@ -1,5 +1,5 @@
 """The agent's own telemetry through a whole run: the test agent traces itself with the stock SDK (`--trace`),
-exports to the endpoint the run hands it, and the finding's evidence resolves to the agent's span and to the
+exports to the endpoint the run hands it, and an event a finding cites resolves to the agent's span and to the
 model call that chose the message."""
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-from mcp.shared.memory import create_connected_server_and_client_session
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -20,8 +19,6 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from minutehand import session
-from minutehand.adapters.mcp.results import Evidence, FindingList
-from minutehand.adapters.mcp.server import build
 from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.adapters.web.app import create_app
 from minutehand.adapters.web.responses import ModelCallsResponse, TraceResponse
@@ -45,36 +42,27 @@ async def test_a_findings_evidence_resolves_to_the_agents_span_and_the_model_cal
     run_id = outcome.record.run_id
     [asked] = messages(world(state, run_id).events(), Actor.AGENT, to=SOFIA)
 
-    async with create_connected_server_and_client_session(build(state)) as client:
-        listed = FindingList.model_validate(
-            (await client.call_tool("list_findings", {"run_id": run_id})).structuredContent
+    transport = httpx.ASGITransport(app=create_app(state))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as viewer:
+        joined = ModelCallsResponse.model_validate_json((await viewer.get(f"/api/runs/{run_id}/model-calls")).content)
+        [cited] = [t for t in joined.events if t.seq == asked.seq]
+        assert cited.trace_id is not None
+        traced = TraceResponse.model_validate_json(
+            (await viewer.get(f"/api/runs/{run_id}/traces/{cited.trace_id}")).content
         )
-        [silence] = [f for f in listed.findings if f.check == "follows_up_when_due"]
-        shown = await client.call_tool("show_evidence", {"run_id": run_id, "finding": silence.number})
-    evidence = Evidence.model_validate(shown.structuredContent)
 
-    [cited] = [e for e in evidence.events if e.seq == asked.seq]
-    assert cited.call is not None and cited.call.trace_id is not None
-    assert cited.agent_spans == ["send_dm", "agent turn"]
+    assert cited.caller is not None
+    assert [s.span.name for s in [cited.caller, *cited.ancestors]] == ["send_dm", "agent turn"]
     assert cited.joined_by is JoinedBy.TRACE
     call = cited.model_call
-    assert call is not None and call.trace_id == cited.call.trace_id
+    assert call is not None and call.trace_id == cited.trace_id
     assert (call.name, call.model, call.source, call.wake) == ("chat model-test", "model-test", SpanSource.RECEIVED, 1)
     assert (call.input_tokens, call.output_tokens) == (120, 18)
     assert call.input_messages is not None and f"What should {SOFIA} be told?" in call.input_messages
     assert call.output_messages is not None
     [said] = json.loads(call.output_messages)
     assert said["parts"][0]["arguments"]["text"] == "Could you confirm the partner pricing, please?"
-    assert "span(s) of the agent's own telemetry were received" in evidence.telemetry
-
-    transport = httpx.ASGITransport(app=create_app(state))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as viewer:
-        joined = ModelCallsResponse.model_validate_json((await viewer.get(f"/api/runs/{run_id}/model-calls")).content)
-        traced = TraceResponse.model_validate_json(
-            (await viewer.get(f"/api/runs/{run_id}/traces/{cited.call.trace_id}")).content
-        )
-    [behind] = [t for t in joined.events if t.seq == asked.seq]
-    assert behind.model_call == call and joined.received == len(traced.spans) == 3
+    assert joined.received == len(traced.spans) == 3
     assert sorted(s.span.name for s in traced.spans) == ["agent turn", "chat model-test", "send_dm"]
 
 
@@ -84,16 +72,12 @@ async def test_a_run_that_received_nothing_says_so(tmp_path: Path, monkeypatch: 
     [outcome] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     run_id = outcome.record.run_id
 
-    async with create_connected_server_and_client_session(build(state)) as client:
-        listed = FindingList.model_validate(
-            (await client.call_tool("list_findings", {"run_id": run_id})).structuredContent
-        )
-        [silence] = [f for f in listed.findings if f.check == "follows_up_when_due"]
-        shown = await client.call_tool("show_evidence", {"run_id": run_id, "finding": silence.number})
-    evidence = Evidence.model_validate(shown.structuredContent)
+    transport = httpx.ASGITransport(app=create_app(state))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as viewer:
+        joined = ModelCallsResponse.model_validate_json((await viewer.get(f"/api/runs/{run_id}/model-calls")).content)
 
-    assert evidence.telemetry.startswith("No telemetry was received from the agent in this run")
-    assert all(e.model_call is None and e.joined_by is None for e in evidence.events)
+    assert joined.received == 0 and joined.events
+    assert all(e.model_call is None and e.joined_by is None for e in joined.events)
 
 
 async def test_a_fork_sees_its_parents_spans_up_to_the_fork_and_not_after(
