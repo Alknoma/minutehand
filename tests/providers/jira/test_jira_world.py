@@ -49,14 +49,14 @@ def test_seeding_writes_the_site_as_the_scenario_with_each_tickets_meaning(site:
         TicketSnapshot(
             title="Write the release notes",
             body="Cover the new export.\nLink the changelog.",
-            project="LAUNCH",
+            project="Launch",
             assignee_email="tomas@example.com",
         ),
         TicketSnapshot(
-            title="Book the venue", project="LAUNCH", assignee_email="noor@example.com", state=TicketState.DONE
+            title="Book the venue", project="Launch", assignee_email="noor@example.com", state=TicketState.DONE
         ),
-        TicketSnapshot(title="Ship the demo kits", project="FIELD"),
-        TicketSnapshot(title="Rotate the vault keys", project="VAULT", assignee_email="iris@example.com"),
+        TicketSnapshot(title="Ship the demo kits", project="Field Ops"),
+        TicketSnapshot(title="Rotate the vault keys", project="Vault", assignee_email="iris@example.com"),
     ]
     vault = site.jira.find_issue("VAULT-1")
     assert vault is not None and site.jira.site().status(vault.status).name == "In Progress", "a seed's own status"
@@ -148,7 +148,7 @@ async def test_edit_rewrites_state_and_assignee_as_the_scenario(site: Site) -> N
     assert last.after == TicketSnapshot(
         title="Write the release notes",
         body="Cover the new export.\nLink the changelog.",
-        project="LAUNCH",
+        project="Launch",
         assignee_email="iris@example.com",
         state=TicketState.CANCELLED,
     )

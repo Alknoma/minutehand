@@ -9,10 +9,10 @@ documented), as every operation, version and feature this fake does not serve do
 
 The version answered is `2022-06-28`. Notion publishes an OpenAPI document only for its latest version
 (https://developers.notion.com/openapi.json, `2026-03-11`). Its 64 operations and the one 2022-06-28 operation it no
-longer lists are `surface.OPERATIONS`: 20 served, 45 raising the shared not-served refusal naming them
+longer lists are `surface.OPERATIONS`: 21 served, 44 raising the shared not-served refusal naming them
 (`app.UNSERVED`, `test_notion_surface.py`); only a path Notion does not document is `invalid_request_url`. The
-subset for the resources this fake claims, with their schemas, is under `tests/data/notion_api/` (33 operations, 20
-served, 13 refused).
+subset for the resources this fake claims, with their schemas, is under `tests/data/notion_api/` (33 operations, 21
+served, 12 refused).
 
 ## Credentials
 
@@ -81,3 +81,4 @@ person's email is answered only to an integration with the `read_users_with_emai
   the scenario's seed.
 - Three tests that drove the product's own Notion code against the stand-in. Their subject is the caller, not
   Notion; the limits they lean on are the rows above.
+| `POST /v1/pages/{page_id}/move` puts the page under another page and answers it; a data source parent, a later version's shape, and a move into the page itself or one below it, whose answer is not documented, are refused by name | documented | `tests/conformance` (`documents`) | https://developers.notion.com/reference/move-page |

@@ -100,7 +100,7 @@ class YouTrackProvider:
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
         """Every issue assigned to the person's account whose State is not a resolved one, as they read it."""
         youtrack = YouTrackWorld(world)
-        user = youtrack.user_by_login(person.key) or youtrack.user_by_email(person.email)
+        user = youtrack.user_by_login(person.key) or (youtrack.user_by_email(person.email) if person.email else None)
         if user is None:
             return []
         waiting: list[Waiting] = []
@@ -267,7 +267,7 @@ def _last_move(world: Store, item: EntityRef) -> Transition:
 
 
 def _account(youtrack: YouTrackWorld, person: Person) -> wire.StoredUser:
-    user = youtrack.user_by_login(person.key) or youtrack.user_by_email(person.email)
+    user = youtrack.user_by_login(person.key) or (youtrack.user_by_email(person.email) if person.email else None)
     if user is None:
         raise ValueError(f"{person.key} has no YouTrack account")
     return user

@@ -55,12 +55,12 @@ def test_every_operation_of_the_vendors_document_is_served_or_refused_by_name(wo
     neither = [(m, p, o) for m, p, o in OPERATIONS if (m, _shape(p)) not in routes]
     assert not neither, f"answered invalid_request_url as if Notion had no such endpoint: {neither}"
     assert len(served) + len(refused) == len(OPERATIONS) == 65
-    assert (len(served), len(refused)) == (20, 45)
+    assert (len(served), len(refused)) == (24, 41)
     claimed = {(m, _shape(p)) for m, p, _ in DOCUMENTED}
     assert (
         sum((m, _shape(p)) in claimed for m, p, _ in served),
         sum((m, _shape(p)) in claimed for m, p, _ in refused),
-    ) == (20, 13)
+    ) == (21, 12)
 
 
 def test_the_committed_subset_is_part_of_the_surface_the_provider_holds() -> None:

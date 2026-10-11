@@ -46,6 +46,7 @@ from minutehand.domain.world import (
     StoredSnapshot,
 )
 from minutehand.session import AGENT, RECORD, RESULT, SCENARIO, WORLD
+from tests.support.people import email
 
 T0 = datetime(2025, 1, 6, 9, 0, tzinfo=UTC)  # a Monday
 RUN_ID = "longyear0001"
@@ -190,7 +191,7 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
                         operation=Operation.CREATE,
                         actor=Actor.AGENT,
                         body=json.dumps({"ts": ts, "text": text}),
-                        after=MessageSnapshot(text=text, channel=f"D{person.key}", recipient_emails=[person.email]),
+                        after=MessageSnapshot(text=text, channel=f"D{person.key}", recipient_emails=[email(person)]),
                     )
                 ]
             )

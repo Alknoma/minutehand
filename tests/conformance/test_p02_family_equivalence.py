@@ -16,6 +16,7 @@ a capability the lifecycle needs absent does not drive it, and the lifecycle is 
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -71,7 +72,7 @@ def _fields(after: object, names: dict[str, str]) -> tuple[tuple[str, str], ...]
 
 def neutral_sequence(events: Sequence[WorldEvent], provider: str, since: int) -> list[Step]:
     """The world's changes after `since`, neutral: vendor-only records (`RecordSnapshot` and kinds outside the
-    neutral ones) dropped, things named T1, T2... by first appearance, and an update that changes no neutral field of
+    neutral ones) and Minutehand's own records of each move dropped, things named T1, T2... by first appearance, and an update that changes no neutral field of
     its thing dropped (it means nothing neutral)."""
     names: dict[str, str] = {}
     last: dict[str, tuple[tuple[str, str], ...]] = {}
@@ -81,15 +82,32 @@ def neutral_sequence(events: Sequence[WorldEvent], provider: str, since: int) ->
             continue
         if event.operation in (Operation.READ, Operation.SEARCH) or isinstance(event.after, RecordSnapshot):
             continue
-        if event.entity.kind in (EntityKind.RECORD, EntityKind.CHANNEL):
-            continue
+        if event.entity.kind in (EntityKind.RECORD, EntityKind.CHANNEL, EntityKind.TRANSITION):
+            continue  # a transition is Minutehand's own record of a move (`domain.transitions`), not the vendor's
         thing = names.setdefault(event.entity.external_id, f"T{len(names) + 1}")
+        if isinstance(event.after, DocumentSnapshot) and event.after.trashed:
+            # In the trash is gone from where it was, as a delete is: Drive and Notion keep a trash, OneDrive a
+            # recycle bin that its delete puts the item in.
+            found.append((event.actor.value, Operation.DELETE.value, event.entity.kind.value, thing, ()))
+            last[thing] = ()
+            continue
         fields = _fields(event.after, names)
         if event.operation is Operation.UPDATE and last.get(thing) == fields:
             continue
         last[thing] = fields
         found.append((event.actor.value, event.operation.value, event.entity.kind.value, thing, fields))
     return found
+
+
+WHERE = frozenset({"owner", "space", "mime"})
+"""Who a document belongs to, which space it lives in and its vendor's media type: facts of each vendor's own model
+(Drive's agent acts as a person in their My Drive; Graph's and Notion's is an app writing in a team's space), not what
+a step of the lifecycle means."""
+
+
+def _meaning(steps: Sequence[Step]) -> list[Step]:
+    """The steps, without the fields that say where a thing lives rather than what was done to it."""
+    return [(a, o, k, t, tuple((n, v) for n, v in f if n not in WHERE)) for a, o, k, t, f in steps]
 
 
 def _show(steps: Sequence[Step]) -> str:
@@ -186,7 +204,7 @@ def _messages(where: str) -> Callable[[Session, Driver, Callable[[str, object], 
         first = session.post(channel, "lifecycle hello")
         session.reply(channel, first, "lifecycle reply")
         session.edit(channel, first, "lifecycle hello, edited")
-        if not absent(driver, "messaging.react", record):
+        if not absent(driver, "messaging.react", record) and not absent(driver, "messaging.agent_reacts", record):
             session.react(channel, first, "thumbsup")
         session.delete_message(channel, first)
         texts = [m.text for m in session.history(channel)]
@@ -265,21 +283,34 @@ LIFECYCLES = {
             Family.MESSAGING,
             _messages("direct"),
             _message_rule,
-            ("messaging.direct", "messaging.edit"),
+            ("messaging.direct", "messaging.edit", "messaging.direct_threads"),
         ),
         Lifecycle("documents", Family.DOCUMENTS, _documents, _document_rule),
     ]
 }
 
 
+def _measured(driver: Driver, measure: Driver) -> Driver:
+    """The driver, also lacking what the family's measure lacks: compared with it, a provider skips the steps the
+    measure cannot take (a reaction its agent cannot set), so the two run the same lifecycle."""
+    acting = copy.copy(driver)
+    vars(acting)["absent"] = {**measure.absent, **driver.absent}
+    return acting
+
+
 def run(
-    harness: Harness, case_provider: str, lifecycle: Lifecycle, record: Callable[[str, object], None]
+    harness: Harness,
+    case_provider: str,
+    lifecycle: Lifecycle,
+    record: Callable[[str, object], None],
+    measure: str | None = None,
 ) -> list[Step]:
     driver = require(case_provider, lifecycle.family)
+    acting = driver if measure is None else _measured(driver, require(measure, lifecycle.family))
     with harness.world(driver, seed(case_provider)) as world:
         since = world.view.head
         with harness.session(driver, world) as session:
-            lifecycle.drive(session, driver, record)
+            lifecycle.drive(session, acting, record)
         steps = neutral_sequence(world.events(), case_provider, since)
         _same_clock(world, steps)
         return steps
@@ -329,7 +360,8 @@ def test_every_provider_of_a_family_leaves_the_same_neutral_sequence_as_the_firs
         raise AssertionError(
             f"{first} cannot complete the lifecycle, so {case.provider} cannot be compared with it: {failed}"
         ) from None
-    mine = run(harness, case.provider, lifecycle, record_property)
+    mine = _meaning(run(harness, case.provider, lifecycle, record_property, measure=first))
+    theirs = _meaning(theirs)
     differ = next(
         (n for n, (a, b) in enumerate(zip(mine, theirs, strict=False)) if a != b), min(len(mine), len(theirs))
     )

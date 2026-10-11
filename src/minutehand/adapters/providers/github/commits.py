@@ -64,7 +64,7 @@ class Commits:
             (
                 a
                 for a in self._api.world.accounts()
-                if a.type is wire.AccountType.USER and (a.email or "").lower() == email.lower()
+                if a.type is not wire.AccountType.ORGANIZATION and (a.email or "").lower() == email.lower()
             ),
             None,
         )

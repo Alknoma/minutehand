@@ -591,6 +591,8 @@ class Standing:
                 | {i.provider for i in spec.inbound}
                 | {s.provider for s in scenario.provider_seeds}
                 | {c.provider for c in scenario.channels}
+                | {s.provider for s in scenario.sign_ins}
+                | {s.provider for s in scenario.spaces}
             )
             standing.open(named, wake=case.stepping.wake if case is not None else FIRST_WAKE)
         except Exception:

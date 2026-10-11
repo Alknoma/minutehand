@@ -49,7 +49,7 @@ class AskedAbout:
 
     async def judge(self, view: RunView, model: LanguageModel, *, failed: frozenset[EntityRef]) -> CheckReport:
         people = {p.key: p for p in view.scenario.people}
-        email = {p.key: p.email for p in view.scenario.people}
+        email = {p.key: p.email for p in view.scenario.people if p.email}
         start = view.scenario.starts_at
         findings: list[Finding] = []
         notes: list[str] = []

@@ -94,7 +94,7 @@ def absences(scenario: Scenario, events: list[WorldEvent]) -> list[Away]:
     """Every absence in the scenario, anchored: at the start, or at the agent's first message to that person."""
     stretches: list[Away] = []
     for person in scenario.people:
-        asked = first_ask(person.email, events)
+        asked = first_ask(person.email, events) if person.email else None
         for absence in person.absences:
             found = placed(
                 from_start=scenario.starts_at if absence.trigger is AbsenceTrigger.AT_START else None,

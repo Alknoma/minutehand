@@ -18,6 +18,9 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | Call | Answered |
 |---|---|
 | `GET /user` | the token's user |
+| `GET /users/{username}` | any account by its login, in the public view |
+| `GET /orgs/{org}/members` | the organization's members to a member; none to anyone else, every membership being concealed |
+| `GET /orgs/{org}/outside_collaborators` | who collaborates on one of its repositories and is no member |
 | `GET /user/repos?per_page&page&sort` | owned, collaborated and organization repositories; a fine-grained token's selection; `Link` paging |
 | `GET /repos/{o}/{r}` | metadata, `permissions`, `language` |
 | `GET /repos/{o}/{r}/languages` | bytes of code per language, no prose, data, docs or vendored paths |
@@ -62,19 +65,17 @@ for a new repository's features (`has_issues` and the rest, from the create-repo
 (github/rest-api-description at `2eba8c3b`, 2026-10-08) for the reference sections this provider touches or
 would be asked for next: repositories, contents, webhooks, branches, commits, git blobs, trees, commits, refs and
 tags, search, users, rate limit, apps and installations, issues, issue comments, labels, pulls, review comments
-and reviews. It holds 169 operations: 48 served, 121 refused by name. The coverage test fails if one is neither.
+and reviews. It holds 171 operations: 51 served, 120 refused by name; the two organization lists were added from the same commit. The coverage test fails if one is neither.
 GraphQL is not in that description; `graphql.py` validates every query against its own schema and refuses what
 it does not answer.
 
 The unserved operations a GitHub client most often calls, to serve next in this order:
 
-1. `GET /users/{username}` and `GET /orgs/{org}/members`: reading accounts (the conformance suite's accounts
-   property asks for both).
-2. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
+1. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
    its files, and a diff.
-3. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
+2. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
    `GET /repos/{owner}/{repo}/git/ref/{ref}`, `GET /repos/{owner}/{repo}/tags`.
-4. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
+3. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
    the token exchange. After them, `POST /repos/{owner}/{repo}/git/refs` and `POST /repos/{owner}/{repo}/pulls/{n}/requested_reviewers`
    (the latter is not in the committed description yet): an agent that makes its own branch and asks for a review.
 

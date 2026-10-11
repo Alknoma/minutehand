@@ -288,7 +288,7 @@ def commit_to_line(
 def authorship(account: wire.StoredAccount, at: str) -> Authorship:
     """A commit made by `account` at `at`: they author and commit it, as the reference defaults it ("By default,
     `committer` will use the information set in `author`", https://docs.github.com/en/rest/git/commits#create-a-commit)."""
-    login = account.login if account.type is wire.AccountType.USER else None
+    login = account.login if account.type is not wire.AccountType.ORGANIZATION else None
     name, email = commit_name(account), commit_email(account)
     return Authorship(
         author_login=login,

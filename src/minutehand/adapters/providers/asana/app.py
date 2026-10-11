@@ -112,6 +112,7 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("GET", "/workspaces", "workspaces"),
     ("GET", "/workspaces/{gid}", "workspace"),
     ("GET", "/workspaces/{gid}/users", "workspace_users"),
+    ("GET", "/workspaces/{gid}/workspace_memberships", "workspace_memberships"),
     ("GET", "/workspaces/{gid}/teams", "workspace_teams"),
     ("GET", "/workspaces/{gid}/projects", "workspace_projects"),
     ("POST", "/workspaces/{gid}/projects", "create_workspace_project"),
@@ -783,6 +784,27 @@ class AsanaApi:
         workspace = view.workspace(request.path_params["gid"])
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return self._listed(request, [view.user_out(u) for u in self._world.users()])
+
+    async def workspace_memberships(self, request: Request, caller: wire.AsanaUser) -> Response:
+        """Each user's membership of the workspace, a removed member's inactive and a guest's `is_guest`
+        (getWorkspaceMembershipsForWorkspace)."""
+        view = self._view(caller)
+        workspace = view.workspace(request.path_params["gid"])
+        place = view.workspace_out(workspace)
+        self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
+        return self._listed(
+            request,
+            [
+                wire.WorkspaceMembershipOut(
+                    gid=state.workspace_membership_gid(u.gid, workspace.gid),
+                    user=view.user_out(u),
+                    workspace=place,
+                    is_active=not u.removed,
+                    is_guest=u.guest,
+                )
+                for u in self._world.every_user()
+            ],
+        )
 
     async def workspace_teams(self, request: Request, caller: wire.AsanaUser) -> Response:
         view = self._view(caller)

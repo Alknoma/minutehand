@@ -45,6 +45,7 @@ from minutehand.domain.world import (
     WorldEvent,
 )
 from tests.checks.world import Log, at, person, scenario, view
+from tests.support.people import email
 
 TRIAL = Path(__file__).parents[1] / "data" / "trial"
 OWNER, SOFIA, TOM = person("owner"), person("sofia"), person("tom")
@@ -232,7 +233,7 @@ def _event(
             seq=seq,
         ),
         kind=ItemKind.CALENDAR_EVENT,
-        people=[p.email for p in people],
+        people=[email(p) for p in people],
         starts=at(starts),
         ends=at(ends),
     )

@@ -66,7 +66,7 @@ class CapturedReplies:
     # -- `ProvidesTransitions`: each send that reached a person is an ask they answer by writing back ------------
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        return conversations(person.email, self._declaration.key, world.events())
+        return conversations(person.email, self._declaration.key, world.events()) if person.email else []
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         del by

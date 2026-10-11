@@ -28,6 +28,7 @@ import binascii
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, unquote
 
 from pydantic import JsonValue
@@ -53,6 +54,7 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("POST", "/v1/pages", "page_create"),
     ("GET", "/v1/pages/{page_id}", "page_get"),
     ("PATCH", "/v1/pages/{page_id}", "page_update"),
+    ("POST", "/v1/pages/{page_id}/move", "page_move"),
     ("GET", "/v1/pages/{page_id}/properties/{property_id}", "page_property"),
     ("GET", "/v1/blocks/{block_id}", "block_get"),
     ("PATCH", "/v1/blocks/{block_id}", "block_update"),
@@ -68,6 +70,9 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("GET", "/v1/users/{user_id}", "user_get"),
     ("GET", "/v1/comments", "comments_list"),
     ("POST", "/v1/comments", "comments_create"),
+    ("POST", "/v1/file_uploads", "file_upload_create"),
+    ("GET", "/v1/file_uploads/{file_upload_id}", "file_upload_get"),
+    ("POST", "/v1/file_uploads/{file_upload_id}/send", "file_upload_send"),
 )
 """Method, path and `NotionApi` handler of every operation this provider serves (`/v1/oauth/token` aside)."""
 
@@ -128,6 +133,12 @@ def _cursor(cursor: str, ids: Sequence[str], kind: str) -> str:
 
 def _answer(found: JsonValue, status: int = 200) -> Response:
     return Response(wire.respond(found), status_code=status, media_type=JSON)
+
+
+def _s3_error(message: str, more: str = "") -> Response:
+    """S3's refusal of a presigned GET: 403 `AccessDenied`, as XML."""
+    body = f'<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>AccessDenied</Code><Message>{message}</Message>{more}</Error>'
+    return Response(body, status_code=403, media_type="application/xml")
 
 
 class NotionApi:
@@ -366,6 +377,12 @@ class NotionApi:
             content = {"title": wire.plain(database.title) if database else ""}
             archived = archived or database is None or database.archived
             has_children = False
+        elif block.type is wire.BlockType.FILE:
+            held = block.content["file"]
+            upload = self._world.file_upload(str(held["file_upload"])) if isinstance(held, dict) else None
+            if upload is not None:
+                url, until = wire.file_url(upload, self._clock.now())
+                content = {**block.content, "file": {"url": url, "expiry_time": until}}
         return {
             "object": "block",
             "id": block.id,
@@ -540,6 +557,11 @@ class NotionApi:
         page = self._page(call, self._id(request, "page_id"))
         changed = self._editor(call).update_page(page.id, await self._body(request), by=call.bot)
         return _answer(self.render_page(call, changed))
+
+    async def page_move(self, request: Request, call: Call) -> Response:
+        page = self._page(call, self._id(request, "page_id"))
+        moved = self._editor(call).move_page(page.id, await self._body(request), by=call.bot)
+        return _answer(self.render_page(call, moved))
 
     async def page_property(self, request: Request, call: Call) -> Response:
         page = self._page(call, self._id(request, "page_id"))
@@ -867,6 +889,101 @@ class NotionApi:
             }
         )
 
+    # ------------------------------------------------------------------ file uploads
+
+    def _upload(self, call: Call, upload_id: str) -> wire.StoredFileUpload:
+        upload = self._world.file_upload(upload_id)
+        if upload is None or upload.workspace != call.workspace:
+            raise wire.undocumented("a file upload this workspace does not hold")
+        return upload
+
+    def _upload_answer(self, request: Request, upload: wire.StoredFileUpload) -> Response:
+        return _answer(upload.render() | {"request_id": self.request_id(request)})
+
+    async def file_upload_create(self, request: Request, call: Call) -> Response:
+        """https://developers.notion.com/reference/create-a-file-upload: a `single_part` upload, the default; one in
+        parts, or from an external url, is not served."""
+        body = await self._body(request)
+        wire.only_keys(body, ["mode", "filename", "content_type", "number_of_parts", "external_url"], "body")
+        mode = wire.as_text(body["mode"], "body.mode") if "mode" in body else "single_part"
+        if mode != "single_part":
+            raise wire.unserved(f"a file upload of mode `{mode}`")
+        if "number_of_parts" in body or "external_url" in body:
+            raise wire.undocumented("a `single_part` file upload giving number_of_parts or external_url")
+        now = self._clock.now()
+        made = self._world.mint("file_upload")
+        upload = wire.StoredFileUpload(
+            id=made,
+            signer=f"ASIA{wire.digest(f'{call.secret}:{made}')[:16].upper()}",
+            workspace=call.workspace,
+            created_by=call.bot,
+            created_time=wire.stamp(now),
+            expiry_time=wire.stamp(now + wire.UPLOAD_LIFETIME),
+            filename=wire.as_text(body["filename"], "body.filename") if "filename" in body else None,
+            content_type=wire.as_text(body["content_type"], "body.content_type") if "content_type" in body else None,
+        )
+        self._world.write_file_upload(upload, operation=Operation.CREATE, actor=Actor.AGENT)
+        return self._upload_answer(request, upload)
+
+    async def file_upload_get(self, request: Request, call: Call) -> Response:
+        return self._upload_answer(request, self._upload(call, self._id(request, "file_upload_id")))
+
+    async def file_upload_send(self, request: Request, call: Call) -> Response:
+        """https://developers.notion.com/reference/send-a-file-upload: the one part of a `single_part` upload, as
+        multipart form data's `file`."""
+        upload = self._upload(call, self._id(request, "file_upload_id"))
+        if upload.status is not wire.UploadStatus.PENDING:
+            raise wire.undocumented(f"a send to a file upload that is {upload.status.value}")
+        if self._clock.now() >= wire.moment(upload.expiry_time):
+            raise wire.undocumented("a send to a file upload past its expiry_time")
+        part = (await request.form()).get("file")
+        if part is None or isinstance(part, str):
+            raise wire.undocumented("a send without a `file` part")
+        content = await part.read()
+        if len(content) > wire.SINGLE_PART_LIMIT:
+            raise wire.undocumented("a `single_part` upload over 20 MB")
+        sent = upload.model_copy(
+            update={
+                "status": wire.UploadStatus.UPLOADED,
+                "filename": upload.filename or part.filename,
+                "content_type": upload.content_type or part.content_type,
+                "content_length": len(content),
+                "content": base64.b64encode(content).decode(),
+            }
+        )
+        self._world.write_file_upload(sent, operation=Operation.UPDATE, actor=Actor.AGENT)
+        return self._upload_answer(request, sent)
+
+    def file_download(self, request: Request) -> Response:
+        """A file a block holds, at its presigned url on `wire.FILES_HOST`: S3's own answers, its signature not
+        checked, its expiry kept (https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html)."""
+        parts = request.url.path.strip("/").split("/")
+        upload = self._world.file_upload(parts[1]) if len(parts) == 3 else None
+        query = parse_qs(request.url.query)
+        if (
+            request.method != "GET"
+            or upload is None
+            or upload.content is None
+            or upload.workspace != parts[0]
+            or not query.get("X-Amz-Date")
+            or not query.get("X-Amz-Expires")
+        ):
+            return _s3_error("Access Denied")
+        try:
+            signed = datetime.strptime(query["X-Amz-Date"][0], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+            lasts = int(query["X-Amz-Expires"][0])
+        except ValueError:
+            return _s3_error("Access Denied")
+        now = self._clock.now().astimezone(UTC)
+        until = signed + timedelta(seconds=lasts)
+        if now > until:
+            return _s3_error(
+                "Request has expired",
+                f"<X-Amz-Expires>{lasts}</X-Amz-Expires><Expires>{until:%Y-%m-%dT%H:%M:%SZ}</Expires>"
+                f"<ServerTime>{now:%Y-%m-%dT%H:%M:%SZ}</ServerTime>",
+            )
+        return Response(base64.b64decode(upload.content), media_type=upload.content_type or "application/octet-stream")
+
     def _client(self, request: Request) -> wire.StoredIntegration | None:
         """The public integration whose client id `Authorization: Basic` names; its secret is not checked."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
@@ -916,6 +1033,9 @@ class NotionApp:
             await asyncio.gather(*list(self._sending))
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and Request(scope).url.hostname == wire.FILES_HOST:
+            await self._api.file_download(Request(scope, receive))(scope, receive, send)
+            return
         if scope["type"] == "http":
             matched = [r.matches(scope)[0] for r in self._routes]
             if Match.FULL not in matched:

@@ -49,6 +49,8 @@ class Wire(Model):
 class AccountType(StrEnum):
     USER = "User"
     ORGANIZATION = "Organization"
+    BOT = "Bot"
+    """A GitHub App's bot account: its login ends with `[bot]` (https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps)."""
 
 
 class TokenKind(StrEnum):
@@ -660,7 +662,7 @@ class AccountOut(Wire):
         return cls(
             login=account.login,
             id=account.id,
-            node_id=node_id("U" if account.type is AccountType.USER else "O", account.id),
+            node_id=node_id({AccountType.USER: "U", AccountType.BOT: "BOT"}.get(account.type, "O"), account.id),
             avatar_url=f"https://avatars.githubusercontent.com/u/{account.id}?v=4",
             url=at,
             html_url=f"{WEB}/{account.login}",

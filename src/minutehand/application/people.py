@@ -1102,7 +1102,7 @@ async def happen(
     if item is None:
         return None
     person = next(p for p in scenario.people if p.key == happening.person)
-    name, given = ticket_move(happening.action, {p.key: p.email for p in scenario.people})
+    name, given = ticket_move(happening.action, {p.key: p.email for p in scenario.people if p.email})
     if isinstance(happening.action, Moves) and _matching(name, port.legal(item, Actor.PERSON, person, world)) is None:
         return None  # already where it would go
     return await move(port, item, name, Actor.PERSON, person, given, world, clock)

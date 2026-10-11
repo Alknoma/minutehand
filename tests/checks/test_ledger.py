@@ -14,6 +14,7 @@ from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Absence, DelayRange, Silent, Take, TicketState
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.checks.world import START, Log, at, person, reply, rules, scenario
+from tests.support.people import email
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
 DANIA = person("dania", reply=Silent())
@@ -167,7 +168,7 @@ def test_the_ledger_reads_a_real_store_and_its_stored_replies(tmp_path: Path) ->
             operation=Operation.CREATE,
             actor=Actor.AGENT,
             body="{}",
-            after=MessageSnapshot(text="Could you sign?", channel="dm", recipient_emails=[SOFIA.email]),
+            after=MessageSnapshot(text="Could you sign?", channel="dm", recipient_emails=[email(SOFIA)]),
         )
     )
     store.remember(PersonReply(person="sofia", in_reply_to=message, text="Signed.", at=at(1)))

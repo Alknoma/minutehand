@@ -202,7 +202,9 @@ class NotionSession(Documents):
         ):  # fmt: skip
             response = self._http.request(method, path, json=body, params=query)
             ok(what, response)
-            answered.append(response.text)
+            # `request_id` names the request, new for each one (https://developers.notion.com/reference/intro), not
+            # anything the workspace holds.
+            answered.append(json.dumps({k: v for k, v in response.json().items() if k != "request_id"}))
         return "\n".join(answered)
 
     def change(self, label: str) -> None:
@@ -369,10 +371,11 @@ class NotionSession(Documents):
         send its one part, then attach it as a `file` block of a page titled `name` at the top."""
         made = self._send("create a file upload", "POST", "file_uploads", {"filename": name, "content_type": mime_type})
         upload = str(made["id"])
-        ok(
-            "send a file upload",
-            self._http.post(f"file_uploads/{upload}/send", files={"file": (name, content, mime_type)}),
+        sending = self._http.build_request(
+            "POST", f"file_uploads/{upload}/send", files={"file": (name, content, mime_type)}
         )
+        sending.read()  # a multipart body streams; the recorder keeps it whole
+        ok("send a file upload", self._http.send(sending))
         block = {"object": "block", "type": "file", "file": {"type": "file_upload", "file_upload": {"id": upload}}}
         return self._create_page(name, None, [block])
 

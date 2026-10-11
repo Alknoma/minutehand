@@ -22,9 +22,10 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal, Protocol
+from urllib.parse import quote, urlencode
 
 from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
@@ -416,6 +417,8 @@ class Names(Protocol):
 
     def title_of(self, object_id: str) -> str | None: ...
 
+    def file_upload(self, upload_id: str) -> StoredFileUpload | None: ...
+
 
 def _annotations(value: JsonValue | None, where: str) -> Json:
     found: Json = {name: False for name in ANNOTATIONS}
@@ -635,6 +638,7 @@ class BlockType(StrEnum):
     TABLE_ROW = "table_row"
     BOOKMARK = "bookmark"
     IMAGE = "image"
+    FILE = "file"
     LINK_PREVIEW = "link_preview"
     CHILD_PAGE = "child_page"
     CHILD_DATABASE = "child_database"
@@ -674,7 +678,6 @@ NOT_BUILT = frozenset(
         "column",
         "embed",
         "equation",
-        "file",
         "pdf",
         "video",
         "audio",
@@ -955,9 +958,37 @@ def block_content(kind: BlockType, body: Json, where: str, names: Names, *, crea
             "external": {"url": as_text(external["url"], f"{where}.external.url")},
             "caption": rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else [],
         }
+    if kind is BlockType.FILE:
+        return _file_block(body, where, names, creating=creating)
     if kind is BlockType.TABLE_ROW:
         raise undocumented(f"a `table_row` written alone ({where})")
     raise undocumented(f"a `{kind.value}` block written this way ({where})")
+
+
+def _file_block(body: Json, where: str, names: Names, *, creating: bool) -> Json:
+    """A `file` block that attaches a file upload (https://developers.notion.com/reference/file-upload): kept as the
+    upload it names, and read back as the file's url (`app.NotionApi.render_block`). One of an external url, and a
+    change to one already written, are not served."""
+    if not creating:
+        raise unserved(f"a change to a `file` block ({where})")
+    if "file_upload" not in body:
+        raise unserved(f"a `file` block that is not a `file_upload` ({where})")
+    only_keys(body, ["type", "file_upload", "caption", "name"], where)
+    named = as_object(body["file_upload"], f"{where}.file_upload")
+    if "id" not in named:
+        raise failed(f"{where}.file_upload.id", "defined")
+    upload_id = canonical_id(as_text(named["id"], f"{where}.file_upload.id"), f"{where}.file_upload.id")
+    upload = names.file_upload(upload_id)
+    if upload is None:
+        raise undocumented(f"a `file_upload` this workspace does not hold ({where})")
+    if upload.status is not UploadStatus.UPLOADED:
+        raise undocumented(f"a `file_upload` that is {upload.status.value}, not uploaded ({where})")
+    return {
+        "caption": rich_text(body["caption"], f"{where}.caption", names) if "caption" in body else [],
+        "type": "file",
+        "file": {"file_upload": upload.id},
+        "name": as_text(body["name"], f"{where}.name") if "name" in body else upload.filename,
+    }
 
 
 def icon(value: JsonValue, where: str) -> JsonValue:
@@ -986,6 +1017,8 @@ def block_text(kind: BlockType, content: Json, title: str | None) -> str:
         return str(content["url"])
     if kind is BlockType.IMAGE:
         return plain(content["caption"])
+    if kind is BlockType.FILE:
+        return str(content["name"])
     if kind is BlockType.DIVIDER:
         return "---"
     return title or ""
@@ -1136,6 +1169,77 @@ class StoredToken(Model):
     integration: str
 
 
+class UploadStatus(StrEnum):
+    PENDING = "pending"
+    UPLOADED = "uploaded"
+
+
+SINGLE_PART_LIMIT = 20 * 1024 * 1024
+"""The most a `single_part` upload takes (https://developers.notion.com/docs/working-with-files-and-media)."""
+UPLOAD_LIFETIME = timedelta(hours=1)
+"""How long a file upload, and a url a file is read from, last (https://developers.notion.com/reference/file-upload)."""
+FILES_HOST = "prod-files-secure.s3.us-west-2.amazonaws.com"
+"""Where Notion serves a file a block holds: a presigned S3 url, its signature not checked."""
+
+
+class StoredFileUpload(Model):
+    """A file upload (https://developers.notion.com/reference/file-upload), with the bytes once they are sent."""
+
+    kind: Literal["file_upload"] = "file_upload"
+    id: str
+    workspace: str
+    created_by: str = Field(description="The bot user of the integration that made it")
+    created_time: str
+    expiry_time: str
+    status: UploadStatus = UploadStatus.PENDING
+    filename: str | None = None
+    content_type: str | None = None
+    content_length: int | None = None
+    content: str | None = Field(default=None, description="The bytes sent, base64")
+    signer: str = Field(description="The access key its file's url is signed with: from the token that made it")
+
+    def render(self) -> Json:
+        found: Json = {
+            "object": "file_upload",
+            "id": self.id,
+            "created_time": self.created_time,
+            "created_by": {"id": self.created_by, "type": "bot"},
+            "last_edited_time": self.created_time,
+            "expiry_time": self.expiry_time,
+        }
+        if self.status is UploadStatus.PENDING:
+            found["upload_url"] = f"https://api.notion.com/v1/file_uploads/{self.id}/send"
+        return found | {
+            "archived": False,
+            "status": self.status.value,
+            "filename": self.filename,
+            "content_type": self.content_type,
+            "content_length": self.content_length,
+        }
+
+
+def file_url(upload: StoredFileUpload, now: datetime) -> tuple[str, str]:
+    """The presigned url a file block's file is read from at `now`, and when it expires."""
+    at = now.astimezone(UTC).replace(microsecond=0)
+    signed = at.strftime("%Y%m%dT%H%M%SZ")
+    expires = int(UPLOAD_LIFETIME.total_seconds())
+    query = urlencode(
+        {
+            "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+            "X-Amz-Content-Sha256": "UNSIGNED-PAYLOAD",
+            "X-Amz-Credential": f"{upload.signer}/{signed[:8]}/us-west-2/s3/aws4_request",
+            "X-Amz-Date": signed,
+            "X-Amz-Expires": str(expires),
+            "X-Amz-Signature": digest(f"{upload.id}:{signed}"),
+            "X-Amz-SignedHeaders": "host",
+            "x-id": "GetObject",
+        }
+    )
+    url = f"https://{FILES_HOST}/{upload.workspace}/{upload.id}/{quote(upload.filename or 'file')}?{query}"
+    until = at + UPLOAD_LIFETIME
+    return url, until.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 class StoredAgent(Model):
     """Minutehand's own: the integration a call is made as when its token names none."""
 
@@ -1241,7 +1345,8 @@ Stored = Annotated[
     | StoredSchedule
     | StoredCount
     | StoredWebhook
-    | StoredOwedEvent,
+    | StoredOwedEvent
+    | StoredFileUpload,
     Field(discriminator="kind"),
 ]
 _STORED: TypeAdapter[Stored] = TypeAdapter(Stored)

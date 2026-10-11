@@ -152,6 +152,11 @@ def workspaces_of(scenario: Scenario) -> list[tuple[wire.SlackWorkspace, list[Pe
             tokens=w.tokens,
             oauth_code=w.oauth_code,
             position=position,
+            user_tokens={
+                s.credential: state.user_id(s.person, w.team_id)
+                for s in scenario.sign_ins
+                if s.provider == MANIFEST.key and s.person is not None and any(p.key == s.person for p in people)
+            },
         )
         found.append((workspace, people))
     return found
@@ -239,11 +244,11 @@ def _workspace(
     users = [_bot(workspace), *(_member(p, scenario.starts_at, team, spec) for p in people)]
     for user in users:
         slack.write(state.user_ref(user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=team)
-    for person in (p for p in people if p.key in spec.without_email and p.account is not Account.BOT):
+    for person in (p for p in people if p.key in spec.without_email and p.account is not Account.BOT and p.email):
         user = state.user_id(person.key, team)
         slack.write(
             state.unlisted_email_ref(user),
-            wire.SlackUnlistedEmail(user=user, email=person.email),
+            wire.SlackUnlistedEmail(user=user, email=person.email or ""),
             operation=Operation.CREATE,
             actor=Actor.SCENARIO,
             parent=state.EMAILS,

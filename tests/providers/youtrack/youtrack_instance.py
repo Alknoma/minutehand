@@ -15,6 +15,7 @@ import pytest
 
 from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.youtrack import state, wire
+from minutehand.adapters.providers.youtrack import state as _yt_state
 from minutehand.adapters.providers.youtrack.provider import YouTrackProvider, build
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 from minutehand.adapters.proxy.policy import Routing
@@ -57,7 +58,11 @@ SCENARIO = Scenario(
 LAUNCH = "0-0"
 FIELD_OPS = "0-1"
 AGENT_ID = "1-0"
-IRIS, TOMAS, NOOR = "1-1", "1-2", "1-3"
+IRIS, TOMAS, NOOR = (
+    _yt_state.person_id("iris", ["iris", "tomas", "noor"]),
+    _yt_state.person_id("tomas", ["iris", "tomas", "noor"]),
+    _yt_state.person_id("noor", ["iris", "tomas", "noor"]),
+)
 
 
 @dataclass

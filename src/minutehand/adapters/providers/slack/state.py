@@ -323,9 +323,11 @@ class SlackWorld:
     """Typed reads and writes of one run's Slack entities, as one of its workspaces: `team`, or with none given the
     first the world holds."""
 
-    def __init__(self, store: Store, team: wire.SlackWorkspace | None = None) -> None:
+    def __init__(self, store: Store, team: wire.SlackWorkspace | None = None, as_user: str | None = None) -> None:
         self._store = store
         self.team = team if team is not None else self._first()
+        self.as_user = as_user
+        """The person whose user token the call carries; None: the app's bot."""
 
     @property
     def store(self) -> Store:
@@ -341,8 +343,8 @@ class SlackWorld:
         found = [wire.parse(wire.SlackWorkspace, s.body) for s in self._pages(EntityKind.RECORD, WORKSPACES)]
         return sorted(found, key=lambda w: w.position) or [DEFAULT_WORKSPACE]
 
-    def as_team(self, team: wire.SlackWorkspace) -> SlackWorld:
-        return SlackWorld(self._store, team)
+    def as_team(self, team: wire.SlackWorkspace, as_user: str | None = None) -> SlackWorld:
+        return SlackWorld(self._store, team, as_user)
 
     def team_of(self, team_id: str) -> SlackWorld | None:
         found = next((w for w in self.workspaces() if w.id == team_id), None)
@@ -350,10 +352,13 @@ class SlackWorld:
 
     def for_token(self, token: str | None) -> SlackWorld:
         """The workspace a call is answered in. A token decides it only by naming a workspace: one the workspace
-        declares or its install minted. Any other token, or none, is the app's in the first workspace that declares
-        no tokens, else the first workspace: Minutehand never refuses a credential."""
+        declares or its install minted, or a person's user token the sign-ins give, which is that person's. Any other
+        token, or none, is the app's in the first workspace that declares no tokens, else the first workspace:
+        Minutehand never refuses a credential."""
         every = self.workspaces()
         for workspace in every:
+            if token is not None and token in workspace.user_tokens:
+                return self.as_team(workspace, workspace.user_tokens[token])
             install = self.body(install_ref(workspace.id), wire.SlackInstall)
             if token is not None and (token in workspace.tokens or (install is not None and token in install.tokens)):
                 return self.as_team(workspace)
@@ -366,7 +371,13 @@ class SlackWorld:
 
     @property
     def bot(self) -> str:
-        return self.team.bot_user_id
+        """The caller's user: the app's bot, or the person whose user token the call carries."""
+        return self.as_user or self.team.bot_user_id
+
+    @property
+    def is_app(self) -> bool:
+        """Whether the call is the app's own (a bot token), so what it posts carries the app's bot."""
+        return self.as_user is None
 
     # ------------------------------------------------------------------ reads
 
@@ -502,7 +513,8 @@ class SlackWorld:
         found = self.body(away_ref(user), wire.SlackAway)
         if found is None:
             return None
-        asked = first_ask(found.email, self._store.events()) if any(s.on_first_ask for s in found.stretches) else None
+        on_ask = found.email is not None and any(s.on_first_ask for s in found.stretches)
+        asked = first_ask(found.email, self._store.events()) if on_ask and found.email is not None else None
         for stretch in found.stretches:
             span = placed(
                 from_start=None if stretch.on_first_ask else datetime.fromtimestamp(found.starts_at, UTC),

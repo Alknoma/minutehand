@@ -143,7 +143,14 @@ class AwsProvider:
         return aws_error(status, code, message)
 
     def seed(self, scenario: Scenario, world: Store) -> None:
-        """A scenario declares no AWS resources: the agent creates its own queues and schedules."""
+        """A scenario declares no AWS resources: the agent creates its own queues and schedules. Its account holds
+        no IAM user for a person, so a sign-in naming one is refused by name."""
+        named = [s.person for s in scenario.sign_ins if s.provider == MANIFEST.key and s.person is not None]
+        if named:
+            raise ValueError(
+                f"aws cannot hold a sign_in for {', '.join(named)}: this provider's account holds no IAM user for a "
+                "person, and every credential acts as the account"
+            )
 
     def app(self, world: Store, clock: Clock) -> ASGIApp:
         self._account = fresh_account()

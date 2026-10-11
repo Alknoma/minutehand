@@ -21,7 +21,7 @@ import pytest
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.provider import build
-from minutehand.adapters.providers.asana.seed import AsanaSeed
+from minutehand.adapters.providers.asana.seed import AsanaSeed, gid_at
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -97,9 +97,9 @@ SURVEY = state.team_gid("Survey")
 STAGE = state.field_gid("Stage")
 DEPTH = state.field_gid("Depth")
 SILT = state.tag_gid("silt")
-CHANNEL = state.task_gid(0)
-SOUNDER = state.task_gid(1)
-SPRING_TABLES = state.task_gid(2)
+CHANNEL = gid_at(SCENARIO, 0)
+SOUNDER = gid_at(SCENARIO, 1)
+SPRING_TABLES = gid_at(SCENARIO, 2)
 
 
 def stage_section(name: str) -> str:

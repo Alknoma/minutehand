@@ -86,6 +86,14 @@ class User(_Answer):
     email: str | None = None
 
 
+class WorkspaceMember(_Answer):
+    """A workspace membership as the people read asks for it."""
+
+    user: User
+    is_active: bool
+    is_guest: bool
+
+
 class Membership(_Answer):
     project: Named | None = None
     section: Named | None = None
@@ -244,10 +252,18 @@ class AsanaSession(Tickets):
         return me.email if me.email is not None else me.name
 
     def people(self) -> list[PersonSeen]:
-        """Asana's user listing (https://developers.asana.com/reference/getusers); it says nothing of a guest or
-        a removed member, which only `/workspace_memberships` carries."""
-        found = self._all("list users", "/users", {"workspace": self.workspace(), "opt_fields": "name,email"})
-        return [PersonSeen(id=u.gid, name=u.name, email=u.email) for u in map(User.model_validate, found)]
+        """Every member of the workspace by its membership, which says whether it is active and a guest's
+        (https://developers.asana.com/reference/getworkspacemembershipsforworkspace); the user listing says neither
+        and leaves out a removed member."""
+        found = self._all(
+            "list workspace memberships",
+            f"/workspaces/{self.workspace()}/workspace_memberships",
+            {"opt_fields": "user.name,user.email,is_active,is_guest"},
+        )
+        return [
+            PersonSeen(id=m.user.gid, name=m.user.name, email=m.user.email, active=m.is_active, guest=m.is_guest)
+            for m in map(WorkspaceMember.model_validate, found)
+        ]
 
     def people_pages(self, page_size: int) -> list[list[str]]:
         return [
@@ -426,6 +442,11 @@ class AsanaDriver(Driver):
     provider: ClassVar[str] = PROVIDER
     session: ClassVar[type[Session]] = AsanaSession
     absent: ClassVar[Mapping[str, str]] = {
+        "tickets.changed_by": "Asana records a change to a task as an activity story, but its reference documents only "
+        "the comment subtype, `comment_added`: 'Only comment_added is supported, which narrows the response to comments "
+        "and excludes activity such as assignments, due date changes, and project moves' "
+        "(https://developers.asana.com/reference/getstoriesfortask), so the provider keeps no activity story it would "
+        "have to invent, and who changed a task is not read",
         "accounts.title": "An Asana user resource carries a gid, name, email, photo and workspaces; it has no job title.",
         "accounts.bot": "Asana's user resource has no field saying an account is a bot or an app; integrations act "
         "as ordinary users or service accounts the API does not mark.",
@@ -485,6 +506,14 @@ class AsanaDriver(Driver):
         token = self.credential_of(world, person)
         assert token is not None
         return AsanaSession(api, token)
+
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return AsanaSession(api, credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A personal access token: a version, a user id and a secret, as Asana writes them
+        (https://developers.asana.com/docs/personal-access-token)."""
+        return f"2/1200000000000000/{unique}"
 
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         agent = world.claims.tokens[0]

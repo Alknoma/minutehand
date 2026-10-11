@@ -25,6 +25,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, WorldEvent
 from tests.orchestrator.rig import T0, person, scenario, scripted
+from tests.support.people import email
 
 FRIDAY_1630 = datetime(2026, 8, 28, 16, 30, tzinfo=UTC)
 
@@ -49,7 +50,7 @@ def world(tmp_path: Path, at: datetime = T0) -> tuple[SqliteStore, RunClock]:
 
 async def landing(tmp_path: Path, who: Person, *, seed: int = 17, at: datetime = T0, message: str = "m1") -> datetime:
     store, clock = world(tmp_path, at)
-    asked = ask(store, who.email, message)
+    asked = ask(store, email(who), message)
     reply = await PeopleReplier(
         scenario(tom_finishes=False, people=[person("owner", Silent()), who], seed=seed), None
     ).decide(who, asked, store.events(), clock)
@@ -122,7 +123,7 @@ async def test_the_nth_ask_gets_the_nth_scripted_reply_and_an_unscripted_ask_get
     replier = PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), sofia]), None)
     texts = []
     for n in (1, 2, 3):
-        asked = ask(store, sofia.email, f"m{n}")
+        asked = ask(store, email(sofia), f"m{n}")
         reply = await replier.decide(sofia, asked, store.events(), clock)
         texts.append(reply.text if reply else None)
     assert texts == ["first", "second", None]
@@ -131,7 +132,7 @@ async def test_the_nth_ask_gets_the_nth_scripted_reply_and_an_unscripted_ask_get
 async def test_a_silent_person_returns_no_reply(tmp_path: Path) -> None:
     store, clock = world(tmp_path)
     dania = person("dania", Silent())
-    asked = ask(store, dania.email, "m1")
+    asked = ask(store, email(dania), "m1")
     assert await PeopleReplier(scenario(), None).decide(dania, asked, store.events(), clock) is None
 
 
@@ -206,7 +207,7 @@ def test_a_reminder_draws_again_and_only_ever_moves_the_answer_sooner(tmp_path: 
     sooner_window = Window(min=timedelta(hours=1), max=timedelta(hours=1))
     who = windowed(reminded={"sooner_within": sooner_window.model_dump()})
     scn = scenario(tom_finishes=False, people=[person("owner", Silent()), who])
-    follow = ask(store, who.email, "m2")
+    follow = ask(store, email(who), "m2")
     owed_late = follow.sim_time + timedelta(hours=5)
     moved = sooner(scn, who, follow, store.events(), owed_late)
     assert moved is not None and moved.lands_at == follow.sim_time + timedelta(hours=1)
@@ -219,11 +220,11 @@ async def test_a_follow_up_before_the_answer_lands_is_no_new_ask(tmp_path: Path)
     store, clock = world(tmp_path)
     sofia = person("sofia", scripted("first", "second", hours=1))
     replier = PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), sofia]), None)
-    first = ask(store, sofia.email, "m1")
+    first = ask(store, email(sofia), "m1")
     reply = await replier.decide(sofia, first, store.events(), clock, store)
     assert reply is not None
     store.remember(reply)
-    chase = ask(store, sofia.email, "m2")  # the same direct conversation, an hour before her answer lands
+    chase = ask(store, email(sofia), "m2")  # the same direct conversation, an hour before her answer lands
     assert replier.plan(sofia, chase, store.events(), owed_in(store)) is None
     # Another thread of the same channel is a conversation of its own, and its ask draws its own moment.
     elsewhere = store.apply(
@@ -232,7 +233,7 @@ async def test_a_follow_up_before_the_answer_lands_is_no_new_ask(tmp_path: Path)
             operation=Operation.CREATE,
             actor=Actor.AGENT,
             body="{}",
-            after=MessageSnapshot(text="?", channel="dm", recipient_emails=[sofia.email], thread_of="t9"),
+            after=MessageSnapshot(text="?", channel="dm", recipient_emails=[email(sofia)], thread_of="t9"),
         )
     )
     planned = replier.plan(sofia, elsewhere, store.events(), owed_in(store))

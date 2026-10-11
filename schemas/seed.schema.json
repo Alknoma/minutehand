@@ -1850,8 +1850,17 @@
           "type": "integer"
         },
         "email": {
-          "title": "Email",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None for an account that has none",
+          "title": "Email"
         },
         "fact_changes": {
           "default": [],
@@ -1988,8 +1997,7 @@
       },
       "required": [
         "key",
-        "name",
-        "email"
+        "name"
       ],
       "title": "Person",
       "type": "object"

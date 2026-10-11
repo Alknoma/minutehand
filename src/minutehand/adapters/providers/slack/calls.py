@@ -185,12 +185,12 @@ class Calls:
             user=world.bot,
             text=text,
             team=world.team.id,
-            bot_id=world.team.bot_id,
-            app_id=world.team.app_id,
+            bot_id=world.team.bot_id if world.is_app else None,
+            app_id=world.team.app_id if world.is_app else None,
             thread_ts=thread_ts,
             blocks=wire.with_ids(blocks, ts),
             attachments=attachments,
-            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team),
+            bot_profile=state.bot_profile(int(self._clock.now().timestamp()), world.team) if world.is_app else None,
             ephemeral_to=ephemeral_to,
         )
 

@@ -816,7 +816,7 @@ class ServiceDesk:
         them. With no responders, nobody does."""
         filed = [e for e in self.log(service, world) if e.item == item.id and e.create]
         said = " ".join(strings_in(json.loads(filed[0].content))).casefold() if filed else ""
-        named = [k for k in service.responders if self._people[k].email.casefold() in said or k in said.split()]
+        named = [k for k in service.responders if (self._people[k].email or k).casefold() in said or k in said.split()]
         among = named or service.responders
         if not among:
             return None

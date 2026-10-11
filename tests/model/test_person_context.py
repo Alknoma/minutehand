@@ -14,7 +14,7 @@ from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Answers, DelayRange, FactChange, Person, Scenario, Silent
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, WorldEvent
 from tests.orchestrator.rig import T0, person, scenario
-from tests.support.people import people_model, people_requests
+from tests.support.people import email, people_model, people_requests
 
 ANA_DM = "dm-ana"
 
@@ -83,9 +83,9 @@ async def test_a_private_message_to_one_person_never_reaches_anothers_context(tm
     ana, ben = _person("ana", ["The budget is 40k."]), _person("ben", ["The venue is booked."])
     store, clock = _world(tmp_path)
     replier = PeopleReplier(_scn(ana, ben), people_model())
-    _say(store, clock, Actor.AGENT, "Ana, between us: what is the budget?", [ana.email], "m1", ANA_DM, T0)
-    _say(store, clock, Actor.AGENT, "Team, the offsite is on.", [ana.email, ben.email], "m2", "team", T0)
-    asked = _say(store, clock, Actor.AGENT, "Ben, is the venue booked?", [ben.email], "m3", "dm-ben", T0)
+    _say(store, clock, Actor.AGENT, "Ana, between us: what is the budget?", [email(ana)], "m1", ANA_DM, T0)
+    _say(store, clock, Actor.AGENT, "Team, the offsite is on.", [email(ana), email(ben)], "m2", "team", T0)
+    asked = _say(store, clock, Actor.AGENT, "Ben, is the venue booked?", [email(ben)], "m3", "dm-ben", T0)
     await _answer(replier, ben, asked, store, clock)
     shown = _shown()
     assert "Team, the offsite is on." in shown, "a channel he is in is his to see"
@@ -102,12 +102,12 @@ async def test_a_persons_earlier_words_are_shown_and_a_declared_fact_change_hold
     )
     store, clock = _world(tmp_path)
     replier = PeopleReplier(_scn(ana), people_model())
-    first = _say(store, clock, Actor.AGENT, "What is the budget?", [ana.email], "m1", ANA_DM, T0)
+    first = _say(store, clock, Actor.AGENT, "What is the budget?", [email(ana)], "m1", ANA_DM, T0)
     said = await _answer(replier, ana, first, store, clock)
     assert said == "The budget is 40k." and "- The budget is 40k." in _system()
     _say(store, clock, Actor.PERSON, said, [], "r1", ANA_DM, T0 + timedelta(hours=1))
     second = _say(
-        store, clock, Actor.AGENT, "Still the same budget?", [ana.email], "m2", ANA_DM, T0 + timedelta(days=2)
+        store, clock, Actor.AGENT, "Still the same budget?", [email(ana)], "m2", ANA_DM, T0 + timedelta(days=2)
     )
     again = await _answer(replier, ana, second, store, clock)
     system, shown = _system(), _shown()
@@ -123,8 +123,8 @@ async def test_beyond_the_budget_the_oldest_turns_are_one_summary_written_once(t
     store, clock = _world(tmp_path)
     replier = PeopleReplier(_scn(ana), people_model())
     for n in range(3):
-        _say(store, clock, Actor.AGENT, f"Note {n}.", [ana.email], f"n{n}", ANA_DM, T0 + timedelta(minutes=n))
-    asked = _say(store, clock, Actor.AGENT, "What is the budget?", [ana.email], "q", ANA_DM, T0 + timedelta(hours=1))
+        _say(store, clock, Actor.AGENT, f"Note {n}.", [email(ana)], f"n{n}", ANA_DM, T0 + timedelta(minutes=n))
+    asked = _say(store, clock, Actor.AGENT, "What is the budget?", [email(ana)], "q", ANA_DM, T0 + timedelta(hours=1))
     await _answer(replier, ana, asked, store, clock)
     summary, written, checked = store.person_calls()
     assert summary.wrote is Wrote.SUMMARY and written.wrote is Wrote.REPLY and checked.wrote is Wrote.FACT_CHECK
@@ -142,25 +142,25 @@ async def test_a_fork_that_changed_what_was_said_before_gets_a_fresh_answer_and_
     ana = _person("ana", ["The budget is 40k."])
     replier = PeopleReplier(_scn(ana), people_model())
     parent, clock = _world(tmp_path)
-    _say(parent, clock, Actor.AGENT, "Hello Ana.", [ana.email], "m1", ANA_DM, T0)
+    _say(parent, clock, Actor.AGENT, "Hello Ana.", [email(ana)], "m1", ANA_DM, T0)
     shared = parent.head()
-    asked = _say(parent, clock, Actor.AGENT, "What is the budget?", [ana.email], "m2", ANA_DM, T0 + timedelta(hours=1))
+    asked = _say(parent, clock, Actor.AGENT, "What is the budget?", [email(ana)], "m2", ANA_DM, T0 + timedelta(hours=1))
     await _answer(replier, ana, asked, parent, clock)
     before = len(people_requests())
 
     same_clock = RunClock(T0)
     same = parent.fork("same", at_seq=shared, clock=same_clock)
     again = _say(
-        same, same_clock, Actor.AGENT, "What is the budget?", [ana.email], "m2", ANA_DM, T0 + timedelta(hours=1)
+        same, same_clock, Actor.AGENT, "What is the budget?", [email(ana)], "m2", ANA_DM, T0 + timedelta(hours=1)
     )
     await _answer(replier, ana, again, same, same_clock)
     assert len(people_requests()) == before and same.person_calls()[0].replayed
 
     other_clock = RunClock(T0)
     other = parent.fork("other", at_seq=0, clock=other_clock)
-    _say(other, other_clock, Actor.AGENT, "Hello Ana, about the offsite.", [ana.email], "m1", ANA_DM, T0)
+    _say(other, other_clock, Actor.AGENT, "Hello Ana, about the offsite.", [email(ana)], "m1", ANA_DM, T0)
     changed = _say(
-        other, other_clock, Actor.AGENT, "What is the budget?", [ana.email], "m2", ANA_DM, T0 + timedelta(hours=1)
+        other, other_clock, Actor.AGENT, "What is the budget?", [email(ana)], "m2", ANA_DM, T0 + timedelta(hours=1)
     )
     await _answer(replier, ana, changed, other, other_clock)
     assert len(people_requests()) == before + 1 and not other.person_calls()[0].replayed

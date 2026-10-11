@@ -470,7 +470,25 @@ class GraphUser(Aliased):
     userPrincipalName: str
     jobTitle: str | None = None
     businessPhones: list[str] = []
-    accountEnabled: bool | None = Field(default=None, description="Said only once an administrator changed it")
+    accountEnabled: bool | None = Field(default=None, description="Returned only on $select")
+    userType: Literal["Member", "Guest"] | None = Field(default=None, description="Returned only on $select")
+
+
+USER_DEFAULT_FIELDS = [
+    "businessPhones",
+    "displayName",
+    "givenName",
+    "jobTitle",
+    "mail",
+    "mobilePhone",
+    "officeLocation",
+    "preferredLanguage",
+    "surname",
+    "userPrincipalName",
+    "id",
+]
+"""The properties Graph returns for a user when the request selects none
+(https://learn.microsoft.com/en-us/graph/api/user-get, "Optional query parameters")."""
 
 
 class OutOfOfficeSettings(Aliased):
@@ -527,9 +545,23 @@ class GraphChannel(Aliased):
     displayName: str
     description: str | None = None
     membershipType: Literal["standard", "private", "shared"] = "standard"
+    isArchived: bool = False
     createdDateTime: str
     webUrl: str
     tenantId: str
+
+
+class ServicePrincipal(Aliased):
+    """An app's instance in the tenant (https://learn.microsoft.com/en-us/graph/api/resources/serviceprincipal): the
+    properties this provider holds."""
+
+    id: str
+    appId: str
+    appDisplayName: str
+    displayName: str
+    accountEnabled: bool = True
+    appOwnerOrganizationId: str
+    servicePrincipalType: Literal["Application"] = "Application"
 
 
 class GraphChat(Aliased):
@@ -588,6 +620,12 @@ class ChatMessageReaction(Aliased):
     reactionType: str
     createdDateTime: str
     user: IdentitySet
+
+
+class SetReaction(Aliased):
+    """The body of chatmessage-setreaction and -unsetreaction: the reaction, as unicode."""
+
+    reactionType: str = Field(min_length=1)
 
 
 class ChatMessage(Aliased):

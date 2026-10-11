@@ -99,15 +99,16 @@ class GoogleWorkspaceProvider:
         of, still there: each an ask they answer, in the order sent. Then every other invitation they have not
         answered (`responseStatus` `needsAction`), not theirs and not cancelled: an item that waits on them, played
         where the scenario names Google in `transitions_on`."""
-        asks = conversations(person.email, MANIFEST.key, world.events())
+        email = person.held_email(MANIFEST.key, "a Google account is its email address")
+        asks = conversations(email, MANIFEST.key, world.events())
         mine = [w.item for w in asks]
         calendars = CalendarWorld(world)
-        for event, _ in calendars.on(person.email):
+        for event, _ in calendars.on(email):
             attendee = calendars.attendee(event, person.key)
             cancelled = event.status == "cancelled"  # enum-lint: exempt Calendar's own event status
             if attendee is None or cancelled or attendee.organizer or event_ref(event.id) in mine:
                 continue
-            if event.organizer.email.lower() == person.email.lower() or attendee.responseStatus != NEEDS_ACTION:
+            if event.organizer.email.lower() == email.lower() or attendee.responseStatus != NEEDS_ACTION:
                 continue
             shown = invitation(event)
             text = shown.text if isinstance(shown, MessageSnapshot) else ""

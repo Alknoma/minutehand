@@ -1304,7 +1304,7 @@ class ProxyAddon:
         each address that reaches nobody, as written. Its people can answer it when the declaration says how an
         answer reaches the agent (`replies`)."""
         by_key = {p.key: p for p in world.capturing.people}
-        emails = [by_key[r.person].email if r.person is not None else r.address for r in read.recipients]
+        emails = [(by_key[r.person].email if r.person is not None else None) or r.address for r in read.recipients]
         channel = "to:" + ",".join(sorted({r.address.lower() for r in read.recipients}))
         text = f"{read.subject}\n\n{read.text}" if read.subject else read.text
         body = json.dumps(

@@ -214,7 +214,26 @@ class SignIn:
         return self._for_user(self._app_id(asked.client_id), self._granted(asked.code, "authorization code"), asked)
 
     def _refresh(self, asked: wire.TokenRequest) -> wire.TokenAnswer:
-        return self._for_user(self._app_id(asked.client_id), self._granted(asked.refresh_token, "refresh token"), asked)
+        app_id = self._app_id(asked.client_id)
+        seeded = self._world.signed_in(asked.refresh_token)
+        if seeded is not None:  # a refresh token the scenario signs this person in with
+            claims = wire.Claims(
+                iss=tokens.issuer_for(seeded.tenant_id),
+                aud=app_id,
+                iat=0,
+                nbf=0,
+                exp=0,
+                tid=seeded.tenant_id,
+                appid=app_id,
+                azp=app_id,
+                oid=seeded.user.id,
+                sub=seeded.user.id,
+                ver="2.0",
+                uti="seeded",
+                minutehand_use=wire.TokenUse.REFRESH,
+            )
+            return self._for_user(app_id, claims, asked)
+        return self._for_user(app_id, self._granted(asked.refresh_token, "refresh token"), asked)
 
     @staticmethod
     def _granted(presented: str | None, what: str) -> wire.Claims:

@@ -15,6 +15,7 @@
 | the seed's faults       | RECORD       | `SCHEDULE`            | None                             |
 | a fault's firings       | RECORD       | `fault-<n>`           | `SCHEDULE`                       |
 | webhook subscription    | RECORD       | its id                | `WEBHOOKS`                       |
+| file upload             | RECORD       | its id                | `uploads:<workspace id>`         |
 | an event owed to one    | RECORD       | its id                | `owed:<subscription id>`         |
 
 A page's blocks are stored inside the page's own entity (`wire.StoredPage.blocks`), so
@@ -192,6 +193,24 @@ class NotionWorld:
         found = self._read(record_ref(workspace_id))
         return found if isinstance(found, wire.StoredWorkspace) else None
 
+    def file_upload(self, upload_id: str) -> wire.StoredFileUpload | None:
+        found = self._read(record_ref(upload_id))
+        return found if isinstance(found, wire.StoredFileUpload) else None
+
+    def write_file_upload(self, upload: wire.StoredFileUpload, *, operation: Operation, actor: Actor) -> WorldEvent:
+        return self._store.apply(
+            Change(
+                entity=record_ref(upload.id),
+                operation=operation,
+                actor=actor,
+                body=wire.dump(upload),
+                parent=f"uploads:{upload.workspace}",
+                after=RecordSnapshot(
+                    resource="file upload", text=f"{upload.filename or ''} ({upload.status.value})".strip()
+                ),
+            )
+        )
+
     def token(self, secret: str) -> wire.StoredToken | None:
         found = self._read(record_ref(wire.digest(secret)))
         return found if isinstance(found, wire.StoredToken) else None
@@ -338,6 +357,7 @@ class NotionWorld:
             last_edited_at=at,
             owner=self.editor(page.stamps.created_by),
             space=space.name if (space := self.workspace(page.workspace)) is not None else None,
+            trashed=page.archived,
         )
 
     # ------------------------------------------------------------------ writes

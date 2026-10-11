@@ -13,11 +13,16 @@ from pathlib import Path
 import httpx
 import pytest
 
+from minutehand.adapters.providers.youtrack import state as _yt_state
 from tests.providers.youtrack.caller_world import scenario_with, seeded
 from tests.providers.youtrack.youtrack_instance import Instance, entities, entity, named, proxied, refusal
 
 LAUNCH, OPS, CREATED = "0-1000", "0-1001", "0-1002"
-AGENT, IRIS, TOMAS, VENDOR = "1-0", "1-1", "1-2", "1-10000"
+AGENT, VENDOR = "1-0", "1-10000"
+IRIS, TOMAS = (
+    _yt_state.person_id("iris", ["iris", "tomas", "noor"]),
+    _yt_state.person_id("tomas", ["iris", "tomas", "noor"]),
+)
 UPDATE_PROJECT = "jetbrains.jetpass.project-update"
 READ_PROJECT = "jetbrains.jetpass.project-read-basic"
 TEMPLATE_FIELDS = {"Priority", "Type", "State", "Assignee"}

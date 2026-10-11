@@ -26,7 +26,7 @@ from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -201,6 +201,9 @@ class YouTrackSeed(Model):
     grants: list[GrantSeed] = []
     faults: list[FaultSeed] = []
     count_unknown: bool = Field(default=False, description="issuesGetter/count answers -1, as while it still counts")
+    logins: dict[str, str] = Field(
+        default={}, description="Person.key to the person's login, where it is not their key (dots, dashes, uppercase)"
+    )
 
     @model_validator(mode="after")
     def _one_project_per_name(self) -> YouTrackSeed:
@@ -334,7 +337,17 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
-    accounts += [user(f"1-{n + 1}", p.key, p.name, p.email) for n, p in enumerate(scenario.people)]
+    numbers = state.person_numbers([extra.logins.get(p.key, p.key) for p in scenario.people])
+    accounts += [
+        user(
+            f"1-{numbers[extra.logins.get(p.key, p.key)]}",
+            extra.logins.get(p.key, p.key),
+            p.name,
+            p.email,
+            banned=p.account is Account.DEACTIVATED,
+        )
+        for p in scenario.people
+    ]
     accounts += [
         user(f"1-{state.EXTRA_USERS + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
     ]
@@ -346,12 +359,19 @@ def seed(scenario: Scenario, world: Store) -> None:
     by_login = {a.login: a for a in accounts}
 
     def login(name: Login) -> wire.StoredUser:
-        if name not in by_login:
+        """A user by their login, or a person by their key, whose login it is unless `logins` names another."""
+        found = by_login.get(name) or by_login.get(extra.logins.get(name, ""))
+        if found is None:
             raise ValueError(f"the YouTrack seed names {name!r}, who is no user")
-        return by_login[name]
+        return found
 
     for token in extra.tokens:
         youtrack.write_token(token.token, wire.StoredToken(user=login(token.login).id), actor=Actor.SCENARIO)
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        # A permanent token the scenario signs a person in with acts as their user, whose login is their key; one
+        # naming no person is the agent's own.
+        who = login(sign_in.person) if sign_in.person is not None else login(state.AGENT_LOGIN)
+        youtrack.write_token(sign_in.credential, wire.StoredToken(user=who.id), actor=Actor.SCENARIO)
     for service in extra.services:
         youtrack.write_service(
             wire.StoredService(
@@ -434,7 +454,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     stray = sorted(set(details) - keys)
     if stray:
         raise ValueError(f"the YouTrack seed describes tickets no seeded YouTrack ticket is: {', '.join(stray)}")
-    people = {p.key: by_login[p.key] for p in scenario.people}
+    people = {p.key: login(p.key) for p in scenario.people}
     reporter = people[scenario.acting(None, "who reports the seeded YouTrack tickets")]
     made_issues: dict[str, wire.StoredIssue] = {}
     labels = list(dict.fromkeys(label.lower() for t in seeded for label in t.labels))
@@ -490,6 +510,15 @@ def _project_fields(
     return made
 
 
+def _identity(ticket: SeededTicket, youtrack: YouTrackWorld, home: wire.StoredProject) -> tuple[str, ...]:
+    """What a seeded ticket is: its key, or its project, title and how many issues of that title seeding made there
+    before it."""
+    if ticket.key is not None:
+        return ("key", ticket.key)
+    before = [i for i in youtrack.issues(home.id) if i.summary == ticket.title and i.seededFrom is not None]
+    return (home.name, ticket.title, str(len(before)))
+
+
 def _seed_issue(
     youtrack: YouTrackWorld,
     home: wire.StoredProject,
@@ -501,8 +530,9 @@ def _seed_issue(
     start: datetime,
     labels: list[str],
 ) -> wire.StoredIssue:
-    """The issue seeded from `Scenario.tickets[position]`: its id from its position and title, its tags' from their
-    names, its comments' from its id and their place on it, so none moves when more is seeded."""
+    """The issue seeded from `Scenario.tickets[position]`: its id from what the ticket is (its key, or its project,
+    title and place among tickets of that title), its tags' from their names, its comments' from its id and their
+    place on it, so none moves when more is seeded or a ticket is listed before it."""
     at = state.millis(start - detail.created_ago)
     number = youtrack.next_number(home.id)
     values: dict[str, wire.FieldValue] = {f.id: f.defaultValue for f in home.fields if f.defaultValue is not None}
@@ -533,7 +563,7 @@ def _seed_issue(
             youtrack.write_tag(tag, actor=Actor.SCENARIO)
         tags.append(tag.id)
     issue = wire.StoredIssue(
-        id=state.seeded_id(2, str(position), home.name, ticket.title, taken=youtrack.taken),
+        id=state.seeded_id(2, *_identity(ticket, youtrack, home), taken=youtrack.taken),
         idReadable=f"{home.shortName}-{number}",
         numberInProject=number,
         project=home.id,

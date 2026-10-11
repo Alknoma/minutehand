@@ -13,6 +13,7 @@ from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from tests.providers.youtrack.youtrack_instance import (
     AGENT_ID,
     FIELD_OPS,
+    IRIS,
     LAUNCH,
     START,
     TOMAS,
@@ -108,7 +109,7 @@ async def test_fields_select_nested_fields_and_nothing_else(client: httpx.AsyncC
     )
 
     assert set(answer) == {"idReadable", "reporter", "customFields", "project", "$type"}
-    assert answer["reporter"] == {"id": "1-1", "$type": "User"}
+    assert answer["reporter"] == {"id": IRIS, "$type": "User"}
     assert answer["customFields"] == [
         {
             "name": "Priority",
@@ -194,11 +195,11 @@ async def test_the_snapshot_carries_the_assignee_email_and_the_state_the_value_m
         (Operation.CREATE, Actor.AGENT, EntityKind.TICKET),
         (Operation.UPDATE, Actor.AGENT, EntityKind.TICKET),
     ]
-    assert events[0].after == TicketSnapshot(title="Hand over the keys", body="Front desk", project="LAUNCH")
+    assert events[0].after == TicketSnapshot(title="Hand over the keys", body="Front desk", project="Launch")
     assert events[1].after == TicketSnapshot(
         title="Hand over the keys",
         body="Front desk",
-        project="LAUNCH",
+        project="Launch",
         assignee_email="noor@example.com",
         state=outcome,
     )

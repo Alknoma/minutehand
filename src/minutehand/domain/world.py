@@ -395,6 +395,11 @@ class DocumentSnapshot(Model):
         description="The name of the shared place it lives in (a shared drive, a site, a workspace); None when it is "
         "its owner's own",
     )
+    trashed: bool = Field(
+        default=False,
+        description="In the trash: gone from where it was, as a delete is, and still restorable where the vendor keeps "
+        "a trash (Drive's `trashed`, Notion's `in_trash`)",
+    )
 
 
 class GrantSnapshot(Model):

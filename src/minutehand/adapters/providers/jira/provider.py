@@ -17,7 +17,7 @@ from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk, Event
-from minutehand.adapters.providers.jira.seed import JiraSeed, seed
+from minutehand.adapters.providers.jira.seed import JiraSeed, account_id, seed
 from minutehand.adapters.providers.jira.state import issue_ref, placed
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
@@ -74,7 +74,7 @@ class JiraProvider:
         """A site administrator deactivates or reactivates the person's Atlassian account: deactivated, it signs in
         to nothing, is not assignable, and reads `active: false` wherever it is shown."""
         jira = Desk(world).world
-        user = jira.user_by_email(person.email)
+        user = jira.user(account_id(person.email or person.key))
         if user is None:
             raise ValueError(f"{person.key} has no Jira account")
         active = change is PersonChange.REACTIVATED
@@ -93,7 +93,7 @@ class JiraProvider:
         desk = Desk(world)
         if not desk.world.seeded():
             return []
-        user = desk.world.user_by_email(person.email)
+        user = desk.world.user(account_id(person.email or person.key))
         if user is None:
             return []
         site = desk.site()
@@ -185,7 +185,7 @@ class JiraProvider:
         if found is None:
             raise ValueError(f"{issue.key} offers no transition {offer!r} from {site.status(issue.status).name}")
         given = content_of(content, found, who.key if who is not None else by.value)
-        account = _account(desk, who.email) if who is not None else None
+        account = _account(desk, who.email or who.key) if who is not None else None
         if account is None and by is not Actor.SCENARIO:
             raise ValueError("a Jira transition is taken by an account: name the person who takes it")
         before = site.status(issue.status).name
@@ -375,7 +375,8 @@ def _project(desk: Desk, issue: wire.StoredIssue) -> wire.StoredProject:
 
 
 def _email(scenario: Scenario, person: str) -> str:
-    return next(p.email for p in scenario.people if p.key == person)
+    """How the person's account is found: by their email, or their key where they have none."""
+    return next(p.email or p.key for p in scenario.people if p.key == person)
 
 
 def _assignee(account: str | None) -> JsonValue:
@@ -383,7 +384,8 @@ def _assignee(account: str | None) -> JsonValue:
 
 
 def _account(desk: Desk, email: str) -> str:
-    user = desk.world.user_by_email(email)
+    """The account a person's email names, or, for a person with none, their key (`account_id` is made from it)."""
+    user = desk.world.user_by_email(email) or desk.world.user(account_id(email))
     if user is None:
         raise LookupError(f"no Jira account has the email {email}")
     return user.accountId

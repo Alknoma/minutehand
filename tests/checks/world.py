@@ -43,6 +43,7 @@ from minutehand.domain.world import (
     TransitionSnapshot,
     WorldEvent,
 )
+from tests.support.people import email
 
 START = datetime(2026, 9, 7, 9, tzinfo=UTC)
 QUICK = Answers(delay=DelayRange(shortest=timedelta(hours=1), longest=timedelta(hours=2)))
@@ -117,7 +118,7 @@ class Log:
     ) -> WorldEvent:
         ref = EntityRef(provider="chat", kind=EntityKind.MESSAGE, external_id=f"m{len(self.events) + 1}")
         snapshot = MessageSnapshot(
-            text=text, channel=channel, recipient_emails=[p.email for p in to], thread_of=thread_of
+            text=text, channel=channel, recipient_emails=[email(p) for p in to], thread_of=thread_of
         )
         return self._add(hours, actor, Operation.CREATE, ref, snapshot, wake, wall)
 
@@ -126,8 +127,10 @@ class Log:
     ) -> WorldEvent:
         """A send through a captured host (`adapters.proxy.capture`): a message nobody can answer where it went."""
         ref = EntityRef(provider="mail", kind=EntityKind.MESSAGE, external_id=f"e{len(self.events) + 1}")
-        channel = "to:" + ",".join(sorted(p.email for p in to))
-        snapshot = MessageSnapshot(text=text, channel=channel, recipient_emails=[p.email for p in to], answerable=False)
+        channel = "to:" + ",".join(sorted(email(p) for p in to))
+        snapshot = MessageSnapshot(
+            text=text, channel=channel, recipient_emails=[email(p) for p in to], answerable=False
+        )
         return self._add(hours, Actor.AGENT, Operation.CREATE, ref, snapshot, wake)
 
     def ticket(

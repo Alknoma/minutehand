@@ -100,15 +100,15 @@ def test_seeding_writes_people_the_agent_projects_and_issues_as_the_scenario(ins
 
     tickets = [e for e in events if e.entity.kind is EntityKind.TICKET]
     assert [e.after for e in tickets] == [
-        TicketSnapshot(title="Write the release notes", project="LAUNCH", assignee_email="tomas@example.com"),
+        TicketSnapshot(title="Write the release notes", project="Launch", assignee_email="tomas@example.com"),
         TicketSnapshot(
             title="Book the venue",
             body="Forty seats",
-            project="LAUNCH",
+            project="Launch",
             assignee_email="noor@example.com",
             state=TicketState.DONE,
         ),
-        TicketSnapshot(title="Ship the demo kits", project="FIELDOPS"),
+        TicketSnapshot(title="Ship the demo kits", project="Field Ops"),
     ]
     issue = youtrack.find_issue("LAUNCH-1")
     assert issue is not None and issue.reporter == IRIS
@@ -149,7 +149,7 @@ async def test_transition_moves_the_issue_as_its_assignee(
     assert (last.actor, last.operation, last.entity) == (Actor.PERSON, Operation.UPDATE, state.issue_ref(issue_id))
     assert last.after == TicketSnapshot(
         title="Write the release notes",
-        project="LAUNCH",
+        project="Launch",
         assignee_email="tomas@example.com",
         state=to,
     )
@@ -214,7 +214,7 @@ async def test_edit_rewrites_state_and_assignee_as_the_scenario(instance: Instan
     assert (last.actor, last.operation) == (Actor.SCENARIO, Operation.UPDATE)
     assert last.after == TicketSnapshot(
         title="Write the release notes",
-        project="LAUNCH",
+        project="Launch",
         assignee_email="iris@example.com",
         state=TicketState.CANCELLED,
     )

@@ -13,7 +13,7 @@ import pytest
 
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.provider import build
-from minutehand.adapters.providers.asana.seed import AsanaSeed
+from minutehand.adapters.providers.asana.seed import AsanaSeed, gid_at
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.people import move
 from minutehand.application.run_clock import RunClock
@@ -26,6 +26,7 @@ from tests.providers.asana.rich_workspace import (
     OLD,
     SCENARIO,
     STATUS_FIELD,
+    SUBTASK,
     agent,
     got,
     option,
@@ -84,7 +85,7 @@ def seeded(tmp_path: Path, scenario: Scenario) -> Workspace:
 
 def test_with_the_completed_box_as_the_source_a_section_says_nothing(tmp_path: Path) -> None:
     ws = seeded(tmp_path, scenario_with({"status": {"kind": "completed"}}))
-    done = state.task_gid(1)
+    done = gid_at(PLAIN, 1)
     assert state_of(ws, done) is TicketState.DONE
     task = ws.asana.task(done)
     assert task is not None
@@ -98,7 +99,7 @@ def test_with_the_completed_box_as_the_source_a_section_says_nothing(tmp_path: P
 
 async def test_with_the_completed_box_as_the_source_a_person_cannot_cancel(tmp_path: Path) -> None:
     ws = seeded(tmp_path, scenario_with({"status": {"kind": "completed"}}))
-    ticket = state.task_ref(state.task_gid(0))
+    ticket = state.task_ref(gid_at(PLAIN, 0))
     # The completed box alone cannot say cancelled, so nothing that means it is offered.
     with pytest.raises(ValueError, match="offers no 'cancelled' now"):
         await assignee_moves(ws.provider, ticket, TicketState.CANCELLED, PLAIN, ws.store, ws.clock)
@@ -165,9 +166,7 @@ async def test_a_person_moves_a_task_by_the_status_field_and_ticks_it(rich: Work
 async def test_a_task_in_no_project_with_the_status_field_cannot_be_cancelled(rich: Workspace) -> None:
     bob = next(p for p in SCENARIO.people if p.key == "bob")
     with pytest.raises(ValueError, match="offers no 'cancelled' now"):
-        await move(
-            rich.provider, state.task_ref(state.task_gid(1)), "cancelled", Actor.PERSON, bob, {}, rich.store, rich.clock
-        )
+        await move(rich.provider, state.task_ref(SUBTASK), "cancelled", Actor.PERSON, bob, {}, rich.store, rich.clock)
 
 
 # ---------------------------------------------------------------------- people acting by themselves
@@ -222,7 +221,7 @@ async def test_people_complete_reassign_comment_and_delete_seeded_tasks_as_thems
     await acted(rich.provider, happening("bob", incident, {"kind": "deletes"}), SCENARIO, rich.store, rich.clock)
     assert (await agent.get(f"/tasks/{INCIDENT}")).status_code == 404
     deleted = [e for e in rich.store.events() if e.actor is Actor.PERSON and e.operation is Operation.DELETE]
-    assert [e.entity.external_id for e in deleted] == [state.task_gid(1), INCIDENT], "its subtask goes with it"
+    assert [e.entity.external_id for e in deleted] == [SUBTASK, INCIDENT], "its subtask goes with it"
     head = rich.store.head()
     await acted(
         rich.provider,

@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
-from minutehand.adapters.providers.microsoft import docx, wire
+from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.scenario import Model, Scenario
@@ -62,6 +62,7 @@ from minutehand.ports.store import Store
 
 TENANTS = "tenants"
 APPS = "apps"
+SIGN_INS = "sign_ins"
 USERS = "users"
 TEAMS = "teams"
 CONVERSATIONS = "conversations"
@@ -142,6 +143,12 @@ class AppRecord(Model):
     tenant_id: str
 
 
+class SignInRecord(Model):
+    """Whom a seeded refresh token signs in: a user of the tenant, by object id."""
+
+    oid: str
+
+
 class AwayRecord(Model):
     """A stretch a person is away, as the tenant shows it: out of office, with their automatic reply. `starts` is
     known at seeding for an absence from the start; one that begins on the agent's first message to them is
@@ -195,6 +202,9 @@ class ConversationRecord(Model):
     members: list[str]
     bot_installed: bool
     created: str
+    description: str | None = Field(default=None, description="A channel's description")
+    private: bool = Field(default=False, description="A private channel: members a subset of the team's")
+    archived: bool = Field(default=False, description="An archived channel: read-only, still listed")
 
 
 class ActionRecord(Model):
@@ -257,6 +267,11 @@ def tenant_ref(tid: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"tenant:{tid}")
 
 
+def sign_in_ref(credential: str) -> EntityRef:
+    """A refresh token the scenario signs a person in with, kept under a digest of itself: never its own text."""
+    return ref(EntityKind.RECORD, f"sign_in:{_digest('sign in', credential)}")
+
+
 def app_ref(app_id: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"app:{app_id}")
 
@@ -317,8 +332,25 @@ def post_ref(key: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"post:{key}")
 
 
-def reaction_ref(activity: str, oid: str) -> EntityRef:
-    return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}")
+OFFICE_EXTENSIONS = (".docx", ".xlsx", ".pptx")
+"""The extensions of Word, Excel and PowerPoint documents: a document named `Plan.docx` is titled `Plan` in Office,
+as a native document of any other provider is titled without one."""
+
+
+def neutral_title(name: str) -> str:
+    """A drive item's title as the neutral record keeps it: its name, less an Office document's extension."""
+    lowered = name.lower()
+    return next((name[: -len(e)] for e in OFFICE_EXTENSIONS if lowered.endswith(e) and len(name) > len(e)), name)
+
+
+def reaction_ref(activity: str, oid: str, reaction: str) -> EntityRef:
+    """One user's reaction of one type to a message: a user may react to it with more than one type."""
+    return ref(EntityKind.RECORD, f"reaction:{activity}:{oid}:{reaction}")
+
+
+def reactions_of(activity: str) -> str:
+    """The parent every reaction to a message is kept under."""
+    return f"reactions:{activity}"
 
 
 def event_ref(event: str) -> EntityRef:
@@ -334,12 +366,15 @@ def subscription_ref(subscription: str) -> EntityRef:
 
 
 def item_text(stored: wire.StoredItem) -> str:
-    """What can be read of a file as text: a Word document's paragraphs, a text file's bytes; nothing else."""
+    """What can be read of a file as text: a Word document's paragraphs, an Excel workbook's cells, a text file's
+    bytes; nothing else."""
     if stored.item.file is None:
         return ""
     content = wire.content_of(stored)
     if stored.item.file.mimeType == docx.DOCX:
         return docx.text_of(content) or ""
+    if stored.item.file.mimeType == xlsx.XLSX:
+        return xlsx.text_of(content) or ""
     if stored.item.file.mimeType.startswith("text/"):
         return content.decode("utf-8", errors="replace")
     return ""
@@ -377,6 +412,13 @@ class MicrosoftWorld:
                 return
             after = page[-1].entity.external_id
 
+    def reactions(self, activity: str) -> list[tuple[str, wire.Reaction, datetime]]:
+        """Each reaction a message holds, oldest first: who reacted (their object id), the reaction, and when."""
+        return [
+            (s.entity.external_id.split(":")[2], wire.parse(wire.Reaction, s.body), s.sim_time)
+            for s in self._pages(EntityKind.RECORD, reactions_of(activity))
+        ]
+
     def _all(self, model: type[wire.M], kind: EntityKind, parent: str) -> list[wire.M]:
         return [wire.parse(model, s.body) for s in self._pages(kind, parent)]
 
@@ -413,6 +455,11 @@ class MicrosoftWorld:
 
     def tenants(self) -> list[TenantRecord]:
         return self._all(TenantRecord, EntityKind.RECORD, TENANTS)
+
+    def signed_in(self, credential: str | None) -> UserRecord | None:
+        """The user a seeded refresh token signs in, when it is one."""
+        found = self._get(SignInRecord, sign_in_ref(credential), SIGN_INS) if credential else None
+        return self.user(found.oid) if found is not None else None
 
     def app(self, app_id: str) -> AppRecord | None:
         return self._get(AppRecord, app_ref(app_id), APPS)
@@ -503,9 +550,14 @@ class MicrosoftWorld:
         return [(s.seq, wire.parse(wire.Activity, s.body)) for s in self._pages(EntityKind.MESSAGE, conversation)]
 
     def next_activity_id(self, clock: Clock) -> str:
-        """Teams' message id: the moment in milliseconds, here the simulated second and the next event's seq, so two
-        messages in one instant are still distinct and ordered."""
-        return f"{int(clock.now().timestamp())}{self.next_seq():06d}"
+        """Teams' message id: the moment it was sent in epoch milliseconds, 13 digits
+        (https://learn.microsoft.com/en-us/graph/api/resources/chatmessage). A run's clock stands still between
+        events, so a message sent in a millisecond an earlier one, live or deleted, already holds takes the next free
+        one: ids stay distinct and in the order sent."""
+        candidate = int(clock.now().timestamp() * 1000)
+        while self.store.versions(message_ref(str(candidate))):
+            candidate += 1
+        return str(candidate)
 
     # ------------------------------------------------------------------ files
 
@@ -537,8 +589,10 @@ class MicrosoftWorld:
         return self.store.versions(item_ref(item))
 
     def write_item(self, stored: wire.StoredItem, *, operation: Operation, actor: Actor) -> WorldEvent:
+        above = self.item(stored.item.parentReference.id) if stored.item.parentReference.id else None
         snapshot = DocumentSnapshot(
-            title=stored.item.name,
+            title=neutral_title(stored.item.name),
+            parent=above.item.name if above is not None and above.item.root is None else None,
             mime_type=stored.item.file.mimeType if stored.item.file is not None else None,
             text=item_text(stored) or None,
             last_edited_by=self._editor(stored.item.lastModifiedBy),
