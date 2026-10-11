@@ -147,12 +147,6 @@ KNOWN: tuple[Known, ...] = (
     Known("google_workspace", Property.PEOPLE_ACT, "happening_moved", "the API shows the folder None"),
     Known(
         "google_workspace",
-        Property.RECORD,
-        "every_call_kept_once_in_order_verbatim",
-        "call 1 (POST oauth2.googleapis.com/token): the answer kept differs from what was answered (130 bytes)",
-    ),
-    Known(
-        "google_workspace",
         Property.SEEDED,
         "document_file",
         "the world's neutral text of 'Fact document' lacks ['fact,csv']: ''",
@@ -209,12 +203,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.ACCOUNTS,
-        "any_credential_acts_as_the_default_identity",
-        "the world's own app credential cannot say who it is: GET /servicePrincipals(appId='<uuid>') is 501, off the Graph v1.0 surface the provider serves; both calls without a known credential are accepted",
-    ),
-    Known(
-        "microsoft",
-        Property.ACCOUNTS,
         "no_email",
         "the shared seed model cannot declare a no_email account: 1 validation error for Seed",
     ),
@@ -229,12 +217,6 @@ KNOWN: tuple[Known, ...] = (
         Property.FAMILY,
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
-    ),
-    Known(
-        "microsoft",
-        Property.RECORD,
-        "every_call_kept_once_in_order_verbatim",
-        'VendorRefused: GET /servicePrincipals(appId=\'<uuid>\'): 400 {"error":{"code":"BadRequest","message":"Resource not found for the segment \'servicePrincipals(appId=\'<uuid>\')\'.","innerE',
     ),
     Known(
         "microsoft",

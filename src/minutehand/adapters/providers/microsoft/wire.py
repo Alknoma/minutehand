@@ -551,6 +551,19 @@ class GraphChannel(Aliased):
     tenantId: str
 
 
+class ServicePrincipal(Aliased):
+    """An app's instance in the tenant (https://learn.microsoft.com/en-us/graph/api/resources/serviceprincipal): the
+    properties this provider holds."""
+
+    id: str
+    appId: str
+    appDisplayName: str
+    displayName: str
+    accountEnabled: bool = True
+    appOwnerOrganizationId: str
+    servicePrincipalType: Literal["Application"] = "Application"
+
+
 class GraphChat(Aliased):
     id: str
     topic: str | None = None

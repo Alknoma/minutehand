@@ -357,10 +357,12 @@ class MicrosoftSession(Messaging, Documents):
         return [[str(u["id"]) for u in page] for page in self._pages("/users", **{"$select": "id", "$top": page_size})]
 
     def stranger(self, *, credentialed: bool) -> httpx.Response:
-        """A Graph read with an access token no sign-in minted, or with none."""
+        """The read that says who the caller is (the app's service principal, as `whoami` reads it), with an access
+        token no sign-in minted, or with none."""
+        path = f"{GRAPH}/servicePrincipals(appId='{self._tenant.bot_app_id}')?$select=displayName"
         if credentialed:
-            return self._http.get(f"{GRAPH}/users", headers={"Authorization": f"Bearer {UNSEEDED}"})
-        return uncredentialed(self._http, "GET", f"{GRAPH}/users")
+            return self._http.get(path, headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", path)
 
     def observe(self) -> str:
         launch = self.channel(STAMP_CHANNEL)

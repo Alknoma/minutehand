@@ -165,7 +165,10 @@ SERVED: frozenset[tuple[str, str]] = frozenset(
 )
 
 MAILBOX_SETTINGS = "https://learn.microsoft.com/en-us/graph/api/user-get-mailboxsettings"
+SERVICE_PRINCIPAL = "https://learn.microsoft.com/en-us/graph/api/serviceprincipal-get"
 DOCUMENTED: dict[tuple[str, str], str] = {
+    ("GET", "/servicePrincipals/{servicePrincipal-id}"): SERVICE_PRINCIPAL,
+    ("GET", "/servicePrincipals(appId='{appId}')"): SERVICE_PRINCIPAL,
     ("GET", "/me/mailboxSettings/automaticRepliesSetting"): MAILBOX_SETTINGS,
     ("GET", "/users/{user-id}/mailboxSettings/automaticRepliesSetting"): MAILBOX_SETTINGS,
 }
