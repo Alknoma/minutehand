@@ -1,5 +1,31 @@
 {
  "components": {
+  "examples": {
+   "simple-user-items": {
+    "value": [
+     {
+      "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+      "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+      "followers_url": "https://api.github.com/users/octocat/followers",
+      "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+      "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+      "gravatar_id": "",
+      "html_url": "https://github.com/octocat",
+      "id": 1,
+      "login": "octocat",
+      "node_id": "MDQ6VXNlcjE=",
+      "organizations_url": "https://api.github.com/users/octocat/orgs",
+      "received_events_url": "https://api.github.com/users/octocat/received_events",
+      "repos_url": "https://api.github.com/users/octocat/repos",
+      "site_admin": false,
+      "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+      "type": "User",
+      "url": "https://api.github.com/users/octocat"
+     }
+    ]
+   }
+  },
   "headers": {
    "link": {
     "example": "<https://api.github.com/resource?page=2>; rel=\"next\", <https://api.github.com/resource?page=5>; rel=\"last\"",
@@ -13722,6 +13748,166 @@
      "enabledForGitHubApps": false,
      "githubCloudOnly": false,
      "subcategory": "issues"
+    }
+   }
+  },
+  "/orgs/{org}/members": {
+   "get": {
+    "description": "List all users who are members of an organization. If the authenticated user is also a member of this organization then both concealed and public members will be returned.",
+    "externalDocs": {
+     "description": "API method documentation",
+     "url": "https://docs.github.com/rest/orgs/members#list-organization-members"
+    },
+    "operationId": "orgs/list-members",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/org"
+     },
+     {
+      "description": "Filter members returned in the list. `2fa_disabled` means that only members without [two-factor authentication](https://github.com/blog/1614-two-factor-authentication) enabled will be returned. `2fa_insecure` means that only members with [insecure 2FA methods](https://docs.github.com/organizations/keeping-your-organization-secure/managing-two-factor-authentication-for-your-organization/requiring-two-factor-authentication-in-your-organization#requiring-secure-methods-of-two-factor-authentication-in-your-organization) will be returned. These options are only available for organization owners.",
+      "in": "query",
+      "name": "filter",
+      "required": false,
+      "schema": {
+       "default": "all",
+       "enum": [
+        "2fa_disabled",
+        "2fa_insecure",
+        "all"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter members returned by their role.",
+      "in": "query",
+      "name": "role",
+      "required": false,
+      "schema": {
+       "default": "all",
+       "enum": [
+        "all",
+        "admin",
+        "member"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/per-page"
+     },
+     {
+      "$ref": "#/components/parameters/page"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "default": {
+          "$ref": "#/components/examples/simple-user-items"
+         }
+        },
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/simple-user"
+         },
+         "type": "array"
+        }
+       }
+      },
+      "description": "Response",
+      "headers": {
+       "Link": {
+        "$ref": "#/components/headers/link"
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/validation_failed"
+     }
+    },
+    "summary": "List organization members",
+    "tags": [
+     "orgs"
+    ],
+    "x-github": {
+     "category": "orgs",
+     "enabledForGitHubApps": true,
+     "githubCloudOnly": false,
+     "subcategory": "members"
+    }
+   }
+  },
+  "/orgs/{org}/outside_collaborators": {
+   "get": {
+    "description": "List all users who are outside collaborators of an organization.",
+    "externalDocs": {
+     "description": "API method documentation",
+     "url": "https://docs.github.com/rest/orgs/outside-collaborators#list-outside-collaborators-for-an-organization"
+    },
+    "operationId": "orgs/list-outside-collaborators",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/org"
+     },
+     {
+      "description": "Filter the list of outside collaborators. `2fa_disabled` means that only outside collaborators without [two-factor authentication](https://github.com/blog/1614-two-factor-authentication) enabled will be returned. `2fa_insecure` means that only outside collaborators with [insecure 2FA methods](https://docs.github.com/organizations/keeping-your-organization-secure/managing-two-factor-authentication-for-your-organization/requiring-two-factor-authentication-in-your-organization#requiring-secure-methods-of-two-factor-authentication-in-your-organization) will be returned.",
+      "in": "query",
+      "name": "filter",
+      "required": false,
+      "schema": {
+       "default": "all",
+       "enum": [
+        "2fa_disabled",
+        "2fa_insecure",
+        "all"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/per-page"
+     },
+     {
+      "$ref": "#/components/parameters/page"
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "default": {
+          "$ref": "#/components/examples/simple-user-items"
+         }
+        },
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/simple-user"
+         },
+         "type": "array"
+        }
+       }
+      },
+      "description": "Response",
+      "headers": {
+       "Link": {
+        "$ref": "#/components/headers/link"
+       }
+      }
+     }
+    },
+    "summary": "List outside collaborators for an organization",
+    "tags": [
+     "orgs"
+    ],
+    "x-github": {
+     "category": "orgs",
+     "enabledForGitHubApps": true,
+     "githubCloudOnly": false,
+     "subcategory": "outside-collaborators"
     }
    }
   },

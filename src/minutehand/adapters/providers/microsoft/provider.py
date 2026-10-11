@@ -23,7 +23,7 @@ from minutehand.adapters.providers.microsoft import docx, seed, subscriptions, w
 from minutehand.adapters.providers.microsoft.app import build_app
 from minutehand.adapters.providers.microsoft.common import error_answer
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
-from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, mime_of
+from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, graph_roles, mime_of
 from minutehand.adapters.providers.microsoft.graph_mail import Mail
 from minutehand.adapters.providers.microsoft.inbound import People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
@@ -50,7 +50,6 @@ from minutehand.domain.people import (
 )
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
 from minutehand.domain.scenario import (
-    AccessRole,
     DocumentHappening,
     Edited,
     Happening,
@@ -65,14 +64,6 @@ from minutehand.domain.world import Actor, EntityKind, Operation, WorldEvent
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
 from minutehand.ports.store import Store
-
-ROLES = {
-    AccessRole.READER: ["read"],
-    AccessRole.COMMENTER: ["read"],
-    AccessRole.WRITER: ["write"],
-    AccessRole.ORGANIZER: ["owner"],
-}
-"""Graph's roles for each access a scenario gives: it has no commenter, so a commenter reads."""
 
 
 class MicrosoftProvider:
@@ -194,7 +185,8 @@ class MicrosoftProvider:
             if target is None:
                 raise LookupError(f"{action.access.person} is not a user of the tenant")
             email = target.user.mail or target.user.userPrincipalName
-            files.share(stored, email, ROLES[action.access.role], actor=Actor.PERSON)
+            roles = graph_roles(action.access.role, f"a share with {action.access.person}")
+            files.share(stored, email, roles, actor=Actor.PERSON)
         elif isinstance(action, Trashed):
             files.delete(stored, by=by, actor=Actor.PERSON)
         else:

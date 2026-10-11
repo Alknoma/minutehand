@@ -12,8 +12,8 @@ Paths are under `tests/providers/asana/`; `claims` is `test_asana_vendor_claims.
 
 The surface is Asana's OpenAPI document (https://github.com/Asana/openapi, `defs/asana_oas.yaml` at `4cf6c7c`),
 whose subset for the resources this provider claims is `tests/data/asana_rest_1_0/openapi-subset-2026-10-08.json`:
-122 operations, 79 served and 43 refused by name. The provider holds the whole document's 251 operations
-(`surface.OPERATIONS`): 79 served, 172 raising the shared not-served refusal naming method, path and operationId
+123 operations, 80 served and 43 refused by name. The provider holds the whole document's 251 operations
+(`surface.OPERATIONS`): 80 served, 171 raising the shared not-served refusal naming method, path and operationId
 (`app.UNSERVED`, `test_asana_surface.py`); only a path Asana does not document is 404 "No matching route for
 request".
 
@@ -174,3 +174,4 @@ is refused 501 naming it:
   the scenario's seed (`AsanaSeed.workspace`).
 - **Fixed gids and a fixture service account with no email.** Data of the predecessor's fixture files, not
   behaviour of Asana; gids here derive from the scenario's names.
+| `GET /workspaces/{gid}/workspace_memberships` answers each user's membership: a member an administrator removed is `is_active: false`, a guest `is_guest: true`; a seeded deactivated person is a removed member, a seeded guest a guest | documented | `tests/conformance` (`person_deactivated`, `person_guest`) | https://developers.asana.com/reference/getworkspacemembershipsforworkspace |

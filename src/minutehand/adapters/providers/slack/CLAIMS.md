@@ -47,6 +47,8 @@ check Slack makes and this stack does not test:
 | Opening a DM with a member answers an IM (`D…`) id | documented | `test_opening_a_dm_with_a_member_answers_an_im_id` | https://docs.slack.dev/reference/methods/conversations.open |
 | An id in `users` that is no member is `user_not_found`, and no DM is made | documented | `test_opening_a_dm_with_an_id_that_is_no_member_is_refused_user_not_found` | https://docs.slack.dev/reference/methods/conversations.open |
 | One unknown id in a group DM refuses the whole call | documented | `test_one_unknown_id_in_a_group_dm_refuses_the_whole_open_user_not_found` | https://docs.slack.dev/reference/methods/conversations.open |
+| Opening a DM with a bot user alone is refused 501 by name: the page documents no answer for it (and no `cannot_dm_bot`) | documented | `test_slack_through_the_proxy.py` (the bot `robo`) | https://docs.slack.dev/reference/methods/conversations.open |
+| A seeded user token (`sign_ins` naming a person) is that person's: `auth.test` answers as them, and what they post carries no bot | documented | `tests/conformance` (`sign_in`, `member`) | https://docs.slack.dev/authentication/tokens |
 | Every member carries `tz` and `tz_offset` | documented | `test_every_member_is_served_with_a_timezone` | https://docs.slack.dev/reference/methods/users.info |
 | An unknown channel id, or a channel's name, is `channel_not_found` and is never provisioned | documented | `test_a_channel_that_is_not_an_existing_id_is_refused_channel_not_found` | https://docs.slack.dev/reference/methods/conversations.info |
 | A member id as `channel` posts into that member's DM with the app | documented | `test_a_member_id_as_the_channel_posts_into_the_dm_with_the_app` | https://docs.slack.dev/reference/methods/chat.postMessage |
@@ -176,3 +178,4 @@ check Slack makes and this stack does not test:
   events `file_created`, `file_public` and `file_change` are not sent.
 - **A button inside a modal** is not a press a scenario can play, so the trigger `views.push` wants comes from a
   `view_submission`; the page names no other source than "an interaction within the existing modal".
+| A person seeded with no email is a member whose profile has none | documented | `tests/conformance` (`person_without_email`, `no_email`) | https://docs.slack.dev/reference/objects/user-object |

@@ -33,11 +33,13 @@ from minutehand.adapters.providers.github import history, wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Person, Scenario
+from minutehand.domain.scenario import Account, Person, Scenario, SignIn
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
-LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}$"
+LOGIN = r"^[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:\[bot\])?$"
+"""A login: letters, digits and single hyphens, and `[bot]` after a GitHub App's bot's."""
+BOT_SUFFIX = "[bot]"
 """GitHub's rule for a login: letters, digits and single inner hyphens, at most 39 characters."""
 REPOSITORY_NAME = r"^[A-Za-z0-9._-]{1,100}$"
 
@@ -437,23 +439,50 @@ def _commit_sha(full_name: str, position: int, message: str, date: str) -> str:
     return hashlib.sha1(f"commit\0{full_name}\0{position}\0{date}\0{message}".encode()).hexdigest()
 
 
+def _signed_in(sign_in: SignIn, given: GitHubSeed) -> wire.StoredToken:
+    """A credential the scenario signs a person in with: a personal access token acting as the GitHub user who is
+    that person, of the kind its prefix says. A GitHub token always acts as a user, so one naming no person, or a
+    person no seeded user is, is refused by name."""
+    user = next((u for u in given.users if sign_in.person is not None and u.person == sign_in.person), None)
+    if user is None:
+        raise ValueError(
+            f"github: the sign_in {sign_in.credential[:8]}... names {sign_in.person or 'no person'}, whom no seeded "
+            "GitHub user is: a personal access token acts as a user"
+        )
+    kind = next((k for k, prefix in wire.TOKEN_PREFIXES.items() if sign_in.credential.startswith(prefix)), None)
+    if kind is None:
+        raise ValueError(
+            f"github: the sign_in for {sign_in.person} is no personal access token: one starts "
+            f"{' or '.join(wire.TOKEN_PREFIXES.values())}"
+        )
+    return wire.StoredToken(kind=kind, login=user.login, scopes=["repo"] if kind is wire.TokenKind.CLASSIC else [])
+
+
 def _people(scenario: Scenario) -> dict[str, Person]:
     return {p.key: p for p in scenario.people}
 
 
 def _user(user: SeedUser, people: dict[str, Person], created: str) -> wire.StoredAccount:
     name, email = user.name, None
+    bot = user.login.endswith(BOT_SUFFIX)
     if user.person is not None:
         if user.person not in people:
             raise ValueError(f"GitHub user {user.login} is person {user.person}, who is nobody in the scenario")
-        name, email = people[user.person].name, people[user.person].email
+        person = people[user.person]
+        if (person.account is Account.BOT) != bot:
+            raise ValueError(
+                f"github: {person.key} is {'' if bot else 'not '}seeded a bot, and the login {user.login} says otherwise: "
+                "a bot account on GitHub is a GitHub App's, its login ending [bot]"
+            )
+        name, email = person.name, None if bot else person.email
+    kind = wire.AccountType.BOT if bot else wire.AccountType.USER
     return wire.StoredAccount(
-        login=user.login, id=number(user.login), type=wire.AccountType.USER, name=name, email=email, created_at=created
+        login=user.login, id=number(user.login), type=kind, name=name, email=email, created_at=created
     )
 
 
 def _login(account: wire.StoredAccount) -> str | None:
-    return account.login if account.type is wire.AccountType.USER else None
+    return account.login if account.type is not wire.AccountType.ORGANIZATION else None
 
 
 def _name(account: wire.StoredAccount, where: str) -> str:
@@ -717,6 +746,8 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
                 scopes=token.scopes if token.kind is wire.TokenKind.CLASSIC else [],
             ),
         )
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        github.write_token(sign_in.credential, _signed_in(sign_in, given))
     _stand_in(github, given, accounts)
 
     for repository in given.repositories:

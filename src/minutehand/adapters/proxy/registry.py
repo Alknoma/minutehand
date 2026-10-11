@@ -63,7 +63,7 @@ class Registry:
         for entry in self._entries.values():
             for mine in patterns:
                 for theirs in entry.patterns:
-                    if mine.overlaps(theirs):
+                    if mine.overlaps(theirs) and mine.is_wildcard == theirs.is_wildcard:
                         raise ProviderConflict(
                             f"{manifest.key!r} claims {mine.text!r}, which {entry.manifest.key!r} already claims"
                             f" as {theirs.text!r}"
@@ -98,11 +98,15 @@ class Registry:
         return manifest
 
     def claimant(self, host: str) -> Manifest | None:
-        """The manifest of the provider that answers `host`, if any does."""
-        for entry in self._entries.values():
-            if any(pattern.matches(host) for pattern in entry.patterns):
-                return entry.manifest
-        return None
+        """The manifest of the provider that answers `host`, if any does: one claiming it exactly before one claiming it
+        under a wildcard (a vendor's own bucket inside a cloud's domain is the vendor's)."""
+        found = [
+            (pattern.is_wildcard, entry.manifest)
+            for entry in self._entries.values()
+            for pattern in entry.patterns
+            if pattern.matches(host)
+        ]
+        return min(found, key=lambda claim: claim[0])[1] if found else None
 
     def provider(self, manifest: Manifest) -> Provider:
         """The provider for a manifest this registry holds, built on first use."""

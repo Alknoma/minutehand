@@ -32,7 +32,7 @@ from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.state import AGENT_GID, WORKSPACE_GID, AsanaWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -231,8 +231,31 @@ def asana_seed(scenario: Scenario) -> AsanaSeed:
 
 
 def seeded_gid(scenario: Scenario, ticket: SeededTicket) -> str:
-    """The gid of the task seeded from `ticket`: its position among the scenario's asana tickets."""
-    return state.task_gid(_position(scenario, ticket))
+    """The gid of the task seeded from `ticket`, from what the ticket is (`state.task_number`)."""
+    return state.task_gid(_number(scenario, ticket))
+
+
+def gid_at(scenario: Scenario, position: int) -> str:
+    """The gid of the task seeded from the scenario's `position`-th asana ticket."""
+    return seeded_gid(scenario, [t for t in scenario.tickets if t.provider == MANIFEST.key][position])
+
+
+def story_gid_at(scenario: Scenario, position: int, nth: int) -> str:
+    """The gid of the `nth` story seeded on the scenario's `position`-th asana ticket."""
+    ticket = [t for t in scenario.tickets if t.provider == MANIFEST.key][position]
+    return state.story_gid(_number(scenario, ticket), nth)
+
+
+def _number(scenario: Scenario, ticket: SeededTicket) -> int:
+    """`ticket`'s seeded number: its key, or its project, title and place among the asana tickets of that title."""
+    if ticket.key is not None:
+        return state.task_number("key", ticket.key)
+    alike = [
+        t
+        for t in scenario.tickets
+        if t.provider == MANIFEST.key and (t.project, t.title) == (ticket.project, ticket.title)
+    ]
+    return state.task_number(ticket.project, ticket.title, str(next(i for i, t in enumerate(alike) if t is ticket)))
 
 
 def _position(scenario: Scenario, ticket: SeededTicket) -> int:
@@ -268,6 +291,13 @@ class _Seeding:
 
     def gid_of(self, ticket: SeededTicket) -> str:
         return seeded_gid(self.scenario, ticket)
+
+    def _made_at(self, ticket: SeededTicket) -> str:
+        """When a seeded task was made: a millisecond apart, in the scenario's order, up to the start, as tasks made
+        one after another before the run would be; listings go by when a task was made."""
+        mine = [t for t in self.scenario.tickets if t.provider == MANIFEST.key]
+        before = len(mine) - _position(self.scenario, ticket)
+        return wire.stamp(self.scenario.starts_at - timedelta(milliseconds=before))
 
     def user(self, person: str | None) -> str:
         if person is None:
@@ -308,7 +338,7 @@ class _Seeding:
                     gid=WORKSPACE_GID,
                     name=self.seed.workspace.name,
                     is_organization=self.seed.workspace.organization,
-                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people}),
+                    email_domains=sorted({p.email.split("@")[-1] for p in self.scenario.people if p.email}),
                     premium=self.seed.workspace.premium,
                     unpaginated_limit=self.seed.workspace.unpaginated_limit,
                     status=self._status(),
@@ -350,7 +380,13 @@ class _Seeding:
         )
         for person in self.scenario.people:
             self.asana.put_record(
-                wire.AsanaUser(gid=state.user_gid(person.key), name=person.name, email=person.email),
+                wire.AsanaUser(
+                    gid=state.user_gid(person.key),
+                    name=person.name,
+                    email=person.held_email("asana", "every Asana account signs in by its email address"),
+                    removed=person.account is Account.DEACTIVATED,
+                    guest=person.account is Account.GUEST,
+                ),
                 parent=state.USERS,
                 actor=Actor.SCENARIO,
             )
@@ -358,6 +394,18 @@ class _Seeding:
             self.asana.put_record(
                 wire.AsanaCredential(
                     gid=state.credential_gid(token.token), kind=wire.CredentialKind.ACCESS, user=self.user(token.person)
+                ),
+                parent=state.CREDENTIALS,
+                actor=Actor.SCENARIO,
+            )
+        for sign_in in (s for s in self.scenario.sign_ins if s.provider == MANIFEST.key):
+            # A personal access token the scenario signs a person in with acts as that person's user; one naming no
+            # person is the app's own, which acts as the agent.
+            self.asana.put_record(
+                wire.AsanaCredential(
+                    gid=state.credential_gid(sign_in.credential),
+                    kind=wire.CredentialKind.ACCESS,
+                    user=self.user(sign_in.person),
                 ),
                 parent=state.CREDENTIALS,
                 actor=Actor.SCENARIO,
@@ -490,7 +538,7 @@ class _Seeding:
             memberships=[]
             if parent is not None or first is None
             else [wire.AsanaMembership(project=project, section=first)],
-            created_at=self.at,
+            created_at=self._made_at(ticket),
             modified_at=self.at,
         )
         task = self.asana.moved(task, ticket.state, now=self.scenario.starts_at)
@@ -564,7 +612,7 @@ class _Seeding:
         """The seed's own comments, oldest first, then the ticket's shared comments, each a story by its person
         written as the scenario starts."""
         task = self.gid_of(ticket)
-        place = _position(self.scenario, ticket)
+        place = _number(self.scenario, ticket)
         stories = iter(range(state.STORIES_PER_TASK))
         for comment in sorted(detail.comments if detail is not None else [], key=lambda c: -c.ago):
             written: datetime = self.scenario.starts_at - comment.ago

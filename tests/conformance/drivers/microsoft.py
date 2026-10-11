@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import docx
 import httpx
+import openpyxl
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, WorldView
 from minutehand.adapters.providers.microsoft.state import Directory, directory_of
@@ -73,9 +74,10 @@ USERS_PAGE = 999
 MESSAGES_PAGE = 50
 ITEMS_PAGE = 999
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 OFFICE_KINDS = {
     DOCX: DocumentKind.DOCUMENT,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": DocumentKind.SPREADSHEET,
+    XLSX: DocumentKind.SPREADSHEET,
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": DocumentKind.PRESENTATION,
 }
 OFFICE_ENDINGS = (".docx", ".xlsx", ".pptx")
@@ -157,10 +159,12 @@ def _expect(what: str, response: httpx.Response, status: int) -> httpx.Response:
 
 
 def _text(body: Doc) -> str:
-    """A chatMessage's `body` as text: an `html` body has its markup removed and its entities read."""
+    """A chatMessage's `body` as text: an `html` body has its markup removed and its entities read, and its
+    mentions (`<at>`) left out, as a bot reads a Teams message with the Bot Framework's remove_recipient_mention
+    (a person in a channel mentions the bot for it to hear them)."""
     content = str(body["content"]) if _given(body, "content") else ""
     if "contentType" in body and body["contentType"] == "html":
-        return html.unescape(re.sub(r"<[^>]+>", "", content))
+        return html.unescape(re.sub(r"<[^>]+>", "", re.sub(r"<at\b[^>]*>.*?</at>", "", content))).strip()
     return content
 
 
@@ -176,6 +180,14 @@ def _docx(text: str) -> bytes:
 
 def _docx_text(content: bytes) -> str:
     return "\n".join(p.text for p in docx.Document(io.BytesIO(content)).paragraphs)
+
+
+def _xlsx_text(content: bytes) -> str:
+    """A workbook's cells, read by openpyxl: a row a line, its cells tab-separated."""
+    book = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+    return "\n".join(
+        "\t".join("" if v is None else str(v) for v in row) for row in book.worksheets[0].iter_rows(values_only=True)
+    )
 
 
 def _segments(path: str) -> list[str]:
@@ -222,6 +234,20 @@ class SignIn:
             )["access_token"]
         )
 
+    def refreshed(self, refresh_token: str) -> str:
+        """A user's access token for a refresh token (v2-oauth2-auth-code-flow, "Refresh the access token")."""
+        return str(
+            self._token(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": self._tenant.bot_app_id,
+                    "client_secret": self._tenant.bot_app_secret,
+                    "refresh_token": refresh_token,
+                    "scope": DELEGATED,
+                }
+            )["access_token"]
+        )
+
     def user(self, login: str) -> str:
         """The authorization code flow (v2-oauth2-auth-code-flow) for the user signing in as `login`."""
         authorized = self._http.get(
@@ -253,14 +279,17 @@ class MicrosoftSession(Messaging, Documents):
     """The bot's app (`login` None): Graph with application permissions, the connector to send. A person: Graph
     with their delegated token for everything, as Teams and OneDrive clients call it."""
 
-    def __init__(self, api: Api, tenant: Directory, login: str | None) -> None:
+    def __init__(self, api: Api, tenant: Directory, login: str | None, *, refresh_token: str | None = None) -> None:
         self._tenant = tenant
         self._http = api.http()
-        self._as_app = login is None
+        self._as_app = login is None and refresh_token is None
         signing = SignIn(self._http, tenant)
-        self._graph_token = signing.app(GRAPH_DEFAULT) if login is None else signing.user(login)
-        self._bot_token = signing.app(BOT_DEFAULT) if login is None else None
-        self.secrets = (tenant.bot_app_secret, *signing.minted, UNSEEDED)
+        if refresh_token is not None:
+            self._graph_token = signing.refreshed(refresh_token)
+        else:
+            self._graph_token = signing.app(GRAPH_DEFAULT) if login is None else signing.user(login)
+        self._bot_token = signing.app(BOT_DEFAULT) if self._as_app else None
+        self.secrets = (tenant.bot_app_secret, *signing.minted, UNSEEDED, *([refresh_token] if refresh_token else []))
         self._drive: str | None = None
         self._site_name: str | None = None
         self._emails: dict[str, str | None] | None = None
@@ -320,7 +349,7 @@ class MicrosoftSession(Messaging, Documents):
                 active=not ("accountEnabled" in u and u["accountEnabled"] is False),
                 guest="userType" in u and u["userType"] == "Guest",
                 title=str(u["jobTitle"]) if _given(u, "jobTitle") else None,
-                login=str(u["userPrincipalName"]),
+                login=str(u["userPrincipalName"]).split("@")[0],
             )
             for page in self._users()
             for u in page
@@ -345,10 +374,12 @@ class MicrosoftSession(Messaging, Documents):
         return [[str(u["id"]) for u in page] for page in self._pages("/users", **{"$select": "id", "$top": page_size})]
 
     def stranger(self, *, credentialed: bool) -> httpx.Response:
-        """A Graph read with an access token no sign-in minted, or with none."""
+        """The read that says who the caller is (the app's service principal, as `whoami` reads it), with an access
+        token no sign-in minted, or with none."""
+        path = f"{GRAPH}/servicePrincipals(appId='{self._tenant.bot_app_id}')?$select=displayName"
         if credentialed:
-            return self._http.get(f"{GRAPH}/users", headers={"Authorization": f"Bearer {UNSEEDED}"})
-        return uncredentialed(self._http, "GET", f"{GRAPH}/users")
+            return self._http.get(path, headers={"Authorization": f"Bearer {UNSEEDED}"})
+        return uncredentialed(self._http, "GET", path)
 
     def observe(self) -> str:
         launch = self.channel(STAMP_CHANNEL)
@@ -688,6 +719,8 @@ class MicrosoftSession(Messaging, Documents):
         item = self._item(document)
         content = self.download(document)
         mime = str(item["file"]["mimeType"]) if "file" in item and "mimeType" in item["file"] else ""
+        if mime == XLSX:
+            return _xlsx_text(content)
         return _docx_text(content) if mime == DOCX else content.decode()
 
     def rename(self, document: str, title: str) -> None:
@@ -801,6 +834,12 @@ class MicrosoftDriver(Driver):
     provider: ClassVar[str] = PROVIDER
     session: ClassVar[type[Session]] = MicrosoftSession
     absent: ClassVar[Mapping[str, str]] = {
+        "messaging.agent_reacts": "the agent is an app, and Graph's setReaction lists Application permissions as "
+        "not supported (https://learn.microsoft.com/en-us/graph/api/chatmessage-setreaction); people react, and the "
+        "message lists their reactions",
+        "messaging.direct_threads": "a Teams chat has no reply threads: replies to a message are a channel's "
+        "(https://learn.microsoft.com/en-us/graph/api/chatmessage-post-replies), and a chat message is replied to "
+        "with a new message",
         "accounts.bot": "Graph lists users at /users and an app or bot is a service principal, never a user, so no "
         "account the listing answers is a bot (https://learn.microsoft.com/en-us/graph/api/resources/user)",
         "messaging.topic": "a Teams channel has a displayName and a description and no topic; only a group chat "
@@ -840,13 +879,17 @@ class MicrosoftDriver(Driver):
         """Each world's people by key, by its name (the tag): whom a person's session signs in as."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
-        if logins:
-            raise NotImplementedError(
-                "Microsoft accounts have a login of their own (the userPrincipalName), but the Microsoft seed has no "
-                "field naming one: the provider derives it from the email's local part (seed.py `_graph_user`)"
-            )
         merged = dict(seed) | {"name": tag}
-        self._people[tag] = {str(p["key"]): p for p in _objects(seed, "people")}
+        if logins:  # a person's userPrincipalName, before the tenant's domain (`MicrosoftSeed.logins`)
+            given = [s for s in _objects(seed, "provider_seeds") if s["provider"] != PROVIDER]
+            ours = next((s for s in _objects(seed, "provider_seeds") if s["provider"] == PROVIDER), None)
+            body: dict[str, object] = {} if ours is None else json.loads(str(ours["body"]))
+            body["logins"] = dict(logins)
+            merged["provider_seeds"] = [*given, {"provider": PROVIDER, "body": json.dumps(body)}]
+        self._people[tag] = {
+            str(p["key"]): {**p, "login": logins[str(p["key"])]} if logins and str(p["key"]) in logins else p
+            for p in _objects(seed, "people")
+        }
         tenant = directory(tag)
         keys = [tenant.tenant_id, tenant.tenant_domain, tenant.sharepoint_host.split(".")[0]]
         return CreateWorld(
@@ -863,6 +906,15 @@ class MicrosoftDriver(Driver):
             raise NotImplementedError(f"{person} is another app's bot, not a user of the tenant, and cannot sign in")
         return MicrosoftSession(api, tenant, login)
 
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        """A person's seeded refresh token, redeemed at the token endpoint for their Graph token
+        (https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token)."""
+        return MicrosoftSession(api, directory(world.name), None, refresh_token=credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A refresh token, which the identity platform issues as an opaque string."""
+        return f"0.A{unique}"
+
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         """The bot app's client secret for the agent; for a person, the sign-in name their authorization code flow
         names (`login_hint`), from which the platform mints their tokens. A bot account is no user and has none."""
@@ -871,7 +923,12 @@ class MicrosoftDriver(Driver):
         found = self._people[world.name][person]
         if "account" in found and found["account"] == "bot":
             return None
-        return str(found["email"])
+        # A person signs in by their userPrincipalName: a login the seed names, else their email's (or, with none,
+        # their key's) local part, at the tenant's domain.
+        domain = directory(world.name).tenant_domain
+        if "login" in found:
+            return f"{found['login']}@{domain}"
+        return str(found["email"]) if "email" in found else f"{person}@{domain}"
 
     def faults(self) -> list[FaultCase]:
         # No Microsoft client library is a dev dependency (no msgraph-sdk, no msal, no botbuilder): each fault is

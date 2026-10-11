@@ -513,11 +513,6 @@ class YouTrackDriver(Driver):
     # CLAIMS.md #1: a call YouTrack cannot authenticate is a 401 `Unauthorized`.
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
-        if logins:
-            raise NotImplementedError(
-                "the youtrack seed gives each scenario person the login of their Person.key and has no field that "
-                f"gives a person another login, so {dict(logins)} cannot be seeded"
-            )
         people = seed["people"]
         if not isinstance(people, list):
             raise ValueError(f"the seed's people are a list, not {people!r}")
@@ -533,6 +528,8 @@ class YouTrackDriver(Driver):
         if not isinstance(held, list):
             raise ValueError(f"the youtrack seed's tokens are a list, not {held!r}")
         body["tokens"] = [*held, *tokens]
+        if logins:  # a person's login, where it is not their key (`YouTrackSeed.logins`)
+            body["logins"] = dict(logins)
         chosen = {**seed, "provider_seeds": [*others, {"provider": PROVIDER, "body": body}]}
         return CreateWorld(
             seed=Seed.model_validate(chosen),
@@ -541,6 +538,13 @@ class YouTrackDriver(Driver):
 
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         return token(tag_of(world), person or AGENT_LOGIN)
+
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return YouTrackSession(api, tag_of(world), credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A permanent token: `perm:` and its parts (https://www.jetbrains.com/help/youtrack/server/manage-permanent-token.html)."""
+        return f"perm:{unique}"
 
     def connect(self, api: Api, world: WorldView, *, person: str | None = None) -> Session:
         credential = self.credential_of(world, person)

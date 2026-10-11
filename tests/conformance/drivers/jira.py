@@ -419,6 +419,8 @@ class JiraDriver(Driver):
     provider = PROVIDER
     session = JiraSession
     absent = {
+        "accounts.no_email": "An Atlassian account signs in by its email address; one the API shows without an email has "
+        "hidden it (profile visibility), and still has one, so no Jira account exists without one.",
         "accounts.title": "A Jira Cloud user object carries no job title: the REST v3 user has an accountId, a "
         "display name, an email, an account type, avatars, a time zone and whether it is active, nothing more.",
         "accounts.guest": "A Jira Cloud user says nothing of being a guest: its accountType is atlassian, app or "
@@ -474,6 +476,16 @@ class JiraDriver(Driver):
                 "claims": {"keys": [site], "tokens": [_token(tag, a) for a in accounts]},
             }
         )
+
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        """Basic with the person's email and the API token: the seeded sign-in in the conformance seed is Sofia's."""
+        site = _site(world)
+        return JiraSession(api, site, self._emails[site]["sofia"], credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """An Atlassian API token: `ATATT` and its secret (https://support.atlassian.com/atlassian-account/docs/
+        manage-api-tokens-for-your-atlassian-account/)."""
+        return f"ATATT3x{unique}"
 
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         site = _site(world)

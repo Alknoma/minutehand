@@ -235,6 +235,8 @@ def _order(operation: tuple[str, str]) -> tuple[int, int, str]:
 
 
 BODIES: dict[str, object] = {
+    "/setReaction": {"reactionType": "👍"},
+    "/unsetReaction": {"reactionType": "👍"},
     "/sendMail": {
         "message": {"subject": "Hello", "toRecipients": [{"emailAddress": {"address": "sofia@example.com"}}]}
     },
@@ -288,7 +290,11 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
         path += "?$orderby=name"
     if template == "/sites" and method == "GET":
         path += "?search=*"
-    posting = method == "POST" and template.endswith(("/messages", "/replies")) and not template.startswith("/me")
+    posting = (
+        method == "POST"
+        and template.endswith(("/messages", "/replies", "/setReaction", "/unsetReaction"))
+        and not template.startswith("/me")
+    )
     headers = surface.me if template.startswith("/me") or template == "/chats" or posting else surface.app
     content: bytes | None = None
     if method in ("POST", "PATCH", "PUT"):

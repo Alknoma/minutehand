@@ -90,7 +90,7 @@ class PushedConversations:
         self._secret = secret
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        return conversations(person.email, self._key, world.events())
+        return conversations(person.email, self._key, world.events()) if person.email else []
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         del by

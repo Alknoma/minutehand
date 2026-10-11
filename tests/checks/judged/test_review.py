@@ -23,7 +23,7 @@ from minutehand.domain.world import Actor, EntityKind, EntityRef
 from minutehand.ports.model import JudgedCheck
 from tests.checks.world import Log, at, person, scenario, view
 from tests.model.fake_completions import Received, fake_completions
-from tests.support.people import people_model
+from tests.support.people import email, people_model
 
 TRIAL = Path(__file__).parents[2] / "data" / "trial"
 
@@ -96,7 +96,7 @@ def test_each_kind_of_item_brings_its_own_instruction_to_the_reviewer() -> None:
             ),
             kind=declared.kind,
             text="Meeting moved to Friday.",
-            people=[tom.email],
+            people=[email(tom)],
             starts=at(48) if declared is CALENDAR_EVENT else None,
             ends=at(49) if declared is CALENDAR_EVENT else None,
         )

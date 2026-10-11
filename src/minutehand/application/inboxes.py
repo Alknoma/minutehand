@@ -128,7 +128,7 @@ class Inboxes:
     async def look(self, world: Store, clock: Clock) -> Looked:
         looked = Looked()
         held = items_in(world.events())
-        by_email = {p.email.casefold(): p for p in self.scenario.people}
+        by_email = {p.email.casefold(): p for p in self.scenario.people if p.email}
         by_key = {p.key: p for p in self.scenario.people}
         for name, reach in self.reaches.items():
             per_person = reach.declared.pending.waits_on is None
@@ -196,7 +196,7 @@ class Inboxes:
             inbox=declared.name,
             item_id=item.item_id,
             person=person.key,
-            waits_on=item.waits_on or person.email,
+            waits_on=item.waits_on or person.email or person.key,
             summary=item.summary,
             category=item.category,
             decisions=allowed,

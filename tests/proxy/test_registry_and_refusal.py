@@ -74,8 +74,19 @@ def test_two_providers_claiming_one_host_are_rejected(registry: Registry) -> Non
         )
 
 
-def test_a_host_inside_another_providers_wildcard_is_rejected(registry: Registry) -> None:
+def test_a_host_inside_another_providers_wildcard_is_answered_by_the_one_claiming_it_exactly(
+    registry: Registry,
+) -> None:
     manifest = Manifest(key="inner", tier=Tier.FINISHED, hosts=["eu.ledger.test"])
+    registry.register(manifest, lambda: Loopback(manifest))
+    found = registry.claimant("eu.ledger.test")
+    assert found is not None and found.key == "inner"
+    other = registry.claimant("us.ledger.test")
+    assert other is not None and other.key != "inner"
+
+
+def test_two_wildcards_over_one_domain_are_rejected(registry: Registry) -> None:
+    manifest = Manifest(key="inner", tier=Tier.FINISHED, hosts=["*.eu.ledger.test"])
     with pytest.raises(ProviderConflict, match=r"\*\.ledger\.test"):
         registry.register(manifest, lambda: Loopback(manifest))
 

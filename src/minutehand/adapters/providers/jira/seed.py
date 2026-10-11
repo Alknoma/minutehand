@@ -26,13 +26,13 @@ from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Desk
 from minutehand.adapters.providers.jira.state import (
     JiraWorld,
-    seeded_issue_id,
+    seeded_issue_ids,
     seeded_link_id,
     seeded_project_id,
     ticket_project_id,
 )
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -469,8 +469,22 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
     }
     for person in scenario.people:
+        if person.account is Account.BOT:  # an app's account: no email (REST v3 user, accountType app)
+            accounts[person.key] = wire.StoredUser(
+                accountId=account_id(person.email or person.key),
+                displayName=person.name,
+                emailAddress=None,
+                accountType=wire.AccountType.APP,
+            )
+            continue
+        email = person.held_email(
+            "jira", "an Atlassian account signs in by its email address; one shown without an email has hidden it"
+        )
         accounts[person.key] = wire.StoredUser(
-            accountId=account_id(person.email), displayName=person.name, emailAddress=person.email
+            accountId=account_id(email),
+            displayName=person.name,
+            emailAddress=email,
+            active=person.account is not Account.DEACTIVATED,
         )
     for extra in spec.accounts:
         email = extra.email or f"{extra.key}@{spec.site}.invalid"
@@ -512,6 +526,20 @@ def seed(scenario: Scenario, world: Store) -> None:
                 lifetime=oauth.expires_in,
             )
         jira.write_credential(stored, actor=Actor.SCENARIO, create=True)
+    signs_in = [s for s in scenario.sign_ins if s.provider == MANIFEST.key]
+    for n, sign_in in enumerate(signs_in, start=len(spec.credentials) + 1):
+        # An API token the scenario signs a person in with, sent as Basic with their email; one naming no person is
+        # the agent's own.
+        jira.write_credential(
+            wire.StoredCredential(
+                id=str(n),
+                kind=wire.CredentialKind.API_TOKEN,
+                account=who(sign_in.person or "agent"),
+                secret=sign_in.credential,
+            ),
+            actor=Actor.SCENARIO,
+            create=True,
+        )
 
     everyone = [a.accountId for a in accounts.values() if a.active and a.accountType is wire.AccountType.ATLASSIAN]
     seeded_tickets = [t for t in scenario.tickets if t.provider == MANIFEST.key]
@@ -573,12 +601,23 @@ def seed(scenario: Scenario, world: Store) -> None:
             raise ValueError(f"the Jira seed describes {detail.ticket!r}, which is the key of no seeded Jira ticket")
     by_key: dict[str, wire.StoredIssue] = {}
     commented: dict[str, int] = {}
+    mine = [t for t in scenario.tickets if t.provider == MANIFEST.key]
+
+    def identity(ticket: SeededTicket) -> str:
+        if ticket.key is not None:
+            return f"key\x1f{ticket.key}"
+        alike = [t for t in mine if (t.project, t.title) == (ticket.project, ticket.title)]
+        return f"{ticket.project}\x1f{ticket.title}\x1f{next(i for i, t in enumerate(alike) if t is ticket)}"
+
+    ids = seeded_issue_ids([identity(t) for t in mine])
     for position, ticket in enumerate(scenario.tickets):
         if ticket.provider != MANIFEST.key:
             continue
         found = next((i for i in spec.issues if i.ticket == ticket.key), None) if ticket.key is not None else None
         detail = found or SeededIssue(ticket=ticket.key or "")
-        made = _issue(desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position)
+        made = _issue(
+            desk, site, projects[ticket.project], ticket, detail, scenario, who, by_key, position, ids[identity(ticket)]
+        )
         for n, comment in enumerate(ticket.comments):
             desk.comment(made, wire.adf_from_text(comment.text), by=who(comment.by), at=scenario.starts_at,
                          actor=Actor.SCENARIO, seeded=n)  # fmt: skip
@@ -619,6 +658,7 @@ def _issue(
     who: Callable[[str], str],
     earlier: dict[str, wire.StoredIssue],
     position: int,
+    issue_id: str,
 ) -> wire.StoredIssue:
     jira = desk.world
     issue_type = next((t for t in site.issueTypes if t.name.lower() == detail.issue_type.lower()), None)
@@ -671,7 +711,7 @@ def _issue(
     ]
     number = jira.next_number(project.id)
     issue = wire.StoredIssue(
-        id=seeded_issue_id(position),
+        id=issue_id,
         key=f"{project.key}-{number}",
         project=project.id,
         issuetype=issue_type.id,

@@ -5568,6 +5568,32 @@
       "type": "object"
      }
     ]
+   },
+   "WorkspaceMembershipCompact": {
+    "description": "This object determines if a user is a member of a workspace.",
+    "type": "object",
+    "properties": {
+     "gid": {
+      "description": "Globally unique identifier of the resource, as a string.",
+      "type": "string",
+      "readOnly": true,
+      "example": "12345",
+      "x-insert-after": false
+     },
+     "resource_type": {
+      "description": "The base type of this resource.",
+      "type": "string",
+      "readOnly": true,
+      "example": "workspace_membership",
+      "x-insert-after": "gid"
+     },
+     "user": {
+      "$ref": "#/components/schemas/UserCompact"
+     },
+     "workspace": {
+      "$ref": "#/components/schemas/WorkspaceCompact"
+     }
+    }
    }
   },
   "securitySchemes": {
@@ -29195,6 +29221,165 @@
     "tags": [
      "Users"
     ]
+   }
+  },
+  "/workspaces/{workspace_gid}/workspace_memberships": {
+   "parameters": [
+    {
+     "$ref": "#/components/parameters/workspace_path_gid"
+    },
+    {
+     "$ref": "#/components/parameters/user_query_param"
+    },
+    {
+     "$ref": "#/components/parameters/pretty"
+    },
+    {
+     "$ref": "#/components/parameters/limit"
+    },
+    {
+     "$ref": "#/components/parameters/offset"
+    }
+   ],
+   "get": {
+    "summary": "Get the workspace memberships for a workspace",
+    "description": "Returns the compact workspace membership records for the workspace.",
+    "tags": [
+     "Workspace memberships"
+    ],
+    "operationId": "getWorkspaceMembershipsForWorkspace",
+    "parameters": [
+     {
+      "name": "opt_fields",
+      "in": "query",
+      "description": "This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).",
+      "required": false,
+      "example": [
+       "created_at",
+       "is_active",
+       "is_admin",
+       "is_guest",
+       "is_view_only",
+       "offset",
+       "path",
+       "uri",
+       "user",
+       "user.name",
+       "user_task_list",
+       "user_task_list.name",
+       "user_task_list.owner",
+       "user_task_list.workspace",
+       "vacation_dates",
+       "vacation_dates.end_on",
+       "vacation_dates.start_on",
+       "workspace",
+       "workspace.name"
+      ],
+      "schema": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "created_at",
+         "is_active",
+         "is_admin",
+         "is_guest",
+         "is_view_only",
+         "offset",
+         "path",
+         "uri",
+         "user",
+         "user.name",
+         "user_task_list",
+         "user_task_list.name",
+         "user_task_list.owner",
+         "user_task_list.workspace",
+         "vacation_dates",
+         "vacation_dates.end_on",
+         "vacation_dates.start_on",
+         "workspace",
+         "workspace.name"
+        ]
+       }
+      },
+      "style": "form",
+      "explode": false
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successfully retrieved the requested workspace's memberships.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/WorkspaceMembershipCompact"
+           }
+          },
+          "next_page": {
+           "$ref": "#/components/schemas/NextPage"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "security": [
+     {
+      "personalAccessToken": []
+     },
+     {
+      "oauth2": []
+     }
+    ],
+    "x-readme": {
+     "code-samples": [
+      {
+       "language": "java",
+       "install": "<dependency><groupId>com.asana</groupId><artifactId>asana</artifactId><version>1.0.0</version></dependency>",
+       "code": "import com.asana.Client;\n\nClient client = Client.accessToken(\"PERSONAL_ACCESS_TOKEN\");\n\nList<JsonElement> result = client.workspacememberships.getWorkspaceMembershipsForWorkspace(workspaceGid, user)\n    .option(\"pretty\", true)\n    .execute();"
+      },
+      {
+       "language": "node",
+       "install": "npm install asana",
+       "code": "const Asana = require('asana');\n\nlet client = new Asana.ApiClient();\nclient.authentications.token.accessToken = '<YOUR_ACCESS_TOKEN>';\n\nlet workspaceMembershipsApiInstance = new Asana.WorkspaceMembershipsApi(client);\nlet workspace_gid = \"12345\"; // String | Globally unique identifier for the workspace or organization.\nlet opts = { \n    'user': \"me\", \n    'limit': 50, \n    'offset': \"eyJ0eXAiOJiKV1iQLCJhbGciOiJIUzI1NiJ9\", \n    'opt_fields': \"created_at,is_active,is_admin,is_guest,is_view_only,offset,path,uri,user,user.name,user_task_list,user_task_list.name,user_task_list.owner,user_task_list.workspace,vacation_dates,vacation_dates.end_on,vacation_dates.start_on,workspace,workspace.name\"\n};\nworkspaceMembershipsApiInstance.getWorkspaceMembershipsForWorkspace(workspace_gid, opts).then((result) => {\n    console.log('API called successfully. Returned data: ' + JSON.stringify(result.data, null, 2));\n}, (error) => {\n    console.error(error.response.body);\n});",
+       "name": "node-sdk-v3"
+      },
+      {
+       "language": "node",
+       "install": "npm install asana@1.0.5",
+       "code": "const asana = require('asana');\n\nconst client = asana.Client.create().useAccessToken('PERSONAL_ACCESS_TOKEN');\n\nclient.workspacememberships.getWorkspaceMembershipsForWorkspace(workspaceGid, {param: \"value\", param: \"value\", opt_pretty: true})\n    .then((result) => {\n        console.log(result);\n    });",
+       "name": "node-sdk-v1"
+      },
+      {
+       "language": "python",
+       "install": "pip install asana",
+       "code": "import asana\nfrom asana.rest import ApiException\nfrom pprint import pprint\n\nconfiguration = asana.Configuration()\nconfiguration.access_token = '<YOUR_ACCESS_TOKEN>'\napi_client = asana.ApiClient(configuration)\n\n# create an instance of the API class\nworkspace_memberships_api_instance = asana.WorkspaceMembershipsApi(api_client)\nworkspace_gid = \"12345\" # str | Globally unique identifier for the workspace or organization.\nopts = {\n    'user': \"me\", # str | A string identifying a user. This can either be the string \\\"me\\\", an email, or the gid of a user.\n    'limit': 50, # int | Results per page. The number of objects to return per page. The value must be between 1 and 100.\n    'offset': \"eyJ0eXAiOJiKV1iQLCJhbGciOiJIUzI1NiJ9\", # str | Offset token. An offset to the next page returned by the API. A pagination request will return an offset token, which can be used as an input parameter to the next request. If an offset is not passed in, the API will return the first page of results. *Note: You can only pass in an offset that was returned to you via a previously paginated request.*\n    'opt_fields': \"created_at,is_active,is_admin,is_guest,is_view_only,offset,path,uri,user,user.name,user_task_list,user_task_list.name,user_task_list.owner,user_task_list.workspace,vacation_dates,vacation_dates.end_on,vacation_dates.start_on,workspace,workspace.name\", # list[str] | This endpoint returns a resource which excludes some properties by default. To include those optional properties, set this query parameter to a comma-separated list of the properties you wish to include. Properties can include nested fields. To learn more, see the [input/output options guide](/docs/inputoutput-options#selecting-nested-fields).\n}\n\ntry:\n    # Get the workspace memberships for a workspace\n    api_response = workspace_memberships_api_instance.get_workspace_memberships_for_workspace(workspace_gid, opts)\n    for data in api_response:\n        pprint(data)\nexcept ApiException as e:\n    print(\"Exception when calling WorkspaceMembershipsApi->get_workspace_memberships_for_workspace: %s\\n\" % e)",
+       "name": "python-sdk-v5"
+      },
+      {
+       "language": "python",
+       "install": "pip install asana==3.2.3",
+       "code": "import asana\n\nclient = asana.Client.access_token('PERSONAL_ACCESS_TOKEN')\n\nresult = client.workspace_memberships.get_workspace_memberships_for_workspace(workspace_gid, {'param': 'value', 'param': 'value'}, opt_pretty=True)",
+       "name": "python-sdk-v3"
+      },
+      {
+       "language": "php",
+       "install": "composer require asana/asana",
+       "code": "<?php\nrequire 'vendor/autoload.php';\n\n$client = Asana\\Client::accessToken('PERSONAL_ACCESS_TOKEN');\n\n$result = $client->workspacememberships->getWorkspaceMembershipsForWorkspace($workspace_gid, array('param' => 'value', 'param' => 'value'), array('opt_pretty' => 'true'))"
+      },
+      {
+       "language": "ruby",
+       "install": "gem install asana",
+       "code": "require 'asana'\n\nclient = Asana::Client.new do |c|\n    c.authentication :access_token, 'PERSONAL_ACCESS_TOKEN'\nend\n\nresult = client.workspace_memberships.get_workspace_memberships_for_workspace(workspace_gid: 'workspace_gid', param: \"value\", param: \"value\", options: {pretty: true})"
+      }
+     ]
+    }
    }
   }
  },

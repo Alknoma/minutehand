@@ -2,7 +2,7 @@
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
 # installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
-version = "0.0.6"
+version = "0.0.7"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -89,6 +89,7 @@ dev = [
     "notion-client==3.1.0",
     "pyjwt[crypto]>=2.10",
     "python-docx==1.2.0",
+    "openpyxl>=3.1",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
     "pytest-split>=0.10",
     "playwright==1.55.0",

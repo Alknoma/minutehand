@@ -10,7 +10,8 @@ shape around them is kept so the provider's normaliser can still read the call.
 from __future__ import annotations
 
 import json
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+import re
+from urllib.parse import parse_qsl, quote, unquote_plus, urlsplit, urlunsplit
 
 REDACTED = "[redacted]"
 
@@ -58,9 +59,12 @@ def _is_credential(name: str, also: frozenset[str] = frozenset()) -> bool:
 
 
 def _pairs(text: str, also: frozenset[str] = frozenset()) -> str:
-    return urlencode(
-        [(k, REDACTED if _is_credential(k, also) else v) for k, v in parse_qsl(text, keep_blank_values=True)]
-    )
+    """Form pairs with each credential's value redacted in place: every other byte as it was sent."""
+    kept: list[str] = []
+    for pair in text.split("&"):
+        name, equals, _ = pair.partition("=")
+        kept.append(f"{name}={quote(REDACTED)}" if equals and _is_credential(unquote_plus(name), also) else pair)
+    return "&".join(kept)
 
 
 def path(raw: str, *, also: frozenset[str] = frozenset()) -> str:
@@ -93,8 +97,54 @@ def body(text: str | None, content_type: str) -> str | None:
         except json.JSONDecodeError:
             return text
         redacted = _walk(parsed)
-        return text if redacted == parsed else json.dumps(redacted, ensure_ascii=False)
+        if redacted == parsed:
+            return text
+        return _in_place(text, parsed) or json.dumps(redacted, ensure_ascii=False)
     return text
+
+
+def _credentials(value: object) -> list[tuple[str, str]]:
+    """Every credential field holding a string, anywhere in the JSON: its name and its value."""
+    if isinstance(value, dict):
+        own = [(k, v) for k, v in value.items() if isinstance(k, str) and _is_credential(k) and isinstance(v, str)]
+        return own + [
+            f for k, v in value.items() if not (isinstance(k, str) and _is_credential(k)) for f in _credentials(v)
+        ]
+    if isinstance(value, list):
+        return [f for v in value for f in _credentials(v)]
+    return []
+
+
+def _in_place(text: str, parsed: object) -> str | None:
+    """The JSON text with each credential's string value replaced where it stands, every other byte as it was; None
+    when a credential is not a string, or its value is not written as `json.dumps` writes it, and cannot be found."""
+    found = _credentials(parsed)
+    if len(found) != len([1 for _ in _every_credential(parsed)]):
+        return None
+    for name, value in found:
+        key = re.escape(json.dumps(name))
+        count = 0
+        for written in dict.fromkeys([json.dumps(value, ensure_ascii=False), json.dumps(value)]):
+            text, count = re.subn(
+                rf"({key}\s*:\s*){re.escape(written)}", lambda m: m.group(1) + json.dumps(REDACTED), text
+            )
+            if count:
+                break
+        if count == 0:
+            return None
+    return text
+
+
+def _every_credential(value: object) -> list[object]:
+    """Every credential field's value, whatever its type."""
+    if isinstance(value, dict):
+        own = [v for k, v in value.items() if isinstance(k, str) and _is_credential(k)]
+        return own + [
+            f for k, v in value.items() if not (isinstance(k, str) and _is_credential(k)) for f in _every_credential(v)
+        ]
+    if isinstance(value, list):
+        return [f for v in value for f in _every_credential(v)]
+    return []
 
 
 def kept(raw: bytes, content_type: str) -> tuple[str | None, bytes | None]:

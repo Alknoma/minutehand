@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -58,6 +59,10 @@ class _Assertion(BaseModel):
     sub: str | None = None
 
 
+PRESIGNED = re.compile(r"X-Amz-Credential=([A-Z0-9]{16,128})(?:%2F|/)")
+"""A presigned url's access key, in an answer's text."""
+
+
 def _media(content_type: str) -> str:
     return content_type.split(";", 1)[0].strip().lower()
 
@@ -94,6 +99,7 @@ def presented(*, authorization: str | None, path: str, content_type: str, body: 
             found += [c for c in (password, user) if c]
     query = parse_qs(urlsplit(path).query)
     found += _single(query, "access_token")
+    found += [c.split("/", 1)[0] for c in _single(query, "X-Amz-Credential")]
     media = _media(content_type)
     if media == FORM and body:
         form = parse_qs(body.decode("utf-8", errors="replace"))
@@ -119,11 +125,13 @@ def _json_request(body: bytes) -> list[str]:
 
 
 def minted(*, content_type: str, body: bytes) -> list[str]:
-    """The credentials an answer hands out for later calls: an OAuth token answer's access and refresh tokens."""
+    """The credentials an answer hands out for later calls: an OAuth token answer's access and refresh tokens, and
+    the access key of every presigned url it holds (SigV4's `X-Amz-Credential`, which the url's call presents)."""
     if _media(content_type) != JSON or not body:
         return []
+    found = [str(k) for k in PRESIGNED.findall(body.decode("utf-8", errors="replace"))]
     try:
         answer = _TokenAnswer.model_validate_json(body)
     except ValidationError:
-        return []
-    return [t for t in (answer.access_token, answer.refresh_token) if t]
+        return list(dict.fromkeys(found))
+    return list(dict.fromkeys([*(t for t in (answer.access_token, answer.refresh_token) if t), *found]))

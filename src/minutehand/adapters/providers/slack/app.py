@@ -296,13 +296,14 @@ class SlackApi(FileCalls):
     def auth_test(self, presented: wire.Presented) -> wire.Ok:
         wire.read_args(wire.NoArgs, presented)
         self._world.saw(state.user_ref(self._world.bot), Operation.READ)
+        person = None if self._world.is_app else self._world.user(self._world.bot)
         return wire.AuthTest(
             url=f"https://{self._world.team.domain}.slack.com/",
             team=self._world.team.name,
-            user=self._world.team.bot_name,
+            user=self._world.team.bot_name if person is None else person.name,
             team_id=self._world.team.id,
             user_id=self._world.bot,
-            bot_id=self._world.team.bot_id,
+            bot_id=self._world.team.bot_id if self._world.is_app else None,
         )
 
     def _shown(self, user: wire.SlackUser) -> wire.SlackUser:
@@ -435,7 +436,10 @@ class SlackApi(FileCalls):
             if user.deleted:
                 raise wire.Refusal("user_disabled")
             if user.is_bot and len(found) == 1:
-                raise wire.Refusal("cannot_dm_bot")
+                raise NotServed(
+                    "conversations.open with a bot user alone, which its page gives no answer for "
+                    "(https://docs.slack.dev/reference/methods/conversations.open)"
+                )
         others = [u.id for u in found]
         channel, opened = self._conversation(others, actor=Actor.AGENT)
         if not opened:

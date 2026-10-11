@@ -128,7 +128,8 @@ class GitHubSession(Session):
         self._http.close()
 
     def _get(self, what: str, url: str, params: Mapping[str, str | int] | None = None) -> httpx.Response:
-        return ok(what, self._http.get(url, params=dict(params or {})))
+        # A `Link` URL carries its own query: params, even empty, would replace it.
+        return ok(what, self._http.get(url) if params is None else self._http.get(url, params=dict(params)))
 
     def _pages(self, what: str, url: str, per_page: int) -> list[list[dict[str, object]]]:
         """Each page of a listing, following `Link: rel="next"` as GitHub's paging guide says to."""
@@ -277,7 +278,8 @@ class GitHubDriver(Driver):
         assert isinstance(people, list)
         keys = [str(p["key"]) for p in people]
         guests = {str(p["key"]) for p in people if Account(p.get("account", Account.MEMBER)) is Account.GUEST}
-        login = {k: named.get(k, _login_for(k)) for k in keys}
+        bots = {str(p["key"]) for p in people if Account(p.get("account", Account.MEMBER)) is Account.BOT}
+        login = {k: named.get(k, _login_for(k) + ("[bot]" if k in bots else "")) for k in keys}
         users: list[dict[str, object]] = [{"login": AGENT_LOGIN, "name": AGENT_NAME}]
         users += [_entry(login=login[k], person=k) for k in keys]
         tokens: list[dict[str, object]] = [{"token": _agent_token(tag), "kind": "classic", "login": AGENT_LOGIN}]
@@ -340,6 +342,14 @@ class GitHubDriver(Driver):
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         tag = _tag_of(world)
         return _agent_token(tag) if person is None else _person_token(tag, person)
+
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return GitHubSession(api, credential, _nobody_token(_tag_of(world)))
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A classic personal access token: `ghp_` and 36 letters and digits
+        (https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/)."""
+        return f"ghp_{(unique * 2)[:36]}"
 
     def faults(self) -> list[FaultCase]:
         # No GitHub client library is among the dev dependencies: each fault is triggered with httpx, whose

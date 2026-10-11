@@ -84,7 +84,7 @@ class Expectations:
     pattern = "honest_closure"
 
     def run(self, view: RunView) -> CheckReport:
-        email = {p.key: p.email for p in view.scenario.people}
+        email = {p.key: p.email for p in view.scenario.people if p.email}
         start = view.scenario.starts_at
         findings: list[Finding] = []
         notes: list[str] = []
@@ -265,7 +265,7 @@ def _met_by(matched: list[WorldEvent], scenario: Scenario) -> str:
     """What met an expectation, quoted: each message with who it went to, each ticket with its holder."""
     if not matched:
         return "nothing, as wanted"
-    names = {p.email: p.name for p in scenario.people}
+    names = {p.email: p.name for p in scenario.people if p.email}
     shown = [_quoted(e, names) for e in matched[:SHOWN]]
     more = f"; and {len(matched) - SHOWN} more" if len(matched) > SHOWN else ""
     return "; ".join(shown) + more

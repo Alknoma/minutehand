@@ -28,7 +28,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from minutehand.adapters import answering
 from minutehand.adapters.providers.microsoft import surface, wire
-from minutehand.adapters.providers.microsoft.common import JSON, GraphRefusal, graph_error
+from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, JSON, GraphRefusal, graph_error, query
 from minutehand.adapters.providers.microsoft.connector import connector_router
 from minutehand.adapters.providers.microsoft.graph_calendar import CALENDAR_SEGMENTS, Calendar
 from minutehand.adapters.providers.microsoft.graph_files import Caller, Files
@@ -38,7 +38,10 @@ from minutehand.adapters.providers.microsoft.signin import bot_framework_router,
 from minutehand.adapters.providers.microsoft.state import (
     CONNECTOR_HOST,
     FAULTS,
+    GRAPH,
     MicrosoftWorld,
+    app_ref,
+    derived_uuid,
     fault_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import (
@@ -177,7 +180,35 @@ class GraphApp:
             return await self._teams.chats(request, parts)
         if head == "communications":
             return await self._teams.communications(request, parts)
+        if head.startswith("servicePrincipals"):
+            return self._service_principal(request, parts)
         raise NotServed(f"the segment {head!r}")
+
+    def _service_principal(self, request: Request, parts: list[str]) -> Response:
+        """The tenant's own app, by its object id or its appId (serviceprincipal-get), which "a service principal
+        can retrieve ... without being granted any application permissions"; any other is not found."""
+        keyed = re.fullmatch(r"servicePrincipals\(appId='((?:[^']|'')*)'\)", parts[0])
+        wanted = keyed.group(1).replace("''", "'") if keyed else parts[1] if len(parts) == 2 else None
+        for app in self._world.apps():
+            principal = wire.ServicePrincipal(
+                id=derived_uuid(app.tenant_id, "service principal", app.app_id),
+                appId=app.app_id,
+                appDisplayName=app.display_name,
+                displayName=app.display_name,
+                appOwnerOrganizationId=app.tenant_id,
+            )
+            if wanted in (principal.id, principal.appId):
+                self._world.saw(app_ref(app.app_id), Operation.READ)
+                fields = [f for f in (query(request, "$select") or "").split(",") if f] or None
+                body = wire.select(
+                    wire.with_context(wire.dump(principal), f"{GRAPH}/$metadata#servicePrincipals/$entity"), fields
+                )
+                return Response(body, media_type=GRAPH_JSON)
+        raise GraphRefusal(
+            404,
+            "Request_ResourceNotFound",
+            f"Resource '{wanted}' does not exist or one of its queried reference-property objects are not present.",
+        )
 
     async def _subscription(self, request: Request, parts: list[str]) -> Response:
         method = request.method

@@ -157,7 +157,7 @@ LINKS = f"{API}/issue/LAUNCH-1/remotelink"
 
 async def test_a_remote_link_is_created_and_read_back_exactly_as_sent(site: Site) -> None:
     made = ok(await site.http.post(LINKS, json=REMOTE), 201)
-    assert set(made) == {"id", "self"} and made["self"] == f"{LINKS.replace('LAUNCH-1', '1000')}/{made['id']}"
+    assert set(made) == {"id", "self"} and made["self"] == f"{LINKS.replace('LAUNCH-1', site.seeded(0))}/{made['id']}"
     read = ok(await site.http.get(f"{LINKS}/{made['id']}"))
     assert read == {"id": made["id"], "self": made["self"]} | REMOTE
     assert ok(await site.http.get(LINKS)) == [read]

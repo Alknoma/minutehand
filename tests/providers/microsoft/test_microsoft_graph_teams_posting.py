@@ -287,3 +287,28 @@ async def test_joined_teams_and_the_primary_channel(posting: Posting) -> None:
     assert primary.status_code == 200
     assert primary.json()["id"] == posting.general and primary.json()["displayName"] == "General"
     assert "primaryChannel/$entity" in primary.json()["@odata.context"]
+
+
+async def test_a_signed_in_user_sets_and_unsets_a_reaction_and_the_message_lists_it(posting: Posting) -> None:
+    """chatmessage-setreaction and -unsetreaction answer 204; the message's `reactions` hold the reaction, its type,
+    when and by whom (chatmessagereaction). Application permissions are not supported, so an app's call is refused
+    by name."""
+    where = f"{GRAPH}/teams/{posting.team}/channels/{posting.general}/messages"
+    made = await posting.http.post(where, json={"body": {"content": "Venue booked."}}, headers=posting.owen)
+    assert made.status_code == 201, made.text
+    message = f"{where}/{made.json()['id']}"
+
+    assert (
+        await posting.http.post(f"{message}/setReaction", json={"reactionType": "👍"}, headers=posting.sofia)
+    ).status_code == 204
+    [reaction] = (await posting.http.get(message, headers=posting.owen)).json()["reactions"]
+    app = await posting.http.post(f"{message}/setReaction", json={"reactionType": "👍"}, headers=posting.app)
+    assert (
+        await posting.http.post(f"{message}/unsetReaction", json={"reactionType": "👍"}, headers=posting.sofia)
+    ).status_code == 204
+    after = (await posting.http.get(message, headers=posting.owen)).json()["reactions"]
+
+    assert reaction["reactionType"] == "👍" and reaction["user"]["user"]["id"] == posting.user("sofia")
+    assert reaction["createdDateTime"].startswith(posting.tenant.clock.now().strftime("%Y-%m-%dT"))
+    assert app.status_code == 501 and "setReaction with no signed-in user" in app.text
+    assert after == []

@@ -158,7 +158,11 @@ async def test_a_deactivated_person_and_a_bot_cannot_be_dmed(
         await sdk.conversations_open(users=[state.user_id("robo")])
     users = {u["id"]: u for u in data(await sdk.users_list())["members"]}
 
-    assert disabled.value.response["error"] == "user_disabled" and bot.value.response["error"] == "cannot_dm_bot"
+    assert disabled.value.response["error"] == "user_disabled"
+    # Slack's page gives no answer for a DM with a bot user alone, so the fake refuses it by name, inventing none.
+    assert (
+        bot.value.response.status_code == 501 and "bot user" in bot.value.response["response_metadata"]["messages"][0]
+    )
     assert users[state.user_id("ward")]["deleted"] is True
     assert users[state.user_id("robo")]["is_bot"] is True and "email" not in users[state.user_id("robo")]["profile"]
 

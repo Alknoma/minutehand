@@ -15,6 +15,7 @@ from pydantic import JsonValue
 
 from minutehand.adapters.providers.notion import wire
 from minutehand.adapters.providers.notion.state import NotionWorld, is_row
+from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
 
@@ -40,6 +41,10 @@ class Editor:
 
     def now(self) -> datetime:
         return self._clock.now()
+
+    def file_upload(self, upload_id: str) -> wire.StoredFileUpload | None:
+        upload = self.world.file_upload(upload_id)
+        return upload if upload is not None and upload.workspace == self.workspace else None
 
     def user_name(self, user_id: str) -> str | None:
         user = self.world.user(user_id)
@@ -166,7 +171,9 @@ class Editor:
         by: str,
         icon: JsonValue = None,
         cover: JsonValue = None,
+        edited_by: str | None = None,
     ) -> wire.StoredPage:
+        """A new page; `edited_by`, a seeded page's last editor where it is not who made it."""
         made = wire.new_blocks(list(children), "body.children", self, seeding=self._actor is Actor.SCENARIO)
         if parent.type is wire.ParentType.DATABASE_ID:
             assert parent.id is not None
@@ -181,6 +188,8 @@ class Editor:
         else:
             values = {"title": self._title_value(properties)}
         stamps = self._stamps(by)
+        if edited_by is not None:
+            stamps = stamps.edited(stamps.last_edited_time, edited_by)
         page = wire.StoredPage(
             id=page_id,
             workspace=self.workspace,
@@ -263,6 +272,36 @@ class Editor:
             update["cover"] = body["cover"]
         update["stamps"] = page.stamps.edited(wire.stamp(self.now()), by)
         changed = page.model_copy(update=update)
+        self._write(changed, Operation.UPDATE)
+        return changed
+
+    def move_page(self, page_id: str, body: wire.Json, *, by: str) -> wire.StoredPage:
+        """The page put under another page (https://developers.notion.com/reference/move-page). A data source parent
+        is a later version's, refused by name; so is a move into the page itself or one below it, whose answer the
+        reference does not give."""
+        page = self.page(page_id)
+        wire.only_keys(body, ["parent"], "body")
+        if "parent" not in body:
+            raise wire.failed("body.parent", "defined")
+        parent = wire.as_object(body["parent"], "body.parent")
+        if parent.get("type") != "page_id" or not isinstance(parent.get("page_id"), str):
+            raise NotServed("a move to other than a page_id parent: a data source parent is a later version's shape")
+        target = self.page(wire.canonical_id(str(parent["page_id"]), "body.parent.page_id"))
+        if page.archived or target.archived:
+            raise wire.archived()
+        above: wire.StoredPage | None = target
+        while above is not None:
+            if above.id == page.id:
+                raise NotServed("a move of a page into itself or a page below it: Notion's answer is not documented")
+            above = (
+                self.page(above.parent.id) if above.parent.type is wire.ParentType.PAGE_ID and above.parent.id else None
+            )
+        changed = page.model_copy(
+            update={
+                "parent": wire.Parent(type=wire.ParentType.PAGE_ID, id=target.id),
+                "stamps": page.stamps.edited(wire.stamp(self.now()), by),
+            }
+        )
         self._write(changed, Operation.UPDATE)
         return changed
 

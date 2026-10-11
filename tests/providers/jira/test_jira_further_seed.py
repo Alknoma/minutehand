@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
+from minutehand.adapters.providers.jira.state import JiraWorld
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -168,7 +169,8 @@ async def test_a_ticket_added_to_an_open_world_is_numbered_after_its_projects_se
             found = (await http.get(f"{API}/issue/LAUNCH-3")).json()
             venue = (await http.get(f"{API}/issue/LAUNCH-1")).json()
         assert found["fields"]["summary"] == "Hire a band"
-        assert venue["fields"]["summary"] == "Book the venue" and venue["id"] == "1000"
+        seeded = next(i.id for i in JiraWorld(world.store).every_issue() if i.seededFrom == 0)
+        assert venue["fields"]["summary"] == "Book the venue" and venue["id"] == seeded
 
 
 async def test_a_ticket_added_where_the_agent_already_took_its_key_is_numbered_after_the_agents_issue(

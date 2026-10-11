@@ -21,6 +21,7 @@ from minutehand.domain.clock import Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.scenario import Absence, AbsenceTrigger, DispatchFault, Scenario, Silent
 from minutehand.domain.world import Actor, Operation, TicketState
 from tests.checks.world import Log, at, person, reply, rules, scenario, view
+from tests.support.people import email
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
 DANIA = person("dania", reply=Silent())
@@ -506,9 +507,9 @@ def test_a_commitment_reported_met_while_the_person_had_not_answered_breaks_the_
     log.message([OWNER], 100, text="status")
     world = view(scenario(OWNER, DANIA), log)
     met = CommitmentStatus.MET
-    [finding] = found(_reported(world, (5, met, DANIA.email), (9, met, DANIA.email)), REPORTED_MET)
+    [finding] = found(_reported(world, (5, met, email(DANIA)), (9, met, email(DANIA))), REPORTED_MET)
     assert "2 commitments" in finding.message and finding.at == at(100) - timedelta(seconds=1)
-    assert found(_reported(world, (5, CommitmentStatus.OPEN, DANIA.email)), REPORTED_MET) == []
+    assert found(_reported(world, (5, CommitmentStatus.OPEN, email(DANIA))), REPORTED_MET) == []
 
 
 def test_a_commitment_reported_met_after_the_answer_keeps_the_rule() -> None:
@@ -516,7 +517,7 @@ def test_a_commitment_reported_met_after_the_answer_keeps_the_rule() -> None:
     ask = log.message([SOFIA], 0)
     log.message([OWNER], 20, text="status")
     world = view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1)])
-    assert found(_reported(world, (5, CommitmentStatus.MET, SOFIA.email)), REPORTED_MET) == []
+    assert found(_reported(world, (5, CommitmentStatus.MET, email(SOFIA))), REPORTED_MET) == []
 
 
 def test_an_agent_that_reports_no_commitments_is_held_to_none() -> None:

@@ -162,7 +162,7 @@ async def test_one_run_lands_a_jira_ticket_a_notion_page_a_microsoft_file_a_team
     file = next(
         e.after for e in by_person if e.entity.provider == "microsoft" and isinstance(e.after, DocumentSnapshot)
     )
-    assert file.title == "Launch plan (final).docx" and file.last_edited_by == "nadia@example.com"
+    assert file.title == "Launch plan (final)" and file.last_edited_by == "nadia@example.com"
     pressed = next(e.after for e in by_person if isinstance(e.after, InteractionSnapshot))
     assert (pressed.person, pressed.label) == ("nadia", "Approve")
 

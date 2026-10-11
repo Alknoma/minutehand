@@ -47,12 +47,14 @@ from minutehand.adapters.providers.microsoft.state import (
     derived_uuid,
     graph_time,
     message_ref,
+    reaction_ref,
+    reactions_of,
     team_ref,
     user_ref,
 )
 from minutehand.adapters.providers.microsoft.subscriptions import conversation_watch, notify
 from minutehand.domain.errors import NotServed
-from minutehand.domain.world import Actor, Operation
+from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
 
 PAGE_DEFAULT = 20
@@ -100,6 +102,20 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
     ]
     team = world.team(conversation.team_id) if conversation.team_id is not None else None
     channel = conversation.type is wire.ConversationType.CHANNEL
+    reactions = [
+        wire.ChatMessageReaction(
+            reactionType=reaction.type,
+            createdDateTime=graph_time(at),
+            user=wire.IdentitySet(
+                user=wire.Identity(
+                    id=oid,
+                    displayName=reactor.user.displayName if (reactor := world.user(oid)) is not None else None,
+                    userIdentityType="aadUser",
+                )
+            ),
+        )
+        for oid, reaction, at in world.reactions(activity.id)
+    ]
     text = activity.text or ""
     for n, mention in enumerate(wire.mentions(activity)):
         text = text.replace(
@@ -124,7 +140,7 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
             body=posted.body,
             attachments=posted.attachments,
             mentions=posted.mentions,
-            reactions=[],
+            reactions=reactions,
             webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
         )
     return wire.ChatMessage(
@@ -142,7 +158,7 @@ def chat_message(world: MicrosoftWorld, conversation: ConversationRecord, activi
         body=wire.ItemBody(content=text),
         attachments=attachments,
         mentions=mentions,
-        reactions=[],
+        reactions=reactions,
         webUrl=f"https://teams.microsoft.com/l/message/{conversation.graph_id}/{activity.id}",
     )
 
@@ -194,6 +210,7 @@ class TeamsGraph:
         default: int = PAGE_DEFAULT,
         most: int = PAGE_MAX,
         keep: frozenset[str] = frozenset(),
+        unselected: list[str] | None = None,
     ) -> Response:
         size, offset = self._bounds(request, default, most)
         page = items[offset : offset + size]
@@ -206,15 +223,19 @@ class TeamsGraph:
             following = f"{GRAPH}{request.url.path.removeprefix('/v1.0')}?{'&'.join([*kept, f'$top={size}', f'$skiptoken={skip}'])}"
         body = "{" + f'"@odata.context":{json.dumps(context)},"value":[' + ",".join(wire.dump(i) for i in page) + "]"
         body += f',"@odata.nextLink":{json.dumps(following)}' + "}" if following else "}"
-        return Response(wire.select_page(body, self._fields(request), keep=keep), media_type=GRAPH_JSON)
+        return Response(wire.select_page(body, self._fields(request) or unselected, keep=keep), media_type=GRAPH_JSON)
 
     @staticmethod
     def _fields(request: Request) -> list[str] | None:
         return [f for f in (query(request, "$select") or "").split(",") if f] or None
 
-    def _one(self, request: Request, entity: wire.Aliased, context: str) -> Response:
+    def _one(
+        self, request: Request, entity: wire.Aliased, context: str, unselected: list[str] | None = None
+    ) -> Response:
+        """`unselected`: the properties answered when the request selects none, where Graph has a default set."""
         return Response(
-            wire.select(wire.with_context(wire.dump(entity), context), self._fields(request)), media_type=GRAPH_JSON
+            wire.select(wire.with_context(wire.dump(entity), context), self._fields(request) or unselected),
+            media_type=GRAPH_JSON,
         )
 
     @staticmethod
@@ -265,13 +286,20 @@ class TeamsGraph:
             found = self._filter_users(clause) if clause else self._world.users()
             self._world.saw(user_ref("all"), Operation.SEARCH)
             return self._page(
-                request, [u.user for u in found], f"{GRAPH}/$metadata#users", default=100, most=USERS_PAGE_MAX
+                request,
+                [u.user for u in found],
+                f"{GRAPH}/$metadata#users",
+                default=100,
+                most=USERS_PAGE_MAX,
+                unselected=wire.USER_DEFAULT_FIELDS,
             )
         user = self._user(parts[1])
         if len(parts) == 2:
             self._refuse_options(request, set())
             self._world.saw(user_ref(user.user.id), Operation.READ)
-            return self._one(request, user.user, f"{GRAPH}/$metadata#users/$entity")
+            return self._one(
+                request, user.user, f"{GRAPH}/$metadata#users/$entity", unselected=wire.USER_DEFAULT_FIELDS
+            )
         if parts[2:] == ["presence"]:
             self._world.saw(user_ref(user.user.id), Operation.READ)
             return self._one(
@@ -363,6 +391,9 @@ class TeamsGraph:
         return wire.GraphChannel(
             id=channel.graph_id,
             displayName=channel.display_name or "General",
+            description=channel.description,
+            membershipType="private" if channel.private else "standard",
+            isArchived=channel.archived,
             createdDateTime=channel.created,
             webUrl=f"https://teams.microsoft.com/l/channel/{channel.graph_id}",
             tenantId=channel.tenant_id,
@@ -499,6 +530,8 @@ class TeamsGraph:
         channel = conversation.type is wire.ConversationType.CHANNEL
         every = self._world.messages(conversation.id)
         roots = [m for m in every if not channel or m.replyToId is None]
+        if request.method == "POST" and rest[-1:] in (["setReaction"], ["unsetReaction"]):
+            return await self._react(request, conversation, rest, every)
         if request.method == "POST":
             return await self._post(request, conversation, rest, every, context)
         if rest in (["delta"], ["delta()"]):
@@ -658,6 +691,48 @@ class TeamsGraph:
 
     # ------------------------------------------------------------------ messages, posted
 
+    async def _react(
+        self, request: Request, conversation: ConversationRecord, rest: list[str], every: list[wire.Activity]
+    ) -> Response:
+        """The signed-in user's reaction set on, or taken off, a message or a channel message's reply
+        (chatmessage-setreaction, chatmessage-unsetreaction): 204, and the message lists it."""
+        channel = conversation.type is wire.ConversationType.CHANNEL
+        target = rest[:-1]
+        if len(target) == 3 and target[1] == "replies" and channel:
+            found = next((m for m in every if m.id == target[2] and m.replyToId == target[0]), None)
+        elif len(target) == 1:
+            found = next((m for m in every if m.id == target[0]), None)
+        else:
+            raise NotServed(f"POST on '{'/'.join(rest)}'")
+        if found is None:
+            raise not_found(target[-1])
+        claims = graph_caller(request, self._world)
+        if claims.oid is None:
+            raise NotServed(
+                f"{rest[-1]} with no signed-in user: its page lists application permissions as not supported, and "
+                "documents no answer"
+            )
+        user = self._user(claims.oid)
+        try:
+            asked = wire.read(wire.SetReaction, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(
+                f"a request body that cannot be read ({e.message}): Graph's answer is not documented"
+            ) from e
+        entity = reaction_ref(found.id, user.user.id, asked.reactionType)
+        if rest[-1] == "setReaction":
+            self._world.write(
+                entity,
+                wire.Reaction(type=asked.reactionType),
+                operation=Operation.UPDATE if self._world.store.get(entity) is not None else Operation.CREATE,
+                actor=Actor.AGENT,
+                parent=reactions_of(found.id),
+                after=RecordSnapshot(resource="reaction", text=asked.reactionType),
+            )
+        elif self._world.store.get(entity) is not None:
+            self._world.remove(entity, actor=Actor.AGENT, parent=reactions_of(found.id))
+        return Response(status_code=204)
+
     async def _post(
         self,
         request: Request,
@@ -686,6 +761,11 @@ class TeamsGraph:
                 "for migration only"
             )
         user = self._user(claims.oid)
+        if conversation.archived:
+            raise NotServed(
+                "a message posted to an archived channel: channel-archive says users can't send new messages to it, "
+                "and documents no answer"
+            )
         if user.user.id not in conversation.members:
             raise NotServed("a message posted where the user is no member: Graph's answer is not documented")
         try:

@@ -275,6 +275,7 @@ class AsanaUser(Model):
         description="Removed from the workspace by an administrator: unlisted and unassignable; what it did before "
         "still names it",
     )
+    guest: bool = Field(default=False, description="A guest of the workspace (its membership's `is_guest`)")
 
 
 class AsanaTeam(Model):
@@ -1498,6 +1499,20 @@ class ProjectMembershipOut(Model):
     parent: ProjectOut
 
 
+class WorkspaceMembershipOut(Model):
+    """A user's membership of a workspace (`WorkspaceMembershipResponse`, https://developers.asana.com/reference/
+    getworkspacemembershipsforworkspace): whether it is active, a guest's, an administrator's or view-only."""
+
+    gid: str
+    resource_type: Literal["workspace_membership"] = "workspace_membership"
+    user: UserOut
+    workspace: WorkspaceOut
+    is_active: bool
+    is_admin: bool = False
+    is_guest: bool
+    is_view_only: bool = False
+
+
 class TagOut(Model):
     gid: str
     resource_type: Literal["tag"] = "tag"
@@ -1640,6 +1655,7 @@ Representation = (
     | CustomFieldOut
     | CustomFieldSettingOut
     | ProjectMembershipOut
+    | WorkspaceMembershipOut
     | TagOut
 )
 
@@ -1672,6 +1688,7 @@ COMPACT: Mapping[str, tuple[str, ...]] = {
     ),
     "custom_field_setting": ("gid", "resource_type"),
     "project_membership": ("gid", "resource_type", "member"),
+    "workspace_membership": ("gid", "resource_type", "user", "workspace"),
 }
 """Each resource's compact record: the fields of its `...Compact` schema in Asana's OpenAPI document that this provider
 serves, less those marked [Opt In] (https://developers.asana.com/docs/inputoutput-options)."""
@@ -1734,6 +1751,7 @@ KNOWN: Mapping[str, frozenset[str]] = {
     "custom_field": _known(CustomFieldOut) | _known(CustomFieldValueOut),
     "custom_field_setting": _known(CustomFieldSettingOut),
     "project_membership": _known(ProjectMembershipOut),
+    "workspace_membership": _known(WorkspaceMembershipOut),
     "tag": _known(TagOut),
     "enum_option": _known(EnumOptionOut),
 }
@@ -1876,7 +1894,12 @@ def page(
         if len(items) > unpaginated_limit:
             raise bad("The result is too large. You should use pagination (may require specifying a workspace)!")
         return items, None
-    rest = items if offset is None else [i for i in items if int(i.gid) > int(decode_offset(offset))]
+    if offset is None:
+        rest = list(items)
+    else:  # the page after the item the offset names, in the list's own order
+        after = decode_offset(offset)
+        seen = next((n for n, i in enumerate(items) if i.gid == after), None)
+        rest = [i for i in items if int(i.gid) > int(after)] if seen is None else list(items[seen + 1 :])
     chosen = rest[:limit]
     if len(rest) <= limit:
         return chosen, None

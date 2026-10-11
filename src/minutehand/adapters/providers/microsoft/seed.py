@@ -19,16 +19,17 @@
 
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field
 
-from minutehand.adapters.providers.microsoft import docx, wire
+from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.cards import message_actions
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
-from minutehand.adapters.providers.microsoft.graph_files import Files, item_id, mime_of
+from minutehand.adapters.providers.microsoft.graph_files import Files, graph_roles, item_id, mime_of
 from minutehand.adapters.providers.microsoft.graph_mail import Composed, Mail, outlook_id, recipient_of
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
@@ -37,6 +38,7 @@ from minutehand.adapters.providers.microsoft.state import (
     FAULTS,
     POSTS,
     SERVICE_URL,
+    SIGN_INS,
     SITES,
     TEAMS,
     TENANTS,
@@ -48,6 +50,7 @@ from minutehand.adapters.providers.microsoft.state import (
     DriveRecord,
     MicrosoftWorld,
     PostRecord,
+    SignInRecord,
     SiteRecord,
     TeamRecord,
     TenantRecord,
@@ -60,6 +63,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     message_ref,
     post_ref,
+    sign_in_ref,
     site_ref,
     team_ref,
     tenant_ref,
@@ -68,10 +72,12 @@ from minutehand.adapters.providers.microsoft.state import (
 from minutehand.domain.scenario import (
     AbsenceTrigger,
     Account,
+    DocumentKind,
     Model,
     Person,
     Scenario,
     SeededChannel,
+    SeededDocument,
     SeededPost,
 )
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
@@ -201,6 +207,11 @@ class MicrosoftSeed(Model):
         description="Person.key of each person whose own chat with the bot does not exist yet: the bot reaches them "
         "only once they install it (`PersonAddsAgent` with no channel)",
     )
+    logins: dict[str, str] = Field(
+        default={},
+        description="Person.key to the part of their userPrincipalName before the tenant's domain, where it is not "
+        "their email's local part",
+    )
 
 
 def microsoft_seed(scenario: Scenario) -> MicrosoftSeed:
@@ -221,11 +232,11 @@ class _At:
         return 0
 
 
-def _graph_user(person: Person, directory: Directory) -> wire.GraphUser:
-    local = person.email.split("@")[0]
+def _graph_user(person: Person, directory: Directory, login: str | None = None) -> wire.GraphUser:
+    local = login or (person.email or person.key).split("@")[0]
     guest = person.account is Account.GUEST
     upn = (
-        f"{person.email.replace('@', '_')}#EXT#@{directory.tenant_domain}"
+        f"{(person.email or person.key).replace('@', '_')}#EXT#@{directory.tenant_domain}"
         if guest
         else f"{local}@{directory.tenant_domain}"
     )
@@ -238,6 +249,8 @@ def _graph_user(person: Person, directory: Directory) -> wire.GraphUser:
         mail=person.email,
         userPrincipalName=upn,
         jobTitle=person.title,
+        accountEnabled=person.account is not Account.DEACTIVATED,
+        userType="Guest" if guest else "Member",
     )
 
 
@@ -298,18 +311,19 @@ def _history(
     thread: str | None,
     seconds: dict[int, int],
 ) -> None:
-    """Each post and its replies; `seconds` counts the seeded messages already given each second, so a message's id
-    is its second and its place among the scenario's posts of that second: the same wherever seeding starts in the
-    log, and unmoved by anything seeded after it. A seeded post is before the start, so no minted id (the start or
-    later) can be one of these."""
+    """Each post and its replies. A message's id is Teams', the moment in epoch milliseconds: its millisecond, or the
+    next one the scenario's earlier posts left free (`seconds` holds those taken), so it is the same wherever seeding
+    starts in the log and unmoved by anything seeded after it. A minted id skips any held."""
     for post in posts:
         author = users[post.by]
         at = start - post.ago
-        second = int(at.timestamp())
-        seconds[second] = seconds[second] + 1 if second in seconds else 1
+        moment = int(at.timestamp() * 1000)
+        while moment in seconds:
+            moment += 1
+        seconds[moment] = 1
         activity = wire.Activity(
             type=wire.ActivityType.MESSAGE,
-            id=f"{second}{seconds[second]:06d}",
+            id=str(moment),
             timestamp=graph_time(at),
             serviceUrl=SERVICE_URL,
             sender=wire.ChannelAccount(id=author.mri, name=author.user.displayName, aadObjectId=author.user.id),
@@ -371,6 +385,9 @@ def _channel(
             members=members,
             bot_installed=seeded.agent_member,
             created=stamp,
+            description=seeded.purpose or None,
+            private=seeded.private,
+            archived=seeded.archived,
         )
     if len(members) == 1:
         existing = world.personal_with(members[0], directory.tenant_id)
@@ -421,7 +438,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         if person.account is Account.BOT:
             continue
         user = UserRecord(
-            user=_graph_user(person, directory),
+            user=_graph_user(person, directory, microsoft_seed(scenario).logins.get(person.key)),
             tenant_id=directory.tenant_id,
             person_key=person.key,
             absences=[
@@ -437,6 +454,21 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         )
         users[person.key] = user
         world.write(user_ref(user.user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        # A person's refresh token: redeemed at the token endpoint for their tokens. An app signs in with its client
+        # credentials, which the tenant's app already holds, so a sign-in naming no person is refused.
+        if sign_in.person is None or sign_in.person not in users:
+            raise ValueError(
+                f"microsoft: the sign_in names {sign_in.person or 'no person'}, no user of the tenant; a sign-in is a "
+                "user's refresh token, and the app signs in with its client credentials"
+            )
+        world.write(
+            sign_in_ref(sign_in.credential),
+            SignInRecord(oid=users[sign_in.person].user.id),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=SIGN_INS,
+        )
     spec = microsoft_seed(scenario)
     unknown = sorted(set(spec.not_installed_for) - set(users))
     if unknown:
@@ -634,19 +666,63 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
         if document.provider != MANIFEST.key:
             continue
         folder = root
-        if document.folder is not None:
-            found = next((c for c in world.children(root.item.id) if c.item.name == document.folder), None)
+        for step in [s for s in (document.folder or "").split("/") if s]:  # a path is folders within folders
+            found = next((c for c in world.children(folder.item.id) if c.item.name == step), None)
             if found is None:
-                made = files.new_item(library, root, document.folder, folder=True, content=b"", by=owner)
-                world.write_item(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
-                found = made
+                found = files.new_item(library, folder, step, folder=True, content=b"", by=owner)
+                world.write_item(found, operation=Operation.CREATE, actor=Actor.SCENARIO)
             folder = found
-        name = document.title if "." in document.title else f"{document.title}.docx"
-        content = docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()
-        made, _ = files.write_content(
-            library, folder, name, content, behaviour="replace", by=owner, actor=Actor.SCENARIO
-        )
+        name, content = _file_of(document)
+        owned = _person_identity(world, document.owner) or owner
+        changed_by = _person_identity(world, document.modified_by) or owned
+        written = Files(world, _At(scenario.starts_at - document.modified_before_start), seeding=True)
+        made = written.new_item(library, folder, name, folder=False, content=content, by=owned)
+        made = made.model_copy(update={"item": made.item.model_copy(update={"lastModifiedBy": changed_by})})
+        world.write_item(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
         world.write_seeded(position, document.title, made.item.id)
+        for access in document.shared_with:
+            roles = graph_roles(access.role, f"{document.title!r}'s shared_with {access.person}")
+            target = world.person(access.person) if access.person is not None else None
+            if target is None:
+                raise ValueError(
+                    f"the Microsoft seed shares {document.title!r} (shared_with) with {access.person}, no user of "
+                    "the tenant: Graph invites a user by email"
+                )
+            written.share(made, target.user.mail or target.user.userPrincipalName, roles, actor=Actor.SCENARIO)
+
+
+def _file_of(document: SeededDocument) -> tuple[str, bytes]:
+    """A seeded document as the file OneDrive keeps: a Word document, an Excel workbook of its rows, or a file of its
+    media type. A presentation is refused: no PowerPoint file is built here."""
+    if document.kind is DocumentKind.PRESENTATION:
+        raise ValueError(
+            f"the Microsoft seed cannot hold the presentation {document.title!r}: this provider builds Word and Excel "
+            "files, and no PowerPoint file"
+        )
+    if document.kind is DocumentKind.SPREADSHEET:
+        return document.title if "." in document.title else f"{document.title}.xlsx", xlsx.build(document.rows)
+    if document.kind is DocumentKind.FILE:
+        media = document.mime_type or "text/plain"
+        if mime_of(document.title) != media:
+            ending = mimetypes.guess_extension(media) or ""
+            raise ValueError(
+                f"the Microsoft seed cannot hold the file {document.title!r} as {media}: OneDrive types a file by its "
+                f"name's extension (https://learn.microsoft.com/en-us/graph/api/resources/file), so title it with one"
+                + (f" ({document.title}{ending})" if ending else "")
+            )
+        return document.title, document.text.encode()
+    name = document.title if "." in document.title else f"{document.title}.docx"
+    return name, docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()
+
+
+def _person_identity(world: MicrosoftWorld, key: str | None) -> wire.IdentitySet | None:
+    """The user a person key names, as a drive item names who made or changed it; None for no one, or no user."""
+    user = world.person(key) if key is not None else None
+    return (
+        None
+        if user is None
+        else wire.IdentitySet(user=wire.Identity(id=user.user.id, displayName=user.user.displayName))
+    )
 
 
 def _faults(world: MicrosoftWorld, scenario: Scenario) -> None:

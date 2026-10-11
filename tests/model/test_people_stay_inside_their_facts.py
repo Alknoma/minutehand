@@ -33,6 +33,7 @@ from minutehand.domain.scenario import (
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.model.fake_completions import FakeCompletions, Received, Rule, fake_completions
 from tests.orchestrator.rig import T0, person, scenario
+from tests.support.people import email
 
 SAID_IN_THE_TRIAL = (
     "Hi,\n\nFor new-starter equipment like this, use cost centre **CC-4410** for the PO-7731 order. That covers the 40 "
@@ -85,7 +86,7 @@ async def _reply(tmp_path: Path, *, learns: bool) -> tuple[str, SqliteStore, Fak
                 operation=Operation.CREATE,
                 actor=Actor.AGENT,
                 body="{}",
-                after=MessageSnapshot(text=ASK, channel="dm-sam", recipient_emails=[SAM.email]),
+                after=MessageSnapshot(text=ASK, channel="dm-sam", recipient_emails=[email(SAM)]),
             )
         )
         reply = await PeopleReplier(played, model).decide(SAM, asked, store.events(), clock, store)

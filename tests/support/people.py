@@ -12,7 +12,7 @@ from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VAR
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier
-from minutehand.domain.scenario import ProviderKey, Scenario
+from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.ports.model import Model as LanguageModel
 
 MODEL = "people-fake"
@@ -61,3 +61,9 @@ def fact_checks() -> list[dict[str, object]]:
 def people_engine(scenario: Scenario, ports: Mapping[ProviderKey, object], model: LanguageModel | None) -> People:
     """The people engine over `ports`, by provider key, with the scripted replier over the same model."""
     return People(scenario, ports, PeopleReplier(scenario, model), model)
+
+
+def email(person: Person) -> str:
+    """A test person's email: every person a test writes has one."""
+    assert person.email is not None, f"{person.key} has no email"
+    return person.email

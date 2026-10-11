@@ -247,7 +247,12 @@ def test_a_disabled_user_cannot_sign_in_or_be_messaged_until_enabled_and_a_remov
 
         changed = world.deactivate_person("microsoft", "sofia")
         assert changed.actor is Actor.SCENARIO
-        assert http.get(f"{GRAPH}/users/{email}", headers=graph).json()["accountEnabled"] is False
+        assert (
+            http.get(f"{GRAPH}/users/{email}", params={"$select": "accountEnabled"}, headers=graph).json()[
+                "accountEnabled"
+            ]
+            is False
+        )
         refused = _user_sign_in(http, directory, email)
         assert refused.status_code == 400 and "AADSTS50057" in refused.text, refused.text
         blocked = http.post(f"{CONNECTOR}v3/conversations/{chat}/activities",

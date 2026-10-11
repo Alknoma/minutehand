@@ -28,6 +28,6 @@ MANIFEST = Manifest(
     path_prefix="/api/1.0",
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],
     ticket_fields=[TicketField.LABELS, TicketField.COMMENTS],
-    people_changes=[PersonChange.REMOVED],
+    people_changes=[PersonChange.DEACTIVATED],
     item_types=[TICKET, COMMENT],
 )

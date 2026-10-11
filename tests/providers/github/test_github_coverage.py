@@ -46,6 +46,9 @@ MERGE = Call(f"{LEDGER}/pulls/4/merge", {}, 200)
 SERVED: dict[tuple[str, str], Call] = {
     ("GET", "/user"): Call("/user"),
     ("GET", "/user/repos"): Call("/user/repos"),
+    ("GET", "/users/{username}"): Call("/users/iris-calder"),
+    ("GET", "/orgs/{org}/members"): Call("/orgs/lanternworks/members"),
+    ("GET", "/orgs/{org}/outside_collaborators"): Call("/orgs/lanternworks/outside_collaborators"),
     ("GET", "/repos/{owner}/{repo}"): Call(LEDGER),
     ("GET", "/repos/{owner}/{repo}/languages"): Call(f"{LEDGER}/languages"),
     ("GET", "/repos/{owner}/{repo}/branches"): Call(f"{LEDGER}/branches"),
@@ -178,8 +181,8 @@ def seeded() -> GitHubSeed:
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 169 operations, 48 served, 121 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (169, 48, 121)
+    """The counts the provider's README states: 171 operations, 51 served, 120 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (171, 51, 120)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 

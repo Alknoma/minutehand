@@ -338,7 +338,7 @@ def _refuse_ticket_edits(fork: Fork, services: Services, scenario: Scenario) -> 
 async def _edit_tickets(fork: Fork, people: People, scenario: Scenario, child: Store, clock: Clock) -> None:
     """Each `TicketEdit`, made by the scenario through the ticket's provider (`apply`): its state set, past any
     workflow, and its assignee changed, each recorded as the transition it is."""
-    emails = {p.key: p.email for p in scenario.people}
+    emails = {p.key: p.email for p in scenario.people if p.email}
     for override in fork.overrides:
         if not isinstance(override, TicketEdit):
             continue
