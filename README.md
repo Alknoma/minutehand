@@ -5,7 +5,7 @@
 | |  | |  | |  | |\  | | |_| |   | |   | |___  |  _  |  / ___ \  | |\  | | |_| |
 |_|  |_| |___| |_| \_|  \___/    |_|   |_____| |_| |_| /_/   \_\ |_| \_| |____/
 
-                     Simulated days for a proactive agent.
+     Turning days or months of agentic behaviour tuning work into minutes.
 ```
 
 **Months of your proactive agent's work, in minutes.** A world of fake Slack, Teams, Jira, Asana, Notion, GitHub and
