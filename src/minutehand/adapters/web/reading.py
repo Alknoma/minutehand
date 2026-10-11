@@ -4,6 +4,7 @@ inspector, and the tables of its views (calls, the dispatch table, memory, store
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from bisect import bisect_right
 from collections.abc import Sequence
@@ -48,20 +49,18 @@ from minutehand.adapters.web.responses import (
 )
 from minutehand.application.checkpoint import CHECKPOINT
 from minutehand.application.dues import due_entries
-from minutehand.application.model_calls import is_model_call, trace_of
+from minutehand.application.model_calls import JoinedBy, is_model_call
 from minutehand.application.steps import STEP
 from minutehand.checks.runner import RunResult, view_of
 from minutehand.domain.assessments import merged
 from minutehand.domain.checks import FindingKind, Obligation, WakeRecord
 from minutehand.domain.clock import DueClosed
-from minutehand.domain.inboxes import item_words
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ExpectedOutcome, Scenario
 from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.world import (
     Actor,
     EntityKind,
-    EntityRef,
     InboxItemSnapshot,
     InteractionSnapshot,
     ItemStatus,
@@ -242,125 +241,106 @@ def _delivered(events: Sequence[WorldEvent], replies: Sequence[PersonReply]) -> 
     return found
 
 
-def _change(event: WorldEvent, before: str | None, text: str) -> MessageChange | None:
-    """What a message event did; None for an update that left its text as it was (a reaction, a button redrawn)."""
-    if event.operation is Operation.DELETE:
-        return MessageChange.DELETED
-    if event.operation is Operation.UPDATE:
-        return None if before == text else MessageChange.EDITED
-    return MessageChange.SENT
+SAID = ("sent", "edited", "deleted")
+"""The read model's `messages.change` a person reads as something said: an update that left the text as it was (a
+reaction, a button redrawn) is not one."""
 
 
-def message_lines(events: Sequence[WorldEvent], scenario: Scenario, world: Store | None = None) -> list[MessageLine]:
-    """Every message sent, rewritten or deleted, and every item in the agent's own product, as a person reads the
-    record. With `world`, each of the agent's is joined to the model call that wrote it (a read of its spans each)."""
+def _said(db: sqlite3.Connection, channel: str | None = None) -> list[dict[str, object]]:
+    """The read model's messages a person reads as something said, with the model that wrote each the read model
+    joined, in a channel or in all of them."""
+    sql = (
+        "SELECT m.seq, m.at, m.wake, m.from_actor, m.change, m.to_people, m.to_emails, m.text, m.text_before,"
+        " m.thread_of, m.model_call_span_id, m.joined_by, c.model FROM messages m"
+        " LEFT JOIN model_calls c ON c.span_id = m.model_call_span_id"
+        f" WHERE m.change IN ({', '.join('?' * len(SAID))})"
+    )
+    args: list[object] = list(SAID)
+    if channel is not None:
+        sql += " AND m.channel = ?"
+        args.append(channel)
+    return _rows(db, sql + " ORDER BY m.seq", *args)
+
+
+def _written_by(row: dict[str, object]) -> WrittenBy | None:
+    span, joined_by, model = row["model_call_span_id"], row["joined_by"], row["model"]
+    if not isinstance(span, str) or not isinstance(joined_by, str):
+        return None
+    return WrittenBy(span_id=span, model=model if isinstance(model, str) else None, joined_by=JoinedBy(joined_by))
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _texts(value: object) -> list[str]:
+    return [str(v) for v in json.loads(value)] if isinstance(value, str) else []
+
+
+def message_lines(db: sqlite3.Connection, scenario: Scenario, channel: str) -> list[MessageLine]:
+    """Every message of one conversation sent, rewritten or deleted, as the read model holds it and a person reads
+    the record."""
     names = {p.email: p.name for p in scenario.people if p.email}
-    said: dict[EntityRef, str] = {}
-    lines: list[MessageLine] = []
-    for event in events:
-        after = event.after
-        if isinstance(after, InboxItemSnapshot):
-            lines.append(_item_line(event, after, names))
-            continue
-        if not isinstance(after, MessageSnapshot) or event.operation not in WRITES:
-            continue
-        before = said.get(event.entity)
-        said[event.entity] = after.text
-        change = _change(event, before, after.text)
-        if change is None:
-            continue
-        joined = trace_of(event, world) if world is not None and event.actor is Actor.AGENT else None
-        lines.append(
-            MessageLine(
-                seq=event.seq,
-                at=event.sim_time,
-                wake=event.wake,
-                actor=event.actor,
-                change=change,
-                to=[names[e] if e in names else e for e in after.recipient_emails],
-                text=after.text,
-                before=before if change is MessageChange.EDITED else None,
-                thread=after.thread_of is not None,
-                written_by=WrittenBy(
-                    span_id=joined.model_call.span_id, model=joined.model_call.model, joined_by=joined.joined_by
-                )
-                if joined is not None and joined.model_call is not None and joined.joined_by is not None
-                else None,
-            )
+    lines = [
+        MessageLine(
+            seq=int(str(row["seq"])),
+            at=datetime.fromisoformat(str(row["at"])),
+            wake=int(str(row["wake"])),
+            actor=Actor(row["from_actor"]),
+            change=MessageChange(row["change"]),
+            to=[names[e] if e in names else e for e in _texts(row["to_emails"])],
+            text=str(row["text"]),
+            before=_text(row["text_before"]) if row["change"] == MessageChange.EDITED else None,
+            thread=row["thread_of"] is not None,
+            written_by=_written_by(row) if row["from_actor"] == Actor.AGENT else None,
         )
+        for row in _said(db, channel)
+    ]
     return lines
 
 
-def _item_line(event: WorldEvent, item: InboxItemSnapshot, names: dict[str, str]) -> MessageLine:
-    """An item in the agent's own product as a line of what was said: the ask, the decision, a refusal of it, or the
-    agent taking it back."""
-    who = names[item.waits_on] if item.waits_on in names else item.waits_on
-    if event.actor is Actor.PERSON:
-        change = MessageChange.DECIDED if item.status is ItemStatus.DECIDED else MessageChange.REFUSED
-    else:
-        change = MessageChange.WITHDRAWN if item.status is ItemStatus.WITHDRAWN else MessageChange.ASKED
-    return MessageLine(
-        seq=event.seq,
-        at=event.sim_time,
-        wake=event.wake,
-        actor=event.actor,
-        change=change,
-        to=[who],
-        text=item.summary,
-        before=None,
-        thread=False,
-        words=item_words(item, event.actor, who),
-    )
-
-
-def people(world: Store, scenario: Scenario) -> PeopleResponse:
+def people(db: sqlite3.Connection, world: Store, scenario: Scenario) -> PeopleResponse:
     events = world_events(world)
     replies = world.replies()
     calls = world.person_calls()
     delivered = _delivered(events, replies)
     seq_of = {i: seq for seq, i in delivered.items()}
     asked_seq = {(e.entity.provider, e.entity.kind, e.entity.external_id): e.seq for e in reversed(events)}
+    said = [row for row in _said(db) if row["from_actor"] == Actor.AGENT]
     found: list[PersonActivity] = []
     for person in scenario.people:
-        lines: list[ConversationLine] = []
-        said: dict[EntityRef, str] = {}
-        for event in events:
-            after = event.after
-            if isinstance(after, MessageSnapshot) and event.operation in WRITES:
-                before = said.get(event.entity)
-                said[event.entity] = after.text
-                if event.actor is not Actor.AGENT or person.email not in after.recipient_emails:
-                    continue
-                change = _change(event, before, after.text)
-                if change is None:
-                    continue
-                lines.append(
-                    ConversationLine(
-                        seq=event.seq,
-                        at=event.sim_time,
-                        from_agent=True,
-                        change=change,
-                        text=after.text,
-                        before=before if change is MessageChange.EDITED else None,
-                        writing=None,
-                        written_by=None,
-                        reply=None,
-                    )
-                )
-            elif isinstance(after, InboxItemSnapshot) and after.person == person.key and event.actor is Actor.AGENT:
-                lines.append(
-                    ConversationLine(
-                        seq=event.seq,
-                        at=event.sim_time,
-                        from_agent=True,
-                        change=MessageChange.WITHDRAWN if after.status is ItemStatus.WITHDRAWN else MessageChange.ASKED,
-                        text=after.summary,
-                        before=None,
-                        writing=None,
-                        written_by=None,
-                        reply=None,
-                    )
-                )
+        lines = [
+            ConversationLine(
+                seq=int(str(row["seq"])),
+                at=datetime.fromisoformat(str(row["at"])),
+                from_agent=True,
+                change=MessageChange(row["change"]),
+                text=str(row["text"]),
+                before=_text(row["text_before"]) if row["change"] == MessageChange.EDITED else None,
+                writing=None,
+                written_by=None,
+                reply=None,
+            )
+            for row in said
+            if person.key in _texts(row["to_people"])
+        ]
+        lines += [
+            ConversationLine(
+                seq=event.seq,
+                at=event.sim_time,
+                from_agent=True,
+                change=MessageChange.WITHDRAWN if after.status is ItemStatus.WITHDRAWN else MessageChange.ASKED,
+                text=after.summary,
+                before=None,
+                writing=None,
+                written_by=None,
+                reply=None,
+            )
+            for event in events
+            if isinstance(after := event.after, InboxItemSnapshot)
+            and after.person == person.key
+            and event.actor is Actor.AGENT
+        ]
         own = [(i, r) for i, r in enumerate(replies, start=1) if r.person == person.key]
         for i, reply in own:
             lines.append(
@@ -404,7 +384,9 @@ def people(world: Store, scenario: Scenario) -> PeopleResponse:
 # -- one event, whole -------------------------------------------------------------------------------------------------
 
 
-def event_detail(world: Store, seq: int, scenario: Scenario, result: RunResult | None) -> EventDetail | None:
+def event_detail(
+    db: sqlite3.Connection, world: Store, seq: int, scenario: Scenario, result: RunResult | None
+) -> EventDetail | None:
     events = world_events(world)
     found = next((e for e in events if e.seq == seq), None)
     if found is None:
@@ -421,14 +403,20 @@ def event_detail(world: Store, seq: int, scenario: Scenario, result: RunResult |
     written_by: WrittenBy | None = None
     after = found.after
     if isinstance(after, MessageSnapshot):
-        same = [e for e in events if isinstance(e.after, MessageSnapshot) and e.after.channel == after.channel]
-        thread = message_lines(same, scenario)
+        thread = message_lines(db, scenario, after.channel)
         if found.actor is Actor.AGENT:
-            joined = trace_of(found, world)
-            if joined.model_call is not None and joined.joined_by is not None:
-                written_by = WrittenBy(
-                    span_id=joined.model_call.span_id, model=joined.model_call.model, joined_by=joined.joined_by
-                )
+            written_by = next(
+                (
+                    _written_by(row)
+                    for row in _rows(
+                        db,
+                        "SELECT m.model_call_span_id, m.joined_by, c.model FROM messages m"
+                        " LEFT JOIN model_calls c ON c.span_id = m.model_call_span_id WHERE m.seq = ?",
+                        seq,
+                    )
+                ),
+                None,
+            )
     delivered = _delivered(events, world.replies())
     return EventDetail(
         event=found,
@@ -513,7 +501,9 @@ def obligations(state: Path, run_id: str, world: Store, events: list[WorldEvent]
     ).obligations
 
 
-def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -> TimelineResponse:
+def timeline(
+    db: sqlite3.Connection, state: Path, run_id: str, world: Store, result: RunResult | None
+) -> TimelineResponse:
     scenario = session.scenario_of(state, run_id)
     everything = world.events()
     events = [e for e in everything if not _loop_own(e)]
@@ -551,7 +541,7 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
     # what passed between the agent and each person
     delivered = _delivered(events, replies)
     covered = {seq for c in calls for seq in range(c.first_seq, c.last_seq + 1)}
-    said: dict[EntityRef, str] = {}
+    said = {int(str(row["seq"])): MessageChange(row["change"]) for row in _said(db)}
     for event in events:
         after = event.after
         kind = event.entity.kind
@@ -583,11 +573,9 @@ def timeline(state: Path, run_id: str, world: Store, result: RunResult | None) -
             )
             continue
         if isinstance(after, MessageSnapshot) and event.operation in WRITES:
-            before = said.get(event.entity)
-            said[event.entity] = after.text
-            change = _change(event, before, after.text)
-            if change is None:
+            if event.seq not in said:
                 continue
+            change = said[event.seq]
             if event.actor is Actor.AGENT:
                 reached = [by_email[e] for e in after.recipient_emails if e in by_email]
                 for p in reached:

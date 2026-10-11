@@ -7,7 +7,7 @@ world per test, and does nothing until told. That is `minutehand serve`.
 ```
 minutehand serve [--state DIR] [--host 127.0.0.1] [--proxy-port 8080] [--control-port 8081]
                  [--telemetry-port 4318] [--no-receive-telemetry] [--agent-host NAME] [--no-proxy HOST]... [--keep 100]
-                 [--model-host HOST]... [--record-model-calls] [--capture-unknown] [--upstream-ca PEM]
+                 [--model-host HOST]... [--tunnel-model-calls] [--capture-unknown] [--upstream-ca PEM]
 ```
 
 One process: the proxy, the OTLP receiver and the control API (HTTP and JSON, under `/v1`). Every installed
@@ -153,15 +153,15 @@ nothing refuses it. A declared host a provider claims is refused with 409, namin
 
 A model API is decided by its host before its call is opened, so it cannot be told apart by world from the
 credentials it carries. `api.openai.com`, `api.anthropic.com` and `generativelanguage.googleapis.com`, and each
-`serve --model-host HOST` (a self-hosted model, a gateway), are model hosts for every world: tunnelled, never
-decrypted, or, under `serve --record-model-calls`, opened, sent on unchanged and kept as a span
+`serve --model-host HOST` (a self-hosted model, a gateway), are model hosts for every world: opened, sent on
+unchanged and kept as a span, or, under `serve --tunnel-model-calls`, tunnelled, never decrypted
 (`docs/design.md`, Hosts the proxy does not own). A world may declare more:
 
 ```json
-{"model_hosts": [{"host": "llm.internal", "record": true}]}
+{"model_hosts": [{"host": "llm.internal", "record": false}]}
 ```
 
-Each is tunnelled, or recorded when `record` says so, and belongs to that world until it closes: a second open
+Each is recorded, or tunnelled when `record` is false, whatever the server does for other model hosts, and belongs to that world until it closes: a second open
 world that declares an overlapping host is refused with 409, as is a host a provider claims or the world
 captures under `outbound`. A recorded call is kept in the world that declared its host, else in the world whose
 calls carried its trace (`traceparent`), else in the lobby (a world of a case keeps neither: its case does); `GET /v1/worlds/{id}/spans` reads it.

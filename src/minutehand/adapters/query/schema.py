@@ -516,7 +516,11 @@ VIEWS: tuple[View, ...] = (
                 "JSON array of the agent messages it is joined to (agent) or of the message it answered (person)",
             ),
             _c("replayed", N, "1 for a person's call answered from the record: no model was called"),
-            _c("failure", T, "Why a person's call failed"),
+            _c(
+                "failure",
+                T,
+                "Why the call failed: a person's call, or the agent's as its span says (an error answer, an error status)",
+            ),
             _c("cache_read_tokens", N, "Of input_tokens, those read from the prompt cache; NULL when not reported"),
             _c(
                 "cache_creation_tokens",

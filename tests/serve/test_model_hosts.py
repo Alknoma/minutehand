@@ -67,9 +67,11 @@ async def _ask(client: MinutehandClient, port: int, trust: Path) -> httpx.Respon
         )
 
 
-async def test_a_model_host_given_to_serve_is_tunnelled_not_refused(tmp_path: Path, authority: Authority) -> None:
+async def test_a_model_host_given_to_serve_tunnelling_model_calls_is_tunnelled_not_refused(
+    tmp_path: Path, authority: Authority
+) -> None:
     """The client trusts ONLY the model API's own CA: a call refused, or opened by the proxy, would fail."""
-    with _served(tmp_path, authority, model_hosts=[MODEL_HOST]) as client:
+    with _served(tmp_path, authority, model_hosts=[MODEL_HOST], record_model_calls=False) as client:
         world = client.create_world(spec("model-key-one"))
         async with model_api(authority, Answer("application/json", [json.dumps(ANSWER).encode()])) as upstream:
             answered = await _ask(client, upstream.port, authority.ca_cert)
@@ -78,11 +80,11 @@ async def test_a_model_host_given_to_serve_is_tunnelled_not_refused(tmp_path: Pa
         assert client.calls(world.world_id).calls == [] and client.spans(world.world_id).spans == []
 
 
-async def test_a_model_host_given_to_serve_with_record_model_calls_is_opened_and_sent_on(
+async def test_a_model_host_given_to_serve_is_opened_and_sent_on_by_default(
     tmp_path: Path, authority: Authority
 ) -> None:
     """The client trusts ONLY the server's CA: the call reaches the model API only if the proxy opened it."""
-    with _served(tmp_path, authority, model_hosts=[MODEL_HOST], record_model_calls=True) as client:
+    with _served(tmp_path, authority, model_hosts=[MODEL_HOST]) as client:
         bundle = Path(client.environment()["SSL_CERT_FILE"])
         async with model_api(authority, Answer("application/json", [json.dumps(ANSWER).encode()])) as upstream:
             answered = await _ask(client, upstream.port, bundle)
@@ -95,7 +97,7 @@ async def test_a_model_host_a_world_declares_recorded_is_kept_as_a_span_in_that_
 ) -> None:
     with _served(tmp_path, authority) as client:
         bundle = Path(client.environment()["SSL_CERT_FILE"])
-        declaring = spec("model-key-two").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST, record=True)]})
+        declaring = spec("model-key-two").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]})
         world = client.create_world(declaring)
         other = client.create_world(spec("model-key-three"))
         async with model_api(authority, Answer("application/json", [json.dumps(ANSWER).encode()])) as upstream:
@@ -111,7 +113,9 @@ async def test_a_model_host_a_world_declares_unrecorded_is_tunnelled_and_release
     tmp_path: Path, authority: Authority
 ) -> None:
     with _served(tmp_path, authority) as client:
-        declaring = spec("model-key-four").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]})
+        declaring = spec("model-key-four").model_copy(
+            update={"model_hosts": [ModelHost(host=MODEL_HOST, record=False)]}
+        )
         world = client.create_world(declaring)
         async with model_api(authority, Answer("application/json", [json.dumps(ANSWER).encode()])) as upstream:
             assert (await _ask(client, upstream.port, authority.ca_cert)).status_code == 200
@@ -125,8 +129,10 @@ async def test_a_model_host_a_world_declares_unrecorded_is_tunnelled_and_release
 
 def test_a_second_world_declaring_a_model_host_another_holds_is_refused(tmp_path: Path, authority: Authority) -> None:
     with _served(tmp_path, authority) as client:
-        client.create_world(spec("model-key-five").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]}))
-        second = spec("model-key-six").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST, record=True)]})
+        client.create_world(
+            spec("model-key-five").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST, record=False)]})
+        )
+        second = spec("model-key-six").model_copy(update={"model_hosts": [ModelHost(host=MODEL_HOST)]})
         with pytest.raises(Refused, match="model host"):
             client.create_world(second)
         assert len(client.worlds()) == 1

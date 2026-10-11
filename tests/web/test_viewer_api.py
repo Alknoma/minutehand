@@ -23,19 +23,16 @@ from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.web.app import PAGE, STATIC, create_app
 from minutehand.adapters.web.responses import (
     CallAnsweredBy,
+    CallDetail,
     CallRowsResponse,
-    CallsResponse,
-    EventsResponse,
     FindingsResponse,
     ModelCallResponse,
-    ModelTrafficResponse,
     ObligationsResponse,
     Refusal,
     RunResponse,
     RunsResponse,
     ScorecardResponse,
     StepSpansResponse,
-    StepsResponse,
     WakesResponse,
 )
 from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Remembered, write_checkpoint
@@ -60,7 +57,7 @@ from minutehand.domain.world import (
 from tests.e2e.support import QUESTION, SOFIA, T0, agent_under_test, answers, scenario
 
 TRACE = "0af7651916cd43dd8448eb211c80319c"
-PATHS = ("", "/wakes", "/events", "/calls", "/obligations", "/findings", "/scorecard")
+PATHS = ("", "/wakes", "/obligations", "/findings", "/scorecard", "/timeline", "/call-rows", "/people")
 
 
 @asynccontextmanager
@@ -114,8 +111,7 @@ async def test_a_finished_run_answers_every_path_with_its_shape(
     async with client(state) as c:
         run = await read(c, base, RunResponse)
         wakes = await read(c, f"{base}/wakes", WakesResponse)
-        events = await read(c, f"{base}/events", EventsResponse)
-        calls = await read(c, f"{base}/calls", CallsResponse)
+        calls = await read(c, f"{base}/call-rows", CallRowsResponse)
         obligations = await read(c, f"{base}/obligations", ObligationsResponse)
         findings = await read(c, f"{base}/findings", FindingsResponse)
         scorecard = await read(c, f"{base}/scorecard", ScorecardResponse)
@@ -123,10 +119,11 @@ async def test_a_finished_run_answers_every_path_with_its_shape(
     assert run.finished and run.record is not None and run.reached == run.record.ended_at
     assert [p.wake for p in run.checkpoints][:2] == [0, 1]
     assert wakes.wakes == run.record.wakes
-    assert all(e.entity != CHECKPOINT for e in events.events)
-    [asked] = [e for e in events.events if isinstance(e.after, MessageSnapshot) and e.actor is Actor.AGENT]
+    with session.reading(state, parent) as world:
+        events = world.events()
+    [asked] = [e for e in events if isinstance(e.after, MessageSnapshot) and e.actor is Actor.AGENT]
     assert isinstance(asked.after, MessageSnapshot) and asked.after.text == QUESTION
-    assert calls.calls and {c.exchange.host for c in calls.calls} == {"slack.com"}
+    assert calls.calls and {c.host for c in calls.calls} == {"slack.com"}
     [wait] = [w.obligation for w in obligations.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert (wait.person, wait.opened_by, wait.settled_at) == ("sofia", asked.seq, None)
     assert findings.finished
@@ -176,7 +173,6 @@ async def test_a_run_still_being_written_is_read_as_of_its_last_commit(tmp_path:
             listed = await read(c, "/api/runs", RunsResponse)
             run = await read(c, "/api/runs/running", RunResponse)
             wakes = await read(c, "/api/runs/running/wakes", WakesResponse)
-            events = await read(c, "/api/runs/running/events", EventsResponse)
             obligations = await read(c, "/api/runs/running/obligations", ObligationsResponse)
             findings = await read(c, "/api/runs/running/findings", FindingsResponse)
             scorecard = await read(c, "/api/runs/running/scorecard", ScorecardResponse)
@@ -188,7 +184,6 @@ async def test_a_run_still_being_written_is_read_as_of_its_last_commit(tmp_path:
     assert (row.run_id, row.finished, row.stop, row.failed) == ("running", False, None, 0)
     assert (run.finished, run.record, run.reached) == (False, None, T0)
     assert [(w.index, w.world_changes) for w in wakes.wakes] == [(1, 1)]
-    assert [e.seq for e in events.events] == [asked.seq]
     [wait] = [w.obligation for w in obligations.obligations if w.obligation.kind is ObligationKind.ANSWER_FROM_PERSON]
     assert wait.opened_by == asked.seq and wait.settled_at is None
     assert (findings.finished, findings.findings) == (False, [])
@@ -240,7 +235,8 @@ async def test_every_api_path_the_page_calls_exists(tmp_path: Path, monkeypatch:
     called = sorted(set(re.findall(r'"(/api/[^"]*)"', _script())))
     assert "/api/runs" in called and "/api/runs/{run}/timeline" in called and "/api/runs/{run}/events/{seq}" in called
     async with client(state) as c:
-        seq = (await read(c, f"/api/runs/{parent}/events", EventsResponse)).events[0].seq
+        with session.reading(state, parent) as world:
+            seq = next(e.seq for e in world.events() if e.entity != CHECKPOINT)
         for path in called:
             if "{span}" in path:
                 continue  # a model call or a span: this run's agent sends no telemetry, see the test of that endpoint
@@ -269,8 +265,8 @@ def _model_span(span_id: str, start: datetime, *, parent: str | None, tokens: in
 async def test_a_step_its_spans_and_one_model_call_are_answered_for_the_waterfall_and_the_detail(
     tmp_path: Path,
 ) -> None:
-    """`/steps` spans each step from its first act to its last, `/steps/{n}/spans` lists its spans without their
-    attributes, `/model-traffic` says how long each call took, and `/model-calls/{span}` carries what it was asked."""
+    """`/steps/{n}/spans` lists a step's spans without their attributes, and `/model-calls/{span}` carries what a
+    model call was asked."""
     state = tmp_path / "state"
     directory = session.run_dir(state, "traced")
     directory.mkdir(parents=True)
@@ -283,16 +279,10 @@ async def test_a_step_its_spans_and_one_model_call_are_answered_for_the_waterfal
         source=SpanSource.RECEIVED,
     )
     async with client(state) as c:
-        steps = await read(c, "/api/runs/traced/steps", StepsResponse)
-        spans = await read(c, f"/api/runs/traced/steps/{steps.steps[0].step}/spans", StepSpansResponse)
-        traffic = await read(c, "/api/runs/traced/model-traffic", ModelTrafficResponse)
+        spans = await read(c, "/api/runs/traced/steps/0/spans", StepSpansResponse)  # no wake began: setup holds both
         call = await read(c, f"/api/runs/traced/model-calls/{'b' * 16}", ModelCallResponse)
         missing = await c.get(f"/api/runs/traced/model-calls/{'f' * 16}")
-    [step] = steps.steps  # no wake began: both spans are placed in setup, the wake they arrived in
-    assert (step.began, step.ended, step.spans, step.model_calls) == (real, real + timedelta(seconds=9), 2, 1)
     assert [(s.name, s.model_call) for s in spans.spans] == [("turn", False), ("chat m", True)]
-    [traced] = traffic.calls
-    assert traced.ended - traced.started == timedelta(seconds=2) and traced.input_tokens == 40
     assert call.call.input_messages == '[{"role": "user", "parts": []}]' and call.wrote == []
     assert missing.status_code == 404
 
@@ -300,8 +290,8 @@ async def test_a_step_its_spans_and_one_model_call_are_answered_for_the_waterfal
 async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_and_its_redacted_bodies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The page's outbound section and lane read `/calls`: each captured call says its mode and what answered it,
-    and its bodies are the redacted ones the run kept."""
+    """The page's outbound section and lane read `/call-rows` and `/calls/{id}`: each captured call says its mode and
+    what answered it, and its bodies are the redacted ones the run kept."""
     launched = agent_under_test(tmp_path, monkeypatch, "forgetful")
     monkeypatch.setenv("MAIL_URL", "https://api.mail.test/v3/mail/send")
     monkeypatch.setenv("MAIL_TO", SOFIA)
@@ -309,10 +299,9 @@ async def test_the_calls_the_page_lists_as_outbound_carry_how_each_was_captured_
     state = tmp_path / "state"
     [outcome] = await session.play(scenario(Silent()), agent, state=state, command=launched.command)
     async with client(state) as c:
-        calls = await read(c, f"/api/runs/{outcome.record.run_id}/calls", CallsResponse)
         rows = await read(c, f"/api/runs/{outcome.record.run_id}/call-rows", CallRowsResponse)
-    [mail] = [c for c in calls.calls if c.exchange.captured is not None]
-    [row] = [r for r in rows.calls if r.host == "api.mail.test"]
+        [row] = [r for r in rows.calls if r.host == "api.mail.test"]
+        mail = (await read(c, f"/api/runs/{outcome.record.run_id}/calls/{row.call_id}", CallDetail)).call
     assert (row.answered_by, row.provider, row.status) == (CallAnsweredBy.DECLARATION, None, mail.exchange.status)
     assert {r.answered_by for r in rows.calls if r.host == "slack.com"} == {CallAnsweredBy.PROVIDER}
     assert mail.exchange.captured is not None

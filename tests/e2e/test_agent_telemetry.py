@@ -8,7 +8,6 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-import httpx
 import pytest
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
@@ -20,9 +19,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from minutehand import session
 from minutehand.adapters.telemetry.otel import OtelTelemetry
-from minutehand.adapters.web.app import create_app
-from minutehand.adapters.web.responses import ModelCallsResponse, TraceResponse
-from minutehand.application.model_calls import JoinedBy
+from minutehand.application.model_calls import JoinedBy, trace_of
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.experiment import Fork, PersonChange
 from minutehand.domain.scenario import Silent
@@ -40,16 +37,11 @@ async def test_a_findings_evidence_resolves_to_the_agents_span_and_the_model_cal
     state = tmp_path / "state"
     [outcome] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     run_id = outcome.record.run_id
-    [asked] = messages(world(state, run_id).events(), Actor.AGENT, to=SOFIA)
-
-    transport = httpx.ASGITransport(app=create_app(state))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as viewer:
-        joined = ModelCallsResponse.model_validate_json((await viewer.get(f"/api/runs/{run_id}/model-calls")).content)
-        [cited] = [t for t in joined.events if t.seq == asked.seq]
-        assert cited.trace_id is not None
-        traced = TraceResponse.model_validate_json(
-            (await viewer.get(f"/api/runs/{run_id}/traces/{cited.trace_id}")).content
-        )
+    store = world(state, run_id)
+    [asked] = messages(store.events(), Actor.AGENT, to=SOFIA)
+    cited = trace_of(asked, store)
+    assert cited.trace_id is not None
+    traced = store.spans(trace_id=cited.trace_id)
 
     assert cited.caller is not None
     assert [s.span.name for s in [cited.caller, *cited.ancestors]] == ["send_dm", "agent turn"]
@@ -62,8 +54,8 @@ async def test_a_findings_evidence_resolves_to_the_agents_span_and_the_model_cal
     assert call.output_messages is not None
     [said] = json.loads(call.output_messages)
     assert said["parts"][0]["arguments"]["text"] == "Could you confirm the partner pricing, please?"
-    assert joined.received == len(traced.spans) == 3
-    assert sorted(s.span.name for s in traced.spans) == ["agent turn", "chat model-test", "send_dm"]
+    assert len(store.spans()) == len(traced) == 3
+    assert sorted(s.span.name for s in traced) == ["agent turn", "chat model-test", "send_dm"]
 
 
 async def test_a_run_that_received_nothing_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,12 +64,11 @@ async def test_a_run_that_received_nothing_says_so(tmp_path: Path, monkeypatch: 
     [outcome] = await session.play(scenario(Silent()), launched.agent, state=state, command=launched.command)
     run_id = outcome.record.run_id
 
-    transport = httpx.ASGITransport(app=create_app(state))
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as viewer:
-        joined = ModelCallsResponse.model_validate_json((await viewer.get(f"/api/runs/{run_id}/model-calls")).content)
+    store = world(state, run_id)
+    joined = [trace_of(e, store) for e in messages(store.events(), Actor.AGENT, to=SOFIA)]
 
-    assert joined.received == 0 and joined.events
-    assert all(e.model_call is None and e.joined_by is None for e in joined.events)
+    assert store.spans() == [] and joined
+    assert all(e.model_call is None and e.joined_by is None for e in joined)
 
 
 async def test_a_fork_sees_its_parents_spans_up_to_the_fork_and_not_after(

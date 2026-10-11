@@ -28,7 +28,7 @@ The worlds are the people `work.json` names; the example's work asks Sam, in fin
 
 ```bash
 pip install minutehand slack_sdk 'pydantic-ai-slim[openai]'
-export AGENT_MODEL=openai:gpt-6-luna OPENAI_API_KEY=...          # the wake decider's model; AGENT_MODEL=test offline
+export AGENT_MODEL=openai-responses:gpt-6-luna OPENAI_API_KEY=... # the wake decider's model; AGENT_MODEL=test offline
 export MINUTEHAND_MODEL=... MINUTEHAND_MODEL_API_KEY=...         # the model that plays Sam and Owen
 minutehand run worlds/quiet.yaml --agent agent.yaml -- python agent.py
 ```

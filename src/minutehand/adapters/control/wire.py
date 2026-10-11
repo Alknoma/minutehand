@@ -117,11 +117,13 @@ class DeclareFaults(Model):
 class ModelHost(Model):
     """A model API this world's services call besides api.openai.com, api.anthropic.com and
     generativelanguage.googleapis.com (a self-hosted model, a gateway in front of one). A host is decided before
-    its call is opened, so each belongs to one open world: its calls are tunnelled, never decrypted, or, with
-    `record`, opened, sent on unchanged and kept as spans in this world."""
+    its call is opened, so each belongs to one open world: its calls are opened, sent on unchanged and kept as
+    spans in this world, or, with `record` false, tunnelled, never decrypted."""
 
     host: str = Field(description="An exact lower-case host, or `*.` and a domain")
-    record: bool = Field(default=False, description="Open its calls and keep each as a span in this world")
+    record: bool = Field(
+        default=True, description="Open its calls and keep each as a span in this world; false tunnels them"
+    )
 
 
 class CreateWorld(Model):

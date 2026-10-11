@@ -20,22 +20,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from starlette.testclient import TestClient
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound, Reply
-from minutehand.adapters.web.app import create_app
-from minutehand.adapters.web.responses import MessageChange, MessagesResponse, ModelTrafficResponse
 from minutehand.application.forks import scorecard_lines
 from minutehand.application.model_calls import JoinedBy
 from minutehand.checks.runner import RunResult
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.scenario import Seed
-from minutehand.domain.world import Actor, EntityKind, EntityRef
+from minutehand.domain.world import EntityKind, EntityRef
 from minutehand.testing.background import serve_in_background
 from minutehand.testing.client import MinutehandClient
 from minutehand.testing.world import OpenCase, open_case
 from tests.serve.support import SECRET, Served, answer, dm, event_receiver
+from tests.support.read_model import listed, rows
 
 ASK = "Dani, which day works for moving the engineering sync this week?"
 ANSWER = "Wednesday afternoon works for me."
@@ -183,16 +181,6 @@ def _play(served: Served, case: OpenCase, *, steps: bool) -> None:
             slack.chat_postMessage(channel=to_dani, text=ping)
 
 
-def _messages(state: Path, run_id: str) -> MessagesResponse:
-    with TestClient(create_app(state)) as viewer:
-        return MessagesResponse.model_validate_json(viewer.get(f"/api/runs/{run_id}/messages").content)
-
-
-def _traffic(state: Path, run_id: str) -> ModelTrafficResponse:
-    with TestClient(create_app(state)) as viewer:
-        return ModelTrafficResponse.model_validate_json(viewer.get(f"/api/runs/{run_id}/model-traffic").content)
-
-
 def test_a_case_driven_from_outside_is_one_run_judged_on_what_it_did(served: Served, state: Path) -> None:
     with event_receiver() as inbound:
         case = open_case(served.client, "timed dm, run 2", _specs(inbound.url, "one", expect=EXPECT))
@@ -215,25 +203,33 @@ def test_a_case_driven_from_outside_is_one_run_judged_on_what_it_did(served: Ser
     assert lines["messages to people"] == "4, edited in place: 1, deleted: 0"
     assert [(b.person, b.messages) for b in card.burden] == [("owen", 0), ("dani", 3), ("nadia", 1)]
 
-    said = _messages(state, case.case_id).messages
-    agents = [m for m in said if m.actor is Actor.AGENT]
-    assert [(m.change, m.to) for m in agents] == [
-        (MessageChange.SENT, ["Dani Ruiz"]),
-        (MessageChange.EDITED, ["Dani Ruiz"]),
-        (MessageChange.SENT, ["Nadia Okafor"]),
-        (MessageChange.SENT, ["Dani Ruiz"]),
-        (MessageChange.SENT, ["Dani Ruiz"]),
+    agents = rows(
+        state,
+        case.case_id,
+        "SELECT change, to_people, text, text_before, joined_by FROM messages"
+        " WHERE from_actor = 'agent' AND change != 'updated' ORDER BY seq",
+    )
+    assert [(m["change"], listed(m["to_people"])) for m in agents] == [
+        ("sent", ["dani"]),
+        ("edited", ["dani"]),
+        ("sent", ["nadia"]),
+        ("sent", ["dani"]),
+        ("sent", ["dani"]),
     ]
-    assert agents[1].before == ASK and agents[1].text == REWRITTEN
-    written = [(m.text, m.written_by.joined_by if m.written_by else None) for m in agents]
+    assert agents[1]["text_before"] == ASK and agents[1]["text"] == REWRITTEN
+    written = [(m["text"], m["joined_by"]) for m in agents]
     assert written[0] == (ASK, JoinedBy.CONTENT) and written[2] == (RELAY, JoinedBy.CONTENT)
-    assert written[3][1] is not JoinedBy.CONTENT, "a ping no model call answered is joined, if at all, as nearest"
+    assert written[3][1] != JoinedBy.CONTENT, "a ping no model call answered is joined, if at all, as nearest"
 
-    traffic = _traffic(state, case.case_id)
-    assert [(c.step, c.model, c.input_tokens) for c in traffic.calls] == [(1, "gpt-test", 812)] + [
+    traffic = rows(
+        state,
+        case.case_id,
+        "SELECT wake, model, input_tokens, wrote_seqs FROM model_calls WHERE side = 'agent' ORDER BY started",
+    )
+    assert [(c["wake"], c["model"], c["input_tokens"]) for c in traffic] == [(1, "gpt-test", 812)] + [
         (2, "gpt-test", 812)
     ] * 2, "the spans reached the case, with no trace link, each placed in its step"
-    assert sorted(len(c.wrote) for c in traffic.calls) == [1, 1, 1]
+    assert sorted(len(listed(c["wrote_seqs"])) for c in traffic) == [1, 1, 1]
 
 
 def test_the_same_run_with_no_step_and_nothing_declared_is_still_assessed(served: Served, state: Path) -> None:

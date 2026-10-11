@@ -17,6 +17,7 @@ All three pass on every commit you push. `docs/ci.md` says what CI runs and why.
 
 - **The problem first.** What is broken or missing without this change.
 - **That your test can fail.** Break the code your test covers, watch the test go red, and say which change you made. A test that has never failed is not known to check anything.
+- **Where the knowledge goes.** What the change does is written on the `docs/` page that owns it and its state in `docs/design.md` "What exists"; `README.md` gains at most a line or a table row pointing there, never a paragraph.
 - **Contracts.** A change under `src/minutehand/domain/` or `src/minutehand/ports/` is a change every part depends on. Put it in its own commit and update every caller in the same pull request. No aliases, no compatibility wrappers.
 
 ## Adding a provider
