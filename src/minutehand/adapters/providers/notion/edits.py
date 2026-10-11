@@ -166,7 +166,9 @@ class Editor:
         by: str,
         icon: JsonValue = None,
         cover: JsonValue = None,
+        edited_by: str | None = None,
     ) -> wire.StoredPage:
+        """A new page; `edited_by`, a seeded page's last editor where it is not who made it."""
         made = wire.new_blocks(list(children), "body.children", self, seeding=self._actor is Actor.SCENARIO)
         if parent.type is wire.ParentType.DATABASE_ID:
             assert parent.id is not None
@@ -181,6 +183,8 @@ class Editor:
         else:
             values = {"title": self._title_value(properties)}
         stamps = self._stamps(by)
+        if edited_by is not None:
+            stamps = stamps.edited(stamps.last_edited_time, edited_by)
         page = wire.StoredPage(
             id=page_id,
             workspace=self.workspace,

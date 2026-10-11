@@ -101,7 +101,9 @@ class NotionProvider:
         """One property of a database row, from the happening's text: a number, `true`/`false`, comma-separated
         option names, person keys or row ids for a property holding several, anything else as written."""
         if not is_row(row):
-            raise ValueError(f"{row.id} is a page, not a row of a database, so it has no {action.field!r} to set")
+            raise ValueError(
+                f"notion: {row.id} is a page, not a row of a database, so it has no {action.field!r} to set"
+            )
         assert row.parent.id is not None
         database = editor.database(row.parent.id)
         if action.field not in database.schema_:

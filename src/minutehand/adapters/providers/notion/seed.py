@@ -620,29 +620,47 @@ def _seed_documents(
     if not documents:
         return
     ws = object_id(workspace.key, workspace.key)
-    editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
+    folder_editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     users = notion.users(ws)
     by = next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
+    people = {p.key: p for p in scenario.people}
+
+    def user_of(key: str | None) -> str | None:
+        person = people.get(key) if key is not None else None
+        if person is None:
+            return None
+        return next((u.id for u in users if (u.email and u.email == person.email) or u.name == person.name), None)
+
     made: list[str] = []
     folders: dict[str, str] = {}
-    for n, document in enumerate(documents):
+    titled: dict[str, int] = {}
+    for document in documents:
         if document.title in rows:
             continue
         parent = wire.Parent(type=wire.ParentType.WORKSPACE)
-        if document.folder is not None:
-            if document.folder not in folders:
-                folder_id = wire.minted_id("seed", workspace.key, "folder", document.folder)
-                editor.create_page(folder_id, parent, {"title": {"title": wire.text_run(document.folder)}}, [], by=by)
-                folders[document.folder] = folder_id
-                made.append(folder_id)
-            parent = wire.Parent(type=wire.ParentType.PAGE_ID, id=folders[document.folder])
-        page_id = _document_page(workspace.key, n)
+        path: list[str] = []
+        for step in [s for s in (document.folder or "").split("/") if s]:  # a path is pages within pages
+            path.append(step)
+            where = "/".join(path)
+            if where not in folders:
+                folder_id = wire.minted_id("seed", workspace.key, "folder", where)
+                folder_editor.create_page(folder_id, parent, {"title": {"title": wire.text_run(step)}}, [], by=by)
+                folders[where] = folder_id
+                if len(path) == 1:
+                    made.append(folder_id)
+            parent = wire.Parent(type=wire.ParentType.PAGE_ID, id=folders[where])
+        nth = titled.get(document.title, 0)
+        titled[document.title] = nth + 1
+        page_id = wire.minted_id("seed", workspace.key, "document", document.title, str(nth))
+        owned = user_of(document.owner) or by
+        editor = Editor(notion, ws, _At(now - document.modified_before_start), actor=Actor.SCENARIO, seeding=True)
         editor.create_page(
             page_id,
             parent,
             {"title": {"title": wire.text_run(document.title)}},
             _paragraphs(document.text)[: wire.MAX_CHILDREN],
-            by=by,
+            by=owned,
+            edited_by=user_of(document.modified_by),
         )
         if document.folder is None:
             made.append(page_id)
@@ -659,10 +677,6 @@ def _paragraphs(text: str) -> list[JsonValue]:
     ]
 
 
-def _document_page(workspace: str, position: int) -> str:
-    return wire.minted_id("seed", workspace, "document", str(position))
-
-
 def document_page(scenario: Scenario, title: str) -> str:
     """The id of the page or row a seeded Notion document was written as."""
     workspaces = read(scenario).workspaces or [DEFAULT_WORKSPACE]
@@ -671,6 +685,5 @@ def document_page(scenario: Scenario, title: str) -> str:
         bridged += [r.key for d in workspace.databases for r in d.rows if r.document == title]
         if bridged:
             return object_id(workspace.key, bridged[0])
-    documents = [d for d in scenario.documents if d.provider == MANIFEST.key]
-    position = next(n for n, d in enumerate(documents) if d.title == title)
-    return _document_page(workspaces[0].key, position)
+    # A seeded document's page is named by its title (the first of that title: the document a happening names).
+    return wire.minted_id("seed", workspaces[0].key, "document", title, "0")

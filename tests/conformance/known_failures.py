@@ -65,35 +65,10 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "notion",
-        Property.IDS,
-        "stable_under_additions_and_reordering",
-        "in a seed listing one more first, document Original doc: <uuid> -> <uuid>",
-    ),
-    Known(
-        "notion",
-        Property.PEOPLE_ACT,
-        "happening_field_set",
-        "refused without naming notion: <uuid> is a page, not a row of a database, so it has no 'Status' to set",
-    ),
-    Known(
-        "notion",
         Property.RECORD,
         "binary_upload_and_download",
         'VendorRefused: create a file upload: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
     ),
-    Known(
-        "notion",
-        Property.SEEDED,
-        "document_folder",
-        "seeded in Fact/Nested, the neutral view's parent is 'Fact/Nested'",
-    ),
-    Known(
-        "notion",
-        Property.SEEDED,
-        "document_last_editor",
-        "seeded last changed by mila 3 days before the start; the API: owen@example.com at 2026-09-01 09:00:00+00:00",
-    ),
-    Known("notion", Property.SEEDED, "document_owner", "seeded owned by sofia, the API shows owner owen@example.com"),
     Known(
         "notion",
         Property.TIME,
