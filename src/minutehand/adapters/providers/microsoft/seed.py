@@ -19,13 +19,14 @@
 
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field
 
-from minutehand.adapters.providers.microsoft import docx, wire
+from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.cards import message_actions
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
 from minutehand.adapters.providers.microsoft.graph_files import Files, item_id, mime_of
@@ -68,10 +69,12 @@ from minutehand.adapters.providers.microsoft.state import (
 from minutehand.domain.scenario import (
     AbsenceTrigger,
     Account,
+    DocumentKind,
     Model,
     Person,
     Scenario,
     SeededChannel,
+    SeededDocument,
     SeededPost,
 )
 from minutehand.domain.world import Actor, MessageSnapshot, Operation
@@ -645,12 +648,48 @@ def _documents(world: MicrosoftWorld, scenario: Scenario, library: DriveRecord, 
                 found = files.new_item(library, folder, step, folder=True, content=b"", by=owner)
                 world.write_item(found, operation=Operation.CREATE, actor=Actor.SCENARIO)
             folder = found
-        name = document.title if "." in document.title else f"{document.title}.docx"
-        content = docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()
-        made, _ = files.write_content(
-            library, folder, name, content, behaviour="replace", by=owner, actor=Actor.SCENARIO
-        )
+        name, content = _file_of(document)
+        owned = _person_identity(world, document.owner) or owner
+        changed_by = _person_identity(world, document.modified_by) or owned
+        written = Files(world, _At(scenario.starts_at - document.modified_before_start), seeding=True)
+        made = written.new_item(library, folder, name, folder=False, content=content, by=owned)
+        made = made.model_copy(update={"item": made.item.model_copy(update={"lastModifiedBy": changed_by})})
+        world.write_item(made, operation=Operation.CREATE, actor=Actor.SCENARIO)
         world.write_seeded(position, document.title, made.item.id)
+
+
+def _file_of(document: SeededDocument) -> tuple[str, bytes]:
+    """A seeded document as the file OneDrive keeps: a Word document, an Excel workbook of its rows, or a file of its
+    media type. A presentation is refused: no PowerPoint file is built here."""
+    if document.kind is DocumentKind.PRESENTATION:
+        raise ValueError(
+            f"the Microsoft seed cannot hold the presentation {document.title!r}: this provider builds Word and Excel "
+            "files, and no PowerPoint file"
+        )
+    if document.kind is DocumentKind.SPREADSHEET:
+        return document.title if "." in document.title else f"{document.title}.xlsx", xlsx.build(document.rows)
+    if document.kind is DocumentKind.FILE:
+        media = document.mime_type or "text/plain"
+        if mime_of(document.title) != media:
+            ending = mimetypes.guess_extension(media) or ""
+            raise ValueError(
+                f"the Microsoft seed cannot hold the file {document.title!r} as {media}: OneDrive types a file by its "
+                f"name's extension (https://learn.microsoft.com/en-us/graph/api/resources/file), so title it with one"
+                + (f" ({document.title}{ending})" if ending else "")
+            )
+        return document.title, document.text.encode()
+    name = document.title if "." in document.title else f"{document.title}.docx"
+    return name, docx.build(document.text) if mime_of(name) == docx.DOCX else document.text.encode()
+
+
+def _person_identity(world: MicrosoftWorld, key: str | None) -> wire.IdentitySet | None:
+    """The user a person key names, as a drive item names who made or changed it; None for no one, or no user."""
+    user = world.person(key) if key is not None else None
+    return (
+        None
+        if user is None
+        else wire.IdentitySet(user=wire.Identity(id=user.user.id, displayName=user.user.displayName))
+    )
 
 
 def _faults(world: MicrosoftWorld, scenario: Scenario) -> None:

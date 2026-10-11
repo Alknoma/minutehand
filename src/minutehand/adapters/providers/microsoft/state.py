@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
-from minutehand.adapters.providers.microsoft import docx, wire
+from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.scenario import Model, Scenario
@@ -354,12 +354,15 @@ def subscription_ref(subscription: str) -> EntityRef:
 
 
 def item_text(stored: wire.StoredItem) -> str:
-    """What can be read of a file as text: a Word document's paragraphs, a text file's bytes; nothing else."""
+    """What can be read of a file as text: a Word document's paragraphs, an Excel workbook's cells, a text file's
+    bytes; nothing else."""
     if stored.item.file is None:
         return ""
     content = wire.content_of(stored)
     if stored.item.file.mimeType == docx.DOCX:
         return docx.text_of(content) or ""
+    if stored.item.file.mimeType == xlsx.XLSX:
+        return xlsx.text_of(content) or ""
     if stored.item.file.mimeType.startswith("text/"):
         return content.decode("utf-8", errors="replace")
     return ""

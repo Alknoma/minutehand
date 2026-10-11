@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import docx
 import httpx
+import openpyxl
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, WorldView
 from minutehand.adapters.providers.microsoft.state import Directory, directory_of
@@ -73,9 +74,10 @@ USERS_PAGE = 999
 MESSAGES_PAGE = 50
 ITEMS_PAGE = 999
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 OFFICE_KINDS = {
     DOCX: DocumentKind.DOCUMENT,
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": DocumentKind.SPREADSHEET,
+    XLSX: DocumentKind.SPREADSHEET,
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": DocumentKind.PRESENTATION,
 }
 OFFICE_ENDINGS = (".docx", ".xlsx", ".pptx")
@@ -176,6 +178,14 @@ def _docx(text: str) -> bytes:
 
 def _docx_text(content: bytes) -> str:
     return "\n".join(p.text for p in docx.Document(io.BytesIO(content)).paragraphs)
+
+
+def _xlsx_text(content: bytes) -> str:
+    """A workbook's cells, read by openpyxl: a row a line, its cells tab-separated."""
+    book = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+    return "\n".join(
+        "\t".join("" if v is None else str(v) for v in row) for row in book.worksheets[0].iter_rows(values_only=True)
+    )
 
 
 def _segments(path: str) -> list[str]:
@@ -688,6 +698,8 @@ class MicrosoftSession(Messaging, Documents):
         item = self._item(document)
         content = self.download(document)
         mime = str(item["file"]["mimeType"]) if "file" in item and "mimeType" in item["file"] else ""
+        if mime == XLSX:
+            return _xlsx_text(content)
         return _docx_text(content) if mime == DOCX else content.decode()
 
     def rename(self, document: str, title: str) -> None:

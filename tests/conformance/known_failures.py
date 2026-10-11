@@ -257,32 +257,7 @@ KNOWN: tuple[Known, ...] = (
         "every_call_kept_once_in_order_verbatim",
         'VendorRefused: GET /servicePrincipals(appId=\'<uuid>\'): 400 {"error":{"code":"BadRequest","message":"Resource not found for the segment \'servicePrincipals(appId=\'<uuid>\')\'.","innerE',
     ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "document_file",
-        "'Fact document' was seeded a file; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "document_last_editor",
-        "seeded last changed by mila 3 days before the start; the API: None at 2026-09-01 09:00:00+00:00",
-    ),
-    Known("microsoft", Property.SEEDED, "document_owner", "seeded owned by sofia, the API shows owner None"),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "document_presentation",
-        "'Fact document' was seeded a presentation; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
-    ),
     Known("microsoft", Property.SEEDED, "document_sharing", "seeded mila commenter; the API: {}"),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "document_spreadsheet",
-        "'Fact document' was seeded a spreadsheet; the API shows a document (application/vnd.openxmlformats-officedocument.wordprocessingml.document)",
-    ),
     Known(
         "microsoft",
         Property.SEEDED,
