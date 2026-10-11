@@ -32,7 +32,7 @@ from minutehand.adapters.providers.jira.state import (
     ticket_project_id,
 )
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -469,10 +469,23 @@ def seed(scenario: Scenario, world: Store) -> None:
         )
     }
     for person in scenario.people:
+        if person.account is Account.BOT:  # an app's account: no email (REST v3 user, accountType app)
+            accounts[person.key] = wire.StoredUser(
+                accountId=account_id(person.email or person.key),
+                displayName=person.name,
+                emailAddress=None,
+                accountType=wire.AccountType.APP,
+            )
+            continue
         email = person.held_email(
             "jira", "an Atlassian account signs in by its email address; one shown without an email has hidden it"
         )
-        accounts[person.key] = wire.StoredUser(accountId=account_id(email), displayName=person.name, emailAddress=email)
+        accounts[person.key] = wire.StoredUser(
+            accountId=account_id(email),
+            displayName=person.name,
+            emailAddress=email,
+            active=person.account is not Account.DEACTIVATED,
+        )
     for extra in spec.accounts:
         email = extra.email or f"{extra.key}@{spec.site}.invalid"
         accounts[extra.key] = wire.StoredUser(

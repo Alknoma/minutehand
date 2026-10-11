@@ -386,7 +386,7 @@ class JiraWorld:
         return str(10000 + self._store.head() + 1)
 
     def snapshot(self, issue: wire.StoredIssue) -> TicketSnapshot:
-        """The issue read across every provider: its summary, its description as text, its project's key, its
+        """The issue read across every provider: its summary, its description as text, its project's name, its
         assignee's email and what its status means."""
         project = self.project(issue.project)
         if project is None:
@@ -395,7 +395,7 @@ class JiraWorld:
         return TicketSnapshot(
             title=issue.summary,
             body=wire.adf_text(issue.description),
-            project=project.key,
+            project=project.name,
             assignee_email=assignee.emailAddress if assignee is not None else None,
             state=self.site().status(issue.status).outcome,
         )

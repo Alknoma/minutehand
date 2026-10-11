@@ -163,7 +163,7 @@ async def test_an_oauth_app_runs_an_issue_from_creation_to_deletion(site: Site) 
     assert finished == TicketSnapshot(
         title="Hire the photographer",
         body="Two hours on launch day.",
-        project="LAUNCH",
+        project="Launch",
         assignee_email="iris@example.com",
         state=TicketState.DONE,
     )

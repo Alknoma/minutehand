@@ -32,7 +32,7 @@ from minutehand.adapters.providers.notion.edits import Editor
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.state import NotionWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Person, Scenario, SeededDocument
+from minutehand.domain.scenario import Account, Model, Person, Scenario, SeededDocument
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -384,21 +384,26 @@ def _seed_workspace(
     unknown = sorted(set(members) - set(people))
     if unknown:
         raise ValueError(f"workspace {workspace.key} names nobody: {', '.join(unknown)}")
+
+    def user_id(person: Person) -> str:
+        """A person user by their email; a bot, which has none, by its key."""
+        if person.account is Account.BOT:
+            return person_id(ws, f"bot:{person.key}")
+        return person_id(ws, person.held_email("notion", "a Notion person user is identified by their email"))
+
     for key in members:
         person = people[key]
+        bot = person.account is Account.BOT
         notion.write_user(
             wire.StoredUser(
-                id=person_id(ws, person.held_email("notion", "a Notion person user is identified by their email")),
+                id=user_id(person),
                 workspace=ws,
-                type=wire.UserType.PERSON,
+                type=wire.UserType.BOT if bot else wire.UserType.PERSON,
                 name=person.name,
-                email=person.email,
+                email=None if bot else person.email,
             )
         )
-    by_person = {
-        k: person_id(ws, people[k].held_email("notion", "a Notion person user is identified by their email"))
-        for k in members
-    }
+    by_person = {k: user_id(people[k]) for k in members}
     creator = by_person[owner.key] if owner.key in by_person else next(iter(by_person.values()), ws)
 
     for integration in workspace.integrations:

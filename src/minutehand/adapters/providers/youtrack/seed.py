@@ -26,7 +26,7 @@ from minutehand.adapters.providers.youtrack import fields, state, wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
@@ -334,7 +334,10 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
-    accounts += [user(f"1-{n + 1}", p.key, p.name, p.email) for n, p in enumerate(scenario.people)]
+    accounts += [
+        user(f"1-{n + 1}", p.key, p.name, p.email, banned=p.account is Account.DEACTIVATED)
+        for n, p in enumerate(scenario.people)
+    ]
     accounts += [
         user(f"1-{state.EXTRA_USERS + n}", u.login, u.name, u.email, banned=u.banned) for n, u in enumerate(extra.users)
     ]

@@ -414,7 +414,7 @@ class YouTrackWorld:
         return TicketSnapshot(
             title=issue.summary,
             body=issue.description or "",
-            project=project.shortName,
+            project=project.name,
             assignee_email=assignee.email if assignee is not None else None,
             state=state.outcome if state is not None else TicketState.OPEN,
         )
