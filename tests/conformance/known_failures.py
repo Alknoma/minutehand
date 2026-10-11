@@ -29,42 +29,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "asana",
-        Property.PEOPLE_ACT,
-        "act_move_ticket",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
-        Property.PEOPLE_ACT,
-        "happening_moves_cancelled",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
-        Property.PEOPLE_ACT,
-        "happening_moves_done",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
-        Property.PEOPLE_ACT,
-        "happening_reassigns",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
-        Property.PEOPLE_ACT,
-        "happening_reopens",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
-        Property.PEOPLE_ACT,
-        "happening_unassigns",
-        "the API says the change was made by None, not sofia@example.com",
-    ),
-    Known(
-        "asana",
         Property.SEEDED,
         "person_deactivated",
         "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",

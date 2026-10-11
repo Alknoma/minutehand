@@ -426,6 +426,11 @@ class AsanaDriver(Driver):
     provider: ClassVar[str] = PROVIDER
     session: ClassVar[type[Session]] = AsanaSession
     absent: ClassVar[Mapping[str, str]] = {
+        "tickets.changed_by": "Asana records a change to a task as an activity story, but its reference documents only "
+        "the comment subtype, `comment_added`: 'Only comment_added is supported, which narrows the response to comments "
+        "and excludes activity such as assignments, due date changes, and project moves' "
+        "(https://developers.asana.com/reference/getstoriesfortask), so the provider keeps no activity story it would "
+        "have to invent, and who changed a task is not read",
         "accounts.title": "An Asana user resource carries a gid, name, email, photo and workspaces; it has no job title.",
         "accounts.bot": "Asana's user resource has no field saying an account is a bot or an app; integrations act "
         "as ordinary users or service accounts the API does not mark.",
