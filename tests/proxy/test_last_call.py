@@ -29,3 +29,17 @@ async def test_every_call_answered_or_refused_is_the_latest_seen_until_the_next(
     assert answered.what == "POST acme.ledger.test/api/v2/entries?token=%5Bredacted%5D"
     assert refused is not None and refused.at >= answered.at
     assert refused.what == "GET api.unclaimed.example/v1/ping"
+
+
+async def test_a_client_with_a_public_address_is_served(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
+    """Docker Desktop behind a VPN hands a published port's connections from a public address: mitmproxy's default
+    killed each unanswered. Who reaches the proxy is decided by the address it listens on."""
+    from mitmproxy import ctx
+    from mitmproxy.connection import Client
+
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca"):
+        visitor = Client(peername=("172.67.69.88", 50000), sockname=("172.17.0.2", 8080))
+        ctx.master.addons.get("block").client_connected(visitor)
+    assert visitor.error is None
