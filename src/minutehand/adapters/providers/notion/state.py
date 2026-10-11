@@ -338,6 +338,7 @@ class NotionWorld:
             last_edited_at=at,
             owner=self.editor(page.stamps.created_by),
             space=space.name if (space := self.workspace(page.workspace)) is not None else None,
+            trashed=page.archived,
         )
 
     # ------------------------------------------------------------------ writes

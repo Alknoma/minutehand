@@ -184,6 +184,7 @@ def snapshot(
         mime_type=stored.file.mimeType,
         text=readable_text(stored, blob) or None,
         parent=parent,
+        trashed=bool(stored.file.trashed),
         last_edited_by=(editor.emailAddress or editor.displayName) if editor is not None else None,
         last_edited_at=datetime.fromisoformat(stored.file.modifiedTime.replace("Z", "+00:00")),
     )

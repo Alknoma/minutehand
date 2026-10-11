@@ -53,6 +53,7 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("POST", "/v1/pages", "page_create"),
     ("GET", "/v1/pages/{page_id}", "page_get"),
     ("PATCH", "/v1/pages/{page_id}", "page_update"),
+    ("POST", "/v1/pages/{page_id}/move", "page_move"),
     ("GET", "/v1/pages/{page_id}/properties/{property_id}", "page_property"),
     ("GET", "/v1/blocks/{block_id}", "block_get"),
     ("PATCH", "/v1/blocks/{block_id}", "block_update"),
@@ -540,6 +541,11 @@ class NotionApi:
         page = self._page(call, self._id(request, "page_id"))
         changed = self._editor(call).update_page(page.id, await self._body(request), by=call.bot)
         return _answer(self.render_page(call, changed))
+
+    async def page_move(self, request: Request, call: Call) -> Response:
+        page = self._page(call, self._id(request, "page_id"))
+        moved = self._editor(call).move_page(page.id, await self._body(request), by=call.bot)
+        return _answer(self.render_page(call, moved))
 
     async def page_property(self, request: Request, call: Call) -> Response:
         page = self._page(call, self._id(request, "page_id"))

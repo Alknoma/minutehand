@@ -29,12 +29,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "google_workspace",
-        Property.FAMILY,
-        "documents",
-        "the document's first neutral change is [('create', {'title': 'My Drive', 'text': '', 'parent': 'None', 'owner': 'owen@example.com', 'space': 'None', 'mime': 'application/vnd.google",
-    ),
-    Known(
-        "google_workspace",
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, document Original doc: 1F00000000000099875f5ee919c73f -> 1F00000000000199875f5ee919c73f",
@@ -44,24 +38,6 @@ KNOWN: tuple[Known, ...] = (
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1000 -> 1001",
-    ),
-    Known(
-        "microsoft",
-        Property.FAMILY,
-        "same_as_google_workspace_documents",
-        "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
-    ),
-    Known(
-        "notion",
-        Property.FAMILY,
-        "documents",
-        'VendorRefused: move a page: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
-    ),
-    Known(
-        "notion",
-        Property.FAMILY,
-        "same_as_google_workspace_documents",
-        'VendorRefused: move a page: 400 {"object": "error", "status": 400, "code": "invalid_request_url", "message": "There is no endpoint at this path.", "request_id": "<uuid>"}',
     ),
     Known(
         "notion",
