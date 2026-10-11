@@ -16,6 +16,7 @@ a capability the lifecycle needs absent does not drive it, and the lifecycle is 
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -71,7 +72,7 @@ def _fields(after: object, names: dict[str, str]) -> tuple[tuple[str, str], ...]
 
 def neutral_sequence(events: Sequence[WorldEvent], provider: str, since: int) -> list[Step]:
     """The world's changes after `since`, neutral: vendor-only records (`RecordSnapshot` and kinds outside the
-    neutral ones) dropped, things named T1, T2... by first appearance, and an update that changes no neutral field of
+    neutral ones) and Minutehand's own records of each move dropped, things named T1, T2... by first appearance, and an update that changes no neutral field of
     its thing dropped (it means nothing neutral)."""
     names: dict[str, str] = {}
     last: dict[str, tuple[tuple[str, str], ...]] = {}
@@ -81,8 +82,8 @@ def neutral_sequence(events: Sequence[WorldEvent], provider: str, since: int) ->
             continue
         if event.operation in (Operation.READ, Operation.SEARCH) or isinstance(event.after, RecordSnapshot):
             continue
-        if event.entity.kind in (EntityKind.RECORD, EntityKind.CHANNEL):
-            continue
+        if event.entity.kind in (EntityKind.RECORD, EntityKind.CHANNEL, EntityKind.TRANSITION):
+            continue  # a transition is Minutehand's own record of a move (`domain.transitions`), not the vendor's
         thing = names.setdefault(event.entity.external_id, f"T{len(names) + 1}")
         fields = _fields(event.after, names)
         if event.operation is Operation.UPDATE and last.get(thing) == fields:
@@ -272,14 +273,27 @@ LIFECYCLES = {
 }
 
 
+def _measured(driver: Driver, measure: Driver) -> Driver:
+    """The driver, also lacking what the family's measure lacks: compared with it, a provider skips the steps the
+    measure cannot take (a reaction its agent cannot set), so the two run the same lifecycle."""
+    acting = copy.copy(driver)
+    vars(acting)["absent"] = {**measure.absent, **driver.absent}
+    return acting
+
+
 def run(
-    harness: Harness, case_provider: str, lifecycle: Lifecycle, record: Callable[[str, object], None]
+    harness: Harness,
+    case_provider: str,
+    lifecycle: Lifecycle,
+    record: Callable[[str, object], None],
+    measure: str | None = None,
 ) -> list[Step]:
     driver = require(case_provider, lifecycle.family)
+    acting = driver if measure is None else _measured(driver, require(measure, lifecycle.family))
     with harness.world(driver, seed(case_provider)) as world:
         since = world.view.head
         with harness.session(driver, world) as session:
-            lifecycle.drive(session, driver, record)
+            lifecycle.drive(session, acting, record)
         steps = neutral_sequence(world.events(), case_provider, since)
         _same_clock(world, steps)
         return steps
@@ -329,7 +343,7 @@ def test_every_provider_of_a_family_leaves_the_same_neutral_sequence_as_the_firs
         raise AssertionError(
             f"{first} cannot complete the lifecycle, so {case.provider} cannot be compared with it: {failed}"
         ) from None
-    mine = run(harness, case.provider, lifecycle, record_property)
+    mine = run(harness, case.provider, lifecycle, record_property, measure=first)
     differ = next(
         (n for n, (a, b) in enumerate(zip(mine, theirs, strict=False)) if a != b), min(len(mine), len(theirs))
     )

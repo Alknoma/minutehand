@@ -57,12 +57,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "jira",
-        Property.FAMILY,
-        "same_as_asana_tickets",
-        'asana cannot complete the lifecycle, so jira cannot be compared with it: link two tasks: 404 {"errors": [{"message": "No matching route for request", "help": "For more information ',
-    ),
-    Known(
-        "jira",
         Property.IDS,
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1000 -> 1001",
@@ -132,22 +126,10 @@ KNOWN: tuple[Known, ...] = (
         "advancing the clock changed what the vendor answers for what was there",
     ),
     Known(
-        "slack",
-        Property.FAMILY,
-        "same_as_microsoft_messages_in_a_channel",
-        "microsoft cannot complete the lifecycle, so slack cannot be compared with it: POST /teams/<uuid>/channels/19%3Ac741879c406c5172ac0c440396e8ffbb%40thread.tacv2/messages/178825320000",
-    ),
-    Known(
         "youtrack",
         Property.ACCOUNTS,
         "vendor_login",
         "NotImplementedError: the youtrack seed gives each scenario person the login of their Person.key and has no field that gives a person another login, so {'lena': 'Lena.Ortiz-QA'} can",
-    ),
-    Known(
-        "youtrack",
-        Property.FAMILY,
-        "same_as_asana_tickets",
-        'asana cannot complete the lifecycle, so youtrack cannot be compared with it: link two tasks: 404 {"errors": [{"message": "No matching route for request", "help": "For more informat',
     ),
     Known(
         "youtrack",

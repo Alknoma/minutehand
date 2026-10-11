@@ -41,7 +41,17 @@ from minutehand.adapters.providers.youtrack import wire
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.transitions import Transition, transition_change
-from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, Stored, TicketSnapshot, WorldEvent
+from minutehand.domain.world import (
+    Actor,
+    Change,
+    EntityKind,
+    EntityRef,
+    MessageSnapshot,
+    Operation,
+    Stored,
+    TicketSnapshot,
+    WorldEvent,
+)
 from minutehand.ports.store import Store
 
 USERS = "users"
@@ -589,6 +599,7 @@ class YouTrackWorld:
                 actor=actor,
                 body=wire.dump(comment),
                 parent=comment.issue,
+                after=MessageSnapshot(text=comment.text, channel=comment.issue, thread_of=comment.issue),
             )
         )
 
