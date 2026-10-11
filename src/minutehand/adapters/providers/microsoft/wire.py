@@ -470,7 +470,25 @@ class GraphUser(Aliased):
     userPrincipalName: str
     jobTitle: str | None = None
     businessPhones: list[str] = []
-    accountEnabled: bool | None = Field(default=None, description="Said only once an administrator changed it")
+    accountEnabled: bool | None = Field(default=None, description="Returned only on $select")
+    userType: Literal["Member", "Guest"] | None = Field(default=None, description="Returned only on $select")
+
+
+USER_DEFAULT_FIELDS = [
+    "businessPhones",
+    "displayName",
+    "givenName",
+    "jobTitle",
+    "mail",
+    "mobilePhone",
+    "officeLocation",
+    "preferredLanguage",
+    "surname",
+    "userPrincipalName",
+    "id",
+]
+"""The properties Graph returns for a user when the request selects none
+(https://learn.microsoft.com/en-us/graph/api/user-get, "Optional query parameters")."""
 
 
 class OutOfOfficeSettings(Aliased):

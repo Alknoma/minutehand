@@ -238,6 +238,8 @@ def _graph_user(person: Person, directory: Directory) -> wire.GraphUser:
         mail=person.email,
         userPrincipalName=upn,
         jobTitle=person.title,
+        accountEnabled=person.account is not Account.DEACTIVATED,
+        userType="Guest" if guest else "Member",
     )
 
 

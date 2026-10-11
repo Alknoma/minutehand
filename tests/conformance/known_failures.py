@@ -322,18 +322,6 @@ KNOWN: tuple[Known, ...] = (
     Known(
         "microsoft",
         Property.SEEDED,
-        "person_deactivated",
-        "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
-        "person_guest",
-        "'Gus Guest' was seeded as a guest; the vendor lists email=gus@example.com active=True bot=False guest=False title=None",
-    ),
-    Known(
-        "microsoft",
-        Property.SEEDED,
         "person_without_email",
         "the shared seed model refused the seed before any provider was asked, naming no provider: 1 validation error for Seed / people.3.email / Field required [type=missing, input_value={",
     ),

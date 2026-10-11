@@ -210,6 +210,7 @@ class TeamsGraph:
         default: int = PAGE_DEFAULT,
         most: int = PAGE_MAX,
         keep: frozenset[str] = frozenset(),
+        unselected: list[str] | None = None,
     ) -> Response:
         size, offset = self._bounds(request, default, most)
         page = items[offset : offset + size]
@@ -222,15 +223,19 @@ class TeamsGraph:
             following = f"{GRAPH}{request.url.path.removeprefix('/v1.0')}?{'&'.join([*kept, f'$top={size}', f'$skiptoken={skip}'])}"
         body = "{" + f'"@odata.context":{json.dumps(context)},"value":[' + ",".join(wire.dump(i) for i in page) + "]"
         body += f',"@odata.nextLink":{json.dumps(following)}' + "}" if following else "}"
-        return Response(wire.select_page(body, self._fields(request), keep=keep), media_type=GRAPH_JSON)
+        return Response(wire.select_page(body, self._fields(request) or unselected, keep=keep), media_type=GRAPH_JSON)
 
     @staticmethod
     def _fields(request: Request) -> list[str] | None:
         return [f for f in (query(request, "$select") or "").split(",") if f] or None
 
-    def _one(self, request: Request, entity: wire.Aliased, context: str) -> Response:
+    def _one(
+        self, request: Request, entity: wire.Aliased, context: str, unselected: list[str] | None = None
+    ) -> Response:
+        """`unselected`: the properties answered when the request selects none, where Graph has a default set."""
         return Response(
-            wire.select(wire.with_context(wire.dump(entity), context), self._fields(request)), media_type=GRAPH_JSON
+            wire.select(wire.with_context(wire.dump(entity), context), self._fields(request) or unselected),
+            media_type=GRAPH_JSON,
         )
 
     @staticmethod
@@ -281,13 +286,20 @@ class TeamsGraph:
             found = self._filter_users(clause) if clause else self._world.users()
             self._world.saw(user_ref("all"), Operation.SEARCH)
             return self._page(
-                request, [u.user for u in found], f"{GRAPH}/$metadata#users", default=100, most=USERS_PAGE_MAX
+                request,
+                [u.user for u in found],
+                f"{GRAPH}/$metadata#users",
+                default=100,
+                most=USERS_PAGE_MAX,
+                unselected=wire.USER_DEFAULT_FIELDS,
             )
         user = self._user(parts[1])
         if len(parts) == 2:
             self._refuse_options(request, set())
             self._world.saw(user_ref(user.user.id), Operation.READ)
-            return self._one(request, user.user, f"{GRAPH}/$metadata#users/$entity")
+            return self._one(
+                request, user.user, f"{GRAPH}/$metadata#users/$entity", unselected=wire.USER_DEFAULT_FIELDS
+            )
         if parts[2:] == ["presence"]:
             self._world.saw(user_ref(user.user.id), Operation.READ)
             return self._one(

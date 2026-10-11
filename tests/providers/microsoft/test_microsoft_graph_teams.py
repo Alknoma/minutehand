@@ -179,3 +179,19 @@ async def test_channel_messages_list_by_their_reply_chains_last_change(graph: Gr
         )
     in_chat = (await graph.http.get(f"{GRAPH}/chats/{chat.graph_id}/messages", headers=graph.auth)).json()["value"]
     assert [m["body"]["content"] for m in in_chat] == ["two", "one"], "chat-list-messages: lastModifiedDateTime desc"
+
+
+async def test_a_users_type_and_whether_it_is_enabled_are_answered_when_selected(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    """`userType` and `accountEnabled` are not among the properties Graph returns by default, and are when selected
+    (https://learn.microsoft.com/en-us/graph/api/user-get)."""
+    async with microsoft.http() as http:
+        app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        plain = (await http.get(f"{GRAPH}/users", headers=app)).json()["value"]
+        chosen = (
+            await http.get(f"{GRAPH}/users", params={"$select": "id,userType,accountEnabled"}, headers=app)
+        ).json()["value"]
+
+    assert not any("userType" in u or "accountEnabled" in u for u in plain)
+    assert {(u["userType"], u["accountEnabled"]) for u in chosen} == {("Member", True)}

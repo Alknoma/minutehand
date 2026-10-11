@@ -188,6 +188,7 @@ answering it with; a code with no Graph recording (Exchange's `ErrorFolderNotFou
 | A chat's members are listed by `GET /chats/{id}/members` | documented | `test_a_one_on_one_chat_between_two_people_is_made_once_and_a_group_with_its_topic` | https://learn.microsoft.com/en-us/graph/api/chat-list-members |
 | `joinedTeams` lists the teams the user is a direct member of, populating `id`, `displayName`, `description`, `isArchived` and `tenantId`; it supports no OData query parameter | documented | `test_joined_teams_and_the_primary_channel` | https://learn.microsoft.com/en-us/graph/api/user-list-joinedteams |
 | `GET /teams/{id}/primaryChannel` is the team's General channel | documented | `test_joined_teams_and_the_primary_channel` | https://learn.microsoft.com/en-us/graph/api/team-get-primarychannel |
+| A signed-in user sets and unsets a reaction on a channel message, a reply or a chat message: 204, and the message's `reactions` list each one (type, when, by whom); an app's call is refused 501 by name, since Application permissions are not supported | documented | `test_microsoft_graph_teams_posting.py::test_a_signed_in_user_sets_and_unsets_a_reaction_and_the_message_lists_it` | https://learn.microsoft.com/en-us/graph/api/chatmessage-setreaction, https://learn.microsoft.com/en-us/graph/api/resources/chatmessagereaction |
 
 ## Answered without a source (tracked, to be sourced or refused)
 
@@ -265,5 +266,3 @@ Contradicted by Microsoft's documentation (the old emulator was wrong; this prov
 Emulator artefacts with no counterpart in Microsoft's service: its `/health` route, its admin routes (clear,
 reset, provisioning a conversation, simulating a message or a card press, reading stored messages), its fixed
 fixture ids and secrets, an `expires_in` of exactly 3600, and its seeded folder names.
-
-| A signed-in user sets and unsets a reaction on a channel message, a reply or a chat message: 204, and the message's `reactions` list each one (type, when, by whom); an app's call is refused 501 by name, since Application permissions are not supported | documented | `test_microsoft_graph_teams_posting.py::test_a_signed_in_user_sets_and_unsets_a_reaction_and_the_message_lists_it` | https://learn.microsoft.com/en-us/graph/api/chatmessage-setreaction, https://learn.microsoft.com/en-us/graph/api/resources/chatmessagereaction |
