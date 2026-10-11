@@ -47,12 +47,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "microsoft",
-        Property.ACCOUNTS,
-        "vendor_login",
-        "NotImplementedError: Microsoft accounts have a login of their own (the userPrincipalName), but the Microsoft seed has no field naming one: the provider derives it from the email's ",
-    ),
-    Known(
-        "microsoft",
         Property.FAMILY,
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
@@ -105,12 +99,6 @@ KNOWN: tuple[Known, ...] = (
         Property.TIME,
         "new_things_carry_the_worlds_clock",
         "advancing the clock changed what the vendor answers for what was there",
-    ),
-    Known(
-        "youtrack",
-        Property.ACCOUNTS,
-        "vendor_login",
-        "NotImplementedError: the youtrack seed gives each scenario person the login of their Person.key and has no field that gives a person another login, so {'lena': 'Lena.Ortiz-QA'} can",
     ),
     Known(
         "youtrack",

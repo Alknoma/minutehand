@@ -349,7 +349,7 @@ class MicrosoftSession(Messaging, Documents):
                 active=not ("accountEnabled" in u and u["accountEnabled"] is False),
                 guest="userType" in u and u["userType"] == "Guest",
                 title=str(u["jobTitle"]) if _given(u, "jobTitle") else None,
-                login=str(u["userPrincipalName"]),
+                login=str(u["userPrincipalName"]).split("@")[0],
             )
             for page in self._users()
             for u in page
@@ -879,13 +879,17 @@ class MicrosoftDriver(Driver):
         """Each world's people by key, by its name (the tag): whom a person's session signs in as."""
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
-        if logins:
-            raise NotImplementedError(
-                "Microsoft accounts have a login of their own (the userPrincipalName), but the Microsoft seed has no "
-                "field naming one: the provider derives it from the email's local part (seed.py `_graph_user`)"
-            )
         merged = dict(seed) | {"name": tag}
-        self._people[tag] = {str(p["key"]): p for p in _objects(seed, "people")}
+        if logins:  # a person's userPrincipalName, before the tenant's domain (`MicrosoftSeed.logins`)
+            given = [s for s in _objects(seed, "provider_seeds") if s["provider"] != PROVIDER]
+            ours = next((s for s in _objects(seed, "provider_seeds") if s["provider"] == PROVIDER), None)
+            body: dict[str, object] = {} if ours is None else json.loads(str(ours["body"]))
+            body["logins"] = dict(logins)
+            merged["provider_seeds"] = [*given, {"provider": PROVIDER, "body": json.dumps(body)}]
+        self._people[tag] = {
+            str(p["key"]): {**p, "login": logins[str(p["key"])]} if logins and str(p["key"]) in logins else p
+            for p in _objects(seed, "people")
+        }
         tenant = directory(tag)
         keys = [tenant.tenant_id, tenant.tenant_domain, tenant.sharepoint_host.split(".")[0]]
         return CreateWorld(
@@ -919,8 +923,12 @@ class MicrosoftDriver(Driver):
         found = self._people[world.name][person]
         if "account" in found and found["account"] == "bot":
             return None
-        # A person with no email signs in by the name the tenant gives them: their key at its domain.
-        return str(found["email"]) if "email" in found else f"{person}@{directory(world.name).tenant_domain}"
+        # A person signs in by their userPrincipalName: a login the seed names, else their email's (or, with none,
+        # their key's) local part, at the tenant's domain.
+        domain = directory(world.name).tenant_domain
+        if "login" in found:
+            return f"{found['login']}@{domain}"
+        return str(found["email"]) if "email" in found else f"{person}@{domain}"
 
     def faults(self) -> list[FaultCase]:
         # No Microsoft client library is a dev dependency (no msgraph-sdk, no msal, no botbuilder): each fault is

@@ -207,6 +207,11 @@ class MicrosoftSeed(Model):
         description="Person.key of each person whose own chat with the bot does not exist yet: the bot reaches them "
         "only once they install it (`PersonAddsAgent` with no channel)",
     )
+    logins: dict[str, str] = Field(
+        default={},
+        description="Person.key to the part of their userPrincipalName before the tenant's domain, where it is not "
+        "their email's local part",
+    )
 
 
 def microsoft_seed(scenario: Scenario) -> MicrosoftSeed:
@@ -227,8 +232,8 @@ class _At:
         return 0
 
 
-def _graph_user(person: Person, directory: Directory) -> wire.GraphUser:
-    local = (person.email or person.key).split("@")[0]
+def _graph_user(person: Person, directory: Directory, login: str | None = None) -> wire.GraphUser:
+    local = login or (person.email or person.key).split("@")[0]
     guest = person.account is Account.GUEST
     upn = (
         f"{(person.email or person.key).replace('@', '_')}#EXT#@{directory.tenant_domain}"
@@ -433,7 +438,7 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         if person.account is Account.BOT:
             continue
         user = UserRecord(
-            user=_graph_user(person, directory),
+            user=_graph_user(person, directory, microsoft_seed(scenario).logins.get(person.key)),
             tenant_id=directory.tenant_id,
             person_key=person.key,
             absences=[

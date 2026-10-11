@@ -513,11 +513,6 @@ class YouTrackDriver(Driver):
     # CLAIMS.md #1: a call YouTrack cannot authenticate is a 401 `Unauthorized`.
 
     def world(self, seed: dict[str, object], tag: str, *, logins: Mapping[str, str] | None = None) -> CreateWorld:
-        if logins:
-            raise NotImplementedError(
-                "the youtrack seed gives each scenario person the login of their Person.key and has no field that "
-                f"gives a person another login, so {dict(logins)} cannot be seeded"
-            )
         people = seed["people"]
         if not isinstance(people, list):
             raise ValueError(f"the seed's people are a list, not {people!r}")
@@ -533,6 +528,8 @@ class YouTrackDriver(Driver):
         if not isinstance(held, list):
             raise ValueError(f"the youtrack seed's tokens are a list, not {held!r}")
         body["tokens"] = [*held, *tokens]
+        if logins:  # a person's login, where it is not their key (`YouTrackSeed.logins`)
+            body["logins"] = dict(logins)
         chosen = {**seed, "provider_seeds": [*others, {"provider": PROVIDER, "body": body}]}
         return CreateWorld(
             seed=Seed.model_validate(chosen),

@@ -201,6 +201,9 @@ class YouTrackSeed(Model):
     grants: list[GrantSeed] = []
     faults: list[FaultSeed] = []
     count_unknown: bool = Field(default=False, description="issuesGetter/count answers -1, as while it still counts")
+    logins: dict[str, str] = Field(
+        default={}, description="Person.key to the person's login, where it is not their key (dots, dashes, uppercase)"
+    )
 
     @model_validator(mode="after")
     def _one_project_per_name(self) -> YouTrackSeed:
@@ -335,7 +338,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     agent = user("1-0", state.AGENT_LOGIN, state.AGENT_NAME, state.AGENT_EMAIL)
     accounts = [agent]
     accounts += [
-        user(f"1-{n + 1}", p.key, p.name, p.email, banned=p.account is Account.DEACTIVATED)
+        user(f"1-{n + 1}", extra.logins.get(p.key, p.key), p.name, p.email, banned=p.account is Account.DEACTIVATED)
         for n, p in enumerate(scenario.people)
     ]
     accounts += [
@@ -349,9 +352,11 @@ def seed(scenario: Scenario, world: Store) -> None:
     by_login = {a.login: a for a in accounts}
 
     def login(name: Login) -> wire.StoredUser:
-        if name not in by_login:
+        """A user by their login, or a person by their key, whose login it is unless `logins` names another."""
+        found = by_login.get(name) or by_login.get(extra.logins.get(name, ""))
+        if found is None:
             raise ValueError(f"the YouTrack seed names {name!r}, who is no user")
-        return by_login[name]
+        return found
 
     for token in extra.tokens:
         youtrack.write_token(token.token, wire.StoredToken(user=login(token.login).id), actor=Actor.SCENARIO)
@@ -442,7 +447,7 @@ def seed(scenario: Scenario, world: Store) -> None:
     stray = sorted(set(details) - keys)
     if stray:
         raise ValueError(f"the YouTrack seed describes tickets no seeded YouTrack ticket is: {', '.join(stray)}")
-    people = {p.key: by_login[p.key] for p in scenario.people}
+    people = {p.key: login(p.key) for p in scenario.people}
     reporter = people[scenario.acting(None, "who reports the seeded YouTrack tickets")]
     made_issues: dict[str, wire.StoredIssue] = {}
     labels = list(dict.fromkeys(label.lower() for t in seeded for label in t.labels))
