@@ -350,7 +350,7 @@ class People:
             await self.install(user, self.named(happening.channel, user), target)
         elif isinstance(happening, PersonOpensAgent):
             raise ValueError(
-                "Teams pushes nothing to a bot when a person opens its app; this happening has no Teams form"
+                "microsoft: Teams pushes nothing to a bot when a person opens its app; this happening has no Teams form"
             )
 
     async def edit(self, user: UserRecord, activity_id: str, text: str, target: InboundTarget) -> None:

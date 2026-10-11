@@ -238,18 +238,6 @@ KNOWN: tuple[Known, ...] = (
     ),
     Known(
         "microsoft",
-        Property.PEOPLE_ACT,
-        "act_reply",
-        "#talk holds 0 messages 'Sofia answers': ['Seeded root', \"Sofia's own post\", 'The agent asks', 'Agent Sofia answers']",
-    ),
-    Known(
-        "microsoft",
-        Property.PEOPLE_ACT,
-        "happening_opens_agent",
-        "refused without naming microsoft: Teams pushes nothing to a bot when a person opens its app; this happening has no Teams form",
-    ),
-    Known(
-        "microsoft",
         Property.RECORD,
         "every_call_kept_once_in_order_verbatim",
         'VendorRefused: GET /servicePrincipals(appId=\'<uuid>\'): 400 {"error":{"code":"BadRequest","message":"Resource not found for the segment \'servicePrincipals(appId=\'<uuid>\')\'.","innerE',

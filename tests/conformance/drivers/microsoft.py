@@ -159,10 +159,12 @@ def _expect(what: str, response: httpx.Response, status: int) -> httpx.Response:
 
 
 def _text(body: Doc) -> str:
-    """A chatMessage's `body` as text: an `html` body has its markup removed and its entities read."""
+    """A chatMessage's `body` as text: an `html` body has its markup removed and its entities read, and its
+    mentions (`<at>`) left out, as a bot reads a Teams message with the Bot Framework's remove_recipient_mention
+    (a person in a channel mentions the bot for it to hear them)."""
     content = str(body["content"]) if _given(body, "content") else ""
     if "contentType" in body and body["contentType"] == "html":
-        return html.unescape(re.sub(r"<[^>]+>", "", content))
+        return html.unescape(re.sub(r"<[^>]+>", "", re.sub(r"<at\b[^>]*>.*?</at>", "", content))).strip()
     return content
 
 
