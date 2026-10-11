@@ -146,7 +146,8 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
-from minutehand.domain.world import Actor, Operation, TicketSnapshot
+from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE
+from minutehand.domain.world import Actor, Operation, RecordedCall, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import JudgedCheck
@@ -172,6 +173,7 @@ RESULT = "result.json"
 SCENARIO = "scenario.json"
 AGENT = "agent.json"
 REPLAYED = "replayed.json"
+RUN_ENVIRONMENT = "run_environment.json"
 AGENT_LOG = "agent.log"
 
 CA_VARIABLES = (
@@ -419,6 +421,7 @@ async def replay(
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
+    _as_run_was(state, parent_run)
     with reading(state, parent_run) as kept:
         recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from)
     listen = (listen or Listen()).model_copy(update={"record_model_calls": True})
@@ -469,6 +472,7 @@ async def fork(
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
+    _as_run_was(state, parent_run)
     world = _root_dir(state, parent.record) / WORLD
     changed = changed_scenario(scenario, changes)
     _refuse_unwritten(changed, agent, model)
@@ -1254,10 +1258,23 @@ def capturing_for(
     a pass-through host replays the parent's answer to the same call unless it says otherwise (`in_forks`)."""
     try:
         refuse_claimed(agent.outbound, registry, model_hosts)
-        replaying = replaying_for(agent.outbound, state=state, parent=parent, after_wake=after_wake)
+        replaying = replaying_for(
+            agent.outbound,
+            state=state,
+            parent=parent,
+            after_wake=after_wake,
+            calls_of=lambda run: _calls_of(state, run),
+        )
         return Capturing(agent.outbound, replaying=replaying)
     except (ProviderConflict, FileNotFoundError, ValueError) as e:
         raise RunRefused(f"agent {agent.name}'s outbound hosts: {e}") from e
+
+
+def _calls_of(state: Path, run_id: str) -> list[RecordedCall]:
+    """Every call a run's log holds, its parent's up to its fork included: a replay's recordings, read from the
+    timestamped record itself."""
+    with reading(state, run_id) as kept:
+        return kept.calls()
 
 
 def desk_for(
@@ -1331,6 +1348,18 @@ def _write_inputs(directory: Path, scenario: Scenario, agent: AgentUnderTest) ->
     directory.mkdir(parents=True, exist_ok=True)
     (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
     (directory / AGENT).write_text(agent.model_dump_json(indent=2), encoding="utf-8")
+    told = {k: os.environ[k] for k in (RUN_PORT_VARIABLE, RUN_DIR_VARIABLE) if k in os.environ}
+    if told:
+        (directory / RUN_ENVIRONMENT).write_text(json.dumps(told, indent=2), encoding="utf-8")
+
+
+def _as_run_was(state: Path, run_id: str) -> None:
+    """The agent's command told what its run's was: the port `{run.port}` was filled with and the folder `{run.dir}`
+    was, which the run's agent file already names, so a fork or a replay of it starts the agent where that file
+    reaches it. The agent's command is started from this process's environment, as `minutehand run` starts it."""
+    path = run_dir(state, run_id) / RUN_ENVIRONMENT
+    if path.is_file():
+        os.environ.update(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _keep(directory: Path, record: RunRecord, judge: _Judge) -> Outcome:

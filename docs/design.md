@@ -692,8 +692,14 @@ What a run leaves behind (`session.py`):
 <state>/runs/<run_id>/scenario.json  the scenario as this run played it (a fork's, with its changes)
 <state>/runs/<run_id>/agent.json     `AgentUnderTest`
 <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
-<state>/runs/<run_id>/captured.jsonl every call the run captured to a host no provider claims, redacted, for
-                                     a later replay (`docs/capture.md`)
+<state>/runs/<run_id>/captured.jsonl every call the run captured to a host no provider claims, redacted: an export
+                                     of what world.db holds, for recordings kept in a directory of their own
+                                     (`docs/capture.md`); a fork or replay of the run reads world.db, never this
+<state>/runs/<run_id>/run_environment.json  what `{run.port}` and `{run.dir}` were filled with
+                                     (MINUTEHAND_RUN_PORT, MINUTEHAND_RUN_DIR), handed again to the agent of a
+                                     fork or replay of the run, which the stored agent file reaches there
+<state>/runs/<run_id>/replayed.json  for a replay: the run it replays, how many model calls were answered from its
+                                     record, and where the two parted
 <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
                                      `own_databases`, outside forks
 <state>/runs/<run_id>/restore.json   for a fork: how its agent was found at its start (its memory, its report)

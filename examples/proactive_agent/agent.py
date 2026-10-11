@@ -51,7 +51,6 @@ PORT = int(os.environ.get("AGENT_PORT") or os.environ.get("MINUTEHAND_RUN_PORT")
 SECRET = os.environ.get("AGENT_SLACK_SIGNING_SECRET", "")
 slack = WebClient(token=os.environ.get("AGENT_SLACK_TOKEN", "xoxb-proactive-agent"))
 lock = threading.Lock()
-last_wake: list[datetime] = []
 
 
 def remembered() -> dict[str, Any]:
@@ -80,8 +79,8 @@ def open_items(work: dict[str, Any]) -> list[Open]:
 
 def wake(now: datetime) -> None:
     with lock:
-        last_wake.append(now)
         work = remembered()
+        work["last_wake"] = now.isoformat()  # in its memory, not its process: a restarted agent knows when it is
         progress: dict[str, dict[str, Any]] = work.setdefault("asks", {})
         inbox = work.pop("inbox", None) or []  # what people wrote since the last wake
         for n, ask in enumerate(ASKS):
@@ -112,8 +111,9 @@ def wake(now: datetime) -> None:
 
 def report() -> dict[str, object]:
     with lock:
-        now = last_wake[-1] if last_wake else datetime.now().astimezone()
-        moment = next_wake(open_items(remembered()), now)
+        work = remembered()
+        now = datetime.fromisoformat(work["last_wake"]) if "last_wake" in work else datetime.now().astimezone()
+        moment = next_wake(open_items(work), now)
     return {"status": "idle", "next_wake": moment.isoformat() if moment else None}
 
 
