@@ -86,6 +86,14 @@ class User(_Answer):
     email: str | None = None
 
 
+class WorkspaceMember(_Answer):
+    """A workspace membership as the people read asks for it."""
+
+    user: User
+    is_active: bool
+    is_guest: bool
+
+
 class Membership(_Answer):
     project: Named | None = None
     section: Named | None = None
@@ -244,10 +252,18 @@ class AsanaSession(Tickets):
         return me.email if me.email is not None else me.name
 
     def people(self) -> list[PersonSeen]:
-        """Asana's user listing (https://developers.asana.com/reference/getusers); it says nothing of a guest or
-        a removed member, which only `/workspace_memberships` carries."""
-        found = self._all("list users", "/users", {"workspace": self.workspace(), "opt_fields": "name,email"})
-        return [PersonSeen(id=u.gid, name=u.name, email=u.email) for u in map(User.model_validate, found)]
+        """Every member of the workspace by its membership, which says whether it is active and a guest's
+        (https://developers.asana.com/reference/getworkspacemembershipsforworkspace); the user listing says neither
+        and leaves out a removed member."""
+        found = self._all(
+            "list workspace memberships",
+            f"/workspaces/{self.workspace()}/workspace_memberships",
+            {"opt_fields": "user.name,user.email,is_active,is_guest"},
+        )
+        return [
+            PersonSeen(id=m.user.gid, name=m.user.name, email=m.user.email, active=m.is_active, guest=m.is_guest)
+            for m in map(WorkspaceMember.model_validate, found)
+        ]
 
     def people_pages(self, page_size: int) -> list[list[str]]:
         return [

@@ -166,14 +166,20 @@ def test_a_task_the_agent_hands_to_a_person_whose_fate_is_deletion_is_gone_once_
 # ------------------------------------------------------------------ an account changes
 
 
-def test_a_person_removed_from_asana_is_unlisted_unassignable_and_not_found(served: Served) -> None:
+def test_a_person_deactivated_in_asana_is_unlisted_unassignable_and_an_inactive_member(served: Served) -> None:
+    """Asana removes a member by making their workspace membership inactive: the shared model's deactivated."""
     seed, claims = _asana_world("asana-remove")
     with _world(served, seed, claims) as world, _asana(served, "asana-remove") as http:
         sofia = asana_state.user_gid("sofia")
         before = [u["gid"] for u in http.get(f"{ASANA}/users").json()["data"]]
-        world.remove_person("asana", "sofia")
+        world.deactivate_person("asana", "sofia")
         after = [u["gid"] for u in http.get(f"{ASANA}/users").json()["data"]]
         assert sofia in before and sofia not in after
+        workspace = http.get(f"{ASANA}/workspaces").json()["data"][0]["gid"]
+        memberships = http.get(
+            f"{ASANA}/workspaces/{workspace}/workspace_memberships", params={"opt_fields": "user,is_active"}
+        ).json()["data"]
+        assert [m["is_active"] for m in memberships if m["user"]["gid"] == sofia] == [False]
         assert http.get(f"{ASANA}/users/{sofia}").status_code == 404
         task = _ticket(world, "asana")
         refused = http.put(f"{ASANA}/tasks/{task.external_id}", json={"data": {"assignee": sofia}})
@@ -239,7 +245,7 @@ def test_a_notion_member_removed_is_unlisted_and_not_found(served: Served) -> No
 
 @pytest.mark.parametrize(
     ("provider", "change"),
-    [("asana", "deactivate"), ("jira", "remove"), ("google_workspace", "remove"), ("github", "deactivate")],
+    [("asana", "remove"), ("jira", "remove"), ("google_workspace", "remove"), ("github", "deactivate")],
 )
 def test_a_person_change_a_provider_cannot_show_is_refused_as_unsupported(
     served: Served, provider: str, change: str

@@ -99,6 +99,11 @@ def user_gid(person_key: str) -> str:
     return _derived("11", "user", "person", person_key)
 
 
+def workspace_membership_gid(user: str, workspace: str) -> str:
+    """A user's membership of a workspace, the same for the same two."""
+    return _derived("11", "workspace_membership", user, workspace)
+
+
 def task_gid(position: int) -> str:
     """A seeded task's gid, from its ticket's position among the scenario's asana tickets: below every gid the
     API mints, and in the scenario's order, as tasks made before the run would be."""
@@ -258,7 +263,11 @@ class AsanaWorld:
 
     def users(self) -> list[wire.AsanaUser]:
         """The workspace's members: every user but those an administrator removed."""
-        return [u for u in self._records(USERS) if isinstance(u, wire.AsanaUser) and not u.removed]
+        return [u for u in self.every_user() if not u.removed]
+
+    def every_user(self) -> list[wire.AsanaUser]:
+        """Every user the workspace has had, the removed among them."""
+        return [u for u in self._records(USERS) if isinstance(u, wire.AsanaUser)]
 
     def user_by_email(self, email: str) -> wire.AsanaUser | None:
         wanted = email.strip().lower()

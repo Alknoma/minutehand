@@ -27,18 +27,6 @@ KNOWN: tuple[Known, ...] = (
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1190000000000000 -> 1190000000000001",
     ),
-    Known(
-        "asana",
-        Property.SEEDED,
-        "person_deactivated",
-        "'Dee Activated' was seeded deactivated; the vendor lists email=dee@example.com active=True bot=False guest=False title=None",
-    ),
-    Known(
-        "asana",
-        Property.SEEDED,
-        "person_guest",
-        "'Gus Guest' was seeded as a guest; the vendor lists email=gus@example.com active=True bot=False guest=False title=None",
-    ),
     Known("asana", Property.SEEDED, "sign_in", "NotImplementedError: AsanaDriver has no sign-in"),
     Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
     Known(

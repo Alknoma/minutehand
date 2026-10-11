@@ -108,7 +108,7 @@ def _defaults_only(request: Request, *names: str) -> None:
     """Query parameters served at their default, `all`, only: any other value is refused by name."""
     for name in names:
         value = param(request, name)
-        if value is not None and value != "all":
+        if value is not None and value != "all":  # enum-lint: exempt GitHub's own `filter` and `role` default
             raise NotServed(f"the parameter {name}={value!r}: only its default, all, is served")
 
 

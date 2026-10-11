@@ -66,11 +66,13 @@ class AsanaProvider:
         )
 
     def change_person(self, change: PersonChange, person: Person, world: Store, clock: Clock) -> None:
-        """An administrator removes the person from the workspace: no longer listed or a team's member, refused as
-        an assignee or a follower; what they did before still names them. A token naming them still acts as them:
-        Minutehand does not enforce credentials."""
-        if change is not PersonChange.REMOVED:
-            raise ValueError(f"asana has no way to show a person {change.value}")
+        """An administrator removes the person from the workspace: their membership is no longer active
+        (`is_active`, "if this user still a member of the workspace"), they are no longer listed among its users or a
+        team's members, and are refused as an assignee or a follower; what they did before still names them. That is
+        the shared model's deactivated: Asana keeps the membership, so it is never not found. A token naming them still
+        acts as them: Minutehand does not enforce credentials."""
+        if change is not PersonChange.DEACTIVATED:
+            raise ValueError(f"asana has no way to show a person {change.value}: a removed member stays, inactive")
         asana = AsanaWorld(world)
         user = asana.user(state.user_gid(person.key))
         if user is None or user.removed:

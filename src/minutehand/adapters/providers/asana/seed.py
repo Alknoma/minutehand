@@ -32,7 +32,7 @@ from minutehand.adapters.providers.asana import state, wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.adapters.providers.asana.state import AGENT_GID, WORKSPACE_GID, AsanaWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Model, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import Account, Model, Scenario, SeededTicket, TicketState
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -350,7 +350,13 @@ class _Seeding:
         )
         for person in self.scenario.people:
             self.asana.put_record(
-                wire.AsanaUser(gid=state.user_gid(person.key), name=person.name, email=person.email),
+                wire.AsanaUser(
+                    gid=state.user_gid(person.key),
+                    name=person.name,
+                    email=person.email,
+                    removed=person.account is Account.DEACTIVATED,
+                    guest=person.account is Account.GUEST,
+                ),
                 parent=state.USERS,
                 actor=Actor.SCENARIO,
             )
