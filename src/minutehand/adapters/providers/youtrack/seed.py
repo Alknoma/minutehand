@@ -355,6 +355,11 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     for token in extra.tokens:
         youtrack.write_token(token.token, wire.StoredToken(user=login(token.login).id), actor=Actor.SCENARIO)
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        # A permanent token the scenario signs a person in with acts as their user, whose login is their key; one
+        # naming no person is the agent's own.
+        who = login(sign_in.person) if sign_in.person is not None else login(state.AGENT_LOGIN)
+        youtrack.write_token(sign_in.credential, wire.StoredToken(user=who.id), actor=Actor.SCENARIO)
     for service in extra.services:
         youtrack.write_service(
             wire.StoredService(

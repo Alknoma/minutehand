@@ -62,6 +62,7 @@ from minutehand.ports.store import Store
 
 TENANTS = "tenants"
 APPS = "apps"
+SIGN_INS = "sign_ins"
 USERS = "users"
 TEAMS = "teams"
 CONVERSATIONS = "conversations"
@@ -140,6 +141,12 @@ class AppRecord(Model):
     secret: str
     display_name: str
     tenant_id: str
+
+
+class SignInRecord(Model):
+    """Whom a seeded refresh token signs in: a user of the tenant, by object id."""
+
+    oid: str
 
 
 class AwayRecord(Model):
@@ -258,6 +265,11 @@ def ref(kind: EntityKind, external_id: str) -> EntityRef:
 
 def tenant_ref(tid: str) -> EntityRef:
     return ref(EntityKind.RECORD, f"tenant:{tid}")
+
+
+def sign_in_ref(credential: str) -> EntityRef:
+    """A refresh token the scenario signs a person in with, kept under a digest of itself: never its own text."""
+    return ref(EntityKind.RECORD, f"sign_in:{_digest('sign in', credential)}")
 
 
 def app_ref(app_id: str) -> EntityRef:
@@ -443,6 +455,11 @@ class MicrosoftWorld:
 
     def tenants(self) -> list[TenantRecord]:
         return self._all(TenantRecord, EntityKind.RECORD, TENANTS)
+
+    def signed_in(self, credential: str | None) -> UserRecord | None:
+        """The user a seeded refresh token signs in, when it is one."""
+        found = self._get(SignInRecord, sign_in_ref(credential), SIGN_INS) if credential else None
+        return self.user(found.oid) if found is not None else None
 
     def app(self, app_id: str) -> AppRecord | None:
         return self._get(AppRecord, app_ref(app_id), APPS)

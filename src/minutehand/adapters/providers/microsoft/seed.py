@@ -38,6 +38,7 @@ from minutehand.adapters.providers.microsoft.state import (
     FAULTS,
     POSTS,
     SERVICE_URL,
+    SIGN_INS,
     SITES,
     TEAMS,
     TENANTS,
@@ -49,6 +50,7 @@ from minutehand.adapters.providers.microsoft.state import (
     DriveRecord,
     MicrosoftWorld,
     PostRecord,
+    SignInRecord,
     SiteRecord,
     TeamRecord,
     TenantRecord,
@@ -61,6 +63,7 @@ from minutehand.adapters.providers.microsoft.state import (
     graph_time,
     message_ref,
     post_ref,
+    sign_in_ref,
     site_ref,
     team_ref,
     tenant_ref,
@@ -446,6 +449,21 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         )
         users[person.key] = user
         world.write(user_ref(user.user.id), user, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        # A person's refresh token: redeemed at the token endpoint for their tokens. An app signs in with its client
+        # credentials, which the tenant's app already holds, so a sign-in naming no person is refused.
+        if sign_in.person is None or sign_in.person not in users:
+            raise ValueError(
+                f"microsoft: the sign_in names {sign_in.person or 'no person'}, no user of the tenant; a sign-in is a "
+                "user's refresh token, and the app signs in with its client credentials"
+            )
+        world.write(
+            sign_in_ref(sign_in.credential),
+            SignInRecord(oid=users[sign_in.person].user.id),
+            operation=Operation.CREATE,
+            actor=Actor.SCENARIO,
+            parent=SIGN_INS,
+        )
     spec = microsoft_seed(scenario)
     unknown = sorted(set(spec.not_installed_for) - set(users))
     if unknown:

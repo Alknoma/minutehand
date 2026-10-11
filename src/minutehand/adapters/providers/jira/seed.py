@@ -526,6 +526,20 @@ def seed(scenario: Scenario, world: Store) -> None:
                 lifetime=oauth.expires_in,
             )
         jira.write_credential(stored, actor=Actor.SCENARIO, create=True)
+    signs_in = [s for s in scenario.sign_ins if s.provider == MANIFEST.key]
+    for n, sign_in in enumerate(signs_in, start=len(spec.credentials) + 1):
+        # An API token the scenario signs a person in with, sent as Basic with their email; one naming no person is
+        # the agent's own.
+        jira.write_credential(
+            wire.StoredCredential(
+                id=str(n),
+                kind=wire.CredentialKind.API_TOKEN,
+                account=who(sign_in.person or "agent"),
+                secret=sign_in.credential,
+            ),
+            actor=Actor.SCENARIO,
+            create=True,
+        )
 
     everyone = [a.accountId for a in accounts.values() if a.active and a.accountType is wire.AccountType.ATLASSIAN]
     seeded_tickets = [t for t in scenario.tickets if t.provider == MANIFEST.key]

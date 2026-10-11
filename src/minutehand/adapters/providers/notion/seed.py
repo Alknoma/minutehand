@@ -298,6 +298,12 @@ class _At:
 
 
 def seed(scenario: Scenario, world: Store) -> None:
+    named = [s.person for s in scenario.sign_ins if s.provider == MANIFEST.key and s.person is not None]
+    if named:
+        raise ValueError(
+            f"notion cannot hold a sign_in for {', '.join(named)}: a Notion token is an integration's and acts as its "
+            "bot, whom /v1/users/me answers (https://developers.notion.com/reference/get-self); no token acts as a person"
+        )
     notion = NotionWorld(world)
     found = read(scenario)
     workspaces = found.workspaces or [DEFAULT_WORKSPACE]

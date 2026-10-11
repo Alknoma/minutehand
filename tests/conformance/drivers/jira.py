@@ -477,6 +477,16 @@ class JiraDriver(Driver):
             }
         )
 
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        """Basic with the person's email and the API token: the seeded sign-in in the conformance seed is Sofia's."""
+        site = _site(world)
+        return JiraSession(api, site, self._emails[site]["sofia"], credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """An Atlassian API token: `ATATT` and its secret (https://support.atlassian.com/atlassian-account/docs/
+        manage-api-tokens-for-your-atlassian-account/)."""
+        return f"ATATT3x{unique}"
+
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         site = _site(world)
         account = person or AGENT

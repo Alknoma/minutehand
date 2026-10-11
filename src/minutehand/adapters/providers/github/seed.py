@@ -33,7 +33,7 @@ from minutehand.adapters.providers.github import history, wire
 from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.domain.provider import Keyed
-from minutehand.domain.scenario import Account, Person, Scenario
+from minutehand.domain.scenario import Account, Person, Scenario, SignIn
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.store import Store
 
@@ -439,6 +439,25 @@ def _commit_sha(full_name: str, position: int, message: str, date: str) -> str:
     return hashlib.sha1(f"commit\0{full_name}\0{position}\0{date}\0{message}".encode()).hexdigest()
 
 
+def _signed_in(sign_in: SignIn, given: GitHubSeed) -> wire.StoredToken:
+    """A credential the scenario signs a person in with: a personal access token acting as the GitHub user who is
+    that person, of the kind its prefix says. A GitHub token always acts as a user, so one naming no person, or a
+    person no seeded user is, is refused by name."""
+    user = next((u for u in given.users if sign_in.person is not None and u.person == sign_in.person), None)
+    if user is None:
+        raise ValueError(
+            f"github: the sign_in {sign_in.credential[:8]}... names {sign_in.person or 'no person'}, whom no seeded "
+            "GitHub user is: a personal access token acts as a user"
+        )
+    kind = next((k for k, prefix in wire.TOKEN_PREFIXES.items() if sign_in.credential.startswith(prefix)), None)
+    if kind is None:
+        raise ValueError(
+            f"github: the sign_in for {sign_in.person} is no personal access token: one starts "
+            f"{' or '.join(wire.TOKEN_PREFIXES.values())}"
+        )
+    return wire.StoredToken(kind=kind, login=user.login, scopes=["repo"] if kind is wire.TokenKind.CLASSIC else [])
+
+
 def _people(scenario: Scenario) -> dict[str, Person]:
     return {p.key: p for p in scenario.people}
 
@@ -727,6 +746,8 @@ def seed(given: GitHubSeed, scenario: Scenario, world: Store) -> None:
                 scopes=token.scopes if token.kind is wire.TokenKind.CLASSIC else [],
             ),
         )
+    for sign_in in (s for s in scenario.sign_ins if s.provider == MANIFEST.key):
+        github.write_token(sign_in.credential, _signed_in(sign_in, given))
     _stand_in(github, given, accounts)
 
     for repository in given.repositories:

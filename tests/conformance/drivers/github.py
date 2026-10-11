@@ -343,6 +343,14 @@ class GitHubDriver(Driver):
         tag = _tag_of(world)
         return _agent_token(tag) if person is None else _person_token(tag, person)
 
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return GitHubSession(api, credential, _nobody_token(_tag_of(world)))
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A classic personal access token: `ghp_` and 36 letters and digits
+        (https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/)."""
+        return f"ghp_{(unique * 2)[:36]}"
+
     def faults(self) -> list[FaultCase]:
         # No GitHub client library is among the dev dependencies: each fault is triggered with httpx, whose
         # `HTTPStatusError` is no GitHub API error type, so `typed` is None.

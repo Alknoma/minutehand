@@ -27,9 +27,6 @@ KNOWN: tuple[Known, ...] = (
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1190000000000000 -> 1190000000000001",
     ),
-    Known("asana", Property.SEEDED, "sign_in", "NotImplementedError: AsanaDriver has no sign-in"),
-    Known("aws", Property.SEEDED, "sign_in", "NotImplementedError: AwsDriver has no sign-in"),
-    Known("github", Property.SEEDED, "sign_in", "NotImplementedError: GitHubDriver has no sign-in"),
     Known(
         "google_workspace",
         Property.FAMILY,
@@ -48,7 +45,6 @@ KNOWN: tuple[Known, ...] = (
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, ticket Original one: 1000 -> 1001",
     ),
-    Known("jira", Property.SEEDED, "sign_in", "NotImplementedError: JiraDriver has no sign-in"),
     Known(
         "microsoft",
         Property.ACCOUNTS,
@@ -61,7 +57,6 @@ KNOWN: tuple[Known, ...] = (
         "same_as_google_workspace_documents",
         "the neutral sequences part at step 1: microsoft [('agent', 'create', 'document', 'T1', (('title', 'Lifecycle doc.docx'), ('text', ''), ('parent', 'None'), ('owner', 'Agent'), ('spa",
     ),
-    Known("microsoft", Property.SEEDED, "sign_in", "NotImplementedError: MicrosoftDriver has no sign-in"),
     Known(
         "notion",
         Property.FAMILY,
@@ -105,7 +100,6 @@ KNOWN: tuple[Known, ...] = (
         "seeded last changed by mila 3 days before the start; the API: owen@example.com at 2026-09-01 09:00:00+00:00",
     ),
     Known("notion", Property.SEEDED, "document_owner", "seeded owned by sofia, the API shows owner owen@example.com"),
-    Known("notion", Property.SEEDED, "sign_in", "NotImplementedError: NotionDriver has no sign-in"),
     Known(
         "notion",
         Property.TIME,
@@ -124,5 +118,4 @@ KNOWN: tuple[Known, ...] = (
         "stable_under_additions_and_reordering",
         "in a seed listing one more first, person mila@example.com: 1-3 -> 1-4",
     ),
-    Known("youtrack", Property.SEEDED, "sign_in", "NotImplementedError: YouTrackDriver has no sign-in"),
 )

@@ -368,6 +368,18 @@ class _Seeding:
                 parent=state.CREDENTIALS,
                 actor=Actor.SCENARIO,
             )
+        for sign_in in (s for s in self.scenario.sign_ins if s.provider == MANIFEST.key):
+            # A personal access token the scenario signs a person in with acts as that person's user; one naming no
+            # person is the app's own, which acts as the agent.
+            self.asana.put_record(
+                wire.AsanaCredential(
+                    gid=state.credential_gid(sign_in.credential),
+                    kind=wire.CredentialKind.ACCESS,
+                    user=self.user(sign_in.person),
+                ),
+                parent=state.CREDENTIALS,
+                actor=Actor.SCENARIO,
+            )
         for refresh in self.seed.refresh_tokens:
             self.asana.put_record(
                 wire.AsanaCredential(

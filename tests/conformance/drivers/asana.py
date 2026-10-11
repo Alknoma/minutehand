@@ -507,6 +507,14 @@ class AsanaDriver(Driver):
         assert token is not None
         return AsanaSession(api, token)
 
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return AsanaSession(api, credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A personal access token: a version, a user id and a secret, as Asana writes them
+        (https://developers.asana.com/docs/personal-access-token)."""
+        return f"2/1200000000000000/{unique}"
+
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         agent = world.claims.tokens[0]
         token = agent if person is None else f"{agent}-{person}"

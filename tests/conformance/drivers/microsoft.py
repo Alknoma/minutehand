@@ -234,6 +234,20 @@ class SignIn:
             )["access_token"]
         )
 
+    def refreshed(self, refresh_token: str) -> str:
+        """A user's access token for a refresh token (v2-oauth2-auth-code-flow, "Refresh the access token")."""
+        return str(
+            self._token(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": self._tenant.bot_app_id,
+                    "client_secret": self._tenant.bot_app_secret,
+                    "refresh_token": refresh_token,
+                    "scope": DELEGATED,
+                }
+            )["access_token"]
+        )
+
     def user(self, login: str) -> str:
         """The authorization code flow (v2-oauth2-auth-code-flow) for the user signing in as `login`."""
         authorized = self._http.get(
@@ -265,14 +279,17 @@ class MicrosoftSession(Messaging, Documents):
     """The bot's app (`login` None): Graph with application permissions, the connector to send. A person: Graph
     with their delegated token for everything, as Teams and OneDrive clients call it."""
 
-    def __init__(self, api: Api, tenant: Directory, login: str | None) -> None:
+    def __init__(self, api: Api, tenant: Directory, login: str | None, *, refresh_token: str | None = None) -> None:
         self._tenant = tenant
         self._http = api.http()
-        self._as_app = login is None
+        self._as_app = login is None and refresh_token is None
         signing = SignIn(self._http, tenant)
-        self._graph_token = signing.app(GRAPH_DEFAULT) if login is None else signing.user(login)
-        self._bot_token = signing.app(BOT_DEFAULT) if login is None else None
-        self.secrets = (tenant.bot_app_secret, *signing.minted, UNSEEDED)
+        if refresh_token is not None:
+            self._graph_token = signing.refreshed(refresh_token)
+        else:
+            self._graph_token = signing.app(GRAPH_DEFAULT) if login is None else signing.user(login)
+        self._bot_token = signing.app(BOT_DEFAULT) if self._as_app else None
+        self.secrets = (tenant.bot_app_secret, *signing.minted, UNSEEDED, *([refresh_token] if refresh_token else []))
         self._drive: str | None = None
         self._site_name: str | None = None
         self._emails: dict[str, str | None] | None = None
@@ -884,6 +901,15 @@ class MicrosoftDriver(Driver):
         if login is None:
             raise NotImplementedError(f"{person} is another app's bot, not a user of the tenant, and cannot sign in")
         return MicrosoftSession(api, tenant, login)
+
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        """A person's seeded refresh token, redeemed at the token endpoint for their Graph token
+        (https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow#refresh-the-access-token)."""
+        return MicrosoftSession(api, directory(world.name), None, refresh_token=credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A refresh token, which the identity platform issues as an opaque string."""
+        return f"0.A{unique}"
 
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         """The bot app's client secret for the agent; for a person, the sign-in name their authorization code flow

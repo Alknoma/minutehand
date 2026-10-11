@@ -542,6 +542,13 @@ class YouTrackDriver(Driver):
     def credential_of(self, world: WorldView, person: str | None) -> str | None:
         return token(tag_of(world), person or AGENT_LOGIN)
 
+    def signed_in(self, api: Api, world: WorldView, credential: str) -> Session:
+        return YouTrackSession(api, tag_of(world), credential)
+
+    def sign_in_credential(self, unique: str) -> str:
+        """A permanent token: `perm:` and its parts (https://www.jetbrains.com/help/youtrack/server/manage-permanent-token.html)."""
+        return f"perm:{unique}"
+
     def connect(self, api: Api, world: WorldView, *, person: str | None = None) -> Session:
         credential = self.credential_of(world, person)
         assert credential is not None
