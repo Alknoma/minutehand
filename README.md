@@ -8,22 +8,21 @@
                      Simulated days for a proactive agent.
 ```
 
-Minutehand runs your proactive agent through months of simulated work in minutes and tells you how well it carried
-that work. The agent gets a world, not a task: fake Slack, Teams, Asana, Jira, YouTrack, Notion, GitHub, Google
-Drive and others, and people who answer late, are away, or never answer. Minutehand owns the clock, records every
-change in an append-only log, and assesses every message, ticket, document and calendar event the agent touches, as
-it happens, against the agent's own instructions and the world your scenario declares.
+**Months of your proactive agent's work, in minutes.** A world of fake Slack, Teams, Jira, Asana, Notion, GitHub and
+Google Drive, with people who answer late, go away, or never answer. Minutehand owns the clock.
+
+**Findings, not opinions.** Every message, ticket, document and calendar event the agent touches is judged as it
+happens against the agent's own instructions and the world you declared: too early, too late, again with nothing new,
+a move the service refuses, a fact it made up. Each finding names what it was held to.
+
+**One import, inert in production.** `minutehand.agent` does nothing unless `MINUTEHAND_ON` is set. The rest is
+environment: `HTTPS_PROXY`, `NO_PROXY`, a CA bundle.
+
+**Every run is a record.** Plain SQL over every call, message, memory write and model call. Replay a run from its
+record; fork it from any checkpoint with the prompt, the model, a person or the world changed, and play it forward.
 
 A proactive agent brings its own work, decides when it next wakes, and keeps going; nothing hands it a task and
-nothing wakes it on a schedule. Minutehand reaches it through its environment (`HTTPS_PROXY`, `NO_PROXY` and a CA
-bundle) and one import, inert in production, for what the agent remembers.
-
-- **Findings name what they were held to.** Too early, too late, again with nothing new, a move the service refuses,
-  a fact the agent made up: each against the agent's instructions or the scenario, never an opinion of how agents
-  should work. Policy the world cannot imply (how often your team chases) is yours to add in YAML.
-- **A run is a record.** Every call, message, memory write and model call, readable with plain SQL.
-- **A finished run can be forked** from a checkpoint with the prompt, the model, a person or the world changed, and
-  played forward again.
+nothing wakes it on a schedule. That is the agent Minutehand is for.
 
 ## Install
 
