@@ -37,6 +37,10 @@ Each norm is one sentence. `docs/design.md` is the design; read it in full befor
 - A test that deliberately triggers a refusal says so in its name (`test_..._is_refused`, `test_..._rejects_...`).
 - `uv run pytest -q`, `uv run pyright`, `uv run python -m lints`, `uv run ruff format --check .` and `uv run ruff check .` all pass before a commit.
 
+## Documentation
+
+- `README.md` is the front door and says only what a reader needs to install, run and find the rest: what a feature does lands in the `docs/` page that owns it, its state in `docs/design.md` "What exists", and the README gains at most a line or a table row pointing there.
+
 ## Git
 
 - Branch from the latest `integration-main` with a `feat/`, `fix/`, `refactor/` or `chore/` prefix; never push to `main` or `integration-main`, never squash-merge, never rewrite a pushed branch.
