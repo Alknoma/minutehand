@@ -19,7 +19,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.experiment import CallMatch, ModelSwap, Override, PromptPatch
+from minutehand.domain.experiment import CallMatch, ModelSwap, Override, PromptPart, PromptPatch
 from tests.proxy.support import client, exchanges, stored_bytes
 from tests.proxy.upstream import Authority, Upstream, make_authority, model_api
 
@@ -206,3 +206,107 @@ async def test_edits_applied_for_a_run_reach_the_model_api_and_clearing_them_tun
     assert json.loads(arrived)["model"] == "model-terra"
     routing.apply("child", [])
     assert routing.policy(MODEL_HOST) is HostPolicy.TUNNEL
+
+
+REJECTION = PromptPatch(
+    where=CallMatch(last_message_contains="Rejected:"),
+    part=PromptPart.LAST_MESSAGE,
+    find="Rejected: over budget.",
+    text="Rejected: over budget; the office has a room that day.",
+)
+"""The one call in a conversation where a rejection was put to the model gets the new rejection text; every call
+before it, and every earlier turn of that call, stays byte for byte as it was."""
+
+
+def _edited(body: object, *edits: ModelEdit) -> object:
+    out = apply_edits(json.dumps(body).encode(), "api.openai.com", list(edits) or [REJECTION])
+    return json.loads(out) if out is not None else None
+
+
+def test_the_newest_chat_message_is_patched_and_the_turns_before_it_are_not() -> None:
+    history = [
+        {"role": "system", "content": "Approvals agent."},
+        {"role": "user", "content": "Rejected: over budget."},
+        {"role": "assistant", "content": "Noted; I will ask Marta."},
+        {"role": "user", "content": "Rejected: over budget."},
+    ]
+    out = _edited({"model": "m", "messages": history})
+    assert out == {
+        "model": "m",
+        "messages": [
+            *history[:3],
+            {"role": "user", "content": "Rejected: over budget; the office has a room that day."},
+        ],
+    }, "only the newest message changed; the same text two turns up did not"
+
+
+def test_the_newest_message_as_text_parts_is_patched_and_the_system_prompt_is_not() -> None:
+    body = {
+        "model": "m",
+        "system": "Rejected: over budget. (never this)",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Rejected: over budget."}, {"type": "image", "x": 1}],
+            },
+        ],
+    }
+    out = _edited(body)
+    assert out == {
+        **body,
+        "messages": [
+            *body["messages"][:2],
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Rejected: over budget; the office has a room that day."},
+                    {"type": "image", "x": 1},
+                ],
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("Rejected: over budget.", "Rejected: over budget; the office has a room that day."),
+        (
+            [
+                {"role": "user", "content": "earlier"},
+                {"role": "user", "content": [{"type": "input_text", "text": "Rejected: over budget."}]},
+            ],
+            [
+                {"role": "user", "content": "earlier"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Rejected: over budget; the office has a room that day."}
+                    ],
+                },
+            ],
+        ),
+    ],
+)
+def test_the_responses_input_is_the_newest_message(given: object, expected: object) -> None:
+    body = {"model": "m", "instructions": "Rejected: over budget. (never this)", "input": given}
+    assert _edited(body) == {**body, "input": expected}
+
+
+def test_a_call_whose_newest_message_lacks_the_text_is_not_matched_and_goes_on_untouched() -> None:
+    body = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Rejected: over budget."}, {"role": "user", "content": "ok"}],
+    }
+    assert _edited(body) is None
+
+
+def test_appending_to_the_newest_message_leaves_the_system_prompt_alone() -> None:
+    body = {"model": "m", "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]}
+    out = _edited(body, PromptPatch(part=PromptPart.LAST_MESSAGE, text=" Be brief."))
+    assert out == {
+        "model": "m",
+        "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "go Be brief."}],
+    }

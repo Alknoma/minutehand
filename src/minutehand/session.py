@@ -625,6 +625,9 @@ async def fork(
                     inboxes=inboxes_for(agent, changed, signing),
                     outside=own_files,
                     replay=model_replay,
+                    code_changed=program_changes(
+                        program_record(state, parent_run), program_of(command, Path.cwd(), state) if command else None
+                    ),
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)

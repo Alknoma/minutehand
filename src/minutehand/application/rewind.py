@@ -174,6 +174,7 @@ async def fork_run(
     inboxes: Inboxes | None = None,
     outside: OutsideState | None = None,
     replay: Replay | None = None,
+    code_changed: Sequence[str] = (),
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -186,7 +187,8 @@ async def fork_run(
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
     without the scenario or agent file naming it is still one whose state may be outside the log. `replay` is the
     parent's record answering the child's model calls after the checkpoint; frozen, it stops the child where the
-    agent asks something the parent did not.
+    agent asks something the parent did not. `code_changed` says how the agent's program differs from the parent's,
+    for a refusal to name it.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
@@ -263,6 +265,7 @@ async def fork_run(
                 own=own,
                 progress=progress,
                 edit=edit if edits else None,
+                code_changed=code_changed,
             )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)

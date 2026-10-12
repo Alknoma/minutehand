@@ -8,6 +8,7 @@ the agent sends to its model provider.
 from __future__ import annotations
 
 from datetime import timedelta
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
@@ -23,11 +24,28 @@ class CallMatch(Model):
     host: str | None = None
     model: str | None = None
     system_contains: str | None = Field(default=None, description="Text that identifies one prompt among several")
+    last_message_contains: str | None = Field(
+        default=None,
+        description="Text the call's newest message carries: the one call in a conversation where that text was "
+        "put to the model (a rejection, a tool's answer), and not the calls before it",
+    )
+
+
+class PromptPart(StrEnum):
+    """Which part of the request a `PromptPatch` changes."""
+
+    SYSTEM = "system"  # the system prompt: a fresh conversation each wake, or an instruction for every turn
+    LAST_MESSAGE = "last_message"  # the newest message: what was just put to the model, the history before it as it was
 
 
 class PromptPatch(Model):
     kind: Literal["prompt_patch"] = "prompt_patch"
     where: CallMatch = CallMatch()
+    part: PromptPart = Field(
+        default=PromptPart.SYSTEM,
+        description="What to change: the system prompt, or the newest message alone, so a transcript carried across "
+        "turns keeps every earlier turn byte for byte and the change is read off the one call it was made at",
+    )
     find: str | None = Field(default=None, description="Text to replace; None appends")
     text: str
 
