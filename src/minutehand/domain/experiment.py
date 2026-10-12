@@ -130,3 +130,16 @@ class Fork(Model):
         description="Where the fork's draws come from for asks after the checkpoint; None: its parent's. Draws made "
         "before the checkpoint are kept as the parent made them",
     )
+
+
+class ReplayCase(Model):
+    """One case of a sweep (`minutehand replay-all`): a finished run, played on from a checkpoint or from its start."""
+
+    run: str = Field(description="The finished run's id")
+    at: int | None = Field(default=None, ge=0, description="The checkpoint's seq; None: from the start")
+
+
+class ReplayCases(Model):
+    """A sweep's cases file: every finished run and checkpoint a change to the agent is replayed against."""
+
+    cases: list[ReplayCase] = Field(min_length=1)

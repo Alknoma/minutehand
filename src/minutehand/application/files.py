@@ -17,7 +17,7 @@ import yaml
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.experiment import Fork
+from minutehand.domain.experiment import Fork, ReplayCases
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
 from minutehand.domain.templates import RUN_DIR, RUN_FILLED, RUN_PORT
@@ -129,6 +129,11 @@ def load_fork(path: Path, *, parent_run: str, at_seq: int) -> Fork:
     if named:
         raise FileRefused(f"{path}: names {', '.join(named)}; the run and the seq to fork at are given on the command")
     return _validate(path, {**raw, "parent_run": parent_run, "at_seq": at_seq}, Fork)
+
+
+def load_replay_cases(path: Path) -> ReplayCases:
+    """A sweep's cases: a file holding `cases`, each a finished run and optionally the checkpoint to play on from."""
+    return _load(path, ReplayCases, called="a replay cases file")
 
 
 def _load(path: Path, model: type[_M], *, called: str | None = None) -> _M:

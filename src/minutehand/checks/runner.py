@@ -258,6 +258,8 @@ _STOPPED = {
     StopReason.AGENT_FAILED: "the run stopped because the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
     StopReason.ENVIRONMENT_FAILED: "the run stopped because an external emulator it used was unavailable",
+    StopReason.REPLAY_PARTED: "the frozen replay stopped where the agent asked its model something the record "
+    "does not hold",
 }
 
 
@@ -282,7 +284,8 @@ def verdict(
     """
     judged = _verdict(view, card, stop)
     problems = [f for f in simulation if f.incomplete]
-    if not problems or judged.kind in (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.TOOL_FAILED):
+    unjudging = (VerdictKind.ENVIRONMENT_FAILED, VerdictKind.TOOL_FAILED, VerdictKind.REPLAY_PARTED)
+    if not problems or judged.kind in unjudging:
         return judged
     first = problems[0].words
     more = f" and {_count(len(problems) - 1, 'more')}" if len(problems) > 1 else ""
@@ -309,6 +312,12 @@ def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Ver
         words = (
             f"Environment failed: {how}, so the agent is not judged on this run"
             f"{f' ({_count(card.failed_checks, "check")} failed after it)' if card.failed_checks else ''}."
+        )
+    elif stop is StopReason.REPLAY_PARTED:
+        kind = VerdictKind.REPLAY_PARTED
+        words = (
+            f"Replay parted: {how}; nothing was sent to a model and the agent is not judged on this run"
+            f"{f' ({_count(card.failed_checks, "check")} failed before it)' if card.failed_checks else ''}."
         )
     elif view.broken_calls:
         kind = VerdictKind.TOOL_FAILED
@@ -529,6 +538,7 @@ def view_of(
 
 
 _STOPPED_BY = {
+    StopReason.REPLAY_PARTED: StoppedBy.REPLAY_PARTED,
     StopReason.AGENT_DONE: StoppedBy.AGENT_DONE,
     StopReason.WAKE_LIMIT: StoppedBy.WAKE_LIMIT,
     StopReason.DEADLINE_PASSED: StoppedBy.DEADLINE_PASSED,

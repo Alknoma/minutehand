@@ -114,7 +114,7 @@ import yaml
 from pydantic import ValidationError
 
 import minutehand
-from minutehand import agent_api, mcp_relay, run_all, session
+from minutehand import agent_api, mcp_relay, replay_all, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
@@ -135,6 +135,7 @@ from minutehand.application.files import (
     load_agent,
     load_fork,
     load_prices,
+    load_replay_cases,
     load_scenario,
     problems,
     schema,
@@ -156,7 +157,7 @@ from minutehand.domain.checks import Effectiveness, Finding, FindingKind, Health
 from minutehand.domain.library import DEFAULT_KNOWS, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.prices import Prices
-from minutehand.domain.run import EXIT_CODES, StopReason, VerdictKind
+from minutehand.domain.run import EXIT_CODES, ReplayRecord, StopReason, VerdictKind
 from minutehand.domain.scenario import PlannedBy, WrittenScenario
 from minutehand.ports.model import ModelFailed
 from minutehand.session import ForkPoint, Outcome
@@ -185,6 +186,8 @@ _STOPPED = {
     StopReason.AGENT_FAILED: "the agent could not be reached or answered with an error",
     StopReason.CLOSED: "the standing world, or the last world of its case, was closed by whoever opened it",
     StopReason.ENVIRONMENT_FAILED: "an external emulator the run used was unavailable",
+    StopReason.REPLAY_PARTED: "the frozen replay's record does not hold a model call the agent made, so nothing "
+    "went to a model and the run stopped there",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
 
@@ -397,27 +400,82 @@ def _parser() -> _Parser:
         "parent's. Draws made before the checkpoint are kept",
     )
     fork.add_argument("--judge", action="store_true", help="also run the checks a model judges")
+    fork.add_argument(
+        "--frozen",
+        action="store_true",
+        help="send nothing to a model: a model call the parent's record does not hold is refused and stops the fork "
+        "there, REPLAY_PARTED, naming the call",
+    )
     fork.add_argument("--json", action="store_true")
     proxy(fork)
     state(fork)
 
     replaying = commands.add_parser(
         "replay",
-        help="play a finished run again from its start: its people, its lookups and the agent's model calls answered "
-        "from its record, until the agent asks something new",
+        help="play a finished run again, from its start or from a checkpoint (--at), with the agent as it is now: "
+        "its people, its lookups and the agent's model calls answered from its record, until the agent asks "
+        "something new",
     )
     replaying.add_argument("run_id")
+    replaying.add_argument(
+        "--at",
+        type=int,
+        default=None,
+        metavar="SEQ",
+        help="play on from this checkpoint (listed by `checkpoints`) instead of from the start: the world, the clock "
+        "and the agent's memory as they stood there, nothing changed, the agent's program as it is now",
+    )
     replaying.add_argument(
         "--live-from",
         type=datetime.fromisoformat,
         default=None,
         metavar="TIME",
-        help="the simulated moment (ISO 8601) from which the agent's model calls go to the model, its state rebuilt",
+        help="the simulated moment (ISO 8601) from which the agent's model calls go to the model, its state rebuilt "
+        "(from the start only)",
+    )
+    replaying.add_argument(
+        "--frozen",
+        action="store_true",
+        help="send nothing to a model: the first model call the record does not hold is refused and stops the run "
+        "there, REPLAY_PARTED, with that call and the one the record held next in replayed.json",
     )
     replaying.add_argument("--judge", action="store_true", help="also run the checks a model judges")
     replaying.add_argument("--json", action="store_true")
     proxy(replaying)
     state(replaying)
+
+    sweeping = commands.add_parser(
+        "replay-all",
+        help="replay every case of a file (a finished run, and the checkpoint to play on from) against the agent as "
+        "it is now, and say which cases the record still answers whole",
+    )
+    sweeping.add_argument("cases", type=Path, help="a file holding `cases`: each a `run` and optionally its `at` seq")
+    sweeping.add_argument(
+        "--frozen",
+        action="store_true",
+        help="send nothing to a model: a case the record does not answer whole stops where it parts, naming the call",
+    )
+    sweeping.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="replays at once (default 1: cases of one run listen where that run's agent did)",
+    )
+    sweeping.add_argument("--judge", action="store_true", help="also run the checks a model judges")
+    sweeping.add_argument("--json", action="store_true")
+    sweeping.add_argument(
+        "--proxy-host", default=None, help="the address each replay's proxy listens on (each takes a free port)"
+    )
+    sweeping.add_argument("--agent-proxy-host", default=None, help="the host the agent reaches each replay's proxy at")
+    sweeping.add_argument(
+        "--no-proxy", action="append", default=[], metavar="HOST", help="a host the agent reaches directly"
+    )
+    sweeping.add_argument(
+        "--no-receive-telemetry", action="store_true", help="receive none of the agent's telemetry in any replay"
+    )
+    models(sweeping)
+    capture(sweeping)
+    state(sweeping)
 
     exported = commands.add_parser(
         "model-calls", help="the agent's model calls in a run, one JSON line each, in the OpenAI Batch API's shape"
@@ -580,7 +638,7 @@ def _parser() -> _Parser:
     priced(view)
     state(view)
     _library_parser(commands.add_parser("scenarios", help="the scenario library: list it, or write scenarios out"))
-    for name in ("run", "run-all", "fork", "replay", "doctor", "mcp-relay"):
+    for name in ("run", "run-all", "fork", "replay", "replay-all", "doctor", "mcp-relay"):
         commands.choices[name].set_defaults(**{TAKES_COMMAND: True})
     for name in ("mcp", "mcp-relay", "serve", "view"):  # each serves until stopped: no call returns from them
         commands.choices[name].set_defaults(**{OVER_MCP: False})
@@ -704,6 +762,8 @@ def _main(args_in: list[str]) -> int:
             return _run_all(args, state, command)
         if args.command == "replay":
             return _replay(args, state, command)
+        if args.command == "replay-all":
+            return _replay_all(args, state, command)
         if args.command == "model-calls":
             with session.reading(state, args.run_id) as kept:
                 for line in batch_lines(kept.spans()):
@@ -1119,6 +1179,7 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
                 judge=args.judge,
                 listen=_listen(args),
                 progress=_progress("fork"),
+                frozen=args.frozen,
             )
         )
     finally:
@@ -1141,6 +1202,8 @@ def _replay(args: argparse.Namespace, state: Path, command: list[str] | None) ->
                 listen=_listen(args),
                 progress=_progress("replay"),
                 live_from=args.live_from,
+                at_seq=args.at,
+                frozen=args.frozen,
             )
         )
     finally:
@@ -1148,11 +1211,35 @@ def _replay(args: argparse.Namespace, state: Path, command: list[str] | None) ->
             telemetry.shutdown()
     replayed = session.replayed(state, outcome.record.run_id)
     if replayed is not None and not args.json:
-        parted = replayed.get("parted") or "never: every model call was answered from the record"
-        print(
-            f"replay of {args.run_id}: {replayed['model_calls_replayed']} model call(s) answered from it; parted {parted}"
-        )
+        print(replay_described(args.run_id, replayed))
     return _report([outcome], state, as_json=args.json, sampled=False)
+
+
+def replay_described(parent: str, replayed: ReplayRecord) -> str:
+    """One line on what a replay answered from its record and where it parted, as `replayed.json` has it."""
+    frozen = ", frozen" if replayed.frozen else ""
+    parted = replayed.parted or "never: every model call was answered from the record"
+    return (
+        f"replay of {parent}{frozen}: {replayed.model_calls_replayed} model call(s) answered from it; parted {parted}"
+    )
+
+
+def _replay_all(args: argparse.Namespace, state: Path, command: list[str] | None) -> int:
+    cases = load_replay_cases(args.cases)
+    sweep = asyncio.run(
+        replay_all.play_all(
+            cases,
+            cases_file=args.cases,
+            state=state,
+            command=command,
+            jobs=args.jobs,
+            frozen=args.frozen,
+            judge=args.judge,
+            passed_on=_passed_on(args),
+        )
+    )
+    print(sweep.model_dump_json(indent=2) if args.json else replay_all.described(sweep))
+    return sweep.exit_code
 
 
 def _findings(args: argparse.Namespace, state: Path) -> int:

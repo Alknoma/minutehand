@@ -173,7 +173,8 @@ def free_port() -> int:
     raise OSError(f"no free port between {PORTS.start} and {PORTS.stop - 1}")
 
 
-def _filled(text: str, port: int, folder: Path) -> str:
+def filled(text: str, port: int, folder: Path) -> str:
+    """`text` with the run's port and folder put in for their placeholders."""
     return text.replace(PORT, str(port)).replace(DIR, str(folder))
 
 
@@ -214,8 +215,8 @@ def filled_for_run(agent: Path, command: list[str] | None, *, state: Path) -> Fi
     folder = state / BATCHES / ONE_RUN / secrets.token_hex(4)
     folder.mkdir(parents=True, exist_ok=True)
     return FilledRun(
-        agent=load_agent(agent, text=_filled(text, port, folder)),
-        command=[_filled(word, port, folder) for word in command],
+        agent=load_agent(agent, text=filled(text, port, folder)),
+        command=[filled(word, port, folder) for word in command],
         environment={PORT_VARIABLE: str(port), DIR_VARIABLE: str(folder)},
     )
 
@@ -316,7 +317,7 @@ async def _play(
     copy = agent.parent / f".{agent.stem}.{written.name}.{port}{agent.suffix}"
     uses = PORT in text or DIR in text
     if uses:
-        copy.write_text(_filled(text, port, own), encoding="utf-8")
+        copy.write_text(filled(text, port, own), encoding="utf-8")
     argv = run_argv(
         path,
         copy if uses else agent,
@@ -324,7 +325,7 @@ async def _play(
         judge=judge,
         seed=seed,
         passed_on=passed_on,
-        command=[_filled(word, port, own) for word in command] if command else None,
+        command=[filled(word, port, own) for word in command] if command else None,
     )
     log = own / "run.log"
     env = {**os.environ, PORT_VARIABLE: str(port), DIR_VARIABLE: str(own)}

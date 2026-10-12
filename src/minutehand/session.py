@@ -144,7 +144,7 @@ from minutehand.domain.items import ItemKind, TypedItem
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
-from minutehand.domain.run import RunRecord, StopReason
+from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE
@@ -385,6 +385,7 @@ async def play(
                     outside=own_files,
                     model=model,
                     desk=desk,
+                    replay=replaying.model if replaying is not None else None,
                 )
             write_recordings(directory, store.calls())
             if replaying is not None:
@@ -405,22 +406,22 @@ class Replaying:
     model: ModelReplay
 
     def summary(self) -> str:
-        """`replayed.json`: what was replayed, and where the runs parted."""
-        return json.dumps(
-            {
-                "replay_of": self.run_id,
-                "model_calls_replayed": self.model.answered,
-                "parted": self.model.parted,
-                "live_from": self.model.live_from.isoformat() if self.model.live_from else None,
-            },
-            indent=2,
-        )
+        """`replayed.json`: what was replayed, whether it was frozen, and where the runs parted: in words, and the
+        call the agent sent beside the call the record held next (`ReplayRecord`)."""
+        return ReplayRecord(
+            replay_of=self.run_id,
+            model_calls_replayed=self.model.answered,
+            parted=self.model.parted,
+            live_from=self.model.live_from,
+            frozen=self.model.frozen,
+            parted_at=self.model.parted_at,
+        ).model_dump_json(indent=2)
 
 
-def replayed(state: Path, run_id: str) -> dict[str, object] | None:
+def replayed(state: Path, run_id: str) -> ReplayRecord | None:
     """What a replay answered from its source, and where they parted (`replayed.json`); None for any other run."""
     path = run_dir(state, run_id) / REPLAYED
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    return ReplayRecord.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 async def replay(
@@ -434,23 +435,50 @@ async def replay(
     listen: Listen | None = None,
     progress: Progress | None = None,
     live_from: datetime | None = None,
+    at_seq: int | None = None,
+    frozen: bool = False,
 ) -> Outcome:
-    """Play a finished run again from its start, as a new run: its scenario as it played (start and seed), its
-    people's words as they said them, its pass-through hosts' answers, and each of the agent's model calls answered
-    with what the model answered then, so an agent that keeps its state in its own process rebuilds it exactly.
+    """Play a finished run again, as a new run: its scenario as it played (start and seed), its people's words as
+    they said them, its pass-through hosts' answers, and each of the agent's model calls answered with what the
+    model answered then, so an agent that keeps its state in its own process rebuilds it exactly.
+
+    From its start, or, with `at_seq`, from that checkpoint: the world, the clock, everything pending and the
+    agent's memory as they stood there, with nothing changed (a fork with no overrides, `fork`), and the agent's
+    program as `command` says it is now, so a change to the agent's code or prompt is played from the moment it
+    matters and nothing before it is played again.
 
     The agent's calls to its model are recorded on the wire (`Listen.record_model_calls`) for the replay to answer;
     the first one the recording never saw, or the first from `live_from` on, goes to the model, and so does every
     call after it: from there the run is played live. A finished run that recorded no model calls is replayed with
-    every call live.
+    every call live. `frozen` sends nothing to a model: the first call the record does not hold is refused to the
+    agent and stops the run `REPLAY_PARTED`, with that call and the one the record held next in `replayed.json`.
     """
+    if at_seq is not None:
+        if live_from is not None:
+            raise RunRefused(
+                "a replay from a checkpoint is answered from the record from there on: --live-from is "
+                "for a replay from the start"
+            )
+        [outcome] = await fork(
+            parent_run,
+            Fork(parent_run=parent_run, at_seq=at_seq),
+            state=state,
+            command=command,
+            telemetry=telemetry,
+            model=model,
+            judge=judge,
+            listen=listen,
+            progress=progress,
+            frozen=frozen,
+        )
+        return outcome
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
     _as_run_was(state, parent_run)
     with reading(state, parent_run) as kept:
-        recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from)
+        recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from, frozen=frozen)
     listen = (listen or Listen()).model_copy(update={"record_model_calls": True})
     replaying = Replaying(parent_run, _root_dir(state, parent.record) / WORLD, recorded)
     [outcome] = await play(
@@ -479,6 +507,7 @@ async def fork(
     judge: bool = False,
     listen: Listen | None = None,
     progress: Progress | None = None,
+    frozen: bool = False,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
@@ -486,6 +515,9 @@ async def fork(
     wire, to the agent's own calls to its model, through the proxy's EDIT policy. The agent's memory is its
     parent's at the checkpoint, with nothing restored; its program, when `command` is given, is started once the
     fork exists, and its report compared with the checkpoint's (`application.restore`); `progress` hears each step.
+    The agent's model calls after the checkpoint are answered from the parent's record until the agent asks
+    something the parent did not; `frozen` refuses that call instead of sending it to the model and stops the child
+    there, `REPLAY_PARTED`.
 
     A fork that is refused leaves no run behind: no row in the world file and no directory.
     """
@@ -546,7 +578,7 @@ async def fork(
         # asks something the parent did not: a fork differs from its parent by its changes, not by a model's mood.
         with reading(state, parent_run) as parent_kept:
             after = [s for s in parent_kept.spans() if s.wake > forked_after]
-        model_replay = ModelReplay.of(parent_run, after)
+        model_replay = ModelReplay.of(parent_run, after, frozen=frozen)
         proxy.proxy.addon.model_replay = model_replay
         own_files = OwnDatabases(agent, run_dir(state, child_id))
         scorer.own_files = own_files
@@ -592,6 +624,7 @@ async def fork(
                     environment=emulators,
                     inboxes=inboxes_for(agent, changed, signing),
                     outside=own_files,
+                    replay=model_replay,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)

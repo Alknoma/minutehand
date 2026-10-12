@@ -45,6 +45,7 @@ from minutehand.application.orchestrator import (
     Orchestrator,
     OutsideState,
     Reach,
+    Replay,
     Scorer,
     Services,
     acting,
@@ -172,6 +173,7 @@ async def fork_run(
     environment: Environment | None = None,
     inboxes: Inboxes | None = None,
     outside: OutsideState | None = None,
+    replay: Replay | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -182,7 +184,9 @@ async def fork_run(
     start is kept as `restore.json` in its directory.
 
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
-    without the scenario or agent file naming it is still one whose state may be outside the log.
+    without the scenario or agent file naming it is still one whose state may be outside the log. `replay` is the
+    parent's record answering the child's model calls after the checkpoint; frozen, it stops the child where the
+    agent asks something the parent did not.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
@@ -242,6 +246,7 @@ async def fork_run(
                 model=model,
                 desk=desk,
                 pins=[o for o in fork.overrides if isinstance(o, ReplyAt)],
+                replay=replay,
             )
             orchestrator.mount()
             edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]
