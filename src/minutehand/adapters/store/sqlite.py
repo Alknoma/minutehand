@@ -418,18 +418,37 @@ class SqliteStore:
     def children(
         self, provider: ProviderKey, kind: EntityKind, parent: str | None, *, after: str | None = None, limit: int = 100
     ) -> list[Stored]:
+        return self._living(provider, kind, "v.parent IS ?", [parent], after=after, limit=limit)
+
+    @_locked
+    def live(
+        self, provider: ProviderKey, kind: EntityKind, *, after: str | None = None, limit: int = 100
+    ) -> list[Stored]:
+        return self._living(provider, kind, "1=1", [], after=after, limit=limit)
+
+    def _living(
+        self,
+        provider: ProviderKey,
+        kind: EntityKind,
+        where_parent: str,
+        parent_args: list[object],
+        *,
+        after: str | None,
+        limit: int,
+    ) -> list[Stored]:
+        """The latest live version of each entity of one kind that `where_parent` admits, by external id."""
         mine, mine_args = self._visible("v")
         newer, newer_args = self._visible("n")
         rows = self._db.execute(
             f"""SELECT v.external_id, v.body, c.codec, c.stored, v.parent, v.seq, v.sim_time
                 FROM entity_version v INDEXED BY entity_listing LEFT JOIN content c ON c.hash=v.body_ref
-                WHERE v.provider=? AND v.kind=? AND v.parent IS ? AND v.external_id > ? AND {mine}
+                WHERE v.provider=? AND v.kind=? AND {where_parent} AND v.external_id > ? AND {mine}
                   AND (v.body IS NOT NULL OR v.body_ref IS NOT NULL)
                   AND NOT EXISTS (SELECT 1 FROM entity_version n INDEXED BY entity_lookup
                                   WHERE n.provider=v.provider AND n.kind=v.kind AND n.external_id=v.external_id
                                     AND n.seq > v.seq AND {newer})
                 ORDER BY v.external_id LIMIT ?""",
-            [provider, kind.value, parent, after or "", *mine_args, *newer_args, limit],
+            [provider, kind.value, *parent_args, after or "", *mine_args, *newer_args, limit],
         ).fetchall()
         found: list[Stored] = []
         for r in rows:
@@ -447,16 +466,36 @@ class SqliteStore:
         return found
 
     @_locked
-    def events(self, *, since: int = 0) -> list[WorldEvent]:
+    def events(
+        self,
+        *,
+        since: int = 0,
+        until: int | None = None,
+        kinds: Sequence[EntityKind] | None = None,
+        actors: Sequence[Actor] | None = None,
+        providers: Sequence[ProviderKey] | None = None,
+    ) -> list[WorldEvent]:
         where, args = self._visible("e")
+        narrowed: list[str] = []
+        narrowing: list[object] = []
+        if until is not None:
+            narrowed.append("e.seq<=?")
+            narrowing.append(until)
+        for column, chosen in (("e.kind", kinds), ("e.actor", actors), ("e.provider", providers)):
+            if chosen is not None:
+                values = [c.value if isinstance(c, StrEnum) else c for c in chosen]
+                narrowed.append(f"{column} IN ({','.join('?' * len(values))})" if values else "0=1")
+                narrowing.extend(values)
         rows = self._db.execute(
             f"SELECT e.run_id, e.seq, e.wake, e.sim_time, e.wall_time, e.actor, e.operation, e.provider, e.kind,"
             f" e.external_id, e.after, c.codec, c.stored"
-            f" FROM event e LEFT JOIN content c ON c.hash=e.after_ref WHERE {where} AND e.seq>? ORDER BY e.seq",
-            [*args, since],
+            f" FROM event e LEFT JOIN content c ON c.hash=e.after_ref WHERE {where} AND e.seq>?"
+            + "".join(f" AND {clause}" for clause in narrowed)
+            + " ORDER BY e.seq",
+            [*args, since, *narrowing],
         ).fetchall()
         attached: dict[int, Exchange] = {}
-        for call in self._calls(touching_after=since):
+        for call in self._calls(touching_after=since) if rows else []:
             for seq in range(call.first_seq, call.last_seq + 1):
                 attached[seq] = call.exchange
         found: list[WorldEvent] = []

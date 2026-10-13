@@ -251,8 +251,17 @@ def digest(memory: dict[tuple[str, str], str]) -> str:
 
 
 def store_digest(store: Store) -> str:
-    """The digest of the memory the store sees at its head."""
-    return digest(memory_of(store.events()))
+    """The digest of the memory the store sees at its head: the live memory entities, read in pages, never the log
+    of every write (a checkpoint takes one, and a long run has thousands of writes behind a few hundred keys)."""
+    memory: dict[tuple[str, str], str] = {}
+    after: str | None = None
+    while True:
+        page = store.live(MEMORY_PROVIDER, EntityKind.MEMORY, after=after, limit=PAGE)
+        for stored in page:
+            memory[split_id(stored.entity.external_id)] = stored.body
+        if len(page) < PAGE:
+            return digest(memory)
+        after = page[-1].entity.external_id
 
 
 def _value(body: str) -> JsonValue:

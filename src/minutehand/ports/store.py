@@ -20,6 +20,7 @@ from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import (
+    Actor,
     CallBegan,
     Change,
     EntityKind,
@@ -53,8 +54,25 @@ class Store(Protocol):
         """Live entities under one parent, ordered by external id, starting after `after`."""
         ...
 
-    def events(self, *, since: int = 0) -> list[WorldEvent]:
-        """Every event with seq greater than `since`, this run's and those it inherited."""
+    def live(
+        self, provider: ProviderKey, kind: EntityKind, *, after: str | None = None, limit: int = 100
+    ) -> list[Stored]:
+        """Live entities of one kind whatever their parent, ordered by external id, starting after `after`:
+        `children` over every parent at once, for a reader that wants the kind whole (the agent's memory)."""
+        ...
+
+    def events(
+        self,
+        *,
+        since: int = 0,
+        until: int | None = None,
+        kinds: Sequence[EntityKind] | None = None,
+        actors: Sequence[Actor] | None = None,
+        providers: Sequence[ProviderKey] | None = None,
+    ) -> list[WorldEvent]:
+        """Every event with seq greater than `since` (and at most `until`), this run's and those it inherited;
+        with `kinds`, `actors` or `providers`, only those of one of them, so a reader after one kind of event
+        does not read the whole log."""
         ...
 
     def head(self) -> int:

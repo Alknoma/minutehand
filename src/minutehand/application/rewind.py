@@ -296,7 +296,8 @@ def not_restorable(store: Store, at_seq: int, checkpoint: Checkpoint) -> NotRest
     """Why a fork cannot start at the checkpoint at `at_seq`, or None when it can. The agent's memory there is its
     log up to `at_seq`; one the agent went on writing in the same wake, after it said it was no longer working, was
     caught half written, and a fork from it would start from memory the agent never finished."""
-    return refused_by(memory_writes(store.events(since=at_seq)), at_seq, checkpoint)
+    writes = store.events(since=at_seq, kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+    return refused_by(memory_writes(writes), at_seq, checkpoint)
 
 
 def memory_writes(events: Sequence[WorldEvent]) -> dict[int, list[WorldEvent]]:
@@ -394,10 +395,8 @@ def _refuse_state_outside_log(store: Store, manifests: Sequence[Manifest], check
             used.setdefault(call.provider, []).append(
                 f"{call.exchange.method} {call.exchange.host}{call.exchange.path.split('?')[0]}"
             )
-    for event in store.events():
-        key = event.entity.provider
-        if key in outside and event.seq <= at_seq:
-            used.setdefault(key, [])
+    for event in store.events(until=at_seq, providers=list(outside)) if outside else []:
+        used.setdefault(event.entity.provider, [])
     if used:
         named = "; ".join(
             f"{key} ({f'{len(calls)} call(s) before it, the first {calls[0]}' if calls else 'its changes in the log'})"
