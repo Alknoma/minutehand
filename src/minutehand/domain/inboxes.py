@@ -50,6 +50,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, JsonValue, model_validator
 
+from minutehand.domain.common import Window
 from minutehand.domain.jsonpath import JsonPath
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.templates import PERSON, named, refuse_unknown
@@ -296,6 +297,16 @@ class HttpInbox(Model):
     pending: Listing | None = Field(default=None, description="None: nothing in this product waits on a person")
     decisions: list[Decision] = Field(default=[], description="What a person can decide on an item `pending` lists")
     uses: list[Use] = Field(default=[], description="What a person does in the product unprompted")
+    within: Window | None = Field(
+        default=None,
+        description="When a person acts on an item here that no take times: this much of their available time after "
+        "it began to wait on them (a website's visitor reacts in seconds; an approver in hours); None: as their own "
+        "answers are drawn",
+    )
+    leaning: str | None = Field(
+        default=None,
+        description="How people tend to act on items here, in plain words, shown to the model that picks for them",
+    )
 
     @model_validator(mode="after")
     def _decisions_differ(self) -> Self:

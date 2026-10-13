@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 from minutehand.application.moments import decision_text
 from minutehand.application.refusals import RunRefused
+from minutehand.domain.common import Window
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import Decides, PersonReply
 from minutehand.domain.scenario import Account, Person, PersonUses, Scenario
@@ -339,6 +340,22 @@ class Inboxes:
                 ),
             )
         return moved
+
+    # -- `SteersPeople`: what the inbox declares of how its people act ------------------------------------------
+
+    def within(self, item: EntityRef, world: Store) -> Window | None:
+        """The inbox's own window for acting on its items (`HttpInbox.within`); None: the person's own."""
+        del world
+        return self.declared(item.provider).within
+
+    def leaning(self, item: EntityRef, world: Store) -> str | None:
+        del world
+        return self.declared(item.provider).leaning
+
+    def drawn(self, item: EntityRef, offers: Sequence[Offer], world: Store) -> Offer | None:
+        """Always None: an inbox declares no odds, so the person (a take, or a model) picks."""
+        del item, offers, world
+        return None
 
     def heard_of(self, item: EntityRef, who: Person | None, world: Store, clock: Clock) -> bool:
         """Always: the decision is a call to the agent's own product."""

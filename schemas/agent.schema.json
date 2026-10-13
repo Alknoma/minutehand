@@ -1288,6 +1288,19 @@
           "title": "Kind",
           "type": "string"
         },
+        "leaning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How people tend to act on items here, in plain words, shown to the model that picks for them",
+          "title": "Leaning"
+        },
         "name": {
           "pattern": "^[a-z][a-z0-9_]*$",
           "title": "Name",
@@ -1313,6 +1326,18 @@
           },
           "title": "Uses",
           "type": "array"
+        },
+        "within": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "When a person acts on an item here that no take times: this much of their available time after it began to wait on them (a website's visitor reacts in seconds; an approver in hours); None: as their own answers are drawn"
         }
       },
       "required": [
@@ -3098,6 +3123,28 @@
         }
       },
       "title": "Where",
+      "type": "object"
+    },
+    "Window": {
+      "additionalProperties": false,
+      "description": "When a person's answer lands: a moment drawn uniformly between `min` and `max` of the person's AVAILABLE\ntime after the ask, the time inside their working hours and outside their absences. Two hours of available\ntime asked at 16:00 on a Friday, of a person working 9 to 17 on weekdays, is 10:00 on Monday.",
+      "properties": {
+        "max": {
+          "format": "duration",
+          "title": "Max",
+          "type": "string"
+        },
+        "min": {
+          "format": "duration",
+          "title": "Min",
+          "type": "string"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "title": "Window",
       "type": "object"
     },
     "Write": {
