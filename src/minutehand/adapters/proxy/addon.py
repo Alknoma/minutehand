@@ -53,7 +53,7 @@ from minutehand.adapters.proxy.local import CALL_HEADER, GRPC_NOT_INSTALLED, Loc
 from minutehand.adapters.proxy.model_calls import EVENT_STREAM, Exchanged, span_of
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.redirected import Redirected
-from minutehand.adapters.proxy.replay import ModelReplay
+from minutehand.adapters.proxy.replay import ModelReplay, Parted
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
@@ -822,7 +822,8 @@ class ProxyAddon:
 
     def _replayed(self, flow: http.HTTPFlow, host: str) -> bool:
         """A model call answered from the replayed run's recording, and kept as a span saying so; False when there
-        is no replay, or the runs have parted, and the call goes to the model."""
+        is no replay, or the runs have parted, and the call goes to the model. A frozen replay that has parted
+        answers the refusal instead (`replay.Parted`), kept the same way: nothing reaches a model."""
         if self.model_replay is None:
             return False
         request = flow.request
@@ -831,6 +832,8 @@ class ProxyAddon:
         recorded = self.model_replay.answer(host, request.path, body, kind, world.clock.now())
         if recorded is None:
             return False
+        if isinstance(recorded, Parted):
+            self._seen(f"a model call to {host}{request.path.split('?', 1)[0]} refused: the frozen replay parted")
         self._recorded.discard(flow.id)
         flow.response = http.Response.make(recorded.status, recorded.body, {"content-type": recorded.content_type})
         now = datetime.fromtimestamp(request.timestamp_start, UTC)  # real time, as a recorded call's span has it

@@ -296,6 +296,8 @@ made; `--tunnel-model-calls` passes them through unopened instead. Two commands 
 ```bash
 minutehand model-calls <run_id> > calls.jsonl      # one line per call, in the OpenAI Batch API's shape
 minutehand replay <run_id> [--live-from TIME] -- <command>
+minutehand replay <run_id> --at <seq> [--frozen] -- <command>
+minutehand replay-all cases.yaml [--frozen] -- <command>
 ```
 
 **`model-calls`** writes each call as a batch input line has it (`custom_id`, `method`, `url`, `body`) and its answer
@@ -316,6 +318,14 @@ the agent plays on live from the state the replay rebuilt. `replayed.json` in th
 first line, say how many calls were answered from the record and where the runs parted; each replayed call's span
 carries `minutehand.replayed_from`. The agent file is the one the run kept, so the agent listens where it did.
 `tests/e2e/test_replay.py` replays an agent whose notes live only in its process, then plays it live from a moment.
+
+**`replay --at <seq>`** plays on from a checkpoint instead, with the agent as it is now: a fork with nothing changed,
+for a change to the agent's own code or prompt. Calls before the checkpoint are not made again; after it the record
+answers until the agent asks something it does not hold. **`--frozen`** sends nothing to a model: that call is
+refused to the agent (422, `minutehand_frozen_replay`), the run stops `REPLAY_PARTED` (exit 7), and `replayed.json`
+keeps the call sent beside the call the record held next (`parted_at`). **`replay-all cases.yaml`** does it for a
+file of cases (`cases: [{run, at}]`), one `minutehand replay` each, and says which cases the change touched and at
+which call (`docs/design.md`, "The agent as it is now, from a checkpoint").
 
 ## Forks
 

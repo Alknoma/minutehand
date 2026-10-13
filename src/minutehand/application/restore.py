@@ -46,6 +46,13 @@ OUTSIDE = (
     "no fork puts back. Keep that state in the store, or rerun from the beginning."
 )
 
+CODE_CHANGED = (
+    "The agent's program is not the one that made the checkpoint ({changes}), so the likelier cause is the new "
+    "code: it reads the memory the checkpoint holds in another shape, or plans otherwise from the same memory. A "
+    "fork continues the agent that made the checkpoint; for the changed one, play the run again from its start "
+    "(`minutehand replay`), or change the memory at the fork to the shape the new code writes (`memory_edit`)."
+)
+
 
 class OwnProgram(Protocol):
     """The agent's program, when Minutehand starts it (`-- <command>`): started once the fork exists."""
@@ -153,9 +160,12 @@ async def start_fork(
     own: OwnProgram | None = None,
     progress: Progress | None = None,
     edit: Callable[[], None] | None = None,
+    code_changed: Sequence[str] = (),
 ) -> Restored:
     """Prove the fork's agent is the agent at the checkpoint at `checkpoint_seq`: the fork's `memory` digest against
-    the checkpoint's, then, once its program is started, its report against the one recorded there.
+    the checkpoint's, then, once its program is started, its report against the one recorded there. `code_changed`
+    says, in words, how the agent's program differs from the one that made the checkpoint (`program_changes`); a
+    report that then differs is refused naming the code as the likely cause, not state outside the store.
 
     With `edit`, the fork changes the agent's memory once it is proven the checkpoint's (`MemoryEdit`): the
     agent's report is then not compared but asked again, since its plan was made from the memory before the change,
@@ -239,11 +249,12 @@ async def start_fork(
     steps.append(StepResult(step=RestoreStep.VERIFY, output="\n".join(found), seconds=0.0))
     if found:
         seen = f" At the checkpoint the run saw: {'; '.join(state.outside)}." if state.outside else ""
+        cause = CODE_CHANGED.format(changes="; ".join(code_changed)) if code_changed else OUTSIDE
         raise RestoreFailed(
             f"the agent after the fork is not the agent at the checkpoint at seq {checkpoint_seq}: its report differs "
             "field by field:\n"
             + "\n".join(f"  {line}" for line in found)
-            + f"\n{OUTSIDE}{seen} The fork was refused rather than run against an agent from another moment.",
+            + f"\n{cause}{seen} The fork was refused rather than run against an agent from another moment.",
             steps,
         )
     say(f"{RestoreStep.VERIFY.value}: the report equals the one at the checkpoint")
