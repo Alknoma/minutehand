@@ -22,6 +22,7 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **inbox** | Where work waits on a person in the agent's own product | queue, human action |
 | **item** | One thing waiting in an inbox | task, request |
 | **decide** | A person settling an item with a decision and its inputs | approve (that is one decision) |
+| **use** | A person doing something in the agent's own product unprompted: opening a page, writing to it | event, interaction |
 | **declared host** | A host the agent calls that Minutehand captures: acknowledge, pass through, replay, forward | mock |
 | **operation** | An `operationId` in an OpenAPI document that a declaration names instead of a template | endpoint |
 
@@ -40,6 +41,7 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **deliver a reply** (declared host) | Minutehand → agent, an answer to a captured send | `DeliveredReply` (the default shape, no `body`), or the declared `body` → 2xx | `outbound[].replies` | Only when people answer a send |
 | **inbox list** | Minutehand → agent, as each person, after each wake or step and before the clock moves | Declared template or operation (default `listPending`, `PendingPage`) | `inboxes[].pending` | Only with an inbox |
 | **decide** | Minutehand → agent, as the person, when a decision falls due | Declared template or operation (default `decide`, `DecisionMade`) → declared success | `inboxes[].decisions[]` | Only with an inbox |
+| **use** | Minutehand → agent, as the person, when a scenario's `uses` happening falls due | Declared template or operation → declared success | `inboxes[].uses[]` | Only to play people using the product unprompted |
 | **declared hosts** | The agent → a host no provider claims | Captured as declared | `outbound[]` (`acknowledge`, `pass_through`, `replay`, `forward`) | No |
 | **emulators** | Minutehand → a fake outside it, for `forward` hosts | The emulator's own | `emulators[]` | No |
 | **base URLs** | The agent → the proxy's `/_host/…`, for a client without a proxy | As the real host | `base_urls[]` | No |

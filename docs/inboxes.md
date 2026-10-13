@@ -1,7 +1,8 @@
 # Inboxes: work waiting on a person in the agent's own product
 
 Some of what a person does never touches a SaaS fake: approving an operation in the agent's own web app, answering
-a question it raised on its own page. Minutehand reaches these through an **inbox** the agent file declares. It
+a question it raised on its own page, or using the product with nothing waiting on them at all (a website's visitor
+opening pages, picking an option, writing to the agent; see "Uses"). Minutehand reaches these through an **inbox** the agent file declares. It
 reads what waits on each person, as that person, and records each new item as the agent asking them. The people
 engine decides for the person, after their usual delay, as a take pins or a model picks. Minutehand then makes the
 decision as that person, by the declared call, records it as the person's transition, and the ledger and the checks
@@ -270,6 +271,53 @@ earliest `due`, `perform_due()`, then wake the agent.
 | The viewer | A "Decisions in the agent's product" row in the timeline. In "What was said": "asked Nadia Ek to approve or reject: …", "Nadia Ek approved: …", the product's refusal, and a withdrawal. |
 | MCP | Results carry the same scorecard. |
 
+## Uses: what a person does in the product unprompted
+
+Some products are mostly people acting with nothing asked of them: a website where an agent watches its visitors,
+an app whose users open screens and type. Each such act is a **use** the inbox declares, and a scenario plays it as
+a happening of its person's (`kind: uses`), at its moment, with its inputs word for word. An inbox may declare only
+`uses` (nothing in the product waits on anyone), only `pending` with its `decisions`, or both.
+
+```yaml
+inboxes:
+  - name: site
+    kind: http
+    uses:
+      - name: views
+        description: Opens a page
+        request: {kind: template, method: POST, url: "http://127.0.0.1:8760/api/events",
+                  body: {visitor: "{person.key}", touch: {kind: view, page: "{input.page}", at: "{clock.now}"}}}
+        inputs: [{name: page, description: The page's path}]
+      - name: writes
+        request: {kind: template, method: POST, url: "http://127.0.0.1:8760/api/events",
+                  body: {visitor: "{person.key}", touch: {kind: reply, text: "{input.text}", at: "{clock.now}"}}}
+        inputs: [{name: text, description: What they write to the agent}]
+```
+
+```yaml
+happenings:
+  - {kind: uses, person: maya, inbox: site, use: views, after: PT1M, inputs: {page: /pricing}}
+  - {kind: uses, person: maya, inbox: site, use: writes, after: PT3M,
+     inputs: {text: "We are a candle brand doing about 2m a year. Is a project enough?"}}
+```
+
+| Part | Says |
+|---|---|
+| `uses[]` | `name`, `description`, `request` (either request kind), `inputs`, and `succeeds` (as a decision's). A use's request may name the person's fields, `{clock.now}` and its own `{input.<name>}`. |
+| A `uses` happening | `person`, `inbox`, `use`, `after` (from the scenario's start) and `inputs`, each given word for word. |
+
+**What it records.** The person's act, `InboxUseSnapshot`, actor PERSON, written before the call goes out, so
+whatever the product does in handling it comes after it; and again once the product answered: `taken`, or `refused`
+with its status and answer. A refusal never stops the run. Each use is an entity of its own (`inbox_use`, numbered in
+the order the world's uses were made), so the same words twice are two acts. The call is Minutehand's own, as the
+person (`Exchange.inbox_call`, act `use`), never the agent's.
+
+**It wakes the agent** with `PERSON_REPLIED`, as a decision does: the call reached the agent's own product.
+
+**Refused before the run starts**, naming it: a use naming an inbox the agent file does not declare, a use the inbox
+does not declare, inputs the use does not take or a required one left out, and a person Minutehand cannot sign in
+as. A standing world refuses the same when it opens, and a happening fired through the control API when it is fired.
+
 ## What it cannot do
 
 - **A decision with no API behind it** is out of reach. A person who must click a page that sends nothing an agent
@@ -285,3 +333,5 @@ earliest `due`, `perform_due()`, then wake the agent.
   a decision a model makes is written when the world's clock passes its moment (`advance`, `inboxes/due`), not
   before, so `inboxes/read` shows its moment and not yet the decision.
 - **MCP inboxes are designed, not built.**
+- **A use's inputs are written by hand.** No model words them from a person's facts, and a person never chooses a use
+  of their own accord: a scenario says each one, and when.
