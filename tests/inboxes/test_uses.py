@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -143,7 +144,7 @@ async def test_a_use_with_a_gap_comes_that_long_after_their_last_drawn_by_the_se
     taken = [e.sim_time for e in uses(played.store.events()) if snapshot(e).taken]
     assert taken == moments
     assert moments[0] == T0 + hours(1)
-    assert all(minutes(10) <= b - a <= minutes(50) for a, b in zip(moments, moments[1:]))
+    assert all(minutes(10) <= b - a <= minutes(50) for a, b in pairwise(moments))
     others = [scn.seeded(seed).happening_moments() for seed in range(scn.seed + 1, scn.seed + 6)]
     assert any(m != moments for m in others), "five other seeds drew the same moments"
     assert [scn.seeded(scn.seed).happening_moments() for _ in range(2)] == [moments, moments]
