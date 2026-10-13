@@ -109,6 +109,8 @@ inboxes:
 | `pending.waits_on` | Makes the list everyone's. Each item names whom it waits on, by email or `Person.key`, and only that person's reading asks them. |
 | `pending.category`, `.decisions` | Optional. A category, and the decisions allowed on this item. |
 | `pending.paging` | `next` is where the next page's cursor is. It is sent as `param`, or wherever the request names `{page.cursor}`. At most `most` pages are read (50). |
+| `within` | Optional. When a person acts on an item no take times: this much of their available time after it began to wait (a website's visitor reacts in seconds, an approver in hours). Without it, as their own answers are drawn. |
+| `leaning` | Optional. How people tend to act here, in plain words, shown to the model that picks for them. |
 | `decisions[]` | `name`, `description` (a model-written person reads it), `reads`, `settles` (false: a note, offered on every item, that leaves it waiting), `inputs`, `request`, and `succeeds`. `succeeds` is the statuses that mean the decision was taken (any 2xx by default), optionally with a JSONPath `at` that must equal `equals`. |
 
 ### Request kinds
