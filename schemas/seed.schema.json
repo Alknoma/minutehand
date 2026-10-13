@@ -2517,6 +2517,18 @@
           "title": "After",
           "type": "string"
         },
+        "gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In place of `after`: how long after this person's previous use in the list it comes, drawn uniformly from the window by the run's seed, in calendar time. Their first use counts from the start"
+        },
         "inbox": {
           "description": "The `name` of the agent file's inbox the use is declared in",
           "pattern": "^[a-z][a-z0-9_]*$",

@@ -7,7 +7,7 @@ declares only `uses`: a website's visitor, whom nothing waits on, who opens page
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -80,6 +80,10 @@ def visiting(*happenings: dict[str, object]) -> Scenario:
     )
 
 
+def minutes(n: int) -> timedelta:
+    return timedelta(minutes=n)
+
+
 def listening(woken: list[WakeRequest]) -> Agent:
     def plan(request: WakeRequest, n: int) -> tuple[datetime | None, bool]:
         del n
@@ -122,6 +126,32 @@ async def test_a_use_is_made_as_its_person_at_its_moment_and_wakes_the_agent(tmp
         (T0 + hours(1), WakeReason.PERSON_REPLIED),
         (T0 + hours(2), WakeReason.PERSON_REPLIED),
     ]
+
+
+async def test_a_use_with_a_gap_comes_that_long_after_their_last_drawn_by_the_seed(
+    tmp_path: Path, product: Product
+) -> None:
+    gap = {"min": "PT10M", "max": "PT50M"}
+    scn = visiting(
+        {"use": "views", "after": "PT1H", "inputs": {"page": "/"}},
+        {"use": "views", "gap": gap, "inputs": {"page": "/pricing"}},
+        {"use": "writes", "gap": gap, "inputs": {"text": "Is a project enough?"}},
+    )
+    moments = scn.happening_moments()
+    played = await play(tmp_path, scn, site(product), lambda _: listening([]))
+
+    taken = [e.sim_time for e in uses(played.store.events()) if snapshot(e).taken]
+    assert taken == moments
+    assert moments[0] == T0 + hours(1)
+    assert all(minutes(10) <= b - a <= minutes(50) for a, b in zip(moments, moments[1:]))
+    others = [scn.seeded(seed).happening_moments() for seed in range(scn.seed + 1, scn.seed + 6)]
+    assert any(m != moments for m in others), "five other seeds drew the same moments"
+    assert [scn.seeded(scn.seed).happening_moments() for _ in range(2)] == [moments, moments]
+
+
+def test_a_use_both_after_a_time_and_a_gap_is_refused() -> None:
+    with pytest.raises(ValueError, match="`after` a fixed time or a `gap` after the last, not both"):
+        visiting({"use": "views", "after": "PT1H", "gap": {"min": "PT1M", "max": "PT2M"}, "inputs": {"page": "/"}})
 
 
 async def test_a_use_the_product_refuses_is_recorded_refused_and_the_run_goes_on(

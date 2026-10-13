@@ -307,6 +307,7 @@ happenings:
 |---|---|
 | `uses[]` | `name`, `description`, `request` (either request kind), `inputs`, and `succeeds` (as a decision's). A use's request may name the person's fields, `{clock.now}` and its own `{input.<name>}`. |
 | A `uses` happening | `person`, `inbox`, `use`, `after` (from the scenario's start) and `inputs`, each given word for word. |
+| `gap` (in place of `after`) | A window: the use comes this long after the same person's previous use in the list, drawn uniformly by the run's seed in calendar time (their first use counts from the start). Their steps keep their order, and each `--samples` seed plays them at a pace of its own. Both `after` and `gap` is refused. |
 
 **What it records.** The person's act, `InboxUseSnapshot`, actor PERSON, written before the call goes out, so
 whatever the product does in handling it comes after it; and again once the product answered: `taken`, or `refused`

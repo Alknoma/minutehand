@@ -717,7 +717,18 @@ class PersonUses(Model):
     inbox: ProviderKey = Field(description="The `name` of the agent file's inbox the use is declared in")
     use: str = Field(description="The use's `name`")
     after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="Offset from the scenario's start")
+    gap: Window | None = Field(
+        default=None,
+        description="In place of `after`: how long after this person's previous use in the list it comes, drawn "
+        "uniformly from the window by the run's seed, in calendar time. Their first use counts from the start",
+    )
     inputs: dict[str, str] = Field(default={}, description="What they give with it, by input name, word for word")
+
+    @model_validator(mode="after")
+    def _one_moment(self) -> Self:
+        if self.gap is not None and self.after:
+            raise ValueError(f"a use of {self.use!r} comes `after` a fixed time or a `gap` after the last, not both")
+        return self
 
 
 Happening = Annotated[
@@ -1457,6 +1468,24 @@ class Scenario(_ScenarioBody):
         if "seed" not in written or written["seed"] is None:
             return {**written, "seed": derived_seed(written["name"])}
         return written
+
+    def happening_moments(self) -> list[datetime]:
+        """When each happening comes, in list order: the start plus its `after`, or, for a use with a `gap`, its
+        person's previous use plus a span drawn from the gap by the seed and the happening's place in the list. Uses
+        drawn this way keep their order, so one seed plays a person's steps at its own pace and another at another."""
+        last: dict[str, datetime] = {}
+        moments: list[datetime] = []
+        for i, happening in enumerate(self.happenings):
+            at = self.starts_at + happening.after
+            if isinstance(happening, PersonUses):
+                if happening.gap is not None:
+                    span = int((happening.gap.max - happening.gap.min).total_seconds())
+                    said = f"{self.seed}|{happening.person}|happening:{i}|gap".encode()
+                    drawn = int.from_bytes(hashlib.sha256(said).digest()[:8], "big") % (span + 1)
+                    at = last.get(happening.person, self.starts_at) + happening.gap.min + timedelta(seconds=drawn)
+                last[happening.person] = at
+            moments.append(at)
+        return moments
 
     def seeded(self, seed: int | None) -> Scenario:
         """This scenario under another seed; itself when `seed` is None."""

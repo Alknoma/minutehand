@@ -413,12 +413,10 @@ class Orchestrator:
                     command=i,
                 )
             )
-        for i, happening in enumerate(self._scenario.happenings):
+        for i, at in enumerate(self._scenario.happening_moments()):
             self._dues.enter(
                 PendingHappening(
-                    due=Due(
-                        at=self._scenario.starts_at + happening.after, kind=DueKind.HAPPENING, ref=f"happening:{i}"
-                    ),
+                    due=Due(at=at, kind=DueKind.HAPPENING, ref=f"happening:{i}"),
                     happening=i,
                 )
             )

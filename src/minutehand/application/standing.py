@@ -275,9 +275,9 @@ class StandingWorld:
         self._named = list(named)
         if self.scripted:
             self._engine = self._engine_for(self.scenario)
-        for n, happening in enumerate(self.scenario.happenings, start=1):
+        moments = self.scenario.happening_moments()
+        for n, (happening, at) in enumerate(zip(self.scenario.happenings, moments, strict=True), start=1):
             self._lands(happening, n)
-            at = self.scenario.starts_at + happening.after
             self._owed.append(
                 _Owed(at=at, what=f"happening {n}: {happening.person} {_doing(happening)}", happening=happening)
             )
