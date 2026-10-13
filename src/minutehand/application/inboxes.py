@@ -12,6 +12,11 @@ model picks one otherwise). `decide` makes the decision as that person, as the p
 writes it as their change: `DECIDED` when the product took it, still `PENDING` with the product's answer when it
 refused. A refusal never stops the run; the wait stays open. `refuse_untakeable` refuses, before anything runs, a
 take naming a decision its inbox does not offer.
+
+`use` plays a person's use of the product (`domain.scenario.PersonUses`): their act is written before the call goes
+out (`InboxUseSnapshot`, actor PERSON), so whatever the product does in handling it comes after it, and again once
+the product answered, taken or refused. `refuse_unusable` refuses, before anything runs, a use no inbox declares, or
+inputs it does not take.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ from minutehand.application.moments import decision_text
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.inboxes import HttpInbox, ListedItem
 from minutehand.domain.people import Decides, PersonReply
-from minutehand.domain.scenario import Account, Person, Scenario
+from minutehand.domain.scenario import Account, Person, PersonUses, Scenario
 from minutehand.domain.transitions import AUTOMATIC_REPLY, TEXT, Offer, OfferField, Transition, Waiting, content_of
 from minutehand.domain.world import (
     Actor,
@@ -32,6 +37,7 @@ from minutehand.domain.world import (
     EntityKind,
     EntityRef,
     InboxItemSnapshot,
+    InboxUseSnapshot,
     ItemStatus,
     Operation,
     WorldEvent,
@@ -93,6 +99,37 @@ def refuse_untakeable(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> No
                 raise RunRefused(str(e)) from e
 
 
+def refuse_unusable(scenario: Scenario, reaches: Sequence[ReachesInbox]) -> None:
+    """Each use a scenario plays (`PersonUses`) is declared by the inbox it names, is given only the inputs it takes
+    and every one it requires, and is done by a person Minutehand can sign in to the product as."""
+    named = {r.declared.name: r for r in reaches}
+    people = {p.key: p for p in scenario.people}
+    for happening in scenario.happenings:
+        if not isinstance(happening, PersonUses):
+            continue
+        reach = named[happening.inbox] if happening.inbox in named else None
+        if reach is None:
+            raise RunRefused(
+                f"{happening.person} uses {happening.use!r} in inbox {happening.inbox}, which the agent file does not "
+                "declare"
+            )
+        use = reach.declared.use(happening.use)
+        if use is None:
+            raise RunRefused(
+                f"{happening.person} uses {happening.use!r} in inbox {happening.inbox}, which declares no such use"
+            )
+        try:
+            use.refuse_inputs(happening.inputs, happening.person)
+        except ValueError as e:
+            raise RunRefused(str(e)) from e
+        person = people[happening.person]
+        if person.account not in READABLE or not reach.can_act_as(person):
+            raise RunRefused(
+                f"{happening.person} uses {happening.use!r} in inbox {happening.inbox}, and Minutehand cannot sign in "
+                "to it as them"
+            )
+
+
 def refuse_clashing(reaches: Sequence[ReachesInbox], taken: Sequence[str]) -> None:
     """An inbox's asks are recorded under its name: it may not be a provider's key or a captured host's name."""
     clash = sorted({r.declared.name for r in reaches} & set(taken))
@@ -131,6 +168,8 @@ class Inboxes:
         by_email = {p.email.casefold(): p for p in self.scenario.people if p.email}
         by_key = {p.key: p for p in self.scenario.people}
         for name, reach in self.reaches.items():
+            if reach.declared.pending is None:
+                continue  # a product where people only act: nothing in it waits on anyone
             per_person = reach.declared.pending.waits_on is None
             seen: set[str] = set()
             complete = True
@@ -340,6 +379,48 @@ class Inboxes:
                 body=after.model_dump_json(),
                 parent=item.person,
                 after=after,
+            )
+        )
+
+    # -- a person using the product unprompted ----------------------------------------------------------------
+
+    async def use(self, happening: PersonUses, world: Store, clock: Clock) -> WorldEvent:
+        """Do `happening` as its person, now: written as their act before the call goes out, then again with the
+        product's answer. Each use is an entity of its own, numbered in the order the world's uses were made."""
+        person = next(p for p in self.scenario.people if p.key == happening.person)
+        reach = self.reaches[happening.inbox]
+        made = sum(
+            1 for e in world.events() if e.entity.kind is EntityKind.INBOX_USE and e.operation is Operation.CREATE
+        )
+        ref = EntityRef(provider=happening.inbox, kind=EntityKind.INBOX_USE, external_id=f"use:{made + 1}")
+        acting = InboxUseSnapshot(
+            inbox=happening.inbox, use=happening.use, person=person.key, inputs=dict(happening.inputs)
+        )
+        world.apply(
+            Change(
+                entity=ref,
+                operation=Operation.CREATE,
+                actor=Actor.PERSON,
+                body=acting.model_dump_json(),
+                parent=person.key,
+                after=acting,
+            )
+        )
+        answer = await reach.use(person, happening.use, happening.inputs, world, clock)
+        refused = (
+            None
+            if answer.accepted
+            else f"{answer.status if answer.status is not None else 'no answer'}: {answer.answer}"
+        )
+        done = acting.model_copy(update={"taken": answer.accepted, "refused": refused})
+        return world.apply(
+            Change(
+                entity=ref,
+                operation=Operation.UPDATE,
+                actor=Actor.PERSON,
+                body=done.model_dump_json(),
+                parent=person.key,
+                after=done,
             )
         )
 

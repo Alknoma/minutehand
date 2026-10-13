@@ -26,7 +26,14 @@ from pydantic import ValidationError
 
 from minutehand.application.checkpoint import PendingService
 from minutehand.application.further_seed import Scratch, land
-from minutehand.application.inboxes import Inboxes, Looked, items_in, refuse_clashing, refuse_untakeable
+from minutehand.application.inboxes import (
+    Inboxes,
+    Looked,
+    items_in,
+    refuse_clashing,
+    refuse_untakeable,
+    refuse_unusable,
+)
 from minutehand.application.model_calls import agent_instructions, per_wake
 from minutehand.application.moments import decision_text
 from minutehand.application.orchestrator import acting
@@ -57,6 +64,7 @@ from minutehand.domain.scenario import (
     DocumentHappening,
     Happening,
     Person,
+    PersonUses,
     ProviderKey,
     ProviderSeed,
     Scenario,
@@ -219,6 +227,7 @@ class StandingWorld:
             try:
                 if scripted:
                     refuse_untakeable(scenario, list(inboxes.reaches.values()))
+                refuse_unusable(scenario, list(inboxes.reaches.values()))
                 refuse_clashing(list(inboxes.reaches.values()), [t.provider for t in inbound])
             except RunRefused as e:
                 raise WorldRefused(str(e)) from e
@@ -610,6 +619,13 @@ class StandingWorld:
 
     def _lands(self, happening: Happening, n: int) -> None:
         """Refuse, before the world opens, a happening whose provider lacks the port its family lands through."""
+        if isinstance(happening, PersonUses):
+            if self.inboxes is None or happening.inbox not in self.inboxes.reaches:
+                raise WorldRefused(
+                    f"happening {n} ({happening.person} {_doing(happening)}) names inbox {happening.inbox}, which "
+                    "this world does not declare"
+                )
+            return
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
@@ -624,7 +640,12 @@ class StandingWorld:
                 f"{port}" + ("" if port != "PushesEvents" else " or no inbound target in this world")
             )
 
-    async def _happen(self, happening: Happening) -> None:
+    async def _happen(self, happening: Happening) -> WorldEvent | None:
+        """Land `happening`; a use answers with its act as the product answered it, every other family with None,
+        its change being the first it wrote."""
+        if isinstance(happening, PersonUses):
+            assert self.inboxes is not None  # refused by `_lands` when no inbox declares it
+            return await self.inboxes.use(happening, self.store, self.clock)
         provider = self.scenario.happening_provider(happening)
         found = self.provider(provider)
         if isinstance(happening, TicketHappening):
@@ -640,6 +661,7 @@ class StandingWorld:
             await self._pushes(provider).happen(
                 happening, self._target(provider), self.store, self.clock, secret=self._signing[provider]
             )
+        return None
 
     # -- a person acting ----------------------------------------------------------------------------------------
 
@@ -669,8 +691,11 @@ class StandingWorld:
             checked = type(self.scenario).model_validate(
                 {**self.scenario.model_dump(), "happenings": [h.model_dump() for h in [*self._acted, happening]]}
             )
-            key = checked.happening_provider(happening)
-            refuse_unheld(checked, {key: self.provider(key).manifest})
+            if isinstance(happening, PersonUses):
+                refuse_unusable(checked, list(self.inboxes.reaches.values()) if self.inboxes is not None else [])
+            else:
+                key = checked.happening_provider(happening)
+                refuse_unheld(checked, {key: self.provider(key).manifest})
         except (ValueError, RunRefused) as e:
             if isinstance(e, NotFound):
                 raise
@@ -679,9 +704,9 @@ class StandingWorld:
         before = self.store.head()
         async with self._push(f"{happening.person} {_doing(happening)}"):
             with _refusing():
-                await self._happen(happening)
+                landed = await self._happen(happening)
         self._acted.append(happening)
-        return self._written(before, reads=True)
+        return landed if landed is not None else self._written(before, reads=True)
 
     async def press(self, person: str, on: EntityRef, press: Press) -> WorldEvent:
         """`person` uses a control on the message `on` now (a button, a pick, a form filled), pushed to the
@@ -966,4 +991,6 @@ def _doing(happening: Happening) -> str:
         return f"{happening.action.kind} the seeded ticket {happening.ticket!r}"
     if isinstance(happening, DocumentHappening):
         return f"{happening.action.kind} the seeded document {happening.document!r}"
+    if isinstance(happening, PersonUses):
+        return f"uses {happening.use!r} in {happening.inbox}"
     return happening.kind

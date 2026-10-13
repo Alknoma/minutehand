@@ -1274,10 +1274,11 @@
           "description": "None: Minutehand sends no credential as anyone"
         },
         "decisions": {
+          "default": [],
+          "description": "What a person can decide on an item `pending` lists",
           "items": {
             "$ref": "#/$defs/Decision"
           },
-          "minItems": 1,
           "title": "Decisions",
           "type": "array"
         },
@@ -1293,13 +1294,29 @@
           "type": "string"
         },
         "pending": {
-          "$ref": "#/$defs/minutehand__domain__inboxes__Listing"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/minutehand__domain__inboxes__Listing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "None: nothing in this product waits on a person"
+        },
+        "uses": {
+          "default": [],
+          "description": "What a person does in the product unprompted",
+          "items": {
+            "$ref": "#/$defs/Use"
+          },
+          "title": "Uses",
+          "type": "array"
         }
       },
       "required": [
-        "name",
-        "pending",
-        "decisions"
+        "name"
       ],
       "title": "HttpInbox",
       "type": "object"
@@ -2878,6 +2895,63 @@
         "url"
       ],
       "title": "Upstream",
+      "type": "object"
+    },
+    "Use": {
+      "additionalProperties": false,
+      "description": "Something a person does in the agent's own product unprompted, as its own page sends it: opens a page, picks\nan option, writes to the agent. Nothing waits on them for it; a scenario says when they do it, and with what\n(`domain.scenario.PersonUses`).",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "What it is, in the product's words",
+          "title": "Description",
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DecisionInput"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "request": {
+          "discriminator": {
+            "mapping": {
+              "operation": "#/$defs/OperationRequest",
+              "template": "#/$defs/TemplateRequest"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/TemplateRequest"
+            },
+            {
+              "$ref": "#/$defs/OperationRequest"
+            }
+          ],
+          "title": "Request"
+        },
+        "succeeds": {
+          "$ref": "#/$defs/Succeeds",
+          "default": {
+            "at": null,
+            "equals": null,
+            "statuses": []
+          }
+        }
+      },
+      "required": [
+        "name",
+        "request"
+      ],
+      "title": "Use",
       "type": "object"
     },
     "Wakes": {

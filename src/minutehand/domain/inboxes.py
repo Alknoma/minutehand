@@ -23,6 +23,15 @@ them as each person does (`docs/inboxes.md`):
             request: {kind: template, url: "http://127.0.0.1:8790/approvals/{item.id}/decision",
                       body: {decision: reject, reason: "{input.reason}"}}
             inputs: [{name: reason, description: Why it is turned down}]
+        uses:                                              # what a person does in the product UNPROMPTED
+          - name: asks
+            request: {kind: template, method: POST, url: "http://127.0.0.1:8790/questions",
+                      body: {from: "{person.email}", text: "{input.text}"}}
+            inputs: [{name: text, description: The question}]
+
+An inbox may declare only `uses` (a product where nothing waits on a person, and people only act in it: a website's
+visitor opening pages, choosing, writing), only `pending` with its `decisions`, or both. A scenario plays a use as a
+happening of its person's (`domain.scenario.PersonUses`), at its moment, with the inputs it gives.
 
 Each request is either a template (method, URL, headers, body, filled from named values) or an operation in an
 OpenAPI document (`OperationRequest`): the agent's own, or Minutehand's default shape (`document: minutehand`,
@@ -49,6 +58,8 @@ from minutehand.domain.world import Actor, InboxItemSnapshot, ItemStatus
 CURSOR = "page.cursor"
 DECIDING = ("item.id", "clock.now")
 """What a decision's request may name beside the person and its inputs (`input.<name>`)."""
+USING = ("clock.now",)
+"""What a use's request may name beside the person and its inputs (`input.<name>`)."""
 
 BUILT_IN = "minutehand"
 """The `document` that names Minutehand's own default shape for an agent's side of the calls
@@ -238,6 +249,40 @@ class Decision(Model):
             raise ValueError(f"{who} makes decision {self.name!r} without {', '.join(missing)}, which it requires")
 
 
+class Use(Model):
+    """Something a person does in the agent's own product unprompted, as its own page sends it: opens a page, picks
+    an option, writes to the agent. Nothing waits on them for it; a scenario says when they do it, and with what
+    (`domain.scenario.PersonUses`)."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    description: str = Field(default="", description="What it is, in the product's words")
+    request: InboxRequest
+    inputs: list[DecisionInput] = []
+    succeeds: Succeeds = Succeeds()
+
+    @model_validator(mode="after")
+    def _names_known_fields(self) -> Self:
+        names = [i.name for i in self.inputs]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            raise ValueError(f"use {self.name!r} takes an input twice: {', '.join(twice)}")
+        self.request.refuse_unknown(f"use {self.name!r}", (*PERSON, *USING, *(f"input.{n}" for n in names)))
+        return self
+
+    def refuse_inputs(self, given: dict[str, str], who: str) -> None:
+        """Inputs this use does not take, or one it requires left out, refused naming `who` gave them."""
+        known = {i.name for i in self.inputs}
+        unknown = sorted(set(given) - known)
+        if unknown:
+            raise ValueError(
+                f"{who} gives use {self.name!r} {', '.join(unknown)}; it takes "
+                + (", ".join(sorted(known)) or "nothing")
+            )
+        missing = sorted(i.name for i in self.inputs if i.required and i.name not in given)
+        if missing:
+            raise ValueError(f"{who} uses {self.name!r} without {', '.join(missing)}, which it requires")
+
+
 class HttpInbox(Model):
     """One inbox in the agent's own product, reached over HTTP and JSON. Its `name` is what the items seen in it are
     recorded under, as a provider's key or a captured host's name is, and may be neither.
@@ -248,23 +293,35 @@ class HttpInbox(Model):
     kind: Literal["http"] = "http"
     name: ProviderKey
     as_person: AsPerson | None = Field(default=None, description="None: Minutehand sends no credential as anyone")
-    pending: Listing
-    decisions: list[Decision] = Field(min_length=1)
+    pending: Listing | None = Field(default=None, description="None: nothing in this product waits on a person")
+    decisions: list[Decision] = Field(default=[], description="What a person can decide on an item `pending` lists")
+    uses: list[Use] = Field(default=[], description="What a person does in the product unprompted")
 
     @model_validator(mode="after")
     def _decisions_differ(self) -> Self:
-        names = [d.name for d in self.decisions]
-        twice = sorted({n for n in names if names.count(n) > 1})
-        if twice:
-            raise ValueError(f"inbox {self.name!r} declares decision {', '.join(twice)} twice")
+        if (self.pending is None) != (not self.decisions):
+            raise ValueError(
+                f"inbox {self.name!r} declares "
+                + ("decisions with no `pending` to list their items" if self.pending is None else "no decisions")
+            )
+        if self.pending is None and not self.uses:
+            raise ValueError(f"inbox {self.name!r} declares neither `pending` nor `uses`")
+        for what, names in (("decision", [d.name for d in self.decisions]), ("use", [u.name for u in self.uses])):
+            twice = sorted({n for n in names if names.count(n) > 1})
+            if twice:
+                raise ValueError(f"inbox {self.name!r} declares {what} {', '.join(twice)} twice")
         return self
 
     def decision(self, name: str) -> Decision | None:
         return next((d for d in self.decisions if d.name == name), None)
 
+    def use(self, name: str) -> Use | None:
+        return next((u for u in self.uses if u.name == name), None)
+
     def operations(self) -> list[OperationRequest]:
         """Every request it makes by an OpenAPI operation, to be resolved before a run."""
-        requests = [self.pending.request, *(d.request for d in self.decisions)]
+        listing = [self.pending.request] if self.pending is not None else []
+        requests = [*listing, *(d.request for d in self.decisions), *(u.request for u in self.uses)]
         return [r for r in requests if isinstance(r, OperationRequest)]
 
 
@@ -334,7 +391,7 @@ class Listed(Model):
 
 
 class DecideAnswer(Model):
-    """What the product answered a decision Minutehand made as a person."""
+    """What the product answered a decision, or a use, Minutehand made as a person."""
 
     accepted: bool
     status: int | None = Field(description="None: nothing answered")

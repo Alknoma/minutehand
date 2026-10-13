@@ -707,13 +707,30 @@ class TicketHappening(Model):
     action: TicketAction
 
 
-Happening = Annotated[TicketHappening | DocumentHappening | MessagingHappening, Field(discriminator="kind")]
-"""Something a person does by themselves, unprompted, at a moment the scenario sets. Three families, one per kind of
+class PersonUses(Model):
+    """A person does something in the agent's own product, unprompted: one of the `uses` an inbox of the agent file
+    declares (`domain.inboxes.Use`), as the product's own page sends it, with the inputs given here word for word.
+    A website's visitor opening a page, picking an option, writing to the agent: each is one."""
+
+    kind: Literal["uses"] = "uses"
+    person: str = Field(description="Person.key of whoever does it")
+    inbox: ProviderKey = Field(description="The `name` of the agent file's inbox the use is declared in")
+    use: str = Field(description="The use's `name`")
+    after: timedelta = Field(default=timedelta(0), ge=timedelta(0), description="Offset from the scenario's start")
+    inputs: dict[str, str] = Field(default={}, description="What they give with it, by input name, word for word")
+
+
+Happening = Annotated[
+    TicketHappening | DocumentHappening | MessagingHappening | PersonUses, Field(discriminator="kind")
+]
+"""Something a person does by themselves, unprompted, at a moment the scenario sets. Four families, one per kind of
 thing acted on, each landing through the port its provider implements: a `TicketHappening` as a transition
-(`ports.transitions`), a `DocumentHappening` through `ChangesDocuments`, a `MessagingHappening` through `PushesEvents.happen`. A scenario
-whose happening lands on a provider without that port is refused before the run starts. A ticket happening wakes
-nobody; a document happening wakes the agent only when it watches that provider's changes; a messaging happening is
-pushed to the agent, as a reply is. A new family is a new member with its own `kind` and its own port."""
+(`ports.transitions`), a `DocumentHappening` through `ChangesDocuments`, a `MessagingHappening` through `PushesEvents.happen`,
+a `PersonUses` through the inbox of the agent's own product that declares it (`ports.inboxes.ReachesInbox.use`). A
+scenario whose happening lands on a provider without that port is refused before the run starts. A ticket happening
+wakes nobody; a document happening wakes the agent only when it watches that provider's changes; a messaging
+happening is pushed to the agent, as a reply is, and a use is a call to the agent's product, which is a wake as a
+decision is. A new family is a new member with its own `kind` and its own port."""
 
 
 class Direction(Model):
@@ -1196,6 +1213,8 @@ class _ScenarioBody(Model):
             return self.happening_ticket(happening).provider
         if isinstance(happening, DocumentHappening):
             return self.happening_document(happening).provider
+        if isinstance(happening, PersonUses):
+            return happening.inbox
         return happening.provider
 
     def _on_tickets(self) -> list[TicketHappening]:
@@ -1214,7 +1233,7 @@ class _ScenarioBody(Model):
         if len(names) != len([c for c in self.channels if c.name is not None]):
             raise ValueError("two seeded channels share a name")
         posts = {(c.provider, p.key) for c in self.channels for p in _every_post(c.history) if p.key is not None}
-        messaging = [h for h in self.happenings if not isinstance(h, TicketHappening | DocumentHappening)]
+        messaging = [h for h in self.happenings if not isinstance(h, TicketHappening | DocumentHappening | PersonUses)]
         for happening in sorted(messaging, key=lambda h: h.after):
             places = (PersonPosts, PersonReacts, PersonCommands, PersonAddsAgent)
             channel = happening.channel if isinstance(happening, places) else None

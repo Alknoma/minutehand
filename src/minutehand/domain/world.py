@@ -19,6 +19,7 @@ class EntityKind(StrEnum):
     CHANNEL = "channel"
     RECORD = "record"
     INBOX_ITEM = "inbox_item"  # something waiting on a person in the agent's own product (`domain.inboxes`)
+    INBOX_USE = "inbox_use"  # something a person did in the agent's own product unprompted (`domain.inboxes.Use`)
     DUE = "due"  # an entry of the run loop's own table of what is due next (`domain.clock.DueEntry`)
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
@@ -244,6 +245,7 @@ class InboxAct(StrEnum):
 
     LIST = "list"  # read what is waiting on the person
     DECIDE = "decide"  # made the person's decision on one item
+    USE = "use"  # did something in the product as the person, unprompted
 
 
 class InboxCall(Model):
@@ -455,6 +457,20 @@ class InboxItemSnapshot(Model):
     refused: str | None = Field(default=None, description="The product's answer to a decision it did not take")
 
 
+class InboxUseSnapshot(Model):
+    """Something a person did in the agent's own product unprompted (`domain.inboxes.Use`): opened a page, picked an
+    option, wrote to the agent. Written as actor PERSON before the call goes out, so whatever the product does in
+    handling it comes after it, and again once the product answered: `taken`, or `refused` with its answer."""
+
+    kind: Literal["inbox_use"] = "inbox_use"
+    inbox: ProviderKey = Field(description="The inbox's `name`")
+    use: str = Field(description="The use's `name`")
+    person: str = Field(description="Person.key of whoever did it")
+    inputs: dict[str, str] = Field(default={}, description="What the person gave with it, by input name")
+    taken: bool | None = Field(default=None, description="None: not yet answered; True: the product took it")
+    refused: str | None = Field(default=None, description="The product's answer when it did not take it")
+
+
 class FileSnapshot(Model):
     """A file in a watched folder of the agent's machine (`AgentUnderTest.watches`), as it stood after a change."""
 
@@ -656,7 +672,8 @@ Snapshot = Annotated[
     | GrantSnapshot
     | RecordSnapshot
     | InteractionSnapshot
-    | InboxItemSnapshot,
+    | InboxItemSnapshot
+    | InboxUseSnapshot,
     Field(discriminator="kind"),
 ]
 
