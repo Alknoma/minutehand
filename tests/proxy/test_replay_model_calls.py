@@ -13,11 +13,11 @@ import pytest
 
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
-from minutehand.adapters.proxy.replay import ModelReplay
+from minutehand.adapters.proxy.replay import PARTED_STATUS, ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.telemetry import StringValue
+from minutehand.domain.telemetry import IntValue, StringValue
 from tests.proxy.support import client
 from tests.proxy.upstream import Answer, Authority, make_authority, model_api
 
@@ -98,3 +98,45 @@ async def test_from_live_from_on_the_model_answers(
     got, reached = await _calls(registry, store, clock, tmp_path, authority, "now", ["plan"], replay)
 
     assert (got, reached, replay.answered) == (["now"], 1, 0)
+
+
+async def test_a_frozen_replay_refuses_the_first_call_the_record_does_not_hold_and_every_call_after_it(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority
+) -> None:
+    """Nothing reaches the model: the call the agent sent is refused with a status no model client retries, and
+    the replay says what was sent beside what the record held next, so a changed prompt is told by its first call."""
+    await _calls(registry, store, clock, tmp_path, authority, "then", ["plan", "plan", "act"])
+    replay = ModelReplay.of("run1", store.spans(), frozen=True)
+    before = len(store.spans())
+    routing = Routing(registry, model_hosts=[HOST])
+    async with (
+        model_api(authority, Answer("application/json", [_said("now")])) as upstream,
+        Proxy(
+            routing, store, clock, confdir=tmp_path / "ca", upstream_ca=authority.ca_cert, record_model_calls=True
+        ) as proxy,
+    ):
+        proxy.addon.model_replay = replay
+        async with client(proxy, proxy.ca_cert) as http:
+            answers = []
+            for text in ["plan", "new plan", "plan"]:
+                response = await http.post(
+                    f"https://{HOST}:{upstream.port}{PATH}",
+                    content=_asked(text),
+                    headers={"content-type": "application/json"},
+                )
+                answers.append((response.status_code, response.json()))
+        reached = len(upstream.received)
+
+    assert answers[0] == (200, json.loads(_said("then")))
+    assert [status for status, _ in answers[1:]] == [PARTED_STATUS, PARTED_STATUS], "refused, not sent on"
+    assert answers[1][1]["error"]["type"] == "minutehand_frozen_replay"
+    assert "frozen replay of run run1" in answers[1][1]["error"]["message"]
+    assert reached == 0 and replay.answered == 1
+    assert replay.parted is not None and "never made" in replay.parted
+    assert replay.parted_at is not None
+    assert replay.parted_at.sent.body == _asked("new plan").decode()
+    assert replay.parted_at.expected is not None and replay.parted_at.expected.body == _asked("plan").decode()
+    kept = store.spans()[before:]
+    assert [s.span.attribute("http.response.status_code") for s in kept] == [IntValue(value=200)] + [
+        IntValue(value=PARTED_STATUS)
+    ] * 2, "the refusals are on the record too"

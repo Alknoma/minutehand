@@ -4,7 +4,8 @@ recorded answers (`minutehand replay`). It wakes once a day.
 
     MODEL_URL  its model's chat completions URL;  PORT  where it listens
     IN_MEMORY  set: it keeps its notes and its last wake in its memory (`minutehand.agent.store`) instead, so a fork
-               from a checkpoint restores it"""
+               from a checkpoint restores it
+    PROMPT_PREFIX  put in front of what it asks its model: a changed prompt, for a replay to part on"""
 
 from __future__ import annotations
 
@@ -47,7 +48,12 @@ def wake(now: datetime) -> None:
         last.append(now)
         asked = {
             "model": "model-luna",
-            "messages": [{"role": "user", "content": f"note {len(notes) + 1}; so far: {notes}"}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"{os.environ.get('PROMPT_PREFIX', '')}note {len(notes) + 1}; so far: {notes}",
+                }
+            ],
         }
         said = httpx.post(os.environ["MODEL_URL"], json=asked, timeout=30).json()
         notes.append(said["choices"][0]["message"]["content"])

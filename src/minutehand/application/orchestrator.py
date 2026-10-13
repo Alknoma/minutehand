@@ -147,6 +147,18 @@ class Environment(Protocol):
     def failure(self) -> str | None: ...
 
 
+class Replay(Protocol):
+    """The record answering the agent's model calls in a replay, or in a fork after its checkpoint. Asked after
+    every wake, and when the run ends, whether it is frozen and the agent asked something it does not hold: such a
+    run stops `REPLAY_PARTED`, whatever the agent did after the refusal."""
+
+    @property
+    def frozen(self) -> bool: ...
+
+    @property
+    def parted(self) -> str | None: ...
+
+
 class Scorer(Protocol):
     """Whoever judges a finished run (the checks). Its findings and scorecard end the run's telemetry.
     Async, because a judged check waits on a model."""
@@ -292,6 +304,7 @@ class Orchestrator:
         model: LanguageModel | None = None,
         desk: ServiceDesk | None = None,
         pins: Sequence[ReplyAt] = (),
+        replay: Replay | None = None,
     ) -> None:
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
@@ -329,6 +342,7 @@ class Orchestrator:
         self._traffic = traffic
         self._channels = dict(channels or {})
         self._environment = environment
+        self._replay = replay
         self._inboxes = inboxes
         self._outside = outside
         self._desk = desk
@@ -499,6 +513,10 @@ class Orchestrator:
         if failed is not None:
             # Whatever the agent did after its emulator failed under it, the run is the environment's failure.
             stop, self._failure = StopReason.ENVIRONMENT_FAILED, failed
+        parted = self._frozen_parted()
+        if parted is not None:
+            # Whatever the agent did after the refusal, the run is the replay parting from its record.
+            stop, self._failure = StopReason.REPLAY_PARTED, parted
         record = RunRecord(
             run_id=self._store.run_id,
             scenario=self._scenario.name,
@@ -881,7 +899,16 @@ class Orchestrator:
             self._store.wake_ended(wake)
         if self._environment is not None and self._environment.failure() is not None:
             return StopReason.ENVIRONMENT_FAILED
+        if self._frozen_parted() is not None:
+            return StopReason.REPLAY_PARTED
         return stop
+
+    def _frozen_parted(self) -> str | None:
+        """Where a frozen replay parted from its record; None for a live run, a replay that goes live, or one
+        still answered from the record."""
+        if self._replay is None or not self._replay.frozen:
+            return None
+        return self._replay.parted
 
     async def _played(
         self,
@@ -1248,11 +1275,13 @@ async def run_scenario(
     outside: OutsideState | None = None,
     model: LanguageModel | None = None,
     desk: ServiceDesk | None = None,
+    replay: Replay | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which a sandbox whose clock Minutehand owns needs to fall idle;
     `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
-    beside its memory at each checkpoint."""
+    beside its memory at each checkpoint; `replay` is the record answering the agent's model calls, when this is a
+    replay of a finished run."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -1274,4 +1303,5 @@ async def run_scenario(
         outside=outside,
         model=model,
         desk=desk,
+        replay=replay,
     ).run()

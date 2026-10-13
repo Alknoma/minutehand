@@ -3795,7 +3795,8 @@
         "nothing_pending",
         "agent_failed",
         "closed",
-        "environment_failed"
+        "environment_failed",
+        "replay_parted"
       ],
       "title": "StoppedBy",
       "type": "string"

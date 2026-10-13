@@ -283,3 +283,18 @@ def test_a_world_whose_agent_failed_fails_though_no_check_did() -> None:
 
     assert result.verdict.kind is VerdictKind.FAILED and result.exit_code == 1
     assert result.verdict.words.startswith("Failed: the run stopped because the agent could not be reached")
+
+
+def test_a_frozen_replay_that_parted_is_not_judged_whatever_the_checks_found_and_exits_7() -> None:
+    """The record did not hold a call the agent made: nothing went to a model, so the run says only where they
+    parted. A check that failed before the refusal is counted but changes nothing."""
+    world = view(scenario(OWNER, SOFIA, expect=[PersonAsked(person="owner")]), _asked_and_waiting())
+
+    result = evaluate(world, stop=StopReason.REPLAY_PARTED)
+
+    assert result.verdict.kind is VerdictKind.REPLAY_PARTED and result.exit_code == 7
+    assert result.verdict.words == (
+        "Replay parted: the frozen replay stopped where the agent asked its model something the record does not "
+        "hold; nothing was sent to a model and the agent is not judged on this run (1 check failed before it)."
+    )
+    assert result.verdict.stop is StopReason.REPLAY_PARTED and result.verdict.failed_checks == 1

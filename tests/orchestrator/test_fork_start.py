@@ -174,3 +174,26 @@ async def test_an_agent_that_never_answers_its_report_is_refused(monkeypatch: py
             checkpoint_seq=2,
             reports=Answers(AgentFailed("GET http://127.0.0.1:1/report: ConnectError")),
         )
+
+
+async def test_a_report_that_differs_under_changed_code_names_the_code_as_the_likely_cause() -> None:
+    """The agent's program is not the one that made the checkpoint: a report that differs is more likely the new
+    code reading the memory in another shape than state outside the store, and the refusal says so, with the two
+    ways out."""
+    after = AgentReport(status=AgentStatus.IDLE, next_wake=T0 + timedelta(days=3))
+    with pytest.raises(RestoreFailed) as refused:
+        await start_fork(
+            remembered(),
+            memory=MEMORY,
+            checkpoint_seq=9,
+            reports=Answers(after),
+            code_changed=["its program's code: 1a2b3c4d5e6f -> 6f5e4d3c2b1a with uncommitted changes"],
+        )
+    message = str(refused.value)
+    assert "  next_wake: 2026-08-26T10:00:00+00:00 at the checkpoint, 2026-08-27T10:00:00+00:00 after" in message
+    assert (
+        "The agent's program is not the one that made the checkpoint (its program's code: 1a2b3c4d5e6f -> "
+        "6f5e4d3c2b1a with uncommitted changes), so the likelier cause is the new code" in message
+    )
+    assert "`minutehand replay`" in message and "`memory_edit`" in message
+    assert restore.OUTSIDE not in message

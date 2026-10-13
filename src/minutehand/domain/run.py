@@ -23,6 +23,7 @@ class StopReason(StrEnum):
     AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
     CLOSED = "closed"  # a standing world (`minutehand serve`) was closed by whoever opened it
     ENVIRONMENT_FAILED = "environment_failed"  # an external emulator the run used was unavailable: not the agent
+    REPLAY_PARTED = "replay_parted"  # a frozen replay: the agent asked its model something the record does not hold
 
 
 class VerdictKind(StrEnum):
@@ -33,6 +34,7 @@ class VerdictKind(StrEnum):
     TOOL_FAILED = "tool_failed"  # Minutehand broke while answering a call; the agent is not scored on this run
     NOT_JUDGED = "not_judged"  # no check failed, and checks could not run or there was nothing to judge
     SIMULATION_INCOMPLETE = "simulation_incomplete"  # the simulated world did not play as declared: see `health`
+    REPLAY_PARTED = "replay_parted"  # a frozen replay stopped where the agent asked something new: nothing is judged
 
 
 EXIT_CODES = {
@@ -43,11 +45,14 @@ EXIT_CODES = {
     VerdictKind.TOOL_FAILED: 4,
     VerdictKind.NOT_JUDGED: 5,
     VerdictKind.SIMULATION_INCOMPLETE: 6,
+    VerdictKind.REPLAY_PARTED: 7,
 }
-"""What `minutehand run`, `fork` and `findings` exit with for each verdict. 2 is also a run that could not be
-performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure. 6 is
-a simulated world that did not play as its files declare (`checks.health`): the agent is judged on what did happen,
-and that judgement is kept beside it (`Verdict.on_what_happened`)."""
+"""What `minutehand run`, `fork`, `replay` and `findings` exit with for each verdict. 2 is also a run that could not
+be performed, which has no verdict: either way, the environment and not the agent. 4 is Minutehand's own failure. 6
+is a simulated world that did not play as its files declare (`checks.health`): the agent is judged on what did
+happen, and that judgement is kept beside it (`Verdict.on_what_happened`). 7 is a frozen replay that parted from its
+record (`minutehand replay --frozen`): the agent asked its model something the record does not hold, nothing was sent
+to a model, and the run says only where the two parted."""
 
 
 class Verdict(Model):
@@ -214,3 +219,32 @@ class RunRecord(Model):
         description="A case (`minutehand serve`, worlds opened under one case label): the worlds it is made of, in "
         "the order they opened; empty for any other run",
     )
+
+
+class ReplayedCall(Model):
+    """One model call as a replay's record keeps it: the host, the path, and the request body as recorded
+    (credentials redacted; bytes that are not text as hex)."""
+
+    host: str
+    path: str
+    body: str
+
+
+class PartedCalls(Model):
+    """Where a replay parted from its record: the call the agent sent, beside the call the record held next (None
+    when the record was used up)."""
+
+    sent: ReplayedCall
+    expected: ReplayedCall | None
+
+
+class ReplayRecord(Model):
+    """`replayed.json`: what a replay, or a fork after its checkpoint, answered from its record, and where the two
+    runs parted."""
+
+    replay_of: str
+    model_calls_replayed: int = Field(ge=0)
+    parted: str | None = Field(description="In words: the first call the record did not hold, or the live moment")
+    live_from: AwareDatetime | None = None
+    frozen: bool = Field(default=False, description="Nothing was sent to a model: a parted replay stopped there")
+    parted_at: PartedCalls | None = Field(default=None, description="The calls at the parting; only once parted")

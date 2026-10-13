@@ -29,6 +29,7 @@ from minutehand.domain.experiment import (
     ModelSwap,
     Override,
     PersonChange,
+    PromptPart,
     PromptPatch,
     ReplyAt,
     TicketEdit,
@@ -227,6 +228,8 @@ def _calls(where: CallMatch) -> str:
         parts.append(f"asking for {where.model}")
     if where.system_contains is not None:
         parts.append(f"whose system prompt contains {_quoted(where.system_contains, 60)}")
+    if where.last_message_contains is not None:
+        parts.append(f"whose newest message contains {_quoted(where.last_message_contains, 60)}")
     return "every model call the agent makes" if not parts else "the agent's model calls " + ", ".join(parts)
 
 
@@ -257,11 +260,10 @@ def change_words(
             "after it, whatever was drawn"
         )
     if isinstance(override, PromptPatch):
+        part = "the newest message" if override.part is PromptPart.LAST_MESSAGE else "the system prompt"
         if override.find is None:
-            return f"appends {_quoted(override.text)} to the system prompt of {_calls(override.where)}"
-        return f"replaces {_quoted(override.find)} with {_quoted(override.text)} in the system prompt of " + _calls(
-            override.where
-        )
+            return f"appends {_quoted(override.text)} to {part} of {_calls(override.where)}"
+        return f"replaces {_quoted(override.find)} with {_quoted(override.text)} in {part} of " + _calls(override.where)
     if isinstance(override, ModelSwap):
         before = (
             override.where.model
