@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import httpx
+import pytest
 
 from minutehand.adapters.providers.asana import state
 from minutehand.domain.scenario import TicketState
@@ -207,6 +208,54 @@ async def test_typeahead_finds_tasks_users_and_projects(client: httpx.AsyncClien
     assert [t["name"] for t in tasks] == ["Confirm the menu"]
     assert [u["gid"] for u in users] == [state.user_gid("noor")]
     assert [p["gid"] for p in projects] == [VENUE]
+
+
+PERMIT = "Lot 14 — Permit application to Stockport council"
+
+
+async def _search(client: httpx.AsyncClient, text: str) -> list[object]:
+    return [t["name"] for t in items(await client.get(f"/workspaces/{WS}/tasks/search", params={"text": text}))]
+
+
+async def _typeahead(client: httpx.AsyncClient, query: str, resource_type: str = "task") -> list[object]:
+    at = f"/workspaces/{WS}/typeahead"
+    return [t["name"] for t in items(await client.get(at, params={"resource_type": resource_type, "query": query}))]
+
+
+@pytest.mark.parametrize("asked", ["Lot 14 permit", "permit lot 14", "LOT 14 PERMIT", "lot-14: permit"])
+async def test_search_and_typeahead_find_every_word_in_any_order_case_and_punctuation_aside(
+    client: httpx.AsyncClient, asked: str
+) -> None:
+    await create(client, name=PERMIT, notes="Drawings attached.", projects=[VENUE])
+    assert await _search(client, asked) == [PERMIT]
+    assert await _typeahead(client, asked) == [PERMIT]
+
+
+async def test_a_word_the_task_does_not_hold_finds_nothing(client: httpx.AsyncClient) -> None:
+    await create(client, name=PERMIT, notes="Drawings attached.", projects=[VENUE])
+    assert await _search(client, "Lot 14 planning permit") == []
+    assert await _typeahead(client, "Lot 14 planning permit") == []
+
+
+async def test_search_finds_the_words_across_name_and_notes(client: httpx.AsyncClient) -> None:
+    await create(client, name=PERMIT, notes="Drawings attached.", projects=[VENUE])
+    assert await _search(client, "permit drawings") == [PERMIT]
+
+
+async def test_search_matches_whole_words_and_typeahead_the_start_of_a_word(client: httpx.AsyncClient) -> None:
+    await create(client, name=PERMIT, notes="Drawings attached.", projects=[VENUE])
+    assert await _search(client, "Stockport") == [PERMIT]
+    assert await _search(client, "Stock") == []
+    assert await _search(client, "port") == []
+    assert await _typeahead(client, "lot 14 perm") == [PERMIT]
+    assert await _typeahead(client, "ermit") == []
+
+
+async def test_typeahead_finds_users_and_projects_by_each_word(client: httpx.AsyncClient) -> None:
+    assert await _typeahead(client, "halvorsen noor", "user") == ["Noor Halvorsen"]
+    assert await _typeahead(client, "noor@example.com", "user") == ["Noor Halvorsen"]
+    assert await _typeahead(client, "move venue", "project") == ["Venue Move"]
+    assert await _typeahead(client, "venue catering", "project") == []
 
 
 async def test_pages_follow_next_page_to_the_end(client: httpx.AsyncClient) -> None:
