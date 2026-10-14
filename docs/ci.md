@@ -152,7 +152,6 @@ Not applied: the merge queue, deleting head branches after merge, approval of wo
 
 ## Contributions and the licence
 
-The project is under the Functional Source License. For Alknoma to keep offering it commercially,
-and to convert each release to Apache-2.0 after two years, a contribution has to arrive with the
-right to do both. That needs a contributor licence agreement or an equivalent statement in
-`CONTRIBUTING.md`, checked on every pull request. It is not written: it is a legal text.
+The project is under the Apache License 2.0. Its section 5 licenses a contribution intentionally
+submitted to the project under the same terms, unless the contributor states otherwise, so a pull
+request needs no separate contributor licence agreement.
