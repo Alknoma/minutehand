@@ -393,7 +393,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "60",
         "61\u201365",
         "66",
-        "Every operation of the claimed resources is served or a 501 naming it (184 described: 55 served, 129 refused); a path outside them is a 501 naming it",
+        "Every operation of the claimed resources is served or a 501 naming it (194 described: 57 served, 137 refused); a path outside them is a 501 naming it",
         "A method the description does not list for a path is a 405",
         'A path outside `/api` and `/hub/api/rest` is 404 `{"error": "Not Found", "error_description": "HTTP 404 Not Found"}`',
         'A required field left empty on a create is `{"error": "Field required", "error_description": "<Field> is required", "error_field": "<Field>"}`',

@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Tue, 13 Oct 2026 23:43:02 GMT
+Content-Type: application/json;charset=utf-8
+Content-Length: 1802
+Connection: keep-alive
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: Location
+Access-Control-Expose-Headers: X-Version
+X-XSS-Protection: 1; mode=block
+Content-Security-Policy: frame-ancestors 'self' hub.jetbrains.com discuss.kotlinlang.org buildserver.labs.intellij.net web.ea.pages.jetbrains.team intellij-support.jetbrains.com dotnettools-support.jetbrains.com resharper-support.jetbrains.com rider-support.jetbrains.com teamcity-support.jetbrains.com release-generator.labs.jb.gg youtrack-support.jetbrains.com;
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: same-origin
+X-YouTrack-User: guest
+X-Version: 454387c28c173b2e25224965e644856105d57a0c17c31ae46c3c1ec2f765d594
+Cache-Control: no-cache, no-store, no-transform, must-revalidate
+Vary: Accept-Encoding, User-Agent
+Strict-Transport-Security: max-age=31536000;
+
+[{"id":"153-668","$type":"Agile"},{"id":"153-1251","$type":"Agile"},{"id":"153-1471","$type":"Agile"},{"id":"153-1739","$type":"Agile"},{"id":"153-2471","$type":"Agile"},{"id":"153-3143","$type":"Agile"},{"id":"153-3672","$type":"Agile"},{"id":"153-3701","$type":"Agile"},{"id":"153-3703","$type":"Agile"},{"id":"153-4663","$type":"Agile"},{"id":"153-4807","$type":"Agile"},{"id":"153-5526","$type":"Agile"},{"id":"153-5623","$type":"Agile"},{"id":"153-5635","$type":"Agile"},{"id":"153-5829","$type":"Agile"},{"id":"153-6059","$type":"Agile"},{"id":"153-6143","$type":"Agile"},{"id":"153-6185","$type":"Agile"},{"id":"153-6231","$type":"Agile"},{"id":"153-6273","$type":"Agile"},{"id":"153-6278","$type":"Agile"},{"id":"153-6353","$type":"Agile"},{"id":"153-6416","$type":"Agile"},{"id":"153-6593","$type":"Agile"},{"id":"153-6595","$type":"Agile"},{"id":"153-6597","$type":"Agile"},{"id":"153-6753","$type":"Agile"},{"id":"153-7061","$type":"Agile"},{"id":"153-7071","$type":"Agile"},{"id":"153-7178","$type":"Agile"},{"id":"153-7289","$type":"Agile"},{"id":"153-7349","$type":"Agile"},{"id":"153-7360","$type":"Agile"},{"id":"153-7385","$type":"Agile"},{"id":"153-7419","$type":"Agile"},{"id":"153-7449","$type":"Agile"},{"id":"153-7580","$type":"Agile"},{"id":"153-7764","$type":"Agile"},{"id":"153-7807","$type":"Agile"},{"id":"153-7824","$type":"Agile"},{"id":"153-7948","$type":"Agile"},{"id":"153-8059","$type":"Agile"},{"id":"153-8097","$type":"Agile"},{"id":"153-8098","$type":"Agile"},{"id":"153-8304","$type":"Agile"},{"id":"153-8318","$type":"Agile"},{"id":"153-8332","$type":"Agile"},{"id":"153-8365","$type":"Agile"},{"id":"153-8374","$type":"Agile"},{"id":"153-8384","$type":"Agile"},{"id":"153-8466","$type":"Agile"},{"id":"153-8502","$type":"Agile"},{"id":"153-8503","$type":"Agile"}]

@@ -175,6 +175,26 @@ TEMPLATE_GAPS: dict[str | None, list[str]] = {
 """Fields a template's page lists that a project made here does not carry: their types are not held."""
 
 
+class TemplateBoard(Model):
+    """One agile board a project template makes, as the template's page lists it: named `[Project Name] <suffix>`."""
+
+    suffix: str
+    estimation_field: str | None
+
+
+TEMPLATE_BOARDS: dict[str | None, list[TemplateBoard]] = {
+    None: [],
+    "scrum": [
+        TemplateBoard(suffix="Project Management", estimation_field="Story points"),
+        TemplateBoard(suffix="Development", estimation_field="Ideal days"),
+    ],
+    "kanban": [TemplateBoard(suffix="Kanban Board", estimation_field=None)],
+}
+"""The boards `POST /admin/projects` makes for no `template`, `scrum` and `kanban`, from the same three pages: the
+Default template makes none, Scrum a Project Management board estimated in story points and a Development board in
+ideal days, Kanban one board with no estimation field."""
+
+
 class Ids:
     """Fresh database ids for what lives inside a project's body: its fields, their bundles and bundle values.
     Each prefix counts on from the highest number already used anywhere in the instance, or from `start`."""

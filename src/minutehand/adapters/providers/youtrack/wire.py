@@ -290,6 +290,15 @@ class StoredProjectField(Wire):
     defaultValue: str | None = Field(default=None, description="A StoredBundleValue id")
 
 
+class StoredTimeTracking(Wire):
+    """A project's time-tracking settings: which of its period fields hold an issue's estimate and its time spent."""
+
+    id: str
+    enabled: bool
+    estimate: str | None = Field(description="StoredProjectField id of one of the project's period fields")
+    timeSpent: str | None = Field(description="StoredProjectField id of one of the project's period fields")
+
+
 class StoredProject(Wire):
     id: str
     shortName: str
@@ -305,6 +314,10 @@ class StoredProject(Wire):
         description="Made by POST /admin/projects: Hub's permissions cache lists nobody holding Update Project on it",
     )
     fields: list[StoredProjectField]
+    timeTracking: StoredTimeTracking | None = Field(
+        description="None on a project made through POST /admin/projects: what YouTrack gives one is neither "
+        "documented nor recorded"
+    )
 
 
 FieldValue = str | int | float
@@ -403,6 +416,15 @@ class StoredGrant(Wire):
     held: bool
 
 
+class StoredAgile(Wire):
+    """An agile board: the projects it holds and the field its cards are estimated by."""
+
+    id: str
+    name: str
+    estimationField: str | None = Field(description="StoredFieldDefinition id")
+    projects: list[str] = Field(description="Project ids")
+
+
 class StoredFault(Wire):
     """A refusal the scenario puts in the way of calls to one path for a while of simulated time."""
 
@@ -430,6 +452,7 @@ StoredModel = TypeVar(
     StoredTag,
     StoredLinkType,
     StoredLink,
+    StoredAgile,
     StoredToken,
     StoredService,
     StoredGrant,
@@ -704,6 +727,21 @@ UNCOMPUTED: dict[str, dict[str, str]] = {
 """Attributes YouTrack computes in ways this fake cannot reproduce (the Issue, IssueComment and ParsedCommand
 entity pages): a `fields=` naming one is answered 501 naming it, never a made-up value."""
 
+UNHELD: dict[str, frozenset[str]] = {
+    "Agile": frozenset(
+        {
+            "owner", "visibleFor", "visibleForProjectBased", "updateableBy", "updateableByProjectBased",
+            "readSharingSettings", "updateSharingSettings", "orphansAtTheTop", "hideOrphansSwimlane",
+            "originalEstimationField", "sprints", "currentSprint", "columnSettings", "swimlaneSettings",
+            "sprintsSettings", "colorCoding", "status",
+        }
+    ),
+    "ProjectTimeTrackingSettings": frozenset({"workItemTypes", "attributes"}),
+}  # fmt: skip
+"""Attributes of an entity this fake answers that it keeps nothing for (the Agile and ProjectTimeTrackingSettings
+schemas of YouTrack's OpenAPI description): a `fields=` naming one is answered 501 naming it, never left out as if
+the entity had not got it."""
+
 
 def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     """Narrow an answer to what was asked: an entity asked for by name alone is its `id` and `$type`."""
@@ -718,6 +756,10 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
         for name in spec:
             if name in UNCOMPUTED[kind]:
                 raise NotServed(f"{kind}.{name}: {UNCOMPUTED[kind][name]}")
+    if isinstance(kind, str) and kind in UNHELD:
+        for name in spec:
+            if name in UNHELD[kind]:
+                raise NotServed(f"{kind}.{name}: this fake keeps none")
     narrowed: dict[str, JsonValue] = {}
     for name, inner in spec.items():
         if name in value:
@@ -727,22 +769,35 @@ def select(value: JsonValue, spec: Spec | None) -> JsonValue:
     return narrowed
 
 
+class Paging(StrEnum):
+    """What JetBrains' public instance is recorded answering to a `$skip` or `$top` out of the ordinary on a
+    collection (`tests/providers/youtrack/data/observed/`)."""
+
+    ISSUE_SEARCH = "issue search"
+    """A value that is not a number, a negative `$skip` and a negative `$top` (`skip_not_a_number.http`,
+    `top_not_a_number.http`, `skip_negative.http`, `top_negative.http`)."""
+    NEGATIVE_TOP_IS_ALL = "negative top is all"
+    """A negative `$top` answers every entity (an issue's custom fields, `issue_custom_fields_top_negative.http`;
+    agile boards, `agiles_top_negative.http`, 53 boards past the default 42)."""
+    UNRECORDED = "unrecorded"
+
+
 def page_bounds(
-    skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT, recorded: bool = False
-) -> tuple[int, int]:
-    """`$skip` and `$top` as an offset and a limit. For the issue search (`recorded`), a value that is not a number,
-    a negative `$skip` and a negative `$top` answer as JetBrains' public instance answered them
-    (`tests/providers/youtrack/data/observed/skip_not_a_number.http`, `top_not_a_number.http`, `skip_negative.http`,
-    `top_negative.http`); for any other collection nothing records the answer, so they are refused by name."""
+    skip: str | None, top: str | None, *, default: int = PAGE_DEFAULT, paging: Paging = Paging.UNRECORDED
+) -> tuple[int, int | None]:
+    """`$skip` and `$top` as an offset and a limit, None for no limit. What `paging` does not record is refused by
+    name."""
     try:
         start = int(skip) if skip else 0
         limit = int(top) if top else default
     except ValueError as error:
-        if recorded:
+        if paging is Paging.ISSUE_SEARCH:
             raise Refusal(500, "server_error", "HTTP 404 Not Found") from error
         raise NotServed(f"$skip={skip} $top={top}: what YouTrack answers is not recorded") from error
+    if start >= 0 and limit < 0 and paging is Paging.NEGATIVE_TOP_IS_ALL:
+        return start, None
     if start < 0 or limit < 0:
-        if not recorded:
+        if paging is not Paging.ISSUE_SEARCH:
             raise NotServed(f"$skip={skip} $top={top}: what YouTrack answers is not recorded")
         if limit < 0:
             raise Refusal(400, "Bad Request", "This resource does not allow requesting all entities, max limit is 3500")
@@ -901,6 +956,25 @@ class ProjectFieldOut(Wire):
     ordinal: int
     hasRunningJob: bool = False
     defaultValues: list[BundleValueOut] = []
+
+
+class TimeTrackingOut(Wire):
+    type_: Literal["ProjectTimeTrackingSettings"] = Field(
+        default="ProjectTimeTrackingSettings", serialization_alias="$type"
+    )
+    id: str
+    enabled: bool
+    estimate: ProjectFieldOut | None
+    timeSpent: ProjectFieldOut | None
+    project: ProjectRefOut
+
+
+class AgileOut(Wire):
+    type_: Literal["Agile"] = Field(default="Agile", serialization_alias="$type")
+    id: str
+    name: str
+    estimationField: CustomFieldOut | None
+    projects: list[ProjectRefOut]
 
 
 class UserGroupOut(Wire):
@@ -1100,6 +1174,8 @@ Answer = (
     | CustomFieldOut
     | ProjectOut
     | ProjectFieldOut
+    | TimeTrackingOut
+    | AgileOut
     | StateBundleOut
     | EnumBundleOut
     | VersionBundleOut

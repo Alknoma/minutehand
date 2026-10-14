@@ -1,7 +1,7 @@
 """The operations of YouTrack's REST API, among the resources this fake claims, that it does not serve.
 
 The claimed resources' operations are read from YouTrack's own OpenAPI description, which every instance publishes at
-`/api/openapi.json` (JetBrains' public instance's, version 2026.3, fetched 2026-10-08; the subset is kept as
+`/api/openapi.json` (JetBrains' public instance's, version 2026.4, fetched 2026-10-13; the subset is kept as
 `tests/data/vendor_surface/youtrack.json`). Each operation below is answered 501 naming it, never a 404 that would
 read as "no such resource". A path outside the claimed resources is answered 501 naming the path. A method the
 description does not list for a path is YouTrack's 405.
@@ -85,12 +85,20 @@ UNSERVED: tuple[tuple[str, str], ...] = (
     ("DELETE", "/admin/projects/{id}/team/groups/{userGroupId}"),
     ("GET", "/admin/projects/{id}/team/ownUsers"),
     ("DELETE", "/admin/projects/{id}/team/ownUsers/{userId}"),
-    ("GET", "/admin/projects/{id}/timeTrackingSettings"),
     ("POST", "/admin/projects/{id}/timeTrackingSettings"),
     ("GET", "/admin/projects/{id}/timeTrackingSettings/workItemTypes"),
     ("POST", "/admin/projects/{id}/timeTrackingSettings/workItemTypes"),
     ("DELETE", "/admin/projects/{id}/timeTrackingSettings/workItemTypes/{workItemTypeId}"),
     ("GET", "/admin/projects/{id}/timeTrackingSettings/workItemTypes/{workItemTypeId}"),
+    ("POST", "/agiles"),
+    ("DELETE", "/agiles/{id}"),
+    ("GET", "/agiles/{id}"),
+    ("POST", "/agiles/{id}"),
+    ("GET", "/agiles/{id}/sprints"),
+    ("POST", "/agiles/{id}/sprints"),
+    ("DELETE", "/agiles/{id}/sprints/{sprintId}"),
+    ("GET", "/agiles/{id}/sprints/{sprintId}"),
+    ("POST", "/agiles/{id}/sprints/{sprintId}"),
     ("POST", "/commands/assist"),
     ("POST", "/issueLinkTypes"),
     ("DELETE", "/issueLinkTypes/{id}"),

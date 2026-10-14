@@ -93,6 +93,7 @@ dev = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
     "pytest-split>=0.10",
     "playwright==1.55.0",
+    "youtrack-sdk==1.0.202607080632",
 ]
 recipes = [
     "anthropic>=1.11.0",
