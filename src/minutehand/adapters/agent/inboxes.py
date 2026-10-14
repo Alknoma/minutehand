@@ -81,8 +81,8 @@ class HttpInboxReach:
         self._credentials = dict(credentials)
         documents: dict[str, dict[str, object]] = {}
         self._operations: dict[int, Operation] = {}
-        listing = declared.pending.request
-        paging = declared.pending.paging
+        listing = declared.pending.request if declared.pending is not None else None
+        paging = declared.pending.paging if declared.pending is not None else None
         if isinstance(listing, OperationRequest):
             given = {paging.param} if paging is not None and paging.param is not None else set()
             built_in = {"inbox", "person"} if listing.document == BUILT_IN else set()
@@ -98,6 +98,11 @@ class HttpInboxReach:
             if isinstance(request, OperationRequest):
                 built_in = {"inbox", "item"} if request.document == BUILT_IN else set()
                 self._operations[id(request)] = resolve(request, documents, defaulted=frozenset(built_in))
+        for use in declared.uses:
+            request = use.request
+            if isinstance(request, OperationRequest):
+                built_in = {"inbox"} if request.document == BUILT_IN else set()
+                self._operations[id(request)] = resolve(request, documents, defaulted=frozenset(built_in))
 
     def can_act_as(self, person: Person) -> bool:
         signing_in = self.declared.as_person
@@ -107,6 +112,8 @@ class HttpInboxReach:
 
     async def pending(self, person: Person, world: Store, clock: Clock) -> Listed:
         listing = self.declared.pending
+        if listing is None:
+            raise ValueError(f"inbox {self.declared.name} lists nothing: it declares no `pending`")
         values = self._values(person, clock)
         found: list[ListedItem] = []
         cursor: str | None = None
@@ -153,6 +160,30 @@ class HttpInboxReach:
         if answered is None:
             return DecideAnswer(accepted=False, status=None, answer=f"{built.what}: nothing answered")
         succeeds = decision.succeeds
+        accepted = answered.status in succeeds.statuses if succeeds.statuses else answered.ok
+        if accepted and succeeds.at is not None:
+            accepted = answered.parsed is not None and first(answered.parsed, succeeds.at) == succeeds.equals
+        return DecideAnswer(
+            accepted=accepted, status=answered.status, answer=answered.text[:ANSWER_KEPT], contract=answered.contract
+        )
+
+    # -- using --------------------------------------------------------------------------------------------------
+
+    async def use(
+        self, person: Person, use: str, inputs: Mapping[str, str], world: Store, clock: Clock
+    ) -> DecideAnswer:
+        declared = self.declared.use(use)
+        if declared is None:
+            return DecideAnswer(accepted=False, status=None, answer=f"inbox {self.declared.name} has no use {use}")
+        values = {
+            **self._values(person, clock),
+            **{f"input.{i.name}": inputs[i.name] if i.name in inputs else "" for i in declared.inputs},
+        }
+        built = self._built(declared.request, values, person)
+        answered = await self._send(built, person, InboxAct.USE, world)
+        if answered is None:
+            return DecideAnswer(accepted=False, status=None, answer=f"{built.what}: nothing answered")
+        succeeds = declared.succeeds
         accepted = answered.status in succeeds.statuses if succeeds.statuses else answered.ok
         if accepted and succeeds.at is not None:
             accepted = answered.parsed is not None and first(answered.parsed, succeeds.at) == succeeds.equals
@@ -306,6 +337,7 @@ def _text(value: object | None) -> str | None:
 
 def _item(holder: object, declared: HttpInbox) -> ListedItem | None:
     listing = declared.pending
+    assert listing is not None  # read only by `pending`, which refuses an inbox that lists nothing
     item_id = _text(first(holder, listing.id))
     if item_id is None or item_id == "":
         return None

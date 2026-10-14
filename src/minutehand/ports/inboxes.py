@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Protocol
 
 from minutehand.domain.inboxes import DecideAnswer, HttpInbox, Listed
@@ -29,4 +30,11 @@ class ReachesInbox(Protocol):
     async def decide(self, person: Person, item: str, decides: Decides, world: Store, clock: Clock) -> DecideAnswer:
         """Make `person`'s decision on the item with the product's id `item`. A product that refuses it, or does not
         answer, says so in `DecideAnswer.accepted`, and never raises."""
+        ...
+
+    async def use(
+        self, person: Person, use: str, inputs: Mapping[str, str], world: Store, clock: Clock
+    ) -> DecideAnswer:
+        """Do the use named `use` as `person`, with `inputs`, as the product's own page sends it. A product that
+        refuses it, or does not answer, says so in `DecideAnswer.accepted`, and never raises."""
         ...

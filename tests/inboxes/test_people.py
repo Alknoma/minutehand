@@ -183,3 +183,32 @@ async def test_gap_7_a_fork_pins_the_moment_of_an_owed_decision(tmp_path: Path, 
     # Her first item in the inbox lands exactly five hours after it began to wait, where her delay drew two.
     # Mutation: an engine that leaves item pins to the replier, which pins only messages, keeps two.
     assert await _fork(tmp_path, product, [pinned]) == [("approve", T0 + hours(5))]
+
+
+async def test_a_model_picked_decision_lands_within_the_inboxs_own_window_not_the_persons_delay(
+    tmp_path: Path, product: Product
+) -> None:
+    """A website's visitor reacts in seconds though they answer email in hours: the inbox's `within` times what no
+    take times."""
+
+    def rule(received: Received) -> WrittenTransition:
+        del received
+        return WrittenTransition(take="approve", fields=[])
+
+    nadia = Answers(delay=DelayRange(shortest=hours(3), longest=hours(3)))
+
+    def raising(request: WakeRequest, n: int) -> tuple[datetime | None, bool]:
+        if n == 1:
+            product.raise_approval("a1", NADIA, "Send Owen the Lakeside booking", "tell-1")
+            return request.now + timedelta(days=1), False
+        return None, True
+
+    from tests.inboxes.support import Agent
+
+    quick = inbox(product, within={"min": "PT20S", "max": "PT20S"}, leaning="People here act in seconds.")
+    async with fake_completions(rule) as fake:
+        model = OpenAICompatible(base_url=fake.base_url, api_key="sk-test", model_id="people-1")
+        played = await play(tmp_path, scenario(nadia), quick, Agent(plan=raising), model=model)
+
+    assert decided(played.store.events()) == [("approve", T0 + timedelta(seconds=20))]
+    assert "How people tend to act here: People here act in seconds." in fake.for_schema("WrittenTransition")[0].system

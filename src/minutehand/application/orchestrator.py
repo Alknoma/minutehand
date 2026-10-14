@@ -32,7 +32,7 @@ from minutehand.application.checkpoint import (
     write_checkpoint,
 )
 from minutehand.application.dues import Dues
-from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_untakeable
+from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_untakeable, refuse_unusable
 from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
@@ -58,7 +58,14 @@ from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import InboundTarget, PersonMessage
 from minutehand.domain.run import RunRecord, StopReason, wake_limit
-from minutehand.domain.scenario import DocumentHappening, Happening, ProviderKey, Scenario, TicketHappening
+from minutehand.domain.scenario import (
+    DocumentHappening,
+    Happening,
+    PersonUses,
+    ProviderKey,
+    Scenario,
+    TicketHappening,
+)
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -312,6 +319,7 @@ class Orchestrator:
             reaches = list(inboxes.reaches.values())
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
             refuse_untakeable(scenario, reaches)
+            refuse_unusable(scenario, reaches)
         if any(isinstance(w, Booked) for w in agent.wakes) and not any(
             p.manifest.books_wakes for p in services.providers
         ):
@@ -419,12 +427,10 @@ class Orchestrator:
                     command=i,
                 )
             )
-        for i, happening in enumerate(self._scenario.happenings):
+        for i, at in enumerate(self._scenario.happening_moments()):
             self._dues.enter(
                 PendingHappening(
-                    due=Due(
-                        at=self._scenario.starts_at + happening.after, kind=DueKind.HAPPENING, ref=f"happening:{i}"
-                    ),
+                    due=Due(at=at, kind=DueKind.HAPPENING, ref=f"happening:{i}"),
                     happening=i,
                 )
             )
@@ -762,7 +768,12 @@ class Orchestrator:
     async def _happen(self, happening: Happening) -> None:
         """What a person does by themselves: a ticket happening is a transition through the ticket's provider, as any
         person's move is (`People.happen`); a document happening lands through the document provider's
-        `ChangesDocuments`, a messaging happening is pushed through `PushesEvents`."""
+        `ChangesDocuments`, a messaging happening is pushed through `PushesEvents`, and a use is a call to the
+        agent's own product through the inbox that declares it."""
+        if isinstance(happening, PersonUses):
+            assert self._inboxes is not None  # refused at the start when no inbox declares it
+            await self._inboxes.use(happening, self._store, self._clock)
+            return
         if isinstance(happening, TicketHappening):
             await self._engine.happen(happening, self._store, self._clock)
             return
@@ -1203,7 +1214,8 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
     """Every happening lands through a port its provider has, checked before anything is seeded: a ticket happening
     needs the ticket's provider in the run holding seeded tickets (`HoldsSeeded`), a document happening the document's provider
     implementing `ChangesDocuments`; a messaging happening needs its provider
-    pushing events and the agent declaring an inbound target for it."""
+    pushing events and the agent declaring an inbound target for it; a use needs the agent file to declare the inbox
+    it names (what that inbox offers is `refuse_unusable`'s)."""
     for n, happening in enumerate(scenario.happenings, start=1):
         provider = scenario.happening_provider(happening)
         found = next((p for p in services.providers if p.manifest.key == provider), None)
@@ -1217,6 +1229,11 @@ def _refuse_unlanded_happenings(scenario: Scenario, agent: AgentUnderTest, servi
                 continue
             why = "is not in this run" if found is None else "has no documents a person can change"
             what = f"{happening.person} {happening.action.kind} the seeded document {happening.document!r}"
+        elif isinstance(happening, PersonUses):
+            if any(i.name == happening.inbox for i in agent.inboxes):
+                continue
+            why = f"is no inbox agent {agent.name} declares"
+            what = f"{happening.person} uses {happening.use!r}"
         else:
             if provider not in services.pushes:
                 why = "pushes no events to the agent"

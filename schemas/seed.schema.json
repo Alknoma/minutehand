@@ -2506,6 +2506,69 @@
       "title": "PersonReacts",
       "type": "object"
     },
+    "PersonUses": {
+      "additionalProperties": false,
+      "description": "A person does something in the agent's own product, unprompted: one of the `uses` an inbox of the agent file\ndeclares (`domain.inboxes.Use`), as the product's own page sends it, with the inputs given here word for word.\nA website's visitor opening a page, picking an option, writing to the agent: each is one.",
+      "properties": {
+        "after": {
+          "default": "PT0S",
+          "description": "Offset from the scenario's start",
+          "format": "duration",
+          "title": "After",
+          "type": "string"
+        },
+        "gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "In place of `after`: how long after this person's previous use in the list it comes, drawn uniformly from the window by the run's seed, in calendar time. Their first use counts from the start"
+        },
+        "inbox": {
+          "description": "The `name` of the agent file's inbox the use is declared in",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Inbox",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "What they give with it, by input name, word for word",
+          "title": "Inputs",
+          "type": "object"
+        },
+        "kind": {
+          "const": "uses",
+          "default": "uses",
+          "title": "Kind",
+          "type": "string"
+        },
+        "person": {
+          "description": "Person.key of whoever does it",
+          "title": "Person",
+          "type": "string"
+        },
+        "use": {
+          "description": "The use's `name`",
+          "title": "Use",
+          "type": "string"
+        }
+      },
+      "required": [
+        "person",
+        "inbox",
+        "use"
+      ],
+      "title": "PersonUses",
+      "type": "object"
+    },
     "PlannedBy": {
       "description": "How the agent asked for one of its own wakes: which of them a dispatch rule is about.",
       "enum": [
@@ -4902,7 +4965,8 @@
             "opens_agent": "#/$defs/PersonOpensAgent",
             "posts": "#/$defs/PersonPosts",
             "reacts": "#/$defs/PersonReacts",
-            "ticket": "#/$defs/TicketHappening"
+            "ticket": "#/$defs/TicketHappening",
+            "uses": "#/$defs/PersonUses"
           },
           "propertyName": "kind"
         },
@@ -4936,6 +5000,9 @@
           },
           {
             "$ref": "#/$defs/PersonCommands"
+          },
+          {
+            "$ref": "#/$defs/PersonUses"
           }
         ]
       },
