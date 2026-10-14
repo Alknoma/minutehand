@@ -6,5 +6,6 @@
 /.github/                 @HHMingD
 /pyproject.toml           @HHMingD
 /uv.lock                  @HHMingD
-/LICENSE.md               @HHMingD
+/LICENSE                  @HHMingD
+/NOTICE                   @HHMingD
 /CLAUDE.md                @HHMingD

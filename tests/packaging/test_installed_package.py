@@ -42,7 +42,8 @@ def test_uv_build_makes_an_sdist_and_a_wheel(dist: Dist) -> None:
     assert {
         "pyproject.toml",
         "README.md",
-        "LICENSE.md",
+        "LICENSE",
+        "NOTICE",
         "src/minutehand/cli.py",
         "examples/proactive_agent/agent.py",
     } <= names
@@ -87,9 +88,11 @@ def test_the_metadata_names_the_licence_and_passes_twine_check(dist: Dist) -> No
     written = headers[0].removeprefix("Metadata-Version: ")
     # License-Expression and License-File exist from 2.4 (PEP 639); PyPI accepts up to 2.5.
     assert written in ("2.4", "2.5"), headers[0]
-    assert "License-Expression: FSL-1.1-ALv2" in headers
-    assert "License-File: LICENSE.md" in headers
-    assert f"minutehand-{VERSION}.dist-info/licenses/LICENSE.md" in shipped
+    assert "License-Expression: Apache-2.0" in headers
+    assert "License-File: LICENSE" in headers
+    assert "License-File: NOTICE" in headers
+    assert f"minutehand-{VERSION}.dist-info/licenses/LICENSE" in shipped
+    assert f"minutehand-{VERSION}.dist-info/licenses/NOTICE" in shipped
     assert "Description-Content-Type: text/markdown" in headers
 
     twine = checked(

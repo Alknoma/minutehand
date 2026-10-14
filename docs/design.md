@@ -1864,6 +1864,7 @@ Every fake of the parent repository now has a provider here: Jira, Notion and Mi
 ## Licence
 
 Decided 2026-10-04: the licence must stop anyone else selling Minutehand as a hosted service, because Alknoma will.
+Reversed 2026-10-13: Minutehand is Apache-2.0 from the release after 0.2.0, to be open source by the OSI definition. A competing hosted service is allowed.
 
 | Licence | Stops a competing hosted service | Still "open source" by the OSI definition | Used by |
 |---|---|---|---|
@@ -1873,7 +1874,7 @@ Decided 2026-10-04: the licence must stop anyone else selling Minutehand as a ho
 | AGPL-3.0 | No. Hosting is allowed; changes must be published. | Yes | Grafana, k6 |
 | Apache-2.0 | No | Yes | LocalStack before 2026, vercel-labs/emulate |
 
-FSL-1.1-ALv2 for the tool from its first commit; `LICENSE.md` carries it today. Starting under it avoids the relicensing that drew forks at HashiCorp, Redis and LocalStack. The cost: it cannot be called open source, only source-available or fair source, and some companies' policies admit OSI licences only. Confirm with a lawyer before the first public commit.
+Releases up to and including 0.2.0 are FSL-1.1-ALv2, each becoming Apache-2.0 two years after it shipped. Every later release is Apache-2.0: `LICENSE` carries it and `NOTICE` the attribution it asks a redistributor to keep. Moving from FSL to Apache-2.0 widens what anyone may do, so it draws none of the forks that relicensing the other way drew at HashiCorp, Redis and LocalStack.
 
 ## Testing
 
