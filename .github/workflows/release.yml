@@ -122,5 +122,5 @@ jobs:
             --label "org.opencontainers.image.source=$SOURCE" \
             --label "org.opencontainers.image.version=$VERSION" \
             --label "org.opencontainers.image.revision=$COMMIT" \
-            --label "org.opencontainers.image.licenses=FSL-1.1-ALv2" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
             --push
