@@ -110,9 +110,9 @@ class YouTrackApi:
     def answer(self, call: Call, answer: wire.Answer | Sequence[wire.Answer]) -> Answered:
         return 200, wire.render(answer, wire.parse_fields(call.param("fields")))
 
-    def page[T](self, call: Call, items: list[T], *, recorded: bool = False) -> list[T]:
-        start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"), recorded=recorded)
-        return items[start : start + limit]
+    def page[T](self, call: Call, items: list[T], *, paging: wire.Paging = wire.Paging.UNRECORDED) -> list[T]:
+        start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"), paging=paging)
+        return items[start:] if limit is None else items[start : start + limit]
 
     # ------------------------------------------------------------------ lookups
 
@@ -229,10 +229,22 @@ class YouTrackApi:
             created_by=call.caller.id,
             team=list(dict.fromkeys([leader.id, call.caller.id])),
             project_fields=[self._template_field(ids, f) for f in fields.TEMPLATES[template]],
+            time_tracking=None,
             description=body.description or "",
             created_through_api=True,
         )
         self.world.write_project(made, actor=Actor.AGENT)
+        for board in fields.TEMPLATE_BOARDS[template]:
+            estimation = None if board.estimation_field is None else self.world.definition_named(board.estimation_field)
+            self.world.write_agile(
+                wire.StoredAgile(
+                    id=self.world.next_id(153),
+                    name=f"{made.name} {board.suffix}",
+                    estimationField=None if estimation is None else estimation.id,
+                    projects=[made.id],
+                ),
+                actor=Actor.AGENT,
+            )
         return self.answer(call, self.presenter().project(made))
 
     def _template_field(self, ids: fields.Ids, field: fields.TemplateField) -> wire.StoredProjectField:
@@ -303,6 +315,13 @@ class YouTrackApi:
                 if field.bundle == bundle.id and field.field == definition.id:
                     return field.values
         raise wire.not_found(bundle.id)
+
+    def project_time_tracking(self, call: Call) -> Answered:
+        project = self.project(call)
+        if project.timeTracking is None:
+            raise _undocumented(f"the time-tracking settings of {project.shortName}, made through POST /admin/projects")
+        self.world.saw(state.project_ref(project.id), Operation.READ)
+        return self.answer(call, self.presenter().time_tracking(project, project.timeTracking))
 
     def project_team(self, call: Call) -> Answered:
         project = self.project(call)
@@ -433,13 +452,25 @@ class YouTrackApi:
             self.world.write_project(project.model_copy(update={"fields": grown}), actor=Actor.AGENT)
         return self.answer(call, self.presenter().bundle_value(kind, added))
 
+    # ------------------------------------------------------------------ agile boards
+
+    def agiles(self, call: Call) -> Answered:
+        present = self.presenter()
+        page: list[wire.Answer] = [
+            present.agile(a) for a in self.page(call, self.world.agiles(), paging=wire.Paging.NEGATIVE_TOP_IS_ALL)
+        ]
+        self.world.saw(state.instance_ref(), Operation.SEARCH)
+        return self.answer(call, page)
+
     # ------------------------------------------------------------------ issues: reads
 
     def search(self, call: Call) -> Answered:
         matched, scope = self._matching(call, call.param("query"))
         present = self.presenter()
         shown = set(call.request.query_params.getlist("customFields"))
-        page: list[wire.Answer] = [_showing(present.issue(i), shown) for i in self.page(call, matched, recorded=True)]
+        page: list[wire.Answer] = [
+            _showing(present.issue(i), shown) for i in self.page(call, matched, paging=wire.Paging.ISSUE_SEARCH)
+        ]
         if len(scope) == 1:
             self.world.saw(state.project_ref(scope[0].id), Operation.SEARCH)
         else:
@@ -477,7 +508,9 @@ class YouTrackApi:
         issue = self.issue(call)
         present = self.presenter()
         project = self.home(issue)
-        page: list[wire.Answer] = list(self.page(call, present.issue_fields(project, issue)))
+        page: list[wire.Answer] = list(
+            self.page(call, present.issue_fields(project, issue), paging=wire.Paging.NEGATIVE_TOP_IS_ALL)
+        )
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
         return self.answer(call, page)
 
@@ -961,6 +994,7 @@ TABLE: tuple[tuple[str, str, str], ...] = (
     ("/admin/projects/{project}/customFields", "GET", "project_fields"),
     ("/admin/projects/{project}/customFields", "POST", "project_field_attach"),
     ("/admin/projects/{project}/customFields/{field}", "GET", "project_field_read"),
+    ("/admin/projects/{project}/timeTrackingSettings", "GET", "project_time_tracking"),
     ("/admin/projects/{project}/team", "GET", "project_team"),
     ("/admin/projects/{project}/team/users", "GET", "project_team_users"),
     ("/admin/projects/{project}/team/ownUsers", "POST", "project_team_add"),
@@ -1000,6 +1034,7 @@ TABLE: tuple[tuple[str, str, str], ...] = (
     ("/issues/{issue}/links/{link}/issues", "POST", "link_add"),
     ("/issues/{issue}/links/{link}/issues/{target}", "DELETE", "link_remove"),
     ("/issueLinkTypes", "GET", "link_types"),
+    ("/agiles", "GET", "agiles"),
     ("/tags", "GET", "tags"),
     ("/tags", "POST", "tag_create"),
     ("/tags/{tag}", "GET", "tag_read"),

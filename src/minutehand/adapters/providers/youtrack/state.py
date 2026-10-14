@@ -4,12 +4,13 @@
 |---|---|---|---|
 | user                         | RECORD  | database id, `1-<n>`              | `users` |
 | custom field of the instance | RECORD  | database id, `58-<n>`             | `customFields` |
-| project, with its fields     | RECORD  | database id, `0-<n>`              | `projects` |
+| project, with its fields and time-tracking settings | RECORD | database id, `0-<n>` | `projects` |
 | issue                        | TICKET  | database id, `2-<n>`              | the project's id |
 | readable id (`DEMO-12`)      | RECORD  | the readable id                   | the project's id |
 | comment                      | COMMENT | database id, `4-<n>`              | the issue's id |
 | tag                          | RECORD  | database id, `6-<n>`              | `tags` |
 | link type                    | RECORD  | database id, `106-<n>`            | `linkTypes` |
+| agile board                  | RECORD  | database id, `153-<n>`            | `agiles` |
 | link                         | RECORD  | `link:<source>:<type>:<target>`   | `links` |
 | token                        | RECORD  | `token:<sha256 of the token>`     | `tokens` |
 | Hub service                  | RECORD  | `service:<client id>`             | `services` |
@@ -60,6 +61,7 @@ PROJECTS = "projects"
 TAGS = "tags"
 LINK_TYPES = "linkTypes"
 LINKS = "links"
+AGILES = "agiles"
 TOKENS = "tokens"
 SERVICES = "services"
 GRANTS = "grants"
@@ -345,6 +347,10 @@ class YouTrackWorld:
         found = [wire.parse(wire.StoredLinkType, s.body) for s in self._all(EntityKind.RECORD, LINK_TYPES)]
         return sorted(found, key=lambda t: ordinal(t.id))
 
+    def agiles(self) -> list[wire.StoredAgile]:
+        found = [wire.parse(wire.StoredAgile, s.body) for s in self._all(EntityKind.RECORD, AGILES)]
+        return sorted(found, key=lambda a: ordinal(a.id))
+
     def links(self) -> list[wire.StoredLink]:
         """The links that hold now."""
         return [link for link in self.every_link() if link.removed is None]
@@ -527,6 +533,9 @@ class YouTrackWorld:
 
     def write_link_type(self, link_type: wire.StoredLinkType, *, actor: Actor) -> WorldEvent:
         return self._write(_ref(EntityKind.RECORD, link_type.id), LINK_TYPES, link_type, actor=actor, create=True)
+
+    def write_agile(self, agile: wire.StoredAgile, *, actor: Actor) -> WorldEvent:
+        return self._write(_ref(EntityKind.RECORD, agile.id), AGILES, agile, actor=actor, create=True)
 
     def write_link(self, link: wire.StoredLink, *, actor: Actor) -> WorldEvent:
         """Make the link, or make a removed one hold again."""

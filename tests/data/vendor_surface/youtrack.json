@@ -1,9 +1,9 @@
 {
  "source": "https://youtrack.jetbrains.com/api/openapi.json",
- "fetched": "2026-10-08",
- "version": "2026.3",
+ "fetched": "2026-10-13",
+ "version": "2026.4",
  "note": "YouTrack publishes its OpenAPI description per instance at /api/openapi.json (see the devportal REST docs); this is JetBrains' own public instance's, the real service. Operations carry no operationId or summary there, so each keeps its parameter names and first response. Hub (/hub/api/rest) publishes no OpenAPI description at that host (the URL answers an HTML page); Hub rows in CLAIMS.md cite the devportal pages instead.",
- "selection": "Every path of the description under /issues, /issuesGetter, /commands, /activities, /activitiesPage, /admin/projects, /admin/customFieldSettings/customFields, /admin/customFieldSettings/bundles, /admin/customFieldSettings/types, /users, /tags, /issueLinkTypes and /workItems that has at least one method: the resources the fake claims (issues and everything under an issue, counts, commands, activities, projects with their fields and teams, the instance's fields and bundles, users, tags, link types, work items).",
+ "selection": "Every path of the description under /issues, /issuesGetter, /commands, /activities, /activitiesPage, /admin/projects, /admin/customFieldSettings/customFields, /admin/customFieldSettings/bundles, /admin/customFieldSettings/types, /users, /tags, /issueLinkTypes, /workItems and /agiles that has at least one method: the resources the fake claims (issues and everything under an issue, counts, commands, activities, projects with their fields and teams, the instance's fields and bundles, users, tags, link types, work items, agile boards).",
  "paths": {
   "/activities": {
    "GET": {
@@ -1626,6 +1626,89 @@
      "id"
     ],
     "response": "200 single IssueWorkItem"
+   }
+  },
+  "/agiles": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Agile"
+   },
+   "POST": {
+    "parameters": [
+     "template",
+     "fields"
+    ],
+    "response": "200 single Agile"
+   }
+  },
+  "/agiles/{id}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Agile"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id"
+    ],
+    "response": "200 single Agile"
+   },
+   "DELETE": {
+    "parameters": [
+     "id"
+    ],
+    "response": "200 OK"
+   }
+  },
+  "/agiles/{id}/sprints": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "$skip",
+     "$top"
+    ],
+    "response": "200 collection of Sprint"
+   },
+   "POST": {
+    "parameters": [
+     "muteUpdateNotifications",
+     "fields",
+     "id"
+    ],
+    "response": "200 single Sprint"
+   }
+  },
+  "/agiles/{id}/sprints/{sprintId}": {
+   "GET": {
+    "parameters": [
+     "fields",
+     "id",
+     "sprintId"
+    ],
+    "response": "200 single Sprint"
+   },
+   "POST": {
+    "parameters": [
+     "fields",
+     "id",
+     "sprintId"
+    ],
+    "response": "200 single Sprint"
+   },
+   "DELETE": {
+    "parameters": [
+     "id",
+     "sprintId"
+    ],
+    "response": "200 OK"
    }
   }
  }

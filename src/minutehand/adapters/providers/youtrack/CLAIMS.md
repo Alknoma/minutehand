@@ -11,13 +11,13 @@ source. Tests are under `tests/providers/youtrack/`; `claims` is `test_youtrack_
   show real error bodies, request by request.
 - **described**: YouTrack's own OpenAPI description, which every instance serves at `/api/openapi.json`. The subset
   for the resources this fake claims is `tests/data/vendor_surface/youtrack.json`: JetBrains' public instance
-  (`https://youtrack.jetbrains.com/api/openapi.json`), version 2026.3, fetched 2026-10-08. Hub publishes no OpenAPI
+  (`https://youtrack.jetbrains.com/api/openapi.json`), version 2026.4, fetched 2026-10-13 (its paths under the resources claimed before agile boards are those of 2026.3, fetched 2026-10-08). Hub publishes no OpenAPI
   description there (that URL answers an HTML page), so Hub rows cite devportal pages.
 - **recorded live**: what a live YouTrack Cloud instance answered on 2026-09-04 and 2026-09-07, written down in prose
   in the older stand-in's README by the people who ran a production YouTrack client against it. That client calls
   the REST API with its own plain HTTP code (YouTrack has no client library); no request or response was kept,
   only the prose and, for one call, an operation id. Each such row says what the prose records.
-- **recorded**: what JetBrains' public instance (`https://youtrack.jetbrains.com`) answered on 2026-10-08 to reads
+- **recorded**: what JetBrains' public instance (`https://youtrack.jetbrains.com`) answered on 2026-10-08 (and, for time tracking and agile boards, 2026-10-13) to reads
   made with no credentials, kept whole in `tests/providers/youtrack/data/observed/` (see its `README.md`). Writes
   need credentials there, so no write is recorded.
 - **refused by name**: the older stand-in's own assertions, which earlier versions of this file called
@@ -124,7 +124,7 @@ The seed's `grants` stay world data: Hub's permissions cache reports them (rows 
 
 | Claim | Source | Pinned by |
 |---|---|---|
-| Every operation of the claimed resources is served or a 501 naming it (184 described: 55 served, 129 refused); a path outside them is a 501 naming it | described | `surface::test_every_described_operation_is_served_or_refused_by_name_and_none_is_both`, `surface::test_the_counts_of_served_and_refused_operations`, `surface::test_an_unserved_operation_is_refused_501_naming_it`, `surface::test_a_path_outside_the_claimed_resources_is_refused_501_naming_it` |
+| Every operation of the claimed resources is served or a 501 naming it (194 described: 57 served, 137 refused); a path outside them is a 501 naming it | described | `surface::test_every_described_operation_is_served_or_refused_by_name_and_none_is_both`, `surface::test_the_counts_of_served_and_refused_operations`, `surface::test_an_unserved_operation_is_refused_501_naming_it`, `surface::test_a_path_outside_the_claimed_resources_is_refused_501_naming_it` |
 | A method the description does not list for a path is a 405 | described; the status recorded live (row 46) | `test_youtrack_refusals::test_a_method_youtrack_does_not_list_for_a_path_is_refused_405` |
 | A path outside `/api` and `/hub/api/rest` is 404 `{"error": "Not Found", "error_description": "HTTP 404 Not Found"}` | documented, [incorrect URL](https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-incorrect-issue-url.html) | `test_youtrack_refusals::test_a_path_outside_the_api_is_refused_404_in_youtracks_words` |
 | A required field left empty on a create is `{"error": "Field required", "error_description": "<Field> is required", "error_field": "<Field>"}` | documented, [missing type](https://www.jetbrains.com/help/youtrack/devportal/api-troubleshoot-missing-type.html) (its workflow-specific keys are not sent) | `test_youtrack_people_and_refusals::test_a_required_field_with_no_default_refuses_a_create_without_it_400` |
@@ -135,6 +135,21 @@ The seed's `grants` stay world data: Hub's permissions cache reports them (rows 
 | `wikifiedDescription`, `textPreview` and `ParsedCommand.description` are a 501 naming them: YouTrack renders or words them, and the fake answered raw text or its own words | documented, Issue, [IssueComment](https://www.jetbrains.com/help/youtrack/devportal/api-entity-IssueComment.html) | `surface::test_an_attribute_youtrack_renders_from_markup_is_refused_by_name`, `surface::test_a_command_description_is_refused_by_name` |
 | An Issue's `fields` attribute is gone: neither the Issue page nor its schema has one | documented, Issue | |
 | Names are stored as sent (project, tag, field and bundle value names were trimmed); summaries, descriptions and comments round-trip byte for byte, under any token | the owner's rule | `claims_projects::test_a_project_name_and_short_name_are_kept_as_sent`, `surface::test_an_issue_and_its_comment_round_trip_as_sent` |
+
+## Time tracking and agile boards
+
+What a client reads before it can read an issue's size. Recorded rows were read as a guest from JetBrains' public
+instance on 2026-10-13, at the URL the row gives, and kept whole in `tests/providers/youtrack/data/observed/`.
+
+| Claim | Class | Source | Pinned by |
+|---|---|---|---|
+| A project's time-tracking settings (`ProjectTimeTrackingSettings`) name the period fields holding an issue's estimate and time spent, each a `PeriodProjectCustomField`, by the project's id or short name | observed | https://youtrack.jetbrains.com/api/admin/projects/22-192/timeTrackingSettings?fields=id,enabled,project(id,shortName),estimate(id,field(name)),timeSpent(id,field(name)) (`time_tracking_settings.http`); the operation and schema in https://youtrack.jetbrains.com/api/openapi.json | `test_youtrack_time_tracking_and_agiles::test_time_tracking_names_the_projects_period_fields_by_id_or_short_name`, `test_youtrack_time_tracking_and_agiles::test_time_tracking_answers_in_the_shape_the_public_instance_does` |
+| An unknown project's time-tracking settings are a 404 "Entity with id … not found" | observed | https://youtrack.jetbrains.com/api/admin/projects/0-99999/timeTrackingSettings?fields=id (`unknown_project_time_tracking.http`) | `test_youtrack_time_tracking_and_agiles::test_time_tracking_of_an_unknown_project_answers_as_the_public_instance_does` |
+| A project made through `POST /admin/projects` has its time-tracking read refused by name (501): no template page says what time tracking it gets, and no recording shows it | documented | https://www.jetbrains.com/help/youtrack/cloud/default-project-template.html, .../scrum-project-template.html, .../kanban-project-template.html (none names time tracking) | `test_youtrack_time_tracking_and_agiles::test_time_tracking_of_a_project_made_through_the_api_is_refused_501_naming_it` |
+| `GET /agiles` lists each board with its `estimationField` (a `CustomField`, or null) and its `projects` by the ids the project routes answer | observed | https://youtrack.jetbrains.com/api/agiles?fields=id,name,estimationField(name),projects(id,shortName)&$top=2 (`agiles.http`; every public board's estimation field is null); the Agile schema in https://youtrack.jetbrains.com/api/openapi.json | `test_youtrack_time_tracking_and_agiles::test_agiles_list_a_board_per_project_estimated_by_story_points`, `test_youtrack_time_tracking_and_agiles::test_agiles_answer_in_the_shape_the_public_instance_does` |
+| A project made from the Scrum template gets a "[Project Name] Project Management" board estimated by Story points and a "[Project Name] Development" board by Ideal days; Kanban one "[Project Name] Kanban Board" with no estimation field; the Default template none | documented | https://www.jetbrains.com/help/youtrack/cloud/scrum-project-template.html, https://www.jetbrains.com/help/youtrack/cloud/kanban-project-template.html, https://www.jetbrains.com/help/youtrack/cloud/default-project-template.html | `test_youtrack_time_tracking_and_agiles::test_a_project_made_from_a_template_gets_the_boards_its_page_lists` |
+| An attribute the Agile or ProjectTimeTrackingSettings schema lists that this fake keeps nothing for (a board's `owner`, `sprints`, columns, sharing…; the settings' `workItemTypes`, `attributes`) is refused by name (501), never left out as if the entity had not got it | documented | the Agile and ProjectTimeTrackingSettings schemas in https://youtrack.jetbrains.com/api/openapi.json | `test_youtrack_time_tracking_and_agiles::test_an_agile_attribute_the_fake_keeps_none_of_is_refused_501_naming_it`, `test_youtrack_time_tracking_and_agiles::test_a_time_tracking_attribute_the_fake_keeps_none_of_is_refused_501_naming_it` |
+| A negative `$top` on an issue's custom fields or on `/agiles` answers every entity | observed | https://youtrack.jetbrains.com/api/issues/IDEA-391136/customFields?fields=id&$top=-1 (`issue_custom_fields_top_negative.http`), https://youtrack.jetbrains.com/api/agiles?fields=id&$top=-1 (`agiles_top_negative.http`: 53 boards, past the default 42) | `test_youtrack_time_tracking_and_agiles::test_a_negative_top_answers_every_entity_as_the_public_instance_does`, `test_youtrack_time_tracking_and_agiles::test_an_issues_size_reads_back_through_the_youtrack_sdk` |
 
 ## Divergences that stay
 
@@ -175,7 +190,8 @@ No refusal is in this fake's own words. Each is one of:
   (`invalid_query` with `error_children`); a `fields=` that does not parse (`bad_request` "Query string has invalid
   syntax"; an attribute the entity lacks is left out); on the issue search, `$skip` or `$top` that is not a number
   (500 `server_error` "HTTP 404 Not Found", as the instance answers), a negative `$skip` (read as 0) and a negative
-  `$top` (400 "This resource does not allow requesting all entities, max limit is 3500"); activities with no
+  `$top` (400 "This resource does not allow requesting all entities, max limit is 3500"); on an issue's custom
+  fields and on agile boards, a negative `$top` (every entity); activities with no
   `categories` (400 "No requested categories specified as a filter parameter"; an unknown category is passed
   over) and a `start` that is not a timestamp (400 "Incorrect timestamp …").
 - **documented**: the troubleshooting pages' bodies (a malformed entity id, a required field left empty, a numeric
@@ -188,5 +204,6 @@ No refusal is in this fake's own words. Each is one of:
   a create or update without a summary, a comment without text; a project without a name, short name or leader; a
   custom field or bundle value without a name or with one in use; a tag named as one in use or named instead of by
   id; an issue linked to itself; a command that is empty, unknown, without a value, naming no issues or an unknown
-  tag; `$skip`/`$top` that are not numbers or negative on any collection but the issue search; Hub's token endpoint
+  tag; `$skip`/`$top` that are not numbers or negative on any collection but the issue search (and a negative `$top` on
+  an issue's custom fields or agile boards); Hub's token endpoint
   with an unreadable request, no grant or a grant other than client credentials.

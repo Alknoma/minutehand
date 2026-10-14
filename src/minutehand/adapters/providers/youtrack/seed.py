@@ -6,7 +6,7 @@ seeded ticket with its title, body, assignee and state, its labels as tags and i
 
 From the scenario's YouTrack seed (`ProviderSeed` with provider `youtrack`, its text a `YouTrackSeed` as JSON):
 more users, the tokens and Hub services that act as them, more instance fields, projects with their own field sets,
-bundles, defaults, teams and leaders, any field value on a seeded issue, links between seeded issues, an issue's
+bundles, defaults, teams, leaders and time-tracking settings, agile boards, any field value on a seeded issue, links between seeded issues, an issue's
 history before the run, permissions given or taken (reported by Hub's permissions cache, never enforced), and
 refusals put in the way of calls for a while.
 
@@ -117,6 +117,14 @@ class ProjectFieldSeed(Model):
     default: str | None = None
 
 
+class TimeTrackingSeed(Model):
+    """A project's time-tracking settings: which of its period fields hold an issue's estimate and its time spent."""
+
+    enabled: bool = True
+    estimate: str | None = Field(default=fields.ESTIMATION.name, description="One of the project's period fields")
+    spent_time: str | None = Field(default=fields.SPENT_TIME.name, description="One of the project's period fields")
+
+
 class ProjectSeed(Model, Keyed):
     IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
     name: str = Field(description="The project a seeded ticket names, or a project no ticket is in yet")
@@ -128,6 +136,18 @@ class ProjectSeed(Model, Keyed):
     created_through_api: bool = Field(
         default=False, description="As if the agent made it: no Hub project, and nobody holds Update Project on it"
     )
+    time_tracking: TimeTrackingSeed | None = Field(
+        default=None, description="Default: on, with Estimation and Spent time where the project carries them"
+    )
+
+
+class AgileSeed(Model, Keyed):
+    """An agile board: the projects it holds and the field its cards are estimated by."""
+
+    IDENTITY: ClassVar[tuple[str, ...]] = ("name",)
+    name: str = Field(min_length=1)
+    projects: list[str] = Field(description="Projects by name or short name")
+    estimation_field: str | None = Field(default=fields.STORY_POINTS.name, description="A field the instance defines")
 
 
 Scalar = str | int | float
@@ -197,6 +217,10 @@ class YouTrackSeed(Model):
     services: list[ServiceSeed] = []
     fields: list[FieldSeed] = []
     projects: list[ProjectSeed] = []
+    agiles: list[AgileSeed] | None = Field(
+        default=None,
+        description="Default: a board per project, named after it, estimated by Story Points where it carries them",
+    )
     issues: list[IssueSeed] = []
     grants: list[GrantSeed] = []
     faults: list[FaultSeed] = []
@@ -211,6 +235,10 @@ class YouTrackSeed(Model):
         twice = sorted({n for n in names if names.count(n) > 1})
         if twice:
             raise ValueError(f"two YouTrack projects are named {', '.join(twice)}")
+        boards = [a.name for a in self.agiles or []]
+        twice = sorted({n for n in boards if boards.count(n) > 1})
+        if twice:
+            raise ValueError(f"two YouTrack agile boards are named {', '.join(twice)}")
         return self
 
 
@@ -254,6 +282,7 @@ def new_project(
     created_by: str,
     team: list[str],
     project_fields: list[wire.StoredProjectField],
+    time_tracking: wire.StoredTimeTracking | None,
     description: str = "",
     created_through_api: bool = False,
 ) -> wire.StoredProject:
@@ -270,6 +299,7 @@ def new_project(
         ringId=ring_id("project", key),
         createdThroughApi=created_through_api,
         fields=project_fields,
+        timeTracking=time_tracking,
     )
 
 
@@ -413,6 +443,7 @@ def seed(scenario: Scenario, world: Store) -> None:
             raise ValueError(f"two YouTrack projects share the short name {key}")
         team = everyone if detail.team is None else [login(m).id for m in detail.team]
         leader = agent if detail.leader is None else login(detail.leader)
+        project_fields = _project_fields(ids, definitions, detail)
         made = new_project(
             number,
             name,
@@ -420,12 +451,15 @@ def seed(scenario: Scenario, world: Store) -> None:
             leader=leader.id,
             created_by=agent.id,
             team=list(dict.fromkeys([leader.id, *team])),
-            project_fields=_project_fields(ids, definitions, detail),
+            project_fields=project_fields,
+            time_tracking=_time_tracking(number, detail, project_fields, definitions),
             description=detail.description,
             created_through_api=detail.created_through_api,
         )
         projects[name] = made
         youtrack.write_project(made, actor=Actor.SCENARIO)
+
+    _seed_agiles(youtrack, extra.agiles, list(projects.values()), definitions)
 
     for number, grant in enumerate(extra.grants):
         project = None
@@ -508,6 +542,77 @@ def _project_fields(
             )
         )
     return made
+
+
+def _time_tracking(
+    number: int,
+    detail: ProjectSeed,
+    project_fields: list[wire.StoredProjectField],
+    definitions: list[wire.StoredFieldDefinition],
+) -> wire.StoredTimeTracking:
+    """The project's time-tracking settings as its seed states them, or on with the period fields named Estimation
+    and Spent time it carries."""
+    stated = detail.time_tracking is not None
+    wanted = detail.time_tracking or TimeTrackingSeed()
+    named = {d.id: d for d in definitions}
+
+    def period(name: str | None) -> str | None:
+        if name is None:
+            return None
+        found = next((f for f in project_fields if named[f.field].name.lower() == name.lower()), None)
+        if found is not None and named[found.field].fieldType is wire.FieldType.PERIOD:
+            return found.id
+        if stated:
+            raise ValueError(f"the time tracking of project {detail.name} names {name!r}, no period field it carries")
+        return None
+
+    return wire.StoredTimeTracking(
+        id=f"169-{number}",
+        enabled=wanted.enabled,
+        estimate=period(wanted.estimate),
+        timeSpent=period(wanted.spent_time),
+    )
+
+
+def _seed_agiles(
+    youtrack: YouTrackWorld,
+    stated: list[AgileSeed] | None,
+    projects: list[wire.StoredProject],
+    definitions: list[wire.StoredFieldDefinition],
+) -> None:
+    """The boards the seed states, or one per project named after it, estimated by the Story Points it carries."""
+    if stated is None:
+        stated = [
+            AgileSeed(
+                name=f"{p.name} Board",
+                projects=[p.shortName],
+                estimation_field=fields.STORY_POINTS.name
+                if youtrack.project_field(p, fields.STORY_POINTS.name) is not None
+                else None,
+            )
+            for p in projects
+        ]
+    for board in stated:
+        held: list[str] = []
+        for wanted in board.projects:
+            found = next((p for p in projects if wanted.lower() in (p.shortName.lower(), p.name.lower())), None)
+            if found is None:
+                raise ValueError(f"agile board {board.name} holds project {wanted!r}, which the instance has not got")
+            held.append(found.id)
+        estimation = None
+        if board.estimation_field is not None:
+            estimation = next((d for d in definitions if d.name.lower() == board.estimation_field.lower()), None)
+            if estimation is None:
+                raise ValueError(f"agile board {board.name} is estimated by {board.estimation_field!r}, no field")
+        youtrack.write_agile(
+            wire.StoredAgile(
+                id=state.seeded_id(153, board.name, taken=youtrack.taken),
+                name=board.name,
+                estimationField=None if estimation is None else estimation.id,
+                projects=list(dict.fromkeys(held)),
+            ),
+            actor=Actor.SCENARIO,
+        )
 
 
 def _identity(ticket: SeededTicket, youtrack: YouTrackWorld, home: wire.StoredProject) -> tuple[str, ...]:

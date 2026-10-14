@@ -188,6 +188,32 @@ class Presenter:
             customFields=[self.project_field(project, f) for f in project.fields],
         )
 
+    def time_tracking(self, project: wire.StoredProject, settings: wire.StoredTimeTracking) -> wire.TimeTrackingOut:
+        by_id = {f.id: f for f in project.fields}
+
+        def period(field: str | None) -> wire.ProjectFieldOut | None:
+            return None if field is None else self.project_field(project, by_id[field])
+
+        return wire.TimeTrackingOut(
+            id=settings.id,
+            enabled=settings.enabled,
+            estimate=period(settings.estimate),
+            timeSpent=period(settings.timeSpent),
+            project=self.project_ref(project),
+        )
+
+    def agile(self, agile: wire.StoredAgile) -> wire.AgileOut:
+        definitions = {d.id: d for d in self._all_definitions()}
+        projects = {p.id: p for p in self._all_projects()}
+        return wire.AgileOut(
+            id=agile.id,
+            name=agile.name,
+            estimationField=None
+            if agile.estimationField is None
+            else self.definition(definitions[agile.estimationField]),
+            projects=[self.project_ref(projects[p]) for p in agile.projects],
+        )
+
     def home(self, issue: wire.StoredIssue) -> wire.StoredProject:
         project = next((p for p in self._all_projects() if p.id == issue.project), None)
         if project is None:
