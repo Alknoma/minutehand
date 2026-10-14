@@ -34,6 +34,7 @@ from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.telemetry import ForwardFailure, ReceivedSpan, Signal, SpanSource, StoredSpan
 from minutehand.domain.world import (
+    Actor,
     CallBegan,
     Change,
     EntityKind,
@@ -92,8 +93,24 @@ class CaseStore:
 
     # -- reading ------------------------------------------------------------------------------------------------
 
-    def events(self, *, since: int = 0) -> list[WorldEvent]:
-        return [e for e in self._events if e.seq > since]
+    def events(
+        self,
+        *,
+        since: int = 0,
+        until: int | None = None,
+        kinds: Sequence[EntityKind] | None = None,
+        actors: Sequence[Actor] | None = None,
+        providers: Sequence[ProviderKey] | None = None,
+    ) -> list[WorldEvent]:
+        return [
+            e
+            for e in self._events
+            if e.seq > since
+            and (until is None or e.seq <= until)
+            and (kinds is None or e.entity.kind in kinds)
+            and (actors is None or e.actor in actors)
+            and (providers is None or e.entity.provider in providers)
+        ]
 
     def head(self) -> int:
         return len(self._events)
@@ -146,6 +163,12 @@ class CaseStore:
         found = [
             s for part in self._parts for s in part.store.children(provider, kind, parent, after=after, limit=limit)
         ]
+        return sorted(found, key=lambda s: s.entity.external_id)[:limit]
+
+    def live(
+        self, provider: ProviderKey, kind: EntityKind, *, after: str | None = None, limit: int = 100
+    ) -> list[Stored]:
+        found = [s for part in self._parts for s in part.store.live(provider, kind, after=after, limit=limit)]
         return sorted(found, key=lambda s: s.entity.external_id)[:limit]
 
     def forward_failures(self) -> list[ForwardFailure]:

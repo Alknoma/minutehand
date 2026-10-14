@@ -1,7 +1,7 @@
 # Answers recorded from the real service
 
 `observed/` holds what JetBrains' public YouTrack instance, `https://youtrack.jetbrains.com`, answered on
-2026-10-08 to requests made with no credentials (the instance lets a guest read), each the whole HTTP answer as
+2026-10-08 (the last five files below, 2026-10-13) to requests made with no credentials (the instance lets a guest read), each the whole HTTP answer as
 `curl -si --http1.1` printed it. Writes need credentials there (a guest's `POST /api/issues` is a 403), so only
 reads are recorded.
 
@@ -24,3 +24,8 @@ reads are recorded.
 | `skip_negative.http` | `GET /api/issues?fields=id&$skip=-1&$top=1` |
 | `top_negative.http` | `GET /api/issues?fields=id&$top=-1` |
 | `top_not_a_number.http` | `GET /api/issues?fields=id&$top=x` |
+| `time_tracking_settings.http` | `GET /api/admin/projects/22-192/timeTrackingSettings?fields=id,enabled,project(id,shortName),estimate(id,field(name)),timeSpent(id,field(name))` |
+| `unknown_project_time_tracking.http` | `GET /api/admin/projects/0-99999/timeTrackingSettings?fields=id` |
+| `agiles.http` | `GET /api/agiles?fields=id,name,estimationField(name),projects(id,shortName)&$top=2` |
+| `issue_custom_fields_top_negative.http` | `GET /api/issues/IDEA-391136/customFields?fields=id&$top=-1` |
+| `agiles_top_negative.http` | `GET /api/agiles?fields=id&$top=-1` |

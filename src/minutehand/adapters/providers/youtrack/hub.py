@@ -43,9 +43,9 @@ class Hub:
 
     def _page(self, call: Call, collection: str, items: Sequence[wire.HubAnswer]) -> Answered:
         start, limit = wire.page_bounds(call.param("$skip"), call.param("$top"), default=wire.HUB_PAGE_DEFAULT)
-        shown = items[start : start + limit]
+        shown = items[start:] if limit is None else items[start : start + limit]
         spec = wire.parse_hub_fields(call.param("fields"))
-        top = limit
+        top = len(shown) if limit is None else limit
         return 200, wire.render_hub_page(collection, list(shown), skip=start, top=top, total=len(items), spec=spec)
 
     # ------------------------------------------------------------------ routes

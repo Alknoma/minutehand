@@ -290,7 +290,7 @@ def test_the_fork_points_of_a_long_run_read_its_log_once(days: Path) -> None:
     class Counting(SqliteStore):
         reads = 0
 
-        def events(self, *, since: int = 0) -> list[WorldEvent]:
+        def events(self, *, since: int = 0, **narrowing: object) -> list[WorldEvent]:  # pyright: ignore[reportIncompatibleMethodOverride]
             Counting.reads += 1
             return super().events(since=since)
 

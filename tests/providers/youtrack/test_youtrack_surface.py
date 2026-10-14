@@ -1,8 +1,8 @@
 """The fake against YouTrack's own description of its API: every operation of the claimed resources is served or
 refused by name, and nothing is served that YouTrack does not describe.
 
-The subset of YouTrack's OpenAPI description (`/api/openapi.json` on JetBrains' public instance, 2026.3, fetched
-2026-10-08) is `tests/data/vendor_surface/youtrack.json`.
+The subset of YouTrack's OpenAPI description (`/api/openapi.json` on JetBrains' public instance, 2026.4, fetched
+2026-10-13) is `tests/data/vendor_surface/youtrack.json`.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def test_the_surface_file_says_where_it_came_from() -> None:
     surface = json.loads(SURFACE.read_text())
 
     assert surface["source"] == "https://youtrack.jetbrains.com/api/openapi.json"
-    assert surface["fetched"] == "2026-10-08" and surface["version"] == "2026.3"
+    assert surface["fetched"] == "2026-10-13" and surface["version"] == "2026.4"
 
 
 def test_every_described_operation_is_served_or_refused_by_name_and_none_is_both() -> None:
@@ -58,8 +58,8 @@ def test_nothing_is_served_or_refused_that_youtrack_does_not_describe() -> None:
 
 
 def test_the_counts_of_served_and_refused_operations() -> None:
-    """184 operations under the claimed resources: 55 served, 129 refused by name. A change to either shows here."""
-    assert (len(_described()), len(SERVED), len(REFUSED)) == (184, 55, 129)
+    """194 operations under the claimed resources: 57 served, 137 refused by name. A change to either shows here."""
+    assert (len(_described()), len(SERVED), len(REFUSED)) == (194, 57, 137)
 
 
 @pytest.fixture
@@ -78,10 +78,10 @@ async def test_an_unserved_operation_is_refused_501_naming_it(http: httpx.AsyncC
 
 
 async def test_a_path_outside_the_claimed_resources_is_refused_501_naming_it(http: httpx.AsyncClient) -> None:
-    refused = refusal(await http.get("/api/agiles", params={"fields": "id"}), 501)
+    refused = refusal(await http.get("/api/savedQueries", params={"fields": "id"}), 501)
     hub = refusal(await http.get("/hub/api/rest/roles"), 501)
 
-    assert "GET /api/agiles is outside the resources this fake serves" in str(refused["error_description"])
+    assert "GET /api/savedQueries is outside the resources this fake serves" in str(refused["error_description"])
     assert "GET /hub/api/rest/roles" in str(hub["error_description"])
 
 

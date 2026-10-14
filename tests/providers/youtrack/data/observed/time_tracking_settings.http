@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Tue, 13 Oct 2026 23:35:47 GMT
+Content-Type: application/json;charset=utf-8
+Content-Length: 362
+Connection: keep-alive
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: Location
+Access-Control-Expose-Headers: X-Version
+X-XSS-Protection: 1; mode=block
+Content-Security-Policy: frame-ancestors 'self' hub.jetbrains.com discuss.kotlinlang.org buildserver.labs.intellij.net web.ea.pages.jetbrains.team intellij-support.jetbrains.com dotnettools-support.jetbrains.com resharper-support.jetbrains.com rider-support.jetbrains.com teamcity-support.jetbrains.com release-generator.labs.jb.gg youtrack-support.jetbrains.com;
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: same-origin
+X-YouTrack-User: guest
+X-Version: 454387c28c173b2e25224965e644856105d57a0c17c31ae46c3c1ec2f765d594
+Cache-Control: no-cache, no-store, no-transform, must-revalidate
+Vary: Accept-Encoding, User-Agent
+Strict-Transport-Security: max-age=31536000;
+
+{"project":{"shortName":"RDOC","id":"22-192","$type":"Project"},"estimate":{"field":{"name":"Estimation","$type":"CustomField"},"id":"170-173","$type":"PeriodProjectCustomField"},"timeSpent":{"field":{"name":"Spent time","$type":"CustomField"},"id":"170-54","$type":"PeriodProjectCustomField"},"enabled":true,"id":"169-150","$type":"ProjectTimeTrackingSettings"}
