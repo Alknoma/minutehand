@@ -3,10 +3,11 @@
     GET  /approvals?approver=<email>[&cursor=N]   that person's pending approvals, `page` at a time
     GET  /everyone[?cursor=N]                     everyone's, each naming its approver
     POST /approvals/<id>/decision                  {"decision": "approve"|"reject", "reason": "..."}
+    POST /events                                   anything a person does on the product's pages, kept as sent
 
 Every call carries `Authorization: Bearer <token>`, and a person's list and decisions need that person's token. The
 product keeps every call it was sent, with its headers, so a test can see what Minutehand sent and as whom. `refuse`
-makes it answer every decision 409, as a product that will not take one does.
+makes it answer every decision and every event 409, as a product that will not take one does.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ class Product:
     """Answer each summary as a number: the product's contract changed under whoever reads it."""
     approvals: dict[str, Approval] = field(default_factory=dict)
     sent: list[Sent] = field(default_factory=list)
+    events: list[object] = field(default_factory=list)
+    """Each event a person's use sent to `/events`, parsed, in the order it arrived."""
     notes: list[tuple[str, str]] = field(default_factory=list)
     """Each note left on an approval, by its id: what an approver writes without deciding."""
     on_decided: Callable[[Approval], None] | None = None
@@ -151,6 +154,14 @@ def _handler(product: Product) -> type[BaseHTTPRequestHandler]:
             raw = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
             product.sent.append(Sent("POST", self.path, self.headers.get("authorization", ""), raw))
             pieces = urlsplit(self.path).path.strip("/").split("/")
+            if pieces == ["events"]:
+                if product.refuse:
+                    self._send(409, {"error": "events are closed"})
+                    return
+                with product.lock:
+                    product.events.append(json.loads(raw))
+                self._send(202, {"ok": True})
+                return
             if pieces[:3] == ["inboxes", "approvals", "items"] and len(pieces) == 5:  # Minutehand's default shape
                 made = json.loads(raw)
                 pieces = ["approvals", pieces[3], "decision"]

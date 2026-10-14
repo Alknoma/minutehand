@@ -15,19 +15,22 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
+from minutehand.domain.inboxes import HttpInbox
 from minutehand.domain.people import Press
 from minutehand.domain.scenario import (
     DocumentHappening,
     FieldSet,
     Moves,
     PersonPosts,
+    PersonUses,
     Seed,
     TicketHappening,
     TicketState,
 )
-from minutehand.domain.world import Actor, EntityKind, MessageSnapshot
+from minutehand.domain.world import Actor, EntityKind, InboxUseSnapshot, MessageSnapshot
 from minutehand.testing.client import Refused
 from minutehand.testing.world import OpenWorld
+from tests.inboxes.product import Product, serving
 from tests.serve.support import Served, answer, dm, event_receiver, spec
 
 
@@ -99,6 +102,47 @@ def test_a_happening_its_provider_cannot_show_is_refused_and_nothing_changes(ser
         assert served.client.world(world.world_id).head == head
     finally:
         served.client.close_world(world.world_id)
+
+
+def test_a_person_uses_the_agents_own_product_now_and_the_product_is_sent_the_call(served: Served) -> None:
+    seed = Seed.model_validate(
+        {
+            "starts_at": "2026-09-01T09:00:00Z",
+            "people": [{"key": "maya", "name": "Maya Rao", "email": "maya@example.com", "reply": {"kind": "silent"}}],
+        }
+    )
+    with serving(Product(tokens={})) as product:
+        site = HttpInbox.model_validate(
+            {
+                "name": "site",
+                "uses": [
+                    {
+                        "name": "views",
+                        "request": {
+                            "kind": "template",
+                            "method": "POST",
+                            "url": f"{product.base}/events",
+                            "body": {"visitor": "{person.email}", "page": "{input.page}"},
+                        },
+                        "inputs": [{"name": "page", "description": "The page's path"}],
+                    }
+                ],
+            }
+        )
+        created = served.client.create_world(CreateWorld(seed=seed, claims=Claims(tokens=["uses-t"]), inboxes=[site]))
+        world = OpenWorld(served.client, created)
+        try:
+            event = world.happen(PersonUses(person="maya", inbox="site", use="views", inputs={"page": "/pricing"}))
+            assert event.actor is Actor.PERSON and isinstance(event.after, InboxUseSnapshot)
+            assert event.after.taken is True
+            assert product.events == [{"visitor": "maya@example.com", "page": "/pricing"}]
+            head = served.client.world(world.world_id).head
+            with pytest.raises(Refused) as refused:
+                world.happen(PersonUses(person="maya", inbox="site", use="buys"))
+            assert refused.value.status == 409 and "declares no such use" in refused.value.error
+            assert served.client.world(world.world_id).head == head
+        finally:
+            served.client.close_world(world.world_id)
 
 
 def test_a_person_presses_a_button_on_the_agents_message_and_the_service_gets_block_actions(served: Served) -> None:

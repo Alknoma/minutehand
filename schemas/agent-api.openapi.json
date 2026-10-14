@@ -261,6 +261,7 @@
           "channel",
           "record",
           "inbox_item",
+          "inbox_use",
           "due",
           "file",
           "tool_call",
