@@ -288,3 +288,40 @@ def test_a_fork_at_the_end_of_a_wake_does_not_see_the_first_call_of_the_next(
     child = store.fork("child", at_seq=checkpoint.seq, clock=clock)
 
     assert [c.exchange.path for c in child.calls()] == ["/a"]
+
+
+def test_events_are_narrowed_by_seq_kind_actor_and_provider_so_a_reader_need_not_read_the_log(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
+    store, _ = world
+    memo = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id="default/plan")
+    store.apply(ticket("one", Operation.CREATE))  # seq 1: asana, ticket, agent
+    store.apply(Change(entity=memo, operation=Operation.CREATE, actor=Actor.AGENT, body="1", parent="default"))  # 2
+    store.apply(Change(entity=memo, operation=Operation.UPDATE, actor=Actor.SCENARIO, body="2", parent="default"))  # 3
+    store.apply(ticket("two"))  # seq 4
+
+    assert [e.seq for e in store.events(until=2)] == [1, 2]
+    assert [e.seq for e in store.events(since=1, until=3)] == [2, 3]
+    assert [e.seq for e in store.events(kinds=[EntityKind.MEMORY])] == [2, 3]
+    assert [e.seq for e in store.events(kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])] == [2]
+    assert [e.seq for e in store.events(providers=["asana"])] == [1, 4]
+    assert [e.seq for e in store.events(providers=["asana"], until=1)] == [1]
+    assert store.events(providers=[]) == [] and store.events(kinds=[EntityKind.DOCUMENT]) == []
+    assert [e.exchange for e in store.events(kinds=[EntityKind.TICKET])] == [None, None]
+
+
+def test_live_lists_the_latest_version_of_every_entity_of_a_kind_across_parents_in_pages(
+    world: tuple[SqliteStore, RunClock],
+) -> None:
+    store, _ = world
+    for collection, key, value in [("a", "x", "1"), ("a", "y", "1"), ("b", "z", "1"), ("a", "x", "2")]:
+        ref = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id=f"{collection}/{key}")
+        store.apply(Change(entity=ref, operation=Operation.UPDATE, actor=Actor.AGENT, body=value, parent=collection))
+    gone = EntityRef(provider="memory", kind=EntityKind.MEMORY, external_id="a/y")
+    store.apply(Change(entity=gone, operation=Operation.DELETE, actor=Actor.AGENT))
+
+    first = store.live("memory", EntityKind.MEMORY, limit=1)
+    assert [(s.entity.external_id, s.body, s.parent) for s in first] == [("a/x", "2", "a")]
+    rest = store.live("memory", EntityKind.MEMORY, after="a/x", limit=10)
+    assert [(s.entity.external_id, s.body) for s in rest] == [("b/z", "1")], "the deleted key is not live"
+    assert store.children("memory", EntityKind.MEMORY, "b") == rest
