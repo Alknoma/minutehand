@@ -6,10 +6,9 @@ version = "0.2.0"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
-# An SPDX expression (PEP 639). FSL-1.1-ALv2 is on the SPDX list since 3.26 and in `packaging` since 26.0, which
-# both hatchling (below) and PyPI's upload validation check it with.
-license = "FSL-1.1-ALv2"
-license-files = ["LICENSE.md"]
+# An SPDX expression (PEP 639); `NOTICE` is the attribution Apache-2.0 section 4(d) asks a redistributor to carry.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Alknoma" }]
 keywords = ["agents", "ai-agents", "testing", "simulation", "proxy", "fakes", "pytest", "evaluation"]
 classifiers = [
@@ -107,9 +106,8 @@ recipes = [
 ]
 
 [build-system]
-# hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later); packaging 26 is the first to know
-# FSL-1.1-ALv2, and hatchling refuses an expression its packaging does not know.
-requires = ["hatchling>=1.27", "packaging>=26"]
+# hatchling 1.27 writes PEP 639 licence metadata (Metadata-Version 2.4 and later).
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -132,7 +130,7 @@ sources = ["src"]
 
 [tool.hatch.build.targets.sdist]
 # The source a wheel is built from, and the example a newcomer runs first.
-only-include = ["src/minutehand", "examples", "README.md", "LICENSE.md"]
+only-include = ["src/minutehand", "examples", "README.md", "LICENSE", "NOTICE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

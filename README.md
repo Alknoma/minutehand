@@ -197,4 +197,4 @@ uv run ruff check . && uv run ruff format --check .
 
 ## Licence
 
-Functional Source License 1.1, Apache-2.0 future licence; see `LICENSE.md`.
+Apache License 2.0; see `LICENSE` and `NOTICE`.

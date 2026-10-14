@@ -18,7 +18,7 @@ FROM ${PYTHON_IMAGE} AS build
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_NO_CACHE=1 UV_PYTHON_DOWNLOADS=never
 WORKDIR /src
-COPY pyproject.toml uv.lock README.md LICENSE.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src ./src
 RUN uv build --out-dir /dist \
  && uv export --frozen --no-dev --no-emit-project --no-hashes --output-file /dist/requirements.txt \
