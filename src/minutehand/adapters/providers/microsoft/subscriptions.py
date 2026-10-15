@@ -78,7 +78,7 @@ def live(record: SubscriptionRecord, now: datetime) -> bool:
 async def _validate(url: str) -> bool:
     token = secrets.token_urlsafe(24)
     try:
-        async with httpx.AsyncClient(timeout=VALIDATION_TIMEOUT_SECONDS, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=VALIDATION_TIMEOUT_SECONDS, trust_env=False, verify=False) as client:
             answered = await client.post(url, params={"validationToken": token}, headers={"Content-Type": "text/plain"})
     except httpx.HTTPError:
         return False
@@ -110,7 +110,7 @@ async def notify(
             ]
         )
         try:
-            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=False, verify=False) as client:
                 await client.post(
                     sub.notificationUrl, content=wire.dump(body), headers={"Content-Type": "application/json"}
                 )

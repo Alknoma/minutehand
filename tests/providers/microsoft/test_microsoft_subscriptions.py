@@ -97,3 +97,27 @@ async def test_a_subscription_unvalidated_or_repeated_is_refused_and_one_too_lon
         )
         assert (await http.delete(f"{GRAPH}/subscriptions/{made.json()['id']}", headers=auth)).status_code == 204
         assert (await http.delete(f"{GRAPH}/subscriptions/{made.json()['id']}", headers=auth)).status_code == 501
+
+
+async def test_a_subscription_to_a_receiver_on_a_certificate_no_trusted_ca_signed_is_validated_and_notified(
+    tenant: Tenant, microsoft: Intercepted, webhook: Webhook
+) -> None:
+    assert webhook.url.startswith("https://")
+    drive = tenant.world.drives()[0].drive.id
+    async with microsoft.http() as http:
+        auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        made = await http.post(
+            f"{GRAPH}/subscriptions",
+            json={
+                "changeType": "updated",
+                "notificationUrl": webhook.url,
+                "resource": f"/drives/{drive}/root",
+                "expirationDateTime": _at(tenant, timedelta(hours=1)),
+                "clientState": "c",
+            },
+            headers=auth,
+        )
+    assert made.status_code == 201, made.text
+    assert len(webhook.validations) == 1
+    await person_does(tenant, "sofia", "notes.txt", Edited(append="edited once"))
+    assert [n["value"][0]["subscriptionId"] for n in webhook.notifications] == [made.json()["id"]]

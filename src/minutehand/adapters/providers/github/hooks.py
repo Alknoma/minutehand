@@ -91,7 +91,7 @@ class Pusher:
             headers["X-Hub-Signature-256"] = signature("sha256", self.secret, encoded)
         url = self.target.request_url()
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
                 answered = await client.post(url, content=encoded, headers=headers)
         except httpx.HTTPError as error:
             raise DeliveryRefused(url, None, repr(error), event) from error

@@ -1962,9 +1962,11 @@ workflows are tested with separate tools, outside this stack.
 - **What a service sends the agent is kept,** since it is the service's request, not a check Minutehand makes: Slack
   signs its events with the world's signing secret, Graph sends its subscription validation handshake, a Bot
   Framework push carries its JWT.
-- **No certificate is ever checked.** A Google push (`changes.watch`, `events.watch`) is delivered to the agent's
-  `https://` address whatever certificate the receiver serves, self-signed included: the scheme is required only as
-  part of Google's request shape.
+- **No certificate is ever checked.** Every push Minutehand sends the agent is delivered whatever certificate its
+  `https://` receiver serves, self-signed included: a service's push, a Graph subscription's validation handshake and
+  notifications, a Bot Framework activity, a Google, Slack, Notion, Jira, GitHub or Asana webhook, a Cloud Tasks task
+  and a reply or inbox delivery alike. Where `https://` is required it is only as part of a vendor's request shape
+  (Google's `changes.watch`, `events.watch`), never to check who answers.
 
 Each provider's `CLAIMS.md` points here and lists what its vendor would refuse, so a reader knows what this stack
 does not test.

@@ -395,7 +395,7 @@ class CloudTasksProvider:
             body = base64.b64decode(task.body) if task.body is not None else None
             timeout = self._deadline(task.dispatch_deadline)
             try:
-                async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                async with httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False) as client:
                     answer = await client.request(task.method, task.url, headers=headers, content=body)
                 status = answer.status_code
             except httpx.TimeoutException:
