@@ -168,7 +168,7 @@ class CapturedReplies:
             )
             if signing.timestamp_header is not None:
                 headers[signing.timestamp_header] = stamp
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
             try:
                 answer = await client.request(delivery.method, delivery.url, content=raw, headers=headers)
             except httpx.HTTPError as e:

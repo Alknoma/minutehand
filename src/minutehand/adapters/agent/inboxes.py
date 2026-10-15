@@ -257,7 +257,7 @@ class HttpInboxReach:
 
     async def _send(self, built: _Built, person: Person, act: InboxAct, world: Store) -> _Answered | None:
         answer: httpx.Response | None = None
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
             try:
                 answer = await client.request(built.method, built.url, content=built.body, headers=built.headers)
             except httpx.HTTPError:

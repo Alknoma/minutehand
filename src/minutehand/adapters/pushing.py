@@ -14,7 +14,7 @@ class HttpPushes:
 
     async def push(self, url: str, body: str) -> Delivered:
         try:
-            async with httpx.AsyncClient(trust_env=False, timeout=TIMEOUT_SECONDS) as client:
+            async with httpx.AsyncClient(trust_env=False, timeout=TIMEOUT_SECONDS, verify=False) as client:
                 answered = await client.post(
                     url, content=body.encode("utf-8"), headers={"content-type": "application/json"}
                 )
