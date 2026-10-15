@@ -217,6 +217,40 @@ async def test_a_streamed_answer_reaches_the_agent_as_a_stream_and_is_kept_whole
     assert KEY.encode() not in stored_bytes(world_path)
 
 
+@pytest.mark.parametrize("shape", sorted(STREAMED))
+async def test_a_streamed_answer_the_client_breaks_off_after_its_last_event_is_kept_as_far_as_it_came(
+    shape: str,
+    registry: Registry,
+    store: SqliteStore,
+    clock: RunClock,
+    tmp_path: Path,
+    authority: Authority,
+) -> None:
+    """A client that closes the connection once the stream's terminal event has arrived, before the model API
+    ends the response (OpenCode's HTTP transport does, on every call): the chunks that arrived are the span's
+    body, with its usage, and the span says the client broke off."""
+    hold_end = asyncio.Event()
+    answer = Answer("text/event-stream; charset=utf-8", STREAMED[shape], hold_end=hold_end)
+    async with model_api(authority, answer) as upstream, _proxy(registry, store, clock, tmp_path, authority) as proxy:
+        url, body, headers = _sent(shape, upstream.port)
+        async with client(proxy, proxy.ca_cert) as http:
+            async with http.stream("POST", url, content=body, headers=headers) as response:
+                read = b""
+                async for chunk in response.aiter_raw():
+                    read += chunk
+                    if read == b"".join(STREAMED[shape]):
+                        break  # every event is in hand; leaving the block closes the connection with the stream open
+        async with asyncio.timeout(10):
+            while not store.spans():
+                await asyncio.sleep(0.05)
+        hold_end.set()
+
+    [kept] = store.spans()
+    _check_span(kept, wake=0)
+    assert kept.span.attribute("minutehand.response.body") == StringValue(value=b"".join(STREAMED[shape]).decode())
+    assert kept.span.attribute("minutehand.response.broke_off") == StringValue(value="Client disconnected.")
+
+
 async def test_without_the_flag_a_model_host_is_tunnelled_and_nothing_is_kept(
     registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path, authority: Authority, world_path: Path
 ) -> None:
