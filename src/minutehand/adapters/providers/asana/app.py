@@ -634,6 +634,25 @@ def _query(request: Request) -> wire.Query:
     return wire.Query(list(request.query_params.multi_items()))
 
 
+_WORD = re.compile(r"\w+")
+
+
+def _words(text: str) -> list[str]:
+    """Text as search reads it: its words, case folded, with any punctuation or dash between them a separator ("periods
+    are treated as spaces", https://forum.asana.com/t/3690)."""
+    return _WORD.findall(text.casefold())
+
+
+def _holds(asked: list[str], *texts: str, as_prefix: bool) -> bool:
+    """Whether every word asked is among the words of `texts`, in any order. Full-text search
+    (https://developers.asana.com/reference/searchtasksforworkspace) matches whole words; typeahead, an
+    "auto-completion/typeahead search algorithm" (https://developers.asana.com/reference/typeaheadforworkspace), the
+    start of a word: "Our results preview supports partial word search, however the list of results itself doesn't"
+    (Asana, https://forum.asana.com/t/3690). Nothing asked holds everywhere."""
+    held = [word for text in texts for word in _words(text)]
+    return all(any(word.startswith(a) if as_prefix else word == a for word in held) for a in asked)
+
+
 def _one(request: Request, item: wire.Representation, status: int = 200) -> Response:
     return _answer(wire.one(item, wire.field_tree(_query(request))), status)
 
@@ -1763,9 +1782,9 @@ class AsanaApi:
         tags = query.gids("tags.any")
         if tags is not None:
             found = [t for t in found if any(g in tags for g in t.tags)]
-        text = (query.text("text") or "").strip().lower()
-        if text:
-            found = [t for t in found if text in t.name.lower() or text in t.notes.lower()]
+        asked = _words(query.text("text") or "")
+        if asked:
+            found = [t for t in found if _holds(asked, t.name, t.notes, as_prefix=False)]
         found.sort(
             key=lambda t: (t.modified_at if sort_by == "modified_at" else t.created_at, t.gid), reverse=not ascending
         )
@@ -1782,30 +1801,30 @@ class AsanaApi:
         if resource_type not in _TYPEAHEAD:
             raise wire.unsupported(f"resource_type={resource_type}")
         count = query.count("count") or wire.TYPEAHEAD_DEFAULT
-        words = (query.text("query") or "").strip().lower()
+        asked = _words(query.text("query") or "")
         found: list[wire.Representation]
         match resource_type:
             case "task":  # enum-lint: exempt Asana's typeahead resource_type, its wire vocabulary
                 found = [
                     view.task_out(t)
                     for t in self._world.tasks()
-                    if t.workspace == workspace.gid and words in t.name.lower() and view.sees(t)
+                    if t.workspace == workspace.gid and _holds(asked, t.name, as_prefix=True) and view.sees(t)
                 ]
             case "user":  # enum-lint: exempt Asana's typeahead resource_type, its wire vocabulary
                 found = [
-                    view.user_out(u) for u in self._world.users() if words in u.name.lower() or words in u.email.lower()
+                    view.user_out(u) for u in self._world.users() if _holds(asked, u.name, u.email, as_prefix=True)
                 ]
             case "project":  # enum-lint: exempt Asana's typeahead resource_type, its wire vocabulary
                 found = [
                     view.project_out(p)
                     for p in self._world.projects()
-                    if p.workspace == workspace.gid and words in p.name.lower() and view.visible(p)
+                    if p.workspace == workspace.gid and _holds(asked, p.name, as_prefix=True) and view.visible(p)
                 ]
             case _:  # "tag", the last of Asana's typeahead resource types this serves
                 found = [
                     view.tag_out(t)
                     for t in self._world.tags()
-                    if t.workspace == workspace.gid and words in t.name.lower()
+                    if t.workspace == workspace.gid and _holds(asked, t.name, as_prefix=True)
                 ]
         self._world.saw(state.record_ref(workspace.gid), Operation.SEARCH)
         return _answer(wire.unpaged(found[:count], wire.field_tree(query)))
