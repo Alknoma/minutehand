@@ -105,11 +105,14 @@ class Received:
 @dataclass
 class Answer:
     """What the model API answers every request with. `chunks` after the first are held back until `hold` is set,
-    so a test can watch the first reach the client while the rest is still to come; sent chunked."""
+    so a test can watch the first reach the client while the rest is still to come; the end of the stream after
+    the last chunk is held back until `hold_end` is set, so a test can break the client off with every chunk in
+    hand and the connection still open; sent chunked."""
 
     content_type: str
     chunks: list[bytes]
     hold: asyncio.Event | None = None
+    hold_end: asyncio.Event | None = None
 
 
 @dataclass
@@ -128,6 +131,8 @@ async def _answer(writer: asyncio.StreamWriter, answer: Answer) -> None:
             await answer.hold.wait()
         writer.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
         await writer.drain()
+    if answer.hold_end is not None:
+        await answer.hold_end.wait()
     writer.write(b"0\r\n\r\n")
     await writer.drain()
 
