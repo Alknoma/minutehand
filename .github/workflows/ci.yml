@@ -96,13 +96,15 @@ jobs:
             esac
           done <<< "$changed"
           if [ "$BASE_REF" = "main" ]; then matrix="$full"; else matrix="$linux"; fi
-          for flag in code tests recipes browser transparent package; do
-            eval "value=\$$flag"
-            echo "$flag=$value" >> "$GITHUB_OUTPUT"
-            echo "$flag=$value"
-          done
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "matrix=$matrix"
+          {
+            echo "code=$code"
+            echo "tests=$tests"
+            echo "recipes=$recipes"
+            echo "browser=$browser"
+            echo "transparent=$transparent"
+            echo "package=$package"
+            echo "matrix=$matrix"
+          } | tee -a "$GITHUB_OUTPUT"
 
   types:
     name: Type check
