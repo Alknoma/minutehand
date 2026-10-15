@@ -889,7 +889,12 @@ class ProxyAddon:
         if flow.id not in self._recorded:
             return
         self._recorded.discard(flow.id)
-        streamed = self._streams.pop(flow.id, None)
+        self._keep_recorded(flow, self._streams.pop(flow.id, None), broke_off=None)
+
+    def _keep_recorded(self, flow: http.HTTPFlow, streamed: list[bytes] | None, *, broke_off: str | None) -> None:
+        """A recorded model call kept as a span: its answer whole, or put back together from the chunks teed off
+        as they were streamed. `broke_off` is why the client closed the connection before the stream ended, when
+        it did: the chunks that had arrived are the body, and the span says so."""
         request, response = flow.request, flow.response
         assert response is not None
         if streamed is None:
@@ -910,6 +915,7 @@ class ProxyAddon:
             traceparent=_first_header(request, TRACEPARENT),
             started=datetime.fromtimestamp(request.timestamp_start, UTC),
             ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
+            broke_off=broke_off,
         )
         span = span_of(exchanged)
         kept_in = self.worlds.keeping(exchanged.host, span.trace_id if span.parent_span_id is not None else None)
@@ -1384,13 +1390,23 @@ class ProxyAddon:
 
     def error(self, flow: http.HTTPFlow) -> None:
         """A captured call whose real host could not be reached or broke off, or a gRPC call whose server did not
-        answer: kept, saying so."""
+        answer: kept, saying so. A recorded model call whose client closed the connection while the answer was
+        still streaming (a harness that cancels the stream once its terminal event is in hand does, on every call)
+        is kept from the chunks that had arrived, saying the client broke off; one that never got a chunk, or
+        whose real host could not be reached, is not kept."""
         self._sent_on.pop(flow.id, None)
         self._ended(flow.id)
         if flow.id in self._grpc:
             self._grpc_passed(flow)
             return
         self._sockets.pop(flow.id, None)
+        if flow.id in self._recorded:
+            self._recorded.discard(flow.id)
+            streamed = self._streams.pop(flow.id, None)
+            if streamed and flow.response is not None:
+                reason = flow.error.msg if flow.error is not None else "the connection failed"
+                self._keep_recorded(flow, streamed, broke_off=reason)
+            return
         passing = self._passing.pop(flow.id, None)
         if passing is None:
             return

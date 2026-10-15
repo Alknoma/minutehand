@@ -334,6 +334,7 @@ class Exchanged:
     started: datetime
     ended: datetime
     replayed_from: str | None = None
+    broke_off: str | None = None  # why the client closed the connection before the stream ended, when it did
 
 
 def span_of(exchanged: Exchanged) -> ReceivedSpan:
@@ -368,6 +369,8 @@ def span_of(exchanged: Exchanged) -> ReceivedSpan:
         attributes.append(("minutehand.response.content_type", StringValue(value=exchanged.response_type)))
     if exchanged.replayed_from is not None:
         attributes.append(("minutehand.replayed_from", StringValue(value=exchanged.replayed_from)))
+    if exchanged.broke_off is not None:
+        attributes.append(("minutehand.response.broke_off", StringValue(value=exchanged.broke_off)))
     if known:
         vendor = StringValue(value=_VENDOR[call.shape])
         attributes += [
