@@ -182,6 +182,13 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 | `docs/reference-agent.md` | A larger example: two processes, a job queue, email, a model API |
 | `examples/recipes/README.md` | The same agent in five frameworks |
 
+Five of the hard parts of a proactive agent, each answered in short on [minutehand.ai](https://minutehand.ai):
+[why it sends the same message twice](https://minutehand.ai/answers/why-does-a-proactive-agent-send-the-same-message-twice),
+[how it survives a restart](https://minutehand.ai/answers/how-does-a-proactive-agent-survive-a-restart),
+[why it acts before an approval](https://minutehand.ai/answers/why-does-a-proactive-agent-act-before-an-approval),
+[how to reproduce a failure](https://minutehand.ai/answers/how-do-you-reproduce-a-proactive-agent-failure) and
+[why it is harder to test than a chatbot](https://minutehand.ai/answers/why-is-a-proactive-agent-harder-to-test-than-a-chatbot).
+
 ## Develop
 
 ```bash
