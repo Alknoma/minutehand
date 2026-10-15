@@ -1,8 +1,14 @@
 name: ci
 
-# Every pull request and every push to a protected branch runs all of this. There is no
-# path filter on purpose: a workflow that does not start reports nothing, and the one
-# required check (`gate`) must always report.
+# Every pull request and every push to a protected branch starts this workflow, and the
+# one required check (`gate`) always reports. There is no path filter on the workflow on
+# purpose: a workflow that does not start reports nothing. What a pull request CHANGES is
+# decided inside, by `changes`, and each job runs only when something it exercises changed:
+# documentation runs nothing but the workflow lint; a change to tests alone runs the suite
+# and not the package; a change to examples alone runs the recipes. A pull request into
+# integration-main runs the suite on Linux and Python 3.12 only; a pull request into main,
+# a push to a protected branch and a merge-queue entry run the whole matrix (macOS and 3.13
+# too). `gate` accepts a skip only where `changes` said the job had nothing to see.
 on:
   pull_request:
   push:
@@ -22,8 +28,88 @@ env:
   UV_LOCKED: "1"
 
 jobs:
+  # What this pull request changes, as one flag per job family, and the suite's matrix.
+  # A push to a protected branch and a merge-queue entry answer "true" to everything and
+  # get the whole matrix: what lands is tested whole. A pull request is diffed against its
+  # base commit, so a rebase cannot widen it. A pull request into main gets the whole
+  # matrix too: that is the promotion, and macOS and 3.13 are seen before main, not after.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+      tests: ${{ steps.decide.outputs.tests }}
+      recipes: ${{ steps.decide.outputs.recipes }}
+      browser: ${{ steps.decide.outputs.browser }}
+      transparent: ${{ steps.decide.outputs.transparent }}
+      package: ${{ steps.decide.outputs.package }}
+      matrix: ${{ steps.decide.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          full='{"os":["ubuntu-latest","macos-latest"],"python":["3.12","3.13"],"shard":[1,2,3,4],"exclude":[{"os":"macos-latest","python":"3.13"}]}'
+          linux='{"os":["ubuntu-latest"],"python":["3.12"],"shard":[1,2,3,4]}'
+          if [ "$EVENT" != "pull_request" ]; then
+            for flag in code tests recipes browser transparent package; do echo "$flag=true" >> "$GITHUB_OUTPUT"; done
+            echo "matrix=$full" >> "$GITHUB_OUTPUT"
+            echo "Not a pull request: everything runs, on the whole matrix."
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          echo "$changed"
+          code=false; tests=false; recipes=false; browser=false; transparent=false; package=false
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              *.md|LICENSE|NOTICE) continue ;;
+            esac
+            code=true
+            case "$file" in
+              # The dependency set and this workflow: everything.
+              pyproject.toml|uv.lock|.github/workflows/ci.yml)
+                tests=true; recipes=true; browser=true; transparent=true; package=true ;;
+              # The package: everything that runs it.
+              src/*)
+                tests=true; recipes=true; browser=true; transparent=true; package=true ;;
+              # What each family runs, and nothing else.
+              examples/*|tests/recipes/*|tests/proactive_agent/*)
+                tests=true; recipes=true; package=true ;;
+              tests/web/*)
+                tests=true; browser=true ;;
+              tests/providers/slack/*)
+                tests=true; transparent=true ;;
+              tests/packaging/*|tests/agents/*|Dockerfile|.github/actions/*)
+                package=true ;;
+              tests/*|lints/*|schemas/*|scripts/*)
+                tests=true ;;
+              *)
+                tests=true; recipes=true; browser=true; transparent=true; package=true ;;
+            esac
+          done <<< "$changed"
+          if [ "$BASE_REF" = "main" ]; then matrix="$full"; else matrix="$linux"; fi
+          {
+            echo "code=$code"
+            echo "tests=$tests"
+            echo "recipes=$recipes"
+            echo "browser=$browser"
+            echo "transparent=$transparent"
+            echo "package=$package"
+            echo "matrix=$matrix"
+          } | tee -a "$GITHUB_OUTPUT"
+
   types:
     name: Type check
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,6 +125,8 @@ jobs:
 
   style:
     name: Format and style
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -55,6 +143,8 @@ jobs:
 
   lints:
     name: House lints
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -90,17 +180,15 @@ jobs:
   # shard of one run shuffles with the same seed, so each splits the same order and every test runs exactly once.
   tests:
     name: Tests (${{ matrix.os }}, ${{ matrix.python }}, shard ${{ matrix.shard }}/4)
+    needs: [changes]
+    if: needs.changes.outputs.tests == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.12", "3.13"]
-        shard: [1, 2, 3, 4]
-        exclude:
-          - os: macos-latest
-            python: "3.13"
+      # Linux and 3.12 for a pull request into integration-main; the whole matrix (macOS, 3.13)
+      # for a pull request into main, a push to a protected branch and the merge queue.
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,6 +212,8 @@ jobs:
   # failed `npm ci` from a skip into a failure.
   recipes:
     name: Framework recipes
+    needs: [changes]
+    if: needs.changes.outputs.recipes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -149,6 +239,8 @@ jobs:
   # VIEWER_BROWSER_REQUIRED turns a missing browser from a skip into a failure.
   browser:
     name: Viewer in a browser
+    needs: [changes]
+    if: needs.changes.outputs.browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -170,6 +262,8 @@ jobs:
   # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
   transparent:
     name: Transparent capture in a container
+    needs: [changes]
+    if: needs.changes.outputs.transparent == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -191,6 +285,8 @@ jobs:
   # dev dependencies, and the image, each running tests/agents/follow_up end to end. Nothing is pushed.
   build:
     name: Package and image (install and run the example)
+    needs: [changes]
+    if: needs.changes.outputs.package == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -218,6 +314,8 @@ jobs:
   # and then the installed command and the image each run.
   action:
     name: Setup action (install, run the example, build the image)
+    needs: [changes]
+    if: needs.changes.outputs.package == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -309,18 +407,30 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
+    needs: [changes, types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Every job above succeeded
+      # Every job succeeded, or was skipped because `changes` said it had nothing to see. A
+      # skip of any other job, or a skip whose flag was true, is a failure: a job that did not
+      # run proved nothing.
+      - name: Every job above succeeded, or was skipped because nothing it exercises changed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          FLAGS: ${{ toJSON(needs.changes.outputs) }}
         run: |
           echo "$RESULTS" | python3 -c '
-          import json, sys
+          import json, os, sys
           needs = json.load(sys.stdin)
-          bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          flags = json.loads(os.environ["FLAGS"])
+          flag_of = {"types": "code", "style": "code", "lints": "code", "tests": "tests", "recipes": "recipes",
+                     "browser": "browser", "transparent": "transparent", "build": "package", "action": "package"}
+          bad = {}
+          for name, job in needs.items():
+              may_skip = name in flag_of and flags.get(flag_of[name]) == "false"
+              ok = job["result"] == "success" or (may_skip and job["result"] == "skipped")
+              if not ok:
+                  bad[name] = job["result"]
           for name, result in bad.items():
               print(f"::error::{name}: {result}")
           sys.exit(1 if bad else 0)'
