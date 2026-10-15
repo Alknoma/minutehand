@@ -1,8 +1,11 @@
 name: ci
 
-# Every pull request and every push to a protected branch runs all of this. There is no
-# path filter on purpose: a workflow that does not start reports nothing, and the one
-# required check (`gate`) must always report.
+# Every pull request and every push to a protected branch starts this workflow, and the
+# one required check (`gate`) always reports. There is no path filter on the workflow on
+# purpose: a workflow that does not start reports nothing. What a pull request CHANGES is
+# decided inside, by `changes`: a pull request that touches only documentation skips the
+# suite (about fifty runner-minutes across twelve shards, three of them on macOS), and
+# `gate` counts those skips as what they are. Every other event runs everything.
 on:
   pull_request:
   push:
@@ -22,8 +25,49 @@ env:
   UV_LOCKED: "1"
 
 jobs:
+  # What this pull request changes. `code` is "false" only for a pull request whose every
+  # changed file is documentation (Markdown anywhere, LICENSE, NOTICE); the suite, the type
+  # check, the lints and the package jobs then skip, and `gate` accepts exactly those skips.
+  # A push to a protected branch and a merge-queue entry always answer "true": what lands
+  # is tested whole. The diff is against the pull request's base, so a rebase cannot widen it.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "Not a pull request: everything runs."
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          echo "$changed"
+          code=false
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              *.md|LICENSE|NOTICE) ;;
+              *) code=true ;;
+            esac
+          done <<< "$changed"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   types:
     name: Type check
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,6 +83,8 @@ jobs:
 
   style:
     name: Format and style
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -55,6 +101,8 @@ jobs:
 
   lints:
     name: House lints
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -90,6 +138,8 @@ jobs:
   # shard of one run shuffles with the same seed, so each splits the same order and every test runs exactly once.
   tests:
     name: Tests (${{ matrix.os }}, ${{ matrix.python }}, shard ${{ matrix.shard }}/4)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -124,6 +174,8 @@ jobs:
   # failed `npm ci` from a skip into a failure.
   recipes:
     name: Framework recipes
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -149,6 +201,8 @@ jobs:
   # VIEWER_BROWSER_REQUIRED turns a missing browser from a skip into a failure.
   browser:
     name: Viewer in a browser
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -170,6 +224,8 @@ jobs:
   # iptables script, is answered by the Slack fake. Needs Docker and alpine's package index; the default run skips it.
   transparent:
     name: Transparent capture in a container
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -191,6 +247,8 @@ jobs:
   # dev dependencies, and the image, each running tests/agents/follow_up end to end. Nothing is pushed.
   build:
     name: Package and image (install and run the example)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -218,6 +276,8 @@ jobs:
   # and then the installed command and the image each run.
   action:
     name: Setup action (install, run the example, build the image)
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -309,18 +369,28 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
+    needs: [changes, types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Every job above succeeded
+      # Every job succeeded, or was one of the jobs `changes` lets a documentation-only pull
+      # request skip and was skipped. A skip of any other job, or a skip when code changed,
+      # is a failure: a job that did not run proved nothing.
+      - name: Every job above succeeded, or was skipped because only documentation changed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           echo "$RESULTS" | python3 -c '
-          import json, sys
+          import json, os, sys
           needs = json.load(sys.stdin)
-          bad = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          may_skip = {"types", "style", "lints", "tests", "recipes", "browser", "transparent", "build", "action"}
+          docs_only = os.environ["CODE"] == "false"
+          bad = {}
+          for name, job in needs.items():
+              ok = job["result"] == "success" or (docs_only and name in may_skip and job["result"] == "skipped")
+              if not ok:
+                  bad[name] = job["result"]
           for name, result in bad.items():
               print(f"::error::{name}: {result}")
           sys.exit(1 if bad else 0)'

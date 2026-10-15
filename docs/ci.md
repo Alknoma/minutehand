@@ -7,7 +7,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
+| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `changes` (what the pull request touched), `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
 | `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
@@ -32,8 +32,8 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 
 | What cost time in alknoma-cloud | Evidence | What this repo does instead |
 |---|---|---|
-| 4,544 lines of workflow across 13 files, 408 of them deciding what to skip | Three job conditions named events their workflow never triggered on; a lint had to be written to catch the class | No change detection. The whole suite takes under a minute, so everything runs every time. |
-| A workflow with a path filter that fed a required check | "A workflow that never starts never reports, and that pull request waits forever" (`ci-tests.yml`) | No path filters. `gate` always reports. |
+| 4,544 lines of workflow across 13 files, 408 of them deciding what to skip | Three job conditions named events their workflow never triggered on; a lint had to be written to catch the class | One decision, in one job: `changes` answers whether a pull request touched anything but Markdown, LICENSE or NOTICE. If not, the type check, the lints, the suite and the package jobs skip, and `gate` accepts exactly those skips (on 2026-10-14 a full run was about five minutes of wall clock and fifty runner-minutes, twelve of its shards being the suite, three on macOS; a README change cost the same as a change to the store). Every other event runs everything, and a skip of any other job, or a skip when code changed, fails `gate`. |
+| A workflow with a path filter that fed a required check | "A workflow that never starts never reports, and that pull request waits forever" (`ci-tests.yml`) | No path filter on any workflow. `gate` always reports; what to skip is decided by a job inside the run, never by whether the run starts. |
 | The working branch had no required check | `integration-main-protection` requires a pull request and nothing else; "never merge a PR whose CI is not green" was a rule for people to remember | `gate` is required on every protected branch (see "Repository settings") |
 | Required checks named individual jobs | Renaming a job blocked every pull request to that branch | Only `gate` is required. Jobs behind it can be renamed, split or added freely. |
 | Two branches that were each green and red together | In this repo on 2026-10-04, three branches that each passed alone produced three failures when combined | A merge queue: `gate` runs on the result of the merge, before it lands |
