@@ -74,7 +74,7 @@ async def deliver(world: NotionWorld, clock: Clock) -> None:
                 "X-Notion-Signature": signature(hook.verification_token, body),
             }
             try:
-                async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+                async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
                     await client.post(hook.url, content=body, headers=headers)
             except httpx.HTTPError:
                 pass
@@ -84,7 +84,7 @@ async def deliver(world: NotionWorld, clock: Clock) -> None:
 async def _verify(hook: wire.StoredWebhook) -> bool:
     body = json.dumps({"verification_token": hook.verification_token}).encode()
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
             answered = await client.post(hook.url, content=body, headers={"Content-Type": "application/json"})
     except httpx.HTTPError:
         return False

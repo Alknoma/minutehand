@@ -69,7 +69,7 @@ def _matches(filter_: wire.AsanaFilter, event: wire.AsanaEvent) -> bool:
 async def handshake(target: str, secret: str) -> bool:
     """Send the target its secret and whether it answered as Asana requires."""
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
             answered = await client.post(target, headers={HANDSHAKE: secret})
     except httpx.HTTPError:
         return False
@@ -95,7 +95,7 @@ async def deliver(world: state.AsanaWorld, clock: Clock) -> None:
         headers = {"Content-Type": "application/json", SIGNATURE: signature(hook.secret, body)}
         now = wire.stamp(clock.now())
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
                 answered = await client.post(hook.target, content=body, headers=headers)
             failure = (
                 None if answered.is_success else f"{answered.status_code} {answered.reason_phrase}\n\n{answered.text}"

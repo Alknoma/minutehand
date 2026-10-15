@@ -96,7 +96,7 @@ async def post_signed(
     if retry is not None and reason is not None:
         headers["X-Slack-Retry-Num"] = str(retry)
         headers["X-Slack-Retry-Reason"] = reason
-    async with httpx.AsyncClient(timeout=timeout.total_seconds(), trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout.total_seconds(), trust_env=False, verify=False) as client:
         return await client.post(url, content=body, headers=headers)
 
 

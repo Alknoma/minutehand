@@ -39,6 +39,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import DocumentAction, DocumentHappening, Scenario
 from minutehand.domain.world import EntityKind, WorldEvent
+from tests.certificates import untrusted_certificate
 from tests.ports import free_port
 
 START = datetime(2026, 9, 14, 8, 30, tzinfo=UTC)
@@ -259,10 +260,12 @@ class Webhook:
 
 
 @pytest.fixture
-async def webhook() -> AsyncIterator[Webhook]:
-    """The service's notification route: the validation handshake echoed as text, notifications kept."""
+async def webhook(tmp_path: Path) -> AsyncIterator[Webhook]:
+    """The service's notification route: the validation handshake echoed as text, notifications kept. It is
+    served over HTTPS, as a `notificationUrl` at Graph is, on a certificate no trusted CA signed."""
     port = free_port()
-    handle = Webhook(url=f"http://127.0.0.1:{port}/api/v1/webhook/sharepoint")
+    handle = Webhook(url=f"https://127.0.0.1:{port}/api/v1/webhook/sharepoint")
+    cert, key = untrusted_certificate(tmp_path / "receiver")
 
     async def receive(request: Request) -> Response:
         if "validationToken" in request.query_params:
@@ -272,7 +275,17 @@ async def webhook() -> AsyncIterator[Webhook]:
         return Response(status_code=202)
 
     app = Starlette(routes=[Route("/api/v1/webhook/sharepoint", receive, methods=["POST"])])
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None, lifespan="off"))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_config=None,
+            lifespan="off",
+            ssl_certfile=str(cert),
+            ssl_keyfile=str(key),
+        )
+    )
     serving = asyncio.create_task(server.serve())
     while not server.started:
         await asyncio.sleep(0.01)

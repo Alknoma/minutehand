@@ -86,7 +86,7 @@ async def send(outgoing: Outgoing) -> None:
     if outgoing.hook.secret is not None:
         headers["X-Hub-Signature"] = signature(outgoing.hook.secret, outgoing.body)
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
             await client.post(outgoing.hook.url, content=outgoing.body, headers=headers)
     except httpx.HTTPError:
         pass
