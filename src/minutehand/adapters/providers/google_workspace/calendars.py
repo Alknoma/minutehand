@@ -36,6 +36,7 @@ from minutehand.adapters.providers.google_workspace.access import Caller, bearer
 from minutehand.adapters.providers.google_workspace.channels import CALENDAR_LIFETIME, Channels
 from minutehand.adapters.providers.google_workspace.gmail import EVERY_METHOD
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace.recurrence import Instance, Series, rule_line
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model
@@ -101,6 +102,7 @@ _EVENTS_LIST_SERVES = frozenset(
     {
         "alwaysIncludeEmail",  # "Deprecated and ignored."
         "calendarId",
+        "eventTypes",
         "maxResults",
         "orderBy",
         "pageToken",
@@ -186,8 +188,9 @@ OPERATIONS = frozenset(m.name for m in SERVED)
 
 
 class CalendarRecord(Model):
-    """A calendar: an account's primary, seeded for each person, whose id is its address; or a secondary one
-    `calendars.insert` made, whose data owner is the account that made it."""
+    """A calendar: an account's primary, seeded for each person, whose id is its address; a secondary one
+    `calendars.insert` made, whose data owner is the account that made it; or a secondary one the seed declares
+    (`seed.SeededCalendar`), whose data owner, if any, it names."""
 
     id: str
     timeZone: str
@@ -195,6 +198,11 @@ class CalendarRecord(Model):
     description: str | None = None
     location: str | None = None
     dataOwner: str | None = Field(default=None, description="The account that made it; None on a primary")
+    seeded: bool = Field(default=False, description="A secondary calendar the seed declares")
+
+    @property
+    def secondary(self) -> bool:
+        return self.seeded or self.dataOwner is not None
 
 
 ROLES = ("none", "freeBusyReader", "reader", "writerWithoutPrivateAccess", "writer", "owner")
@@ -246,7 +254,7 @@ def invitation(event: cal.StoredEvent) -> MessageSnapshot | RecordSnapshot:
     """The event as its guests are asked by it: what, when, where, who else, and Yes, Maybe or No."""
     guests = [a.email for a in event.attendees or [] if a.email.lower() != event.organizer.email.lower()]
     when = f"{event.start.dateTime or event.start.date} to {event.end.dateTime or event.end.date}"
-    lines = [event.summary or "(No title)", when]
+    lines = [event.summary or "(No title)", when, *(event.recurrence or [])]
     if event.location:
         lines.append(event.location)
     if guests:
@@ -303,11 +311,11 @@ class CalendarWorld:
         return HeldCalendar(record=CalendarRecord(id=user.emailAddress, timeZone="UTC"), seq=0)
 
     def secondary(self) -> list[HeldCalendar]:
-        """Every calendar `calendars.insert` made."""
+        """Every secondary calendar: those `calendars.insert` made and those the seed declares."""
         found: list[HeldCalendar] = []
         for stored in self._store.children(MANIFEST.key, EntityKind.RECORD, CALENDARS, limit=_SCAN):
             record = CalendarRecord.model_validate_json(stored.body)
-            if record.dataOwner is not None:
+            if record.secondary:
                 found.append(HeldCalendar(record=record, seq=stored.seq))
         return found
 
@@ -596,6 +604,10 @@ def _not_found() -> wire.Refusal:
     return cal.refused(404, "notFound", "Not Found")
 
 
+def _unrecorded(what: str) -> wire.Refusal:
+    return mail.not_implemented(f"minutehand's Google Calendar does not serve {what}: Google's answer is not recorded")
+
+
 class CalendarApi:
     def __init__(self, store: Store, clock: Clock, channels: Channels) -> None:
         self._calendars = CalendarWorld(store)
@@ -624,7 +636,7 @@ class CalendarApi:
 
     def _role(self, calendar: HeldCalendar, caller: Caller) -> str | None:
         """The caller's access role on a calendar: owner of their own primary, else what its ACL grants them."""
-        if calendar.record.dataOwner is None and calendar.id.lower() == caller.email.lower():
+        if not calendar.record.secondary and calendar.id.lower() == caller.email.lower():
             return "owner"
         return self._calendars.role(calendar.record, caller.email)
 
@@ -736,6 +748,172 @@ class CalendarApi:
             raise cal.refused(400, "timeRangeEmpty", "The specified time range is empty.")
         return begins, ends
 
+    def _shaped(self, event: cal.StoredEvent, calendar: HeldCalendar) -> None:
+        """What an event must be to be written, past its times: a recurring one names the zone it is expanded in,
+        an out-of-office one is what the event types guide makes one."""
+        if event.recurrence:
+            for where, time in (("start", event.start), ("end", event.end)):
+                if not time.timeZone and time.dateTime is not None:
+                    raise cal.refused(400, "required", f"Missing time zone definition for {where} time.")
+                if not time.timeZone:
+                    raise _unrecorded(
+                        f"a recurring all-day event without {where}.timeZone, which the events reference requires "
+                        "of a recurring event"
+                    )
+            series = Series(event)
+            if series.bounded:
+                series.span()
+        properties = event.outOfOfficeProperties
+        if event.eventType != "outOfOffice":  # enum-lint: exempt Calendar event type
+            if properties is not None:
+                raise _unrecorded("outOfOfficeProperties on an event whose eventType is not outOfOffice")
+            return
+        if calendar.record.secondary:
+            raise _unrecorded("an outOfOffice event on a calendar that is not a primary one")
+        if properties is None or properties.autoDeclineMode is None:
+            raise _unrecorded("an outOfOffice event without outOfOfficeProperties.autoDeclineMode")
+        if properties.autoDeclineMode not in cal.AUTO_DECLINE_MODES:
+            raise _unrecorded(f"the autoDeclineMode {properties.autoDeclineMode}")
+        if event.start.date is not None:
+            raise _unrecorded('an all-day outOfOffice event ("Out of office events cannot be all-day events")')
+        if event.transparency == "transparent":  # enum-lint: exempt Calendar transparency
+            raise _unrecorded("a transparent outOfOffice event, which the guide sets opaque")
+        if event.attendees:
+            raise _unrecorded("an outOfOffice event with attendees")
+        if event.recurrence:
+            raise _unrecorded("a recurring outOfOffice event")
+
+    def _instance_event(self, master: cal.StoredEvent, series: Series, found: Instance) -> cal.StoredEvent:
+        """One instance of a recurring event, as Calendar serves it: its own id, start and end, the recurring
+        event's id and the instance's original start, the series' iCalUID, and no recurrence."""
+        if series.all_day:
+            start = cal.EventTime(date=found.start.date().isoformat())
+            end = cal.EventTime(date=found.end.date().isoformat())
+        else:
+            start = cal.EventTime(dateTime=found.start.isoformat(), timeZone=master.start.timeZone)
+            ends_in = master.end.timeZone or master.start.timeZone
+            assert ends_in is not None
+            end = cal.EventTime(dateTime=found.end.astimezone(cal.zone(ends_in)).isoformat(), timeZone=ends_in)
+        instance = f"{master.id}_{found.suffix}"
+        return master.model_copy(
+            update={
+                "id": instance,
+                "htmlLink": html_link(instance, master.organizer.email),
+                "start": start,
+                "end": end,
+                "recurrence": None,
+                "recurringEventId": master.id,
+                "originalStartTime": start,
+            }
+        )
+
+    def _instances(self, event: cal.StoredEvent, low: datetime | None, high: datetime | None) -> list[cal.StoredEvent]:
+        series = Series(event)
+        return [self._instance_event(event, series, found) for found in series.between(low, high)]
+
+    def _instance(self, event_id: str, calendar: str) -> cal.StoredEvent | None:
+        """The instance an id names (`<recurring event id>_<original start>`) on the calendar; None when it names
+        none."""
+        master_id, underscore, suffix = event_id.rpartition("_")
+        if not underscore:
+            return None
+        found = self._calendars.event(master_id)
+        if found is None or not found[0].recurrence or not self._on_calendar(found[0], calendar):
+            return None
+        series = Series(found[0])
+        instance = series.at(suffix)
+        return self._instance_event(found[0], series, instance) if instance is not None else None
+
+    def _not_one_instance(self, event_id: str, calendar: str) -> None:
+        """Changing or deleting one instance makes an exception, which this fake does not keep."""
+        if self._calendars.event(event_id) is None and self._instance(event_id, calendar) is not None:
+            raise _unrecorded("changing or deleting one instance of a recurring event")
+
+    def _times(self, event: cal.StoredEvent, zone: str) -> tuple[datetime, datetime]:
+        return cal.instant(event.start, zone, "start"), cal.instant(event.end, zone, "end")
+
+    def _meets(self, event: cal.StoredEvent, zone: str, low: datetime, high: datetime) -> bool:
+        """Whether the event, or any instance of a recurring one, meets [low, high)."""
+        if event.recurrence:
+            return bool(Series(event).between(low, high))
+        start, end = self._times(event, zone)
+        return cal.overlaps(start, end, low, high)
+
+    def _absence(self, address: str, event: cal.StoredEvent, zone: str) -> cal.StoredEvent | None:
+        """An out-of-office event on the account's primary calendar that declines new invitations and meets the
+        event; None when there is none."""
+        for held, _ in self._calendars.organized(address):
+            properties = held.outOfOfficeProperties
+            if held.eventType != "outOfOffice" or properties is None:  # enum-lint: exempt Calendar event type
+                continue
+            if properties.autoDeclineMode == "declineNone":  # enum-lint: exempt Calendar autoDeclineMode
+                continue
+            low, high = self._times(held, zone)
+            if self._meets(event, zone, low, high):
+                return held
+        return None
+
+    def _declined_by_absence(self, event: cal.StoredEvent, before: list[cal.Attendee]) -> cal.StoredEvent:
+        """Each guest newly invited whose primary calendar holds an out-of-office event that declines new
+        invitations meeting this one is declined, with its `declineMessage`, as Calendar declines it."""
+        invited = {a.email.lower() for a in before}
+        attendees = list(event.attendees or [])
+        for place, guest in enumerate(attendees):
+            mine = guest.email.lower()
+            if mine in invited or mine == event.organizer.email.lower():
+                continue
+            calendar = self._calendars.calendar(guest.email)
+            if calendar is None or calendar.record.secondary:
+                continue
+            absence = self._absence(guest.email, event, calendar.timeZone)
+            if absence is None:
+                continue
+            if event.recurrence:
+                raise _unrecorded("inviting a guest to a recurring event that meets their out-of-office event")
+            message = absence.outOfOfficeProperties.declineMessage if absence.outOfOfficeProperties else None
+            attendees[place] = guest.model_copy(update={"responseStatus": "declined", "comment": message})
+        return event.model_copy(update={"attendees": attendees or None})
+
+    def _conflicts(self, absence: cal.StoredEvent, calendar: HeldCalendar) -> list[cal.StoredEvent]:
+        """The invitations an out-of-office event that declines all conflicting invitations declines on its
+        calendar: each meeting it, of which the calendar's account is a guest who has not declined."""
+        properties = absence.outOfOfficeProperties
+        if properties is None or properties.autoDeclineMode != "declineAllConflictingInvitations":
+            return []
+        mine = calendar.id.lower()
+        low, high = self._times(absence, calendar.timeZone)
+        found: list[cal.StoredEvent] = []
+        for event, _ in self._calendars.on(calendar.id):
+            if event.id == absence.id or event.organizer.email.lower() == mine:
+                continue
+            guest = next((a for a in event.attendees or [] if a.email.lower() == mine), None)
+            if guest is None or guest.responseStatus == "declined":
+                continue
+            if not self._meets(event, calendar.timeZone, low, high):
+                continue
+            if event.recurrence:
+                raise _unrecorded("an out-of-office event that meets an instance of a recurring invitation")
+            found.append(event)
+        return found
+
+    def _decline(self, events: list[cal.StoredEvent], absence: cal.StoredEvent, address: str) -> None:
+        """The account declines each invitation, with the out-of-office event's `declineMessage`."""
+        message = absence.outOfOfficeProperties.declineMessage if absence.outOfOfficeProperties else None
+        mine = address.lower()
+        for event in events:
+            attendees = [
+                a.model_copy(update={"responseStatus": "declined", "comment": message})
+                if a.email.lower() == mine
+                else a
+                for a in event.attendees or []
+            ]
+            seq = self._calendars.store.head() + 1
+            declined = event.model_copy(
+                update={"attendees": attendees, "updated": wire.rfc3339(self._clock.now()), "etag": f'"{seq}"'}
+            )
+            self._calendars.write(declined, operation=Operation.UPDATE, actor=Actor.AGENT, snapshot=False)
+            self._channels.tell_calendars_later(calendars_of(declined))
+
     # ------------------------------------------------------------------ routes
 
     def _entry(self, calendar: HeldCalendar, role: str, caller: Caller) -> cal.CalendarListEntry:
@@ -749,7 +927,7 @@ class CalendarApi:
             timeZone=record.timeZone,
             dataOwner=record.dataOwner,
             accessRole=role,
-            primary=True if record.dataOwner is None and record.id.lower() == caller.email.lower() else None,
+            primary=True if not record.secondary and record.id.lower() == caller.email.lower() else None,
         )
 
     def _listed(self, caller: Caller) -> list[cal.CalendarListEntry]:
@@ -768,7 +946,7 @@ class CalendarApi:
                 found.append(self._entry(calendar, role, caller))
         for spelled in added:
             calendar = self._calendars.calendar(spelled)
-            if calendar is None or calendar.record.dataOwner is not None or calendar.id.lower() == caller.email.lower():
+            if calendar is None or calendar.record.secondary or calendar.id.lower() == caller.email.lower():
                 continue
             role = self._role(calendar, caller)
             if role is not None:
@@ -889,9 +1067,18 @@ class CalendarApi:
                 raise mail.not_implemented(f"minutehand's Google Calendar does not serve the event field {name}")
         asked = wire.read_body(cal.EventWrite, found)
         if asked.recurrence:
-            raise mail.not_implemented("minutehand's Google Calendar does not serve the event field recurrence")
-        if asked.eventType is not None and asked.eventType != (held.eventType if held is not None else "default"):
+            rule_line(asked.recurrence)
+        if held is None and asked.eventType not in (
+            None,
+            "default",
+            "outOfOffice",
+        ):  # enum-lint: exempt Calendar event types
             raise mail.not_implemented(f"minutehand's Google Calendar does not serve eventType {asked.eventType}")
+        if held is not None and asked.eventType is not None and asked.eventType != held.eventType:
+            raise mail.not_implemented(
+                "minutehand's Google Calendar does not serve changing an event's eventType, which \"cannot be "
+                "modified after the event is created\": Google's answer is not recorded"
+            )
         if asked.iCalUID is not None and (held is None or asked.iCalUID != held.iCalUID):
             raise mail.not_implemented("minutehand's Google Calendar does not serve writing an event's iCalUID")
         return asked
@@ -946,11 +1133,18 @@ class CalendarApi:
             end=end,
             iCalUID=f"{new_id}@google.com",
             sequence=asked.sequence or 0,
+            recurrence=asked.recurrence or None,
             attendees=self._attendees(asked.attendees or [], calendar.id, []) or None,
+            eventType=asked.eventType or "default",
+            outOfOfficeProperties=asked.outOfOfficeProperties,
             **{name: getattr(asked, name) for name in cal.VERBATIM},
         )
+        self._shaped(event, calendar)
+        event = self._declined_by_absence(event, [])
+        conflicts = self._conflicts(event, calendar)
         self._calendars.write(event, operation=Operation.CREATE, actor=Actor.AGENT, snapshot=True)
         self._channels.tell_calendars_later(calendars_of(event))
+        self._decline(conflicts, event, calendar.id)
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_get(self, request: Request, caller: Caller) -> Response:
@@ -961,6 +1155,11 @@ class CalendarApi:
         if gone is not None and self._on_calendar(gone[0], calendar.id):
             self._calendars.saw(event_ref(spelled), Operation.READ)
             return _json(self._cancelled(gone[0], gone[1], calendar.id, caller, details=True), request, cal.StoredEvent)
+        if self._calendars.event(spelled) is None and not self._calendars.was(spelled):
+            instance = self._instance(spelled, calendar.id)
+            if instance is not None:
+                self._calendars.saw(event_ref(instance.recurringEventId or instance.id), Operation.READ)
+                return _json(self._served(instance, calendar.id, caller), request, cal.StoredEvent)
         event, _ = self._visible(spelled, calendar.id)
         self._calendars.saw(event_ref(event.id), Operation.READ)
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
@@ -975,6 +1174,7 @@ class CalendarApi:
         """`events.patch` sets what the body names; `events.update` replaces the event with the body."""
         calendar = self._own(request, caller, needs="writer")
         self._send_updates(request)
+        self._not_one_instance(request.path_params["eventId"], calendar.id)
         event, _ = self._visible(request.path_params["eventId"], calendar.id)
         if event.organizer.email.lower() != calendar.id.lower():
             raise cal.refused(
@@ -1011,14 +1211,25 @@ class CalendarApi:
             update["attendees"] = (
                 self._attendees(asked.attendees or [], event.organizer.email, list(event.attendees or [])) or None
             )
+        if "recurrence" in named:
+            if event.recurrence and not asked.recurrence:
+                raise _unrecorded("removing a recurring event's recurrence")
+            update["recurrence"] = asked.recurrence or None
+        if "outOfOfficeProperties" in named:
+            update["outOfOfficeProperties"] = asked.outOfOfficeProperties
         changed = event.model_copy(update=update)
+        self._shaped(changed, calendar)
+        changed = self._declined_by_absence(changed, list(event.attendees or []))
+        conflicts = self._conflicts(changed, calendar)
         self._calendars.write(changed, operation=Operation.UPDATE, actor=Actor.AGENT, snapshot=True)
         self._channels.tell_calendars_later(calendars_of(event, changed))
+        self._decline(conflicts, changed, calendar.id)
         return _json(self._served(changed, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_delete(self, request: Request, caller: Caller) -> Response:
         calendar = self._own(request, caller, needs="writer")
         self._send_updates(request)
+        self._not_one_instance(request.path_params["eventId"], calendar.id)
         event, _ = self._visible(request.path_params["eventId"], calendar.id)
         if event.organizer.email.lower() != calendar.id.lower():
             raise cal.refused(
@@ -1068,17 +1279,32 @@ class CalendarApi:
             raise cal.refused(400, "badRequest", "The requested ordering is not available for the particular query.")
         words = (_param(request, "q") or "").casefold().split()
         show_deleted = _param(request, "showDeleted") == "true"
+        types = set(request.query_params.getlist("eventTypes"))
+        for spelled in types - set(cal.EVENT_TYPES):
+            raise _unrecorded(f"the eventTypes value {spelled}")
         candidates: list[tuple[cal.StoredEvent, WorldEvent | None]] = [
             (e, None) for e, _ in self._calendars.on(calendar.id)
         ]
         if show_deleted or updated_min is not None:
             # "When specified, entries deleted since this time will always be included regardless of showDeleted."
             candidates += [(e, gone) for e, gone in self._calendars.deletions() if self._on_calendar(e, calendar.id)]
-        found: list[tuple[datetime, str, cal.StoredEvent | cal.CancelledEvent]] = []
+        expanded: list[tuple[cal.StoredEvent, WorldEvent | None]] = []
         for event, removal in candidates:
+            if types and event.eventType not in types:
+                continue
+            if not event.recurrence:
+                expanded.append((event, removal))
+            elif removal is not None and single:
+                raise _unrecorded("singleEvents=true over a deleted recurring event")
+            elif single:
+                expanded += [(i, None) for i in self._instances(event, low, high)]
+            elif self._series_listed(event, low, high):
+                expanded.append((event, removal))
+        found: list[tuple[datetime, str, cal.StoredEvent | cal.CancelledEvent]] = []
+        for event, removal in expanded:
             start = cal.instant(event.start, calendar.timeZone, "start")
             end = cal.instant(event.end, calendar.timeZone, "end")
-            if not cal.overlaps(start, end, low, high):
+            if not event.recurrence and not cal.overlaps(start, end, low, high):
                 continue
             changed_at = wire.moment(event.updated) if removal is None else removal.sim_time
             if updated_min is not None and changed_at < updated_min:
@@ -1113,6 +1339,15 @@ class CalendarApi:
         self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.SEARCH)
         return _json(answer, request, cal.EventList)
 
+    def _series_listed(self, event: cal.StoredEvent, low: datetime | None, high: datetime | None) -> bool:
+        """Whether a list without `singleEvents` answers a recurring event: when any of its instances meets the
+        window, however long before it the series began (observed, `CLAIMS.md`). A rule that never ends always has
+        an instance after `timeMin`."""
+        series = Series(event)
+        if high is None and not series.bounded:
+            return True
+        return bool(series.between(low, high))
+
     def _incremental(self, request: Request, caller: Caller, calendar: HeldCalendar, sync: str) -> Response:
         """Every event on the calendar changed since the sync token, a deleted one as `cancelled`, oldest change
         first. A token cannot be combined with the filters a full list takes, as Calendar's guide says."""
@@ -1123,10 +1358,14 @@ class CalendarApi:
         if not sync.startswith("s") or not sync[1:].isdigit() or int(sync[1:]) > store.head():
             raise cal.refused(410, "fullSyncRequired", "Sync token is no longer valid, a full sync is required.")
         show_deleted = _param(request, "showDeleted") == "true"
+        single = _param(request, "singleEvents") == "true"
         items: list[cal.StoredEvent | cal.CancelledEvent] = []
         for event_key, _, _ in self._changes(calendar.id, since=int(sync[1:])):
             current = self._calendars.event(event_key)
             gone = self._calendars.deleted(event_key)
+            last = current[0] if current is not None else gone[0] if gone is not None else None
+            if single and last is not None and last.recurrence:
+                raise _unrecorded("a syncToken with singleEvents=true over a changed recurring event")
             if current is not None:
                 items.append(self._served(current[0], calendar.id, caller))
             elif gone is not None:
@@ -1228,10 +1467,14 @@ class CalendarApi:
                     continue
                 if any(a.email.lower() == mine and a.responseStatus == "declined" for a in event.attendees or []):
                     continue
-                start = cal.instant(event.start, found.timeZone, "start")
-                end = cal.instant(event.end, found.timeZone, "end")
-                if cal.overlaps(start, end, low, high):
-                    ranges.append((max(start, low), min(end, high)))
+                times = (
+                    [(i.start, i.end) for i in Series(event).between(low, high)]
+                    if event.recurrence
+                    else [self._times(event, found.timeZone)]
+                )
+                for start, end in times:
+                    if cal.overlaps(start, end, low, high):
+                        ranges.append((max(start, low), min(end, high)))
             calendars[item.id] = cal.FreeBusyCalendar(
                 busy=[cal.BusyRange(start=cal.utc(s), end=cal.utc(e)) for s, e in cal.merged(ranges)]
             )

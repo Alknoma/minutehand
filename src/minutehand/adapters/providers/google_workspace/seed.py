@@ -13,8 +13,10 @@ scenario declared.
 - A `SignIn` for this provider signs in as its person (or, naming none, as a service account of that name). No
   credential is enforced: any other credential, or none, acts as the seed's `unknown_credentials_act_as`, by
   default the scenario's owner.
-- Every person has a mailbox at their address and a primary calendar in their working hours' time zone (UTC
-  without).
+- Every person has a mailbox at their address and a primary calendar in the time zone `time_zones` gives them,
+  else their working hours' (UTC without either).
+- Each `SeededCalendar` is a secondary calendar, a public holidays calendar or a shared one, on each of its readers'
+  calendar lists with role `reader`.
 - Its own seed (`WorkspaceSeed`, the scenario's `ProviderSeed` for `google_workspace`) declares the emails already
   sent (each in its sender's and its recipients' mailboxes, threaded by what it answers), the events already on
   calendars, and the faults: the next `times` calls of a Google operation, from `after` on, refused with a
@@ -30,9 +32,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.utils import format_datetime, formataddr
-from typing import Literal
+from typing import Literal, Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.google_workspace import (
     calendar_wire,
@@ -48,6 +51,7 @@ from minutehand.adapters.providers.google_workspace.app import OPERATIONS
 from minutehand.adapters.providers.google_workspace.calendars import CalendarRecord, CalendarWorld, html_link
 from minutehand.adapters.providers.google_workspace.gmail import MailWorld
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
+from minutehand.adapters.providers.google_workspace.recurrence import Series
 from minutehand.adapters.providers.google_workspace.state import (
     ROLES,
     ROOT_NAME,
@@ -90,17 +94,72 @@ class SeededAttendee(Model):
     response: Literal["needsAction", "declined", "tentative", "accepted"] = "needsAction"
 
 
-class SeededEvent(Model):
-    """An event on its organizer's calendar when the scenario starts."""
+class SeededOutOfOffice(Model):
+    """The event is out of office (`eventType` `outOfOffice`), with its `outOfOfficeProperties`."""
 
-    calendar: str = Field(description="Person.key of its organizer, on whose calendar it is")
+    auto_decline: Literal["declineNone", "declineAllConflictingInvitations", "declineOnlyNewConflictingInvitations"]
+    decline_message: str | None = None
+
+
+class SeededEvent(Model):
+    """An event on a calendar when the scenario starts: timed (`starts`, `lasts`) or all day (`day`, `days`)."""
+
+    calendar: str = Field(
+        description="Person.key of its organizer, on whose primary calendar it is, or the id of a seeded calendar"
+    )
     summary: str = Field(min_length=1)
-    starts: timedelta = Field(description="Offset from the scenario's start; negative for one already begun or past")
-    lasts: timedelta = Field(gt=timedelta(0))
+    starts: timedelta | None = Field(
+        default=None, description="A timed event: offset from the scenario's start; negative for one begun or past"
+    )
+    lasts: timedelta | None = Field(default=None, gt=timedelta(0), description="How long a timed event lasts")
+    day: int | None = Field(
+        default=None,
+        description="An all-day event: the day it starts, as days from the scenario's start's date in the calendar's "
+        "time zone; negative for one already begun or past",
+    )
+    days: int | None = Field(
+        default=None, ge=1, description="How many days an all-day event lasts: its end date, exclusive, is that far on"
+    )
+    recurrence: list[str] = Field(
+        default=[], description="Its RRULE line, as Calendar takes it, expanded in the calendar's time zone"
+    )
+    ical_uid: str | None = Field(
+        default=None, min_length=1, description="Its iCalUID, answered as given; None is Calendar's own"
+    )
+    out_of_office: SeededOutOfOffice | None = None
     attendees: list[SeededAttendee] = []
     description: str | None = None
     location: str | None = None
     transparent: bool = Field(default=False, description="Free rather than busy, for free/busy")
+
+    @model_validator(mode="after")
+    def _timed_or_all_day(self) -> Self:
+        timed = self.starts is not None and self.lasts is not None
+        all_day = self.day is not None and self.days is not None
+        named = [n for n in ("starts", "lasts", "day", "days") if getattr(self, n) is not None]
+        if timed == all_day or len(named) != 2:
+            raise ValueError(
+                f"a seeded event is timed (starts and lasts) or all day (day and days); {self.summary!r} names "
+                + (", ".join(named) or "none of them")
+            )
+        return self
+
+
+class SeededCalendar(Model):
+    """A secondary calendar the scenario starts with: a public holidays calendar, a team's shared one."""
+
+    id: str = Field(min_length=1, description="As Calendar names it: 'en.taiwan#holiday@group.v.calendar.google.com'")
+    summary: str = Field(min_length=1)
+    description: str | None = None
+    time_zone: str = Field(default="UTC", description="An IANA name")
+    owner: str | None = Field(
+        default=None,
+        description="Its data owner: a Person.key, or an address outside the world; None answers no dataOwner, as a "
+        "public holidays calendar is answered",
+    )
+    readers: list[str] = Field(
+        default=[], description="Person.key of each who reads it: on their calendar list with role reader"
+    )
 
 
 class WorkspaceSeed(Model):
@@ -109,6 +168,12 @@ class WorkspaceSeed(Model):
     faults: list[FaultSeed] = []
     emails: list[SeededEmail] = []
     events: list[SeededEvent] = []
+    calendars: list[SeededCalendar] = []
+    time_zones: dict[str, str] = Field(
+        default={},
+        description="Person.key to their primary calendar's time zone, an IANA name; where it names none, their "
+        "working hours' zone, else UTC",
+    )
     unknown_credentials_act_as: str | None = Field(
         default=None,
         description="Key of the person every credential the world does not hold, or none at all, acts as (an "
@@ -268,14 +333,56 @@ def seed(scenario: Scenario, world: Store) -> None:
 
     calendars = CalendarWorld(world)
     for person in scenario.people:
-        zone = person.working_hours.timezone if person.working_hours is not None else "UTC"
         calendars.keep_calendar(
-            CalendarRecord(id=person.held_email(MANIFEST.key, "a Google account is its email address"), timeZone=zone),
+            CalendarRecord(
+                id=person.held_email(MANIFEST.key, "a Google account is its email address"),
+                timeZone=_primary_zone(person, own),
+            ),
             actor=Actor.SCENARIO,
         )
+    _seed_calendars(own.calendars, scenario, calendars)
     _seed_emails(own.emails, scenario, MailWorld(world))
-    _seed_events(own.events, scenario, calendars)
+    _seed_events(own, scenario, calendars)
     write_faults(drive, own.faults, start)
+
+
+def _primary_zone(person: Person, own: WorkspaceSeed) -> str:
+    if person.key in own.time_zones:
+        return own.time_zones[person.key]
+    return person.working_hours.timezone if person.working_hours is not None else "UTC"
+
+
+def _zone(name: str, what: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise ValueError(f"{what} is in the time zone {name!r}, which is no IANA time zone") from error
+
+
+def _seed_calendars(seeded: list[SeededCalendar], scenario: Scenario, calendars: CalendarWorld) -> None:
+    """Each seeded calendar, its readers granted `reader` on it and given it on their calendar lists."""
+    people = {p.key: p for p in scenario.people}
+    for declared in seeded:
+        owner = _address(declared.owner, people, f"the seeded calendar {declared.id!r}")[1] if declared.owner else None
+        record = CalendarRecord(
+            id=declared.id,
+            summary=declared.summary,
+            description=declared.description,
+            timeZone=declared.time_zone,
+            dataOwner=owner,
+            seeded=True,
+        )
+        seq = calendars.keep_calendar(record, actor=Actor.SCENARIO)
+        for reader in declared.readers:
+            address = people[reader].held_email(MANIFEST.key, "a Google account is its email address")
+            rule = calendar_wire.AclRule(
+                etag=f'"{seq}"',
+                id=f"user:{address}",
+                scope=calendar_wire.AclScope(type="user", value=address),
+                role="reader",
+            )
+            calendars.keep_rule(record, rule, actor=Actor.SCENARIO)
+            calendars.keep_listed(address, record, actor=Actor.SCENARIO)
 
 
 def _check(own: WorkspaceSeed, scenario: Scenario) -> None:
@@ -306,10 +413,38 @@ def _check(own: WorkspaceSeed, scenario: Scenario) -> None:
             _address(name, people, what)
         if email.key is not None:
             keys.add(email.key)
+    for key, name in own.time_zones.items():
+        if key not in people:
+            raise ValueError(f"time_zones names {key!r}, who is not a person in the scenario")
+        _zone(name, f"{key}'s primary calendar")
+    addresses = {p.held_email(MANIFEST.key, "a Google account is its email address").lower() for p in people.values()}
+    ids: set[str] = set()
+    for declared in own.calendars:
+        what = f"the seeded calendar {declared.id!r}"
+        if declared.id.lower() in addresses or declared.id.lower() in ids:
+            raise ValueError(f"{what} takes an id a person's primary calendar or another seeded calendar has")
+        ids.add(declared.id.lower())
+        _zone(declared.time_zone, what)
+        if declared.owner is not None:
+            _address(declared.owner, people, what)
+        for reader in declared.readers:
+            if reader not in people:
+                raise ValueError(f"{what} is read by {reader!r}, who is not a person in the scenario")
     for n, event in enumerate(own.events, start=1):
         what = f"seeded event {n}"
-        if event.calendar not in people:
-            raise ValueError(f"{what} is on {event.calendar!r}'s calendar, who is not a person in the scenario")
+        if event.calendar not in people and event.calendar.lower() not in ids:
+            raise ValueError(
+                f"{what} is on {event.calendar!r}'s calendar, who is not a person in the scenario, nor a seeded "
+                "calendar's id"
+            )
+        if event.out_of_office is not None:
+            if event.calendar not in people:
+                raise ValueError(f"{what} is out of office on a seeded calendar; only a primary calendar holds one")
+            if event.day is not None or event.attendees or event.recurrence or event.transparent:
+                raise ValueError(
+                    f"{what} is out of office, which Google makes a timed, opaque event, and this simulation one with "
+                    "no attendees and no recurrence"
+                )
         for guest in event.attendees:
             _address(guest.person, people, what)
 
@@ -359,13 +494,25 @@ def _seed_emails(emails: list[SeededEmail], scenario: Scenario, mailboxes: MailW
         )
 
 
-def _seed_events(events: list[SeededEvent], scenario: Scenario, calendars: CalendarWorld) -> None:
+def _seed_events(own: WorkspaceSeed, scenario: Scenario, calendars: CalendarWorld) -> None:
+    """Every seeded event, each built and checked before any is written."""
     people = {p.key: p for p in scenario.people}
-    for n, seeded in enumerate(events, start=1):
+    declared = {c.id.lower(): c for c in own.calendars}
+    stamp = wire.rfc3339(scenario.starts_at)
+    built: list[calendar_wire.StoredEvent] = []
+    for n, seeded in enumerate(own.events, start=1):
         what = f"seeded event {n}"
-        organizer = people[seeded.calendar]
-        start = scenario.starts_at + seeded.starts
-        stamp = wire.rfc3339(scenario.starts_at)
+        if seeded.calendar in people:
+            organizer = people[seeded.calendar]
+            on = organizer.held_email(MANIFEST.key, "a Google account is its email address")
+            me = calendar_wire.Actor(email=on, displayName=organizer.name)
+            zone_name = _primary_zone(organizer, own)
+        else:
+            calendar = declared[seeded.calendar.lower()]
+            on = calendar.id
+            me = calendar_wire.Actor(email=calendar.id, displayName=calendar.summary)
+            zone_name = calendar.time_zone
+        zone = _zone(zone_name, what)
         event_id = f"seeded{n:04d}{scenario.name.replace('_', '')[:20]}".lower()
         event_id = "".join(c for c in event_id if c in calendar_wire.EVENT_ID_CHARACTERS)
         attendees = []
@@ -375,16 +522,26 @@ def _seed_events(events: list[SeededEvent], scenario: Scenario, calendars: Calen
                 calendar_wire.Attendee(
                     email=address,
                     displayName=display or None,
-                    organizer=True if address == organizer.email else None,
+                    organizer=True if address.lower() == on.lower() else None,
                     responseStatus=guest.response,
                 )
             )
-        organized = organizer.held_email(MANIFEST.key, "a Google account is its email address")
-        me = calendar_wire.Actor(email=organized, displayName=organizer.name)
+        named_zone = zone_name if seeded.recurrence else None
+        if seeded.day is not None and seeded.days is not None:
+            first = scenario.starts_at.astimezone(zone).date() + timedelta(days=seeded.day)
+            start = calendar_wire.EventTime(date=first.isoformat(), timeZone=named_zone)
+            end = calendar_wire.EventTime(date=(first + timedelta(days=seeded.days)).isoformat(), timeZone=named_zone)
+        else:
+            assert seeded.starts is not None and seeded.lasts is not None
+            begins = scenario.starts_at + seeded.starts
+            start = calendar_wire.EventTime(dateTime=begins.astimezone(zone).isoformat(), timeZone=named_zone)
+            ends = (begins + seeded.lasts).astimezone(zone)
+            end = calendar_wire.EventTime(dateTime=ends.isoformat(), timeZone=named_zone)
+        absent = seeded.out_of_office
         event = calendar_wire.StoredEvent(
             etag=f'"{n}"',
             id=event_id,
-            htmlLink=html_link(event_id, organized),
+            htmlLink=html_link(event_id, on),
             created=stamp,
             updated=stamp,
             summary=seeded.summary,
@@ -392,12 +549,28 @@ def _seed_events(events: list[SeededEvent], scenario: Scenario, calendars: Calen
             location=seeded.location,
             creator=me,
             organizer=me,
-            start=calendar_wire.EventTime(dateTime=start.isoformat()),
-            end=calendar_wire.EventTime(dateTime=(start + seeded.lasts).isoformat()),
+            start=start,
+            end=end,
             transparency="transparent" if seeded.transparent else None,
-            iCalUID=f"{event_id}@google.com",
+            iCalUID=seeded.ical_uid or f"{event_id}@google.com",
+            recurrence=seeded.recurrence or None,
             attendees=attendees or None,
+            eventType="outOfOffice" if absent is not None else "default",
+            outOfOfficeProperties=calendar_wire.OutOfOfficeProperties(
+                autoDeclineMode=absent.auto_decline, declineMessage=absent.decline_message
+            )
+            if absent is not None
+            else None,
         )
+        if event.recurrence:
+            try:
+                series = Series(event)
+                if series.bounded:
+                    series.span()
+            except wire.Refusal as refused:
+                raise ValueError(f"{what}'s recurrence: {refused.answer.error.message}") from refused
+        built.append(event)
+    for event in built:
         calendars.write(event, operation=Operation.CREATE, actor=Actor.SCENARIO, snapshot=True)
 
 
