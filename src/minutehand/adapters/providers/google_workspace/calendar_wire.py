@@ -53,8 +53,20 @@ class Actor(Model):
     self: bool | None = None
 
 
+AUTO_DECLINE_MODES = ("declineNone", "declineAllConflictingInvitations", "declineOnlyNewConflictingInvitations")
+"""`outOfOfficeProperties.autoDeclineMode`'s values, as the events reference lists them."""
+EVENT_TYPES = ("birthday", "default", "focusTime", "fromGmail", "outOfOffice", "workingLocation")
+"""`eventTypes`' acceptable values, as the events.list reference lists them."""
+
+
+class OutOfOfficeProperties(Model):
+    autoDeclineMode: str | None = None
+    declineMessage: str | None = None
+
+
 class StoredEvent(Model):
-    """One event, as its organizer's calendar holds it."""
+    """One event, as its organizer's calendar holds it; a recurring one with its `recurrence`. An instance of a
+    recurring event is never kept: it is expanded from it when it is served (`recurrence.Series`)."""
 
     kind: Literal["calendar#event"] = "calendar#event"
     etag: str
@@ -75,6 +87,9 @@ class StoredEvent(Model):
     visibility: str | None = None
     iCalUID: str
     sequence: int = 0
+    recurrence: list[str] | None = None
+    recurringEventId: str | None = None
+    originalStartTime: EventTime | None = None
     attendees: list[Attendee] | None = None
     guestsCanModify: bool | None = None
     guestsCanInviteOthers: bool | None = None
@@ -86,6 +101,7 @@ class StoredEvent(Model):
     extendedProperties: JsonValue = Field(default=None, description="As written, verbatim")
     source: JsonValue = Field(default=None, description="As written, verbatim")
     eventType: str = "default"
+    outOfOfficeProperties: OutOfOfficeProperties | None = None
 
 
 class CancelledEvent(Model):
@@ -266,7 +282,6 @@ NOT_SERVED = (
     "conferenceData",
     "attachments",
     "gadget",
-    "outOfOfficeProperties",
     "focusTimeProperties",
     "workingLocationProperties",
     "birthdayProperties",
@@ -304,6 +319,7 @@ class EventWrite(Model):
     sequence: int | None = None
     iCalUID: str | None = None
     eventType: str | None = None
+    outOfOfficeProperties: OutOfOfficeProperties | None = None
 
 
 class FreeBusyItem(Model):
