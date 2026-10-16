@@ -532,6 +532,12 @@ class MailboxSettings(Aliased):
     timeZone: str = "UTC"
 
 
+class PropertyValue(Aliased):
+    """One primitive property read by its own path (`/mailboxSettings/timeZone`): OData's `value`."""
+
+    value: str
+
+
 class GraphTeam(Aliased):
     id: str
     displayName: str

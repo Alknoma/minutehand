@@ -48,7 +48,10 @@ manifest, and because the tenant, its bot and its users are one directory every 
   its call is answered, a person's when the run tells watchers (`NotifiesChanges.notify`), through the same
   `subscriptions.notify`; a chat's or channel's messages of every new message; a mailbox's messages (all, or one
   folder's: `/me/mailFolders('Inbox')/messages`) of every message put there, and its events of every change,
-  each for at most 10,080 minutes.
+  each for at most 10,080 minutes. A test reads a world's subscriptions from outside as its entities (`GET
+  /v1/worlds/{id}/entities?provider=microsoft&kind=record`, those whose `parent` is `subscriptions`): each body's
+  `subscription` holds `resource`, `notificationUrl`, `clientState` and `expirationDateTime` as Graph answers them;
+  a deleted one is gone, and an expired one stays with its `expirationDateTime` past the world's clock.
 - **Mail** (`graph_mail.py`): every user has a mailbox with Inbox, Sent Items, Drafts and Deleted Items, on `/me`
   and `/users/{id | userPrincipalName | mail}`, a folder named in any case or by id, as a segment or
   `mailFolders('Inbox')`. A sent message is one copy per mailbox: the sender's in Sent Items, read, and one unread
@@ -131,7 +134,9 @@ An administrator changes a person's account (`ChangesPeople`, `POST /v1/worlds/{
 A person's `Absence` is what Graph shows of them: `GET /users/{id}/presence`, `/communications/presences/{id}` and
 `POST /communications/getPresencesByUserId` answer `Away`/`OutOfOffice` with the reason as the out-of-office message
 while it lasts, `Available` otherwise; `GET /users/{id}/mailboxSettings[/automaticRepliesSetting]` is `scheduled`
-over the stretch that lasts now or the next one known, `disabled` when none is. An absence from the first ask is
+over the stretch that lasts now or the next one known, `disabled` when none is. A mailbox's `timeZone` is what
+`MicrosoftSeed.time_zones` gives it, as written (a Windows name such as `GMT Standard Time`, or an IANA one), on
+`/me` and `/users/{id}`, whole or as `/mailboxSettings/timeZone`; a mailbox it names none of is `UTC`. An absence from the first ask is
 known once the store holds the agent's first message to them, in any provider. Teams posts no automatic reply into
 a chat, so none is pushed.
 
