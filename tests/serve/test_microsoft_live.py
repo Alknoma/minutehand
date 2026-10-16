@@ -462,3 +462,72 @@ def test_two_tenants_with_two_bots_each_send_only_in_their_own_world(served: Ser
             for label, w in (("one", one), ("two", two))
         }
         assert texts == {"one": ["from one"], "two": ["from two"]}
+
+
+# ------------------------------------------------------------------ subscriptions, read from outside
+
+
+@contextmanager
+def _notification_url() -> Iterator[str]:
+    """A notification URL that answers Graph's validation handshake by echoing its token, and every
+    notification 202."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            asked = parse_qs(urlsplit(self.path).query)
+            self.rfile.read(int(self.headers["Content-Length"] or 0))
+            if "validationToken" in asked:
+                echoed = asked["validationToken"][0].encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(echoed)))
+                self.end_headers()
+                self.wfile.write(echoed)
+                return
+            self.send_response(202)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/notify"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _subscriptions(world: OpenWorld) -> list[dict[str, Any]]:
+    """The world's open Graph subscriptions, as a test reads them from outside: its entities."""
+    return [
+        json.loads(s.body)["subscription"]
+        for s in world.entities(provider="microsoft", kind=EntityKind.RECORD)
+        if s.parent == "subscriptions"
+    ]
+
+
+def test_a_worlds_open_subscriptions_are_read_from_outside_and_a_deleted_one_is_gone(served: Served) -> None:
+    with _world(served, "watched_tenant") as (world, directory), _http(served) as http, _notification_url() as url:
+        graph = _app_token(http, directory, "https://graph.microsoft.com/.default")
+        drive = http.get(f"{GRAPH}/users/owen@watched_tenant.example.com/drive", headers=graph).json()["id"]
+        made = http.post(
+            f"{GRAPH}/subscriptions",
+            json={"changeType": "updated", "notificationUrl": url, "resource": f"/drives/{drive}/root",
+                  "expirationDateTime": "2026-09-02T09:00:00Z", "clientState": "kept-secret"},
+            headers=graph,
+        )  # fmt: skip
+        assert made.status_code == 201, made.text
+        [held] = _subscriptions(world)
+        assert (held["id"], held["resource"], held["notificationUrl"], held["clientState"]) == (
+            made.json()["id"],
+            f"/drives/{drive}/root",
+            url,
+            "kept-secret",
+        )
+        assert held["expirationDateTime"].startswith("2026-09-02T09:00:00")
+        gone = http.delete(f"{GRAPH}/subscriptions/{held['id']}", headers=graph)
+        assert gone.status_code == 204, gone.text
+        assert _subscriptions(world) == []

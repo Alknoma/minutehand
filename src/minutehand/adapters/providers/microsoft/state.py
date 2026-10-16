@@ -167,6 +167,7 @@ class UserRecord(Model):
     tenant_id: str
     person_key: str | None = None
     absences: list[AwayRecord] | None = None
+    time_zone: str | None = Field(default=None, description="The mailbox's time zone as seeded; None is UTC")
 
     @property
     def mri(self) -> str:

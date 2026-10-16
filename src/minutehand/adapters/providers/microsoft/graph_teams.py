@@ -307,8 +307,14 @@ class TeamsGraph:
             )
         if parts[2:] == ["mailboxSettings"]:
             self._world.saw(user_ref(user.user.id), Operation.READ)
-            settings = wire.MailboxSettings(automaticRepliesSetting=self._replies(user))
+            settings = wire.MailboxSettings(
+                automaticRepliesSetting=self._replies(user), timeZone=user.time_zone or "UTC"
+            )
             return self._one(request, settings, f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings")
+        if parts[2:] == ["mailboxSettings", "timeZone"]:
+            self._world.saw(user_ref(user.user.id), Operation.READ)
+            context = f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings/timeZone"
+            return self._one(request, wire.PropertyValue(value=user.time_zone or "UTC"), context)
         if parts[2:] == ["mailboxSettings", "automaticRepliesSetting"]:
             self._world.saw(user_ref(user.user.id), Operation.READ)
             context = f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings/automaticRepliesSetting"
