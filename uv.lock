@@ -2090,7 +2090,7 @@ wheels = [
 
 [[package]]
 name = "minutehand"
-version = "0.2.4"
+version = "0.2.5"
 source = { editable = "." }
 dependencies = [
     { name = "asgiref" },
@@ -2107,6 +2107,7 @@ dependencies = [
     { name = "protobuf" },
     { name = "pydantic", version = "2.11.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "pydantic", version = "2.13.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -2179,6 +2180,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "protobuf", specifier = ">=5" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "python-dateutil", specifier = ">=2.8.2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },

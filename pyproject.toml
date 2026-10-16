@@ -2,7 +2,7 @@
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
 # installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
-version = "0.2.4"
+version = "0.2.5"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -44,6 +44,8 @@ dependencies = [
     "mcp>=1.2,<2",
     "zstandard>=0.23",
     "jsonschema>=4.20",
+    # RFC 5545 recurrence rules, expanded for Google Calendar's recurring events.
+    "python-dateutil>=2.8.2",
     # uvicorn's WebSocket protocol for the providers' socket servers (Slack's Socket Mode); mitmproxy needs it too.
     "wsproto>=1.2",
 ]

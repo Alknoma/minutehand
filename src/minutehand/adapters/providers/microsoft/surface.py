@@ -171,6 +171,8 @@ DOCUMENTED: dict[tuple[str, str], str] = {
     ("GET", "/servicePrincipals(appId='{appId}')"): SERVICE_PRINCIPAL,
     ("GET", "/me/mailboxSettings/automaticRepliesSetting"): MAILBOX_SETTINGS,
     ("GET", "/users/{user-id}/mailboxSettings/automaticRepliesSetting"): MAILBOX_SETTINGS,
+    ("GET", "/me/mailboxSettings/timeZone"): MAILBOX_SETTINGS,
+    ("GET", "/users/{user-id}/mailboxSettings/timeZone"): MAILBOX_SETTINGS,
 }
 """Served operations Microsoft's reference page documents that the OpenAPI description leaves out, with the page."""
 

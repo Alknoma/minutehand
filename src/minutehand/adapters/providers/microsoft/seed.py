@@ -212,6 +212,11 @@ class MicrosoftSeed(Model):
         description="Person.key to the part of their userPrincipalName before the tenant's domain, where it is not "
         "their email's local part",
     )
+    time_zones: dict[str, str] = Field(
+        default={},
+        description="Person.key, or the agent mailbox's key, to their mailbox's time zone as `mailboxSettings` answers "
+        "it: a Windows time zone name (`GMT Standard Time`) or an IANA one; a mailbox it names none of is in UTC",
+    )
 
 
 def microsoft_seed(scenario: Scenario) -> MicrosoftSeed:
@@ -408,6 +413,13 @@ def _channel(
 
 def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
     directory = directory_of(scenario)
+    spec = microsoft_seed(scenario)
+    mailboxes = {p.key for p in scenario.people if p.account is not Account.BOT}
+    if spec.mailbox is not None:
+        mailboxes.add(spec.mailbox.key)
+    unzoned = sorted(set(spec.time_zones) - mailboxes)
+    if unzoned:
+        raise ValueError(f"the Microsoft seed's time_zones name no mailbox of the tenant: {', '.join(unzoned)}")
     stamp = graph_time(scenario.starts_at)
     world.write(
         tenant_ref(directory.tenant_id),
@@ -438,9 +450,10 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
         if person.account is Account.BOT:
             continue
         user = UserRecord(
-            user=_graph_user(person, directory, microsoft_seed(scenario).logins.get(person.key)),
+            user=_graph_user(person, directory, spec.logins.get(person.key)),
             tenant_id=directory.tenant_id,
             person_key=person.key,
+            time_zone=spec.time_zones.get(person.key),
             absences=[
                 AwayRecord(
                     starts=scenario.starts_at if a.trigger is AbsenceTrigger.AT_START else None,
@@ -469,7 +482,6 @@ def seed(scenario: Scenario, world: MicrosoftWorld) -> None:
             actor=Actor.SCENARIO,
             parent=SIGN_INS,
         )
-    spec = microsoft_seed(scenario)
     unknown = sorted(set(spec.not_installed_for) - set(users))
     if unknown:
         raise ValueError(f"the Microsoft seed names no user of the tenant: {', '.join(unknown)}")
@@ -584,6 +596,7 @@ def _mail_and_calendars(
                 userPrincipalName=address,
             ),
             tenant_id=directory.tenant_id,
+            time_zone=spec.time_zones.get(spec.mailbox.key),
         )
         world.write(user_ref(mailbox.user.id), mailbox, operation=Operation.CREATE, actor=Actor.SCENARIO, parent=USERS)
         named[spec.mailbox.key] = mailbox

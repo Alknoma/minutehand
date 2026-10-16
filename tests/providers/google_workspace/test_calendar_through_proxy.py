@@ -191,7 +191,7 @@ say(answered=answered, moved=moved, changes=[e["id"] for e in changes["items"]],
         assert [(e.actor, e.entity.external_id) for e in deleted] == [(Actor.AGENT, made["id"])]
 
 
-async def test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_recurrence_are_refused(
+async def test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_a_zoneless_recurrence_are_refused(
     tmp_path: Path,
 ) -> None:
     async with serving(tmp_path, SCENARIO) as google:
@@ -226,7 +226,7 @@ say(
         assert seen["elsewhere"] == [404, "notFound"]
         assert seen["not_organizer"] == [403, "forbiddenForNonOrganizer"]
         assert seen["taken"] == [409, "duplicate"]
-        assert seen["recurring"] == [501, "notImplemented"]
+        assert seen["recurring"] == [400, "required"], "a recurring event names the zone it is expanded in"
         assert seen["instances"] == [501, "notImplemented"]
         assert seen["review_self"] == [True] and seen["review_organizer"] is None
         made = [e for e in google.store.events() if e.actor is Actor.AGENT and e.operation is Operation.CREATE]
