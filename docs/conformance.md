@@ -56,7 +56,9 @@ The driver defines `DRIVER`, an instance of a `Driver` subclass (`tests/conforma
 - `id_formats` (a documented regular expression per kind, its source cited beside it), `page_floor`,
   `vendor_login`, and where the provider has them `faults()`, `declared_ids()`, `permission()`,
   `signed_in()`.
-- `absent`: capability → the vendor's reason it has no such thing. Names come from `CAPABILITIES`; each declared
+- `absent`: capability → the vendor's reason it has no such thing. `state.read_back` is for a write-only API
+  (FCM's `messages.send`, reCAPTCHA's `assessments.create`): with nothing written ever read back, property 7's reset
+  and concurrent cases have no witness in the vendor's API, and hold vacuously. Names come from `CAPABILITIES`; each declared
   exception is reported at the end of the run under "declared vendor exceptions", never silently skipped.
 
 A driver performs each operation the way a real client does and raises when the vendor refuses (`ok`,
@@ -73,22 +75,25 @@ pass, and a vendor that genuinely differs is a declared, reasoned exception in i
 ## The matrix
 
 Generated from a run of `test/conformance` with `integration-main` merged (`eb0663d`) on 2026-10-07. Each cell is
-**pass / known failure / not applicable**, counted in cases; — means the property does not apply to the provider's families. Every known failure is one line of
+**pass / known failure / not applicable**, counted in cases (the `firebase_cloud_messaging` and `recaptcha_enterprise`
+rows from the run that added them, on 2026-10-20); — means the property does not apply to the provider's families. Every known failure is one line of
 `tests/conformance/known_failures.py`, which says what was observed.
 
 | Provider | 1 Seeded | 2 Family | 3 People act | 4 Accounts | 5 Ids | 6 Record | 7 State | 8 Time | 9 Faults | 10 Listing |
 |---|---|---|---|---|---|---|---|---|---|---|
 | asana | 8 / 3 / 3 | 0 / 1 / 0 | 9 / 6 / 0 | 1 / 0 / 3 | 1 / 1 / 1 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | aws | 0 / 1 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 1 / 1 / 0 | 2 / 0 / 1 | 0 / 1 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
+| firebase_cloud_messaging | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 5 | 0 / 0 / 3 | 0 / 0 / 1 | 1 / 0 / 2 | 0 / 0 / 1 | 1 / 0 / 0 | 0 / 0 / 1 |
 | github | 0 / 5 / 2 | — | 4 / 0 / 0 | 3 / 1 / 0 | 0 / 2 / 1 | 0 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 4 / 0 / 0 | 0 / 1 / 0 |
 | google_cloud_tasks | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 0 / 1 / 1 | 3 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
 | google_workspace | 8 / 2 / 16 | 0 / 1 / 2 | 11 / 1 / 12 | 0 / 0 / 4 | 0 / 1 / 2 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 11 / 0 / 0 | 1 / 0 / 2 |
 | jira | 7 / 5 / 2 | 1 / 1 / 0 | 15 / 0 / 0 | 2 / 1 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | microsoft | 9 / 15 / 2 | 0 / 4 / 0 | 19 / 4 / 1 | 1 / 2 / 1 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 |
 | notion | 2 / 5 / 9 | 0 / 2 / 0 | 9 / 1 / 1 | 0 / 0 / 4 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 0 / 1 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
+| recaptcha_enterprise | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 5 | 0 / 0 / 3 | 0 / 0 / 1 | 1 / 0 / 2 | 0 / 0 / 1 | 1 / 0 / 0 | 0 / 0 / 1 |
 | slack | 15 / 2 / 0 | 2 / 2 / 0 | 17 / 0 / 0 | 0 / 3 / 1 | 3 / 0 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 5 / 0 / 0 | 2 / 0 / 0 |
 | youtrack | 7 / 4 / 3 | 1 / 1 / 0 | 15 / 0 / 0 | 1 / 2 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
-| **all** | **57 / 42 / 49** | **4 / 12 / 2** | **101 / 12 / 20** | **8 / 9 / 23** | **10 / 8 / 12** | **8 / 14 / 1** | **26 / 3 / 1** | **7 / 3 / 0** | **38 / 0 / 0** | **14 / 1 / 4** |
+| **all** | **59 / 42 / 61** | **4 / 12 / 2** | **103 / 12 / 26** | **8 / 9 / 33** | **10 / 8 / 18** | **8 / 14 / 3** | **28 / 3 / 5** | **7 / 3 / 2** | **40 / 0 / 0** | **14 / 1 / 6** |
 
 ### Not applicable, and why
 
@@ -106,6 +111,13 @@ a known failure.
 - aws state.concurrent: SigV4 is no OAuth credential: a world claims the host, or is the default, one at a time (docs/serve.md), and moto answers only the regions it knows, so no two worlds can claim hosts of their own
 - aws: its docs let a seed declare no id
 - aws: nothing of the shared seed is its to show
+- firebase_cloud_messaging accounts.people: the scenario's people are no FCM principals: FCM's resources are messages and a device's topic subscriptions, and who may send is IAM's business (https://firebase.google.com/docs/reference/fcm/rest), so it has no account of theirs to list or act as
+- firebase_cloud_messaging accounts.whoami: the FCM HTTP v1 API has no call that answers who the caller is (https://firebase.google.com/docs/reference/fcm/rest); reading a token's identity is Google's token endpoint's business, which this provider does not serve
+- firebase_cloud_messaging listing.people: the scenario's people are no FCM principals (see accounts.people)
+- firebase_cloud_messaging state.read_back: nothing written through the API is ever read back: messages.send is the API's only message method and no method lists or gets a message (https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages)
+- firebase_cloud_messaging time.stamp: a Message carries no time: messages.send answers only its name, and the Message resource has no timestamp (https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages)
+- firebase_cloud_messaging: its docs let a seed declare no id
+- firebase_cloud_messaging: nothing of the shared seed is its to show
 - github accounts.deactivated: GitHub.com keeps no deactivated account an organization still lists: a removed member drops out of the members listing, and suspending a user exists only on GitHub Enterprise Server.
 - github accounts.title: A GitHub account has a name, company, location and bio, and no job title anywhere in the REST or GraphQL user objects.
 - github: its docs let a seed declare no id
@@ -138,6 +150,13 @@ a known failure.
 - notion documents.spaces: Notion's page object does not say which teamspace a page sits in, so the API cannot place a page in a shared space or read one back (https://developers.notion.com/reference/page)
 - notion documents.spreadsheet: Notion has no spreadsheet document: tabular data is a database, which is not a page
 - notion: its docs let a seed declare no id
+- recaptcha_enterprise accounts.people: the scenario's people are no reCAPTCHA Enterprise principals: its resources are assessments, keys, firewall policies and related account groups, and who may call it is IAM's business (https://cloud.google.com/recaptcha/docs/reference/rest), so it has no account of theirs to list or act as
+- recaptcha_enterprise accounts.whoami: the reCAPTCHA Enterprise API has no call that answers who the caller is (https://cloud.google.com/recaptcha/docs/reference/rest); reading a token's identity is Google's token endpoint's business, which this provider does not serve
+- recaptcha_enterprise listing.people: the scenario's people are no reCAPTCHA Enterprise principals (see accounts.people)
+- recaptcha_enterprise state.read_back: nothing written through the API is ever read back: createAssessment answers from the token alone and no method lists or gets an assessment (https://cloud.google.com/recaptcha/docs/reference/rest/v1/projects.assessments)
+- recaptcha_enterprise time.stamp: an Assessment carries no time of its own: its only timestamp, tokenProperties.createTime, is when the browser minted the token, and no method reads an assessment again (https://cloud.google.com/recaptcha/docs/reference/rest/v1/projects.assessments)
+- recaptcha_enterprise: its docs let a seed declare no id
+- recaptcha_enterprise: nothing of the shared seed is its to show
 - slack accounts.vendor_login: Slack retired usernames: the user object's `name` is documented as 'Don't use this. It once indicated the preferred username for a user, but that behavior has fundamentally changed since' (https://docs.slack.dev/reference/objects/user-object); an account is its member id and display name
 - youtrack accounts.bot: YouTrack's User entity has no bot or app flag: an integration acts through a permanent token or a Hub service belonging to an ordinary user account.
 - youtrack accounts.guest: YouTrack's only guest is the single anonymous 'guest' account unauthenticated visitors act as; nobody is invited as a guest from outside, so no person's account can be one.

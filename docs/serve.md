@@ -77,6 +77,7 @@ Per provider, given only what a client sends:
 | Notion | Yes | The integration token, or a public integration's token request |
 | GitHub | Yes | The personal access token |
 | Google Drive | Yes | The refresh token or the service account's assertion, then the token Google's endpoint mints |
+| reCAPTCHA Enterprise, Firebase Cloud Messaging | Yes | The access token Google's endpoint minted for the refresh token the world claims (an `authorized_user` ADC's, answered by the Google Workspace provider from the world's `SignIn`), or an access token the world claims itself (`tests/serve/test_google_user_credentials.py`) |
 | AWS | No | SigV4 is no OAuth credential: a world claims the host, or is the default, one at a time |
 
 ## The control API

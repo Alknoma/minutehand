@@ -570,6 +570,7 @@ CAPABILITIES: dict[str, str] = {
     "documents.owner": "the API says who owns a document",
     "time.stamp": "the provider creates something that carries a creation time",
     "state.concurrent": "two worlds can be open at once and told apart by their calls",
+    "state.read_back": "something written through the vendor API is read back through it",
     "listing.people": "the account listing is paged",
     "listing.tickets": "the ticket listing is paged",
     "listing.history": "a conversation's history is paged",

@@ -139,6 +139,12 @@ class Manifest(Model):
         "its checks and what the model reviewer looks for; two of one entity kind mean the provider tells its items "
         "apart itself (`ports.provider.TypesItems`)",
     )
+    data_keys: list[str] = Field(
+        default=[],
+        description="JSON keys of its bodies that hold the service's own data under a name the record reads as a "
+        "credential's (`adapters.proxy.redact.CREDENTIAL_KEYS`): a reCAPTCHA response token, an FCM registration "
+        "token. Its calls are kept with them as sent; every other credential key is still redacted",
+    )
     state_outside_log: str | None = Field(
         default=None,
         description="What of the state this provider answers from it keeps outside the run's log, in words (e.g. "

@@ -975,7 +975,16 @@ class ProxyAddon:
                             if held is not None:
                                 self._let_go(held)
                             return False
-                        exchange = self._record(world, flow, host, original, first, manifest.key, answered_by=outcome)
+                        exchange = self._record(
+                            world,
+                            flow,
+                            host,
+                            original,
+                            first,
+                            manifest.key,
+                            answered_by=outcome,
+                            data=frozenset(k.lower() for k in manifest.data_keys),
+                        )
                         if held is not None:
                             self._let_go(held)  # after the record, whose events end where the answer's do
                         break
@@ -1043,15 +1052,17 @@ class ProxyAddon:
         *,
         late_for: str | None = None,
         answered_by: Outcome | None = None,
+        data: frozenset[str] = frozenset(),
     ) -> Exchange:
-        """`answered_by` is how a provider's app answered the call; None for a call no provider answered."""
+        """`answered_by` is how a provider's app answered the call; None for a call no provider answered. `data`
+        are the JSON keys the answering provider's bodies hold its own data under (`Manifest.data_keys`)."""
         request, response = flow.request, flow.response
         assert response is not None
         asked, asked_bytes = redact.kept(
-            request.get_content(strict=False) or b"", _first_header(request, "content-type") or ""
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or "", data=data
         )
         answered, answered_bytes = redact.kept(
-            response.get_content(strict=False) or b"", _first_header(response, "content-type") or ""
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or "", data=data
         )
         exchange = Exchange(
             method=request.method,
