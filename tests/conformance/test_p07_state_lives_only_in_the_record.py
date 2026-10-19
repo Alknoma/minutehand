@@ -18,8 +18,12 @@ type Record = Callable[[str, object], None]
 
 
 @parametrize(cases(Property.STATE, Family.ACCOUNTS, ["reset_returns_the_seeded_answers"]))
-def test_reset_returns_the_vendors_answers_to_exactly_the_seeded_ones(case: Case, harness: Harness) -> None:
+def test_reset_returns_the_vendors_answers_to_exactly_the_seeded_ones(
+    case: Case, harness: Harness, record_property: Record
+) -> None:
     driver = require(case.provider, Family.ACCOUNTS)
+    if absent(driver, "state.read_back", record_property):
+        return
     with harness.world(driver, seed(case.provider)) as world:
         with harness.session(driver, world) as session:
             seeded = session.observe()
@@ -56,7 +60,7 @@ def test_two_worlds_changed_at_the_same_moment_never_see_each_others_changes(
     case: Case, harness: Harness, record_property: Record
 ) -> None:
     driver = require(case.provider, Family.ACCOUNTS)
-    if absent(driver, "state.concurrent", record_property):
+    if absent(driver, "state.concurrent", record_property) or absent(driver, "state.read_back", record_property):
         return
     with harness.world(driver, seed(case.provider)) as one, harness.world(driver, seed(case.provider)) as two:
         with harness.session(driver, one) as first, harness.session(driver, two) as second:
