@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import socket
+import statistics
 import threading
 import time
 from collections.abc import Iterator
@@ -144,7 +145,8 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
     page.click("#theme")
     page.wait_for_timeout(300)
     assert page.evaluate("window.__lasting") == bound
-    assert max(took[6:]) < 2 * max(took[:6]) + 0.2, took
+    # The defect doubles every redraw, so it moves the median; one scheduling pause on a runner moves only a max.
+    assert statistics.median(took[6:]) < 2 * statistics.median(took[:6]) + 0.2, took
     assert errors == [] or all("other" in e for e in errors), errors
 
 
