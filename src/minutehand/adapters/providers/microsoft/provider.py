@@ -25,7 +25,7 @@ from minutehand.adapters.providers.microsoft.common import error_answer
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
 from minutehand.adapters.providers.microsoft.graph_files import DRIVE_ITEM_TYPE, Files, graph_roles, mime_of
 from minutehand.adapters.providers.microsoft.graph_mail import Mail
-from minutehand.adapters.providers.microsoft.inbound import People, activity_token
+from minutehand.adapters.providers.microsoft.inbound import ACTIVITY_TOKEN_LIFETIME_SECONDS, People, activity_token
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
     MAILBOX,
@@ -252,15 +252,22 @@ class MicrosoftProvider:
     def credential(self, asked: InboundCredentialAsk, world: Store, clock: Clock, *, secret: str) -> InboundCredential:
         """The Bot Framework's bearer token for an activity a test posts to the bot itself, signed as every pushed
         activity's is: issued by `https://api.botframework.com` for the bot's app id, naming the activity's
-        `serviceUrl`. `secret` is not used: the Bot Framework signs with its published key."""
+        `serviceUrl`. `foreign_audience` mints for an app id that is no bot of this world, and `expires_in` for a
+        token that ends that many seconds from now (negative: already expired): the tokens a bot must refuse.
+        `secret` is not used: the Bot Framework signs with its published key."""
         if not asked.service_url or not asked.audience:
             raise ValueError("a Bot Framework token names the activity's service_url and the bot's app id (audience)")
         apps = MicrosoftWorld(world).apps()
         app = next((a for a in apps if a.app_id == asked.audience), None)
-        if app is None:
+        if app is None and not asked.foreign_audience:
             known = ", ".join(a.app_id for a in apps) or "none"
-            raise ValueError(f"{asked.audience} is no bot of this world; its bots are {known}")
-        token = activity_token(app, service_url=asked.service_url)
+            raise ValueError(
+                f"{asked.audience} is no bot of this world; its bots are {known} (foreign_audience mints for it anyway)"
+            )
+        if app is not None and asked.foreign_audience:
+            raise ValueError(f"{asked.audience} is a bot of this world, not a foreign audience")
+        lifetime = ACTIVITY_TOKEN_LIFETIME_SECONDS if asked.expires_in is None else asked.expires_in
+        token = activity_token(asked.audience, service_url=asked.service_url, lifetime=lifetime)
         del secret, clock
         return InboundCredential(headers=[Header(name="Authorization", value=f"Bearer {token}")])
 

@@ -159,6 +159,16 @@ class InboundCredentialAsk(Model):
     timestamp: int | None = Field(default=None, ge=0, description="Seconds since the epoch, as the request states")
     service_url: str | None = Field(default=None, description="The Bot Framework `serviceUrl` the activity names")
     audience: str | None = Field(default=None, description="Who the token is for: the bot's app (client) id")
+    foreign_audience: bool = Field(
+        default=False,
+        description="The Bot Framework mints for an `audience` that is no bot of this world, as a token for another "
+        "app would be: what the bot under test must refuse. False refuses an audience the world has no bot for",
+    )
+    expires_in: int | None = Field(
+        default=None,
+        description="Seconds from now the Bot Framework's token expires; negative for one already expired, which "
+        "the bot under test must refuse. None is the hour every pushed activity's token lasts",
+    )
 
 
 class Header(Model):

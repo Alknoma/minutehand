@@ -352,6 +352,30 @@ def test_a_minted_bot_framework_token_passes_the_bots_check_and_a_missing_audien
         assert refused.value.status == 409
 
 
+def test_an_expired_token_and_one_for_another_bot_are_minted_signed_and_refused_by_the_bots_check(
+    served: Served,
+) -> None:
+    """The tokens a bot under test must refuse: still signed with the published key, so only the expiry or the
+    audience is wrong. An audience that is no bot of the world is minted only when asked for as foreign."""
+    with _world(served, "refused_tokens_tenant") as (world, directory):
+        bot = Bot(app_id=directory.bot_app_id, keys=_keys(served))
+        expired = world.inbound_credential(
+            "microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience=directory.bot_app_id, expires_in=-600)
+        )
+        assert "expired" in (bot.check(expired.headers[0].value, CONNECTOR) or ""), "an expired token passed"
+        foreign = world.inbound_credential(
+            "microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience="another-app", foreign_audience=True)
+        )
+        assert bot.check(foreign.headers[0].value, CONNECTOR) is not None, "a token for another app passed"
+        with pytest.raises(Refused):
+            world.inbound_credential("microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience="another-app"))
+        with pytest.raises(Refused):
+            world.inbound_credential(
+                "microsoft",
+                InboundCredentialAsk(service_url=CONNECTOR, audience=directory.bot_app_id, foreign_audience=True),
+            )
+
+
 # ------------------------------------------------------------------ out of office, as Graph shows it
 
 
