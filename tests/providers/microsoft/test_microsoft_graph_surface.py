@@ -119,6 +119,7 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 headers=app,
             )
         ).json()["value"][0]["id"]
+        calendar = (await http.get(f"{GRAPH}/me/calendar", headers=me)).json()["id"]
         sent = (
             await http.get(
                 f"{GRAPH}/me/mailFolders/sentitems/messages",
@@ -211,6 +212,7 @@ async def surface(tenant: Tenant, microsoft: Intercepted, webhook: Webhook) -> A
                 "message-id": sent,
                 "mailFolder-id": "sentitems",
                 "event-id": event,
+                "calendar-id": calendar,
                 "subscription-id": subscription,
                 "attachment-id": attached.json()["id"],
                 "q": "Brief",

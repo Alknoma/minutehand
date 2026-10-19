@@ -47,7 +47,9 @@ manifest, and because the tenant, its bot and its users are one directory every 
   expire on the run's clock. A drive's root is notified of every change to an item in it: an agent's change as
   its call is answered, a person's when the run tells watchers (`NotifiesChanges.notify`), through the same
   `subscriptions.notify`; a chat's or channel's messages of every new message; a mailbox's messages (all, or one
-  folder's: `/me/mailFolders('Inbox')/messages`) of every message put there, and its events of every change,
+  folder's: `/me/mailFolders('Inbox')/messages`) of every message put there, and its events (`/me/events`,
+  `/users/{id}/events`) of every change, `created`, `updated` and `deleted`; a subscription to one calendar's events
+  (`/me/calendars/{id}/events`), which Graph documents nowhere, is 501 naming the documented resources;
   each for at most 10,080 minutes. A test reads a world's subscriptions from outside as its entities (`GET
   /v1/worlds/{id}/entities?provider=microsoft&kind=record`, those whose `parent` is `subscriptions`): each body's
   `subscription` holds `resource`, `notificationUrl`, `clientState` and `expirationDateTime` as Graph answers them;
@@ -72,7 +74,8 @@ manifest, and because the tenant, its bot and its users are one directory every 
   `messages/delta` lists the folder, then what changed in it and, as `@removed`, what left it. A user's token
   reaches only their own mailbox (403 `ErrorAccessDenied`); an application's reaches all.
 - **Calendars** (`graph_calendar.py`): `/events`, `/calendar/events`, `/calendarView` and `/calendar/calendarView`
-  (`startDateTime` and `endDateTime` required), `/calendar`, `/calendars`, `/calendar/getSchedule`. An event is one
+  (`startDateTime` and `endDateTime` required), `calendarView/delta` of the mailbox or of its calendar
+  (`/calendars/{id}/calendarView/delta`, whose links stay on that calendar), `/calendar`, `/calendars`, `/calendar/getSchedule`. An event is one
   item in its organizer's calendar, seen with the same id from each attendee's; `isOrganizer` and
   `responseStatus` are the reading mailbox's. Times are answered in UTC; a `timeZone` sent is UTC or an IANA name.
   An event made with attendees sends a meeting request (`eventMessageRequest`, `meetingMessageType:
@@ -155,7 +158,7 @@ every pushed activity is.
 - Mail has no categories or flags (a `PATCH` of anything but `isRead`, or of a draft's subject, body, recipients or importance, is 501), and `sendMail` always saves to Sent
   Items. A message deleted from Deleted Items is gone, and `delta` lists it as removed. A draft or a forward has no sender or subject Graph composes, and a message with attachments is not forwarded. A reply's `body` is
   left out (Graph composes it with the quoted original, and no source says how); the run records what was written.
-  A tentative or declining answer to an invitation carries no subject (only "Accepted: …" is recorded). Deletions notify no subscription.
+  A tentative or declining answer to an invitation carries no subject (only "Accepted: …" is recorded). A message's deletion notifies no subscription; an event's deletion (or cancellation) notifies `deleted` on the calendars of its organizer and attendees.
 - Calendars have recurrence only as daily and weekly series (an occurrence is read, never changed), no online meetings, no `findMeetingTimes`, no working hours in `getSchedule`, no
   `Prefer: outlook.timezone` other than UTC and no Windows time zone names (501). An attendee's copy of an event
   is the organizer's one item, so an attendee cannot change or delete it (501); deleting an event sends no
