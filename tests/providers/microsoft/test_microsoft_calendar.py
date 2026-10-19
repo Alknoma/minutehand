@@ -189,3 +189,86 @@ def test_a_seeded_event_naming_its_organizer_among_its_attendees_is_refused(tmp_
     )
     with pytest.raises(ValueError, match="names someone twice"):
         seeded(tmp_path / "world.db", scenario)
+
+
+AWAY = {
+    "subject": "Out of office",
+    "isAllDay": True,
+    "showAs": "oof",
+    "start": {"dateTime": "2026-09-15T00:00:00.0000000", "timeZone": "UTC"},
+    "end": {"dateTime": "2026-09-17T00:00:00.0000000", "timeZone": "UTC"},
+}
+
+
+async def test_an_all_day_out_of_office_is_kept_shown_as_oof_and_free_busy_reads_it_away(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    """An Outlook absence is an event shown as `oof`: kept as sent, read back, counted out of office (3) in the
+    organizer's free/busy, and shown free once changed to free."""
+    async with microsoft.http() as http:
+        auth = bearer(await signed_in(http, tenant, AGENT))
+        made = await http.post(f"{GRAPH}/me/events", json=AWAY, headers=auth)
+        assert made.status_code == 201, made.text
+        assert (made.json()["isAllDay"], made.json()["showAs"]) == (True, "oof")
+        listed = await http.get(
+            f"{GRAPH}/me/calendarView",
+            params={"startDateTime": "2026-09-15T00:00:00Z", "endDateTime": "2026-09-16T00:00:00Z"},
+            headers=auth,
+        )
+        [away] = [e for e in listed.json()["value"] if e["subject"] == "Out of office"]
+        assert (away["isAllDay"], away["showAs"]) == (True, "oof")
+
+        def schedule() -> dict[str, object]:
+            return {
+                "schedules": [AGENT],
+                "startTime": {"dateTime": "2026-09-15T09:00:00", "timeZone": "UTC"},
+                "endTime": {"dateTime": "2026-09-15T10:00:00", "timeZone": "UTC"},
+                "availabilityViewInterval": 30,
+            }
+
+        app = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        busy = await http.post(f"{GRAPH}/users/{AGENT}/calendar/getSchedule", json=schedule(), headers=app)
+        assert busy.json()["value"][0]["availabilityView"] == "33", "the organizer is out of office"
+        freed = await http.patch(f"{GRAPH}/me/events/{made.json()['id']}", json={"showAs": "free"}, headers=auth)
+        assert freed.status_code == 200, freed.text
+        assert freed.json()["showAs"] == "free" and freed.json()["isAllDay"] is True
+        free = await http.post(f"{GRAPH}/users/{AGENT}/calendar/getSchedule", json=schedule(), headers=app)
+        assert free.json()["value"][0]["availabilityView"] == "00", "an event shown free leaves the time free"
+
+
+async def test_an_all_day_event_not_at_midnights_is_refused_by_name(tenant: Tenant, microsoft: Intercepted) -> None:
+    async with microsoft.http() as http:
+        auth = bearer(await signed_in(http, tenant, AGENT))
+        off = {**AWAY, "start": {"dateTime": "2026-09-15T09:00:00", "timeZone": "UTC"}}
+        refused = await http.post(f"{GRAPH}/me/events", json=off, headers=auth)
+        assert refused.status_code == 501 and "midnight" in refused.json()["error"]["message"]
+
+
+async def test_a_seeded_all_day_out_of_office_is_shown_as_oof(tmp_path: Path, microsoft: Intercepted) -> None:
+    body = microsoft_seed(OUTLOOK).model_dump(mode="json")
+    body["events"] = [{"organizer": "sofia", "subject": "Leave", "day": 1, "days": 3, "show_as": "oof"}]
+    scenario = OUTLOOK.model_copy(
+        update={"provider_seeds": [ProviderSeed.model_validate({"provider": "microsoft", "body": body})]}
+    )
+    seeded_tenant = seeded(tmp_path / "world.db", scenario)
+    async with microsoft.http() as http:
+        auth = bearer(await token(http, seeded_tenant, "https://graph.microsoft.com/.default"))
+        start = seeded_tenant.clock.now().date() + timedelta(days=1)
+        listed = await http.get(
+            f"{GRAPH}/users/sofia@example.com/calendarView",
+            params={
+                "startDateTime": f"{start.isoformat()}T00:00:00Z",
+                "endDateTime": f"{(start + timedelta(days=3)).isoformat()}T00:00:00Z",
+            },
+            headers=auth,
+        )
+        [leave] = [e for e in listed.json()["value"] if e["subject"] == "Leave"]
+        assert (leave["isAllDay"], leave["showAs"]) == (True, "oof")
+        assert leave["start"]["dateTime"].startswith(f"{start.isoformat()}T00:00:00")
+
+
+def test_a_seeded_event_neither_timed_nor_all_day_is_refused() -> None:
+    from minutehand.adapters.providers.microsoft.seed import EventSeed
+
+    with pytest.raises(ValueError, match=r"timed .* or all day"):
+        EventSeed.model_validate({"organizer": "sofia", "subject": "x", "at": "PT1H", "day": 1})

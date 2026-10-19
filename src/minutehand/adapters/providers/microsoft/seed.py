@@ -20,11 +20,11 @@
 from __future__ import annotations
 
 import mimetypes
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from minutehand.adapters.providers.microsoft import docx, wire, xlsx
 from minutehand.adapters.providers.microsoft.cards import message_actions
@@ -183,15 +183,49 @@ class AttendeeSeed(Model):
 
 
 class EventSeed(Model):
-    """An event already in its organizer's calendar when the run starts, with its attendees' answers."""
+    """An event already in its organizer's calendar when the run starts, with its attendees' answers: timed (`at`,
+    `lasts`) or all day (`day`, `days`)."""
 
     organizer: str = Field(description="Person.key, or the agent mailbox's key")
     attendees: list[AttendeeSeed] = []
     subject: str
     text: str = ""
     location: str = ""
-    at: timedelta = Field(description="When it starts, from the scenario's start; before it when negative")
-    lasts: timedelta = Field(gt=timedelta(0))
+    at: timedelta | None = Field(
+        default=None, description="A timed event: when it starts, from the scenario's start; before it when negative"
+    )
+    lasts: timedelta | None = Field(default=None, gt=timedelta(0), description="How long a timed event lasts")
+    day: int | None = Field(
+        default=None,
+        description="An all-day event: the day it starts, as days from the scenario's start's date in UTC; negative "
+        "for one already begun or past. Its start and end are UTC midnights",
+    )
+    days: int | None = Field(
+        default=None, ge=1, description="How many days an all-day event lasts (its end, exclusive)"
+    )
+    show_as: wire.ShowAs = Field(
+        default="busy", description="How it shows its organizer's time; `oof` is out of office"
+    )
+
+    @model_validator(mode="after")
+    def _timed_or_all_day(self) -> Self:
+        timed = self.at is not None and self.lasts is not None
+        all_day = self.day is not None and self.days is not None
+        named = [n for n in ("at", "lasts", "day", "days") if getattr(self, n) is not None]
+        if timed == all_day or len(named) != 2:
+            raise ValueError(
+                f"a seeded event is timed (at and lasts) or all day (day and days); {self.subject!r} names "
+                + (", ".join(named) or "none of them")
+            )
+        return self
+
+    def span(self, starts_at: datetime) -> tuple[datetime, datetime]:
+        """When it starts and ends, for a scenario starting at `starts_at`."""
+        if self.at is not None and self.lasts is not None:
+            return starts_at + self.at, starts_at + self.at + self.lasts
+        assert self.day is not None and self.days is not None
+        midnight = datetime(starts_at.year, starts_at.month, starts_at.day, tzinfo=UTC) + timedelta(days=self.day)
+        return midnight, midnight + timedelta(days=self.days)
 
 
 class MicrosoftSeed(Model):
@@ -646,12 +680,15 @@ def _mail_and_calendars(
     at = _At(scenario.starts_at)
     calendar = Calendar(world, at, Mail(world, at))
     for position, event in enumerate(spec.events):
+        starts, ends = event.span(scenario.starts_at)
         calendar.make(
             named[event.organizer],
             subject=event.subject,
             body=wire.ItemBody(contentType="text", content=event.text),
-            starts=scenario.starts_at + event.at,
-            ends=scenario.starts_at + event.at + event.lasts,
+            starts=starts,
+            ends=ends,
+            show_as=event.show_as,
+            all_day=event.day is not None,
             location=event.location,
             attendees=[
                 wire.Attendee(

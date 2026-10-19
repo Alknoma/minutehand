@@ -28,7 +28,7 @@ import operator
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from starlette.requests import Request
@@ -126,6 +126,15 @@ def moment(sent: wire.SentDateTime) -> datetime:
         return found.replace(tzinfo=ZoneInfo(zone)).astimezone(UTC)
     except (ZoneInfoNotFoundError, ValueError) as e:
         raise NotServed(f"the time zone {zone!r}: only UTC and IANA names are read") from e
+
+
+def at_midnight(sent: wire.SentDateTime) -> bool:
+    """Whether a `dateTimeTimeZone` names a midnight on its own clock, as an all-day event's start and end must."""
+    try:
+        found = datetime.fromisoformat(sent.dateTime.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (found.hour, found.minute, found.second, found.microsecond) == (0, 0, 0, 0)
 
 
 def outlook_time(at: datetime) -> wire.DateTimeTimeZone:
@@ -504,6 +513,10 @@ class Calendar:
         starts, ends = moment(asked.start), moment(asked.end)
         if ends < starts:
             raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
+        if asked.isAllDay and not (at_midnight(asked.start) and at_midnight(asked.end) and ends > starts):
+            raise NotServed(
+                "an all-day event whose start or end is not a midnight in its timeZone: Graph's answer is not recorded"
+            )
         stored = self.make(
             owner,
             subject=asked.subject or "",
@@ -515,6 +528,8 @@ class Calendar:
             actor=Actor.AGENT,
             transaction=asked.transactionId,
             recurrence=series.kept(asked.recurrence, starts) if asked.recurrence is not None else None,
+            show_as=asked.showAs or "busy",
+            all_day=bool(asked.isAllDay),
         )
         if stored.event.attendees:
             stored = await self._invite(stored, owner, stored.event.attendees)
@@ -535,6 +550,8 @@ class Calendar:
         transaction: str | None = None,
         seeded: str | None = None,
         recurrence: wire.Recurrence | None = None,
+        show_as: wire.ShowAs = "busy",
+        all_day: bool = False,
     ) -> wire.StoredEvent:
         """Write a new event in `organizer`'s calendar, inviting nobody yet. `seeded` names an event the scenario
         seeds, so its id is derived from what it is rather than where the log stands."""
@@ -561,6 +578,8 @@ class Calendar:
                 isOrganizer=True,
                 type="singleInstance" if recurrence is None else "seriesMaster",
                 recurrence=recurrence,
+                showAs=show_as,
+                isAllDay=all_day,
                 responseStatus=wire.ResponseStatus(response=wire.ResponseKind.ORGANIZER, time=now),
                 webLink=f"https://outlook.office365.com/owa/?itemid={event_id}&exvsurl=1&path=/calendar/item",
             ),
@@ -617,6 +636,19 @@ class Calendar:
         if ends < starts:
             raise NotServed("an event whose end is before its start: Graph's answer is not documented or recorded")
         event = stored.event
+        all_day = asked.isAllDay if asked.isAllDay is not None else event.isAllDay
+        if (
+            all_day
+            and (asked.start is not None or asked.end is not None or asked.isAllDay)
+            and not (
+                (asked.start is None or at_midnight(asked.start))
+                and (asked.end is None or at_midnight(asked.end))
+                and ends > starts
+            )
+        ):
+            raise NotServed(
+                "an all-day event whose start or end is not a midnight in its timeZone: Graph's answer is not recorded"
+            )
         subject = asked.subject if asked.subject is not None else event.subject
         place = asked.location.displayName if asked.location is not None else event.location.displayName
         moved = (subject, starts, ends, place) != (
@@ -651,6 +683,8 @@ class Calendar:
                         "end": outlook_time(ends),
                         "location": wire.Location(displayName=place),
                         "attendees": attendees,
+                        "showAs": asked.showAs if asked.showAs is not None else event.showAs,
+                        "isAllDay": all_day,
                         "lastModifiedDateTime": now,
                         "changeKey": outlook_id(event.id, now),
                         "odata_etag": weak_etag(outlook_id(event.id, now)),
@@ -845,13 +879,15 @@ class Calendar:
         items: list[wire.ScheduleItem] = []
         for stored in self.in_window(self.visible(user), start, end):
             attendee = self.attends(stored, user)
-            status: Literal["tentative", "busy"]
+            status: wire.ShowAs
             if stored.organizer_id != user.user.id and attendee is not None:
                 if attendee.status.response is wire.ResponseKind.DECLINED:
                     continue
                 status = "busy" if attendee.status.response is wire.ResponseKind.ACCEPTED else "tentative"
             else:
-                status = "busy"
+                status = stored.event.showAs  # the organizer's own time shows as the event says
+                if status == "free":  # enum-lint: exempt Graph's freeBusyStatus vocabulary
+                    continue
             items.append(
                 wire.ScheduleItem(
                     status=status,
