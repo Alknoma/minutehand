@@ -72,6 +72,7 @@ _USER = [
     ("POST", "/calendar/getSchedule"),
     ("GET", "/calendarView"),
     ("GET", "/calendarView/delta()"),
+    ("GET", "/calendars/{calendar-id}/calendarView/delta()"),
     ("GET", "/calendar/calendarView"),
     *(
         operation

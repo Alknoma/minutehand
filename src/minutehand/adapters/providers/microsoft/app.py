@@ -90,6 +90,11 @@ class GraphApp:
             key, rest = parts[1], lowered[2:]
         else:
             return None
+        if len(rest) == 3 and rest[0] == "calendars" and rest[2] == "events":
+            raise NotServed(
+                f"a subscription to {resource!r}: Graph documents event subscriptions on a mailbox's events only, "
+                "/me/events and /users/{id}/events (https://learn.microsoft.com/en-us/graph/outlook-change-notifications-overview)"
+            )
         if rest not in (["messages"], ["events"], ["calendar", "events"]) and not (
             len(rest) == 3 and rest[0] == "mailfolders" and rest[2] == "messages"
         ):

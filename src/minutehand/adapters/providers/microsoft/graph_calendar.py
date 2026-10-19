@@ -235,7 +235,20 @@ class Calendar:
         if rest == ["calendarView"] and method == "GET":
             return self._view(request, owner)
         if rest in (["calendarView", "delta"], ["calendarView", "delta()"]) and method == "GET":
-            return self._delta(request, owner)
+            return self._delta(request, owner, f"{GRAPH}/users/{owner.user.id}/calendarView/delta")
+        if (
+            len(rest) == 4
+            and rest[0] == "calendars"
+            and rest[2:] in (["calendarView", "delta"], ["calendarView", "delta()"])
+            and method == "GET"
+        ):
+            calendar = outlook_id(owner.user.id, "calendar")
+            if rest[1] != calendar:
+                raise NotServed(
+                    f"a calendar view delta of the calendar {rest[1]!r}, which the mailbox does not hold: Graph's "
+                    "answer is not documented or recorded"
+                )
+            return self._delta(request, owner, f"{GRAPH}/users/{owner.user.id}/calendars/{calendar}/calendarView/delta")
         if rest == ["events"] and method == "GET":
             return self._listed(request, owner, self.visible(owner), "events")
         if rest == ["events"] and method == "POST":
@@ -264,7 +277,7 @@ class Calendar:
             if len(rest) == 2 and method == "PATCH":
                 return await self._patch(request, owner, stored)
             if len(rest) == 2 and method == "DELETE":  # enum-lint: exempt HTTP's method name
-                return self._delete(owner, stored)
+                return await self._delete(owner, stored)
             if (
                 rest[2:3] == ["attachments"] and method == "POST" and len(rest) == 3
             ):  # enum-lint: exempt HTTP's method name
@@ -400,10 +413,11 @@ class Calendar:
         except (binascii.Error, ValueError, UnicodeDecodeError) as e:
             raise GraphRefusal(400, "invalidRequest", "The delta or skip token is not valid.") from e
 
-    def _delta(self, request: Request, owner: UserRecord) -> Response:
+    def _delta(self, request: Request, owner: UserRecord, link: str) -> Response:
         """`calendarView/delta`: the events in the window, paged by `$skiptoken` to a `@odata.deltaLink`; then the
         events changed since. An event outside the window that was added, deleted or updated, and one deleted, is
-        `@removed` with the reason `deleted` (event-delta)."""
+        `@removed` with the reason `deleted` (event-delta). The mailbox holds one calendar, so its calendar's view
+        (`calendars/{id}/calendarView/delta`) is the mailbox's, and `link` is the one the caller asked through."""
         for option in ("$select", "$filter", "$orderby", "$search", "$expand", "$top", "$skip", "$count"):
             if option in request.query_params:
                 raise NotServed(f"{option} on a calendar view delta: the page lists it unsupported or documents none")
@@ -433,7 +447,6 @@ class Calendar:
         prefer = request.headers["prefer"] if "prefer" in request.headers else ""
         wanted = re.search(r"odata\.maxpagesize\s*=\s*(\d+)", prefer)
         size = max(1, int(wanted.group(1))) if wanted else PAGE_DEFAULT
-        link = f"{GRAPH}/users/{owner.user.id}/calendarView/delta"
         if offset + size < len(changed):
             following = self._delta_token(since, offset + size, start, end)
             closing = f'"@odata.nextLink":{json.dumps(f"{link}?$skiptoken={following}")}'
@@ -758,10 +771,12 @@ class Calendar:
                 actor=Actor.AGENT,
                 answerable=False,
             )
-        self._delete(owner, stored)
+        await self._delete(owner, stored)
         return Response(status_code=202)
 
-    def _delete(self, owner: UserRecord, stored: wire.StoredEvent) -> Response:
+    async def _delete(self, owner: UserRecord, stored: wire.StoredEvent) -> Response:
+        """The organizer removes the event; a subscription on the calendar of the organizer or of an attendee is
+        notified `deleted` (subscription: changeType "created, updated, deleted")."""
         if stored.organizer_id != owner.user.id:
             raise NotServed(
                 "an attendee removing an event from their own calendar: an event here is its organizer's one item"
@@ -772,6 +787,7 @@ class Calendar:
             parent=CALENDAR.format(user=stored.organizer_id),
             before=RecordSnapshot(resource="event", text=stored.event.subject),
         )
+        await self._notify(stored, "deleted")
         return Response(status_code=204)
 
     async def _notify(self, stored: wire.StoredEvent, change: str) -> None:
