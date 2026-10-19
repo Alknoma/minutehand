@@ -1331,6 +1331,10 @@ class Recurrence(Aliased):
     range: RecurrenceRange
 
 
+ShowAs = Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"]
+"""How an event shows its organizer's time (`freeBusyStatus`): `oof` is out of office."""
+
+
 class Event(Aliased):
     """An event as Graph reads it from one mailbox: `isOrganizer` and `responseStatus` are that mailbox's own."""
 
@@ -1358,7 +1362,7 @@ class Event(Aliased):
     isAllDay: bool = False
     isCancelled: bool = False
     isOnlineMeeting: bool = False
-    showAs: Literal["free", "tentative", "busy", "oof", "workingElsewhere", "unknown"] = "busy"
+    showAs: ShowAs = "busy"
     type: Literal["singleInstance", "occurrence", "exception", "seriesMaster"] = "singleInstance"
     seriesMasterId: str | None = None
     recurrence: Recurrence | None = None
@@ -1444,6 +1448,8 @@ class EventRequest(Lenient):
     attendees: list[SentAttendee] | None = None
     transactionId: str | None = None
     isOnlineMeeting: bool | None = None
+    isAllDay: bool | None = None
+    showAs: ShowAs | None = None
 
 
 class CancelRequest(Lenient):

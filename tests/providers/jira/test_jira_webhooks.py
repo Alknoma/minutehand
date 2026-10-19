@@ -187,8 +187,10 @@ async def test_a_transition_the_agent_makes_is_issue_updated_and_its_comment_is_
     body = {"transition": {"id": "11"}, "update": {"comment": [{"add": {"body": _doc("Going")}}]}}
     ok(await hooked.http.post(f"{API}/issue/LAUNCH-1/transitions", json=body), 204)
     events = await _heard(hooked, receiver, 2)
-    assert [e["webhookEvent"] for e in events] == ["jira:issue_updated", "comment_created"]
-    assert events[0]["changelog"]["items"][0]["toString"] == "In Progress"
+    # Each delivery is its own POST and the reference promises no order among them, so they are read by name.
+    by_name = {e["webhookEvent"]: e for e in events}
+    assert sorted(by_name) == ["comment_created", "jira:issue_updated"]
+    assert by_name["jira:issue_updated"]["changelog"]["items"][0]["toString"] == "In Progress"
 
 
 async def test_each_delivery_has_an_identifier_of_its_own(hooked: Site, receiver: Receiver) -> None:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import socket
+import statistics
 import threading
 import time
 from collections.abc import Iterator
@@ -144,7 +145,8 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
     page.click("#theme")
     page.wait_for_timeout(300)
     assert page.evaluate("window.__lasting") == bound
-    assert max(took[6:]) < 2 * max(took[:6]) + 0.2, took
+    # The defect doubles every redraw, so it moves the median; one scheduling pause on a runner moves only a max.
+    assert statistics.median(took[6:]) < 2 * statistics.median(took[:6]) + 0.2, took
     assert errors == [] or all("other" in e for e in errors), errors
 
 
@@ -185,7 +187,8 @@ def test_a_year_long_run_loads_and_pans_and_zooms_at_interactive_speed(
             f"{max(draws):.1f} ms, median {sorted(draws)[len(draws) // 2]:.1f} ms; read model built in {built:.2f} s, calls "
             f"table drawn in {calls_shown:.2f} s"
         )
-        assert marks > 30000 and loaded < 15 and max(draws) < 120 and built < 30 and calls_shown < 2
+        # CI runners load the same page in 8.7 to 15.0 s (runs of 2026-10-19), so 15 s was a coin toss on a slow one
+        assert marks > 30000 and loaded < 30 and max(draws) < 120 and built < 30 and calls_shown < 2
         assert errors == []
     finally:
         next(served, None)

@@ -333,7 +333,8 @@ credential the platform would send with it (`POST /inbound-credential`, `MintInb
 `OpenWorld.inbound_credential(provider, InboundCredentialAsk(...))`): for Slack, `X-Slack-Request-Timestamp` and
 `X-Slack-Signature` over the body at the timestamp given, signed with the world's inbound secret for Slack; for
 the Bot Framework, `Authorization: Bearer <JWT>` for the `service_url` and `audience` given, signed with the key
-the fake publishes. A world with no Slack inbound target has no signing secret, and the request is refused. The
+the fake publishes; `expires_in` (seconds, negative for a token already expired) and `foreign_audience` (an app
+id that is no bot of the world) mint the tokens a bot must refuse. A world with no Slack inbound target has no signing secret, and the request is refused. The
 supported path is still the acts above, which build, sign and push the request themselves.
 
 ## Scoring a run you drive yourself

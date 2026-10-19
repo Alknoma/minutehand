@@ -82,17 +82,23 @@ class DeliveryRefused(AgentFailed):
         self.status = status
 
 
-def activity_token(app: AppRecord, *, service_url: str = SERVICE_URL) -> str:
-    """The Bot Framework's bearer token on an activity pushed to `app`, naming the `serviceUrl` it carries."""
+ACTIVITY_TOKEN_LIFETIME_SECONDS = 3600
+
+
+def activity_token(
+    app: AppRecord | str, *, service_url: str = SERVICE_URL, lifetime: int = ACTIVITY_TOKEN_LIFETIME_SECONDS
+) -> str:
+    """The Bot Framework's bearer token on an activity pushed to `app` (or to the app id given), naming the
+    `serviceUrl` it carries, valid for `lifetime` seconds from now (negative: already expired)."""
     token, _ = tokens.issued(
         use=TokenUse.ACTIVITY,
         issuer=tokens.BOT_FRAMEWORK_ISSUER,
-        audience=app.app_id,
+        audience=app if isinstance(app, str) else app.app_id,
         tenant=None,
         app_id=CHANNEL_APP_ID,
         user=None,
         service_url=service_url,
-        lifetime=3600,
+        lifetime=lifetime,
     )
     return token
 
