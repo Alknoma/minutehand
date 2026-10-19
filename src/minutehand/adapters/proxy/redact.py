@@ -76,16 +76,23 @@ def path(raw: str, *, also: frozenset[str] = frozenset()) -> str:
     return urlunsplit(parts._replace(query=_pairs(parts.query, also)))
 
 
-def _walk(value: object) -> object:
+def _named(name: object, data: frozenset[str]) -> bool:
+    """Whether a JSON key names a credential: one of `CREDENTIAL_KEYS` that is not one of the provider's `data` keys
+    (`Manifest.data_keys`)."""
+    return isinstance(name, str) and _is_credential(name) and name.lower() not in data
+
+
+def _walk(value: object, data: frozenset[str]) -> object:
     if isinstance(value, dict):
-        return {k: REDACTED if isinstance(k, str) and _is_credential(k) else _walk(v) for k, v in value.items()}
+        return {k: REDACTED if _named(k, data) else _walk(v, data) for k, v in value.items()}
     if isinstance(value, list):
-        return [_walk(v) for v in value]
+        return [_walk(v, data) for v in value]
     return value
 
 
-def body(text: str | None, content_type: str) -> str | None:
-    """A request or response body with credential fields redacted, in its own format."""
+def body(text: str | None, content_type: str, *, data: frozenset[str] = frozenset()) -> str | None:
+    """A request or response body with credential fields redacted, in its own format; a JSON key in `data` (lower
+    case) is the provider's data, and kept."""
     if not text:
         return text
     kind = content_type.split(";", 1)[0].strip().lower()
@@ -96,30 +103,28 @@ def body(text: str | None, content_type: str) -> str | None:
             parsed: object = json.loads(text)
         except json.JSONDecodeError:
             return text
-        redacted = _walk(parsed)
+        redacted = _walk(parsed, data)
         if redacted == parsed:
             return text
-        return _in_place(text, parsed) or json.dumps(redacted, ensure_ascii=False)
+        return _in_place(text, parsed, data) or json.dumps(redacted, ensure_ascii=False)
     return text
 
 
-def _credentials(value: object) -> list[tuple[str, str]]:
+def _credentials(value: object, data: frozenset[str]) -> list[tuple[str, str]]:
     """Every credential field holding a string, anywhere in the JSON: its name and its value."""
     if isinstance(value, dict):
-        own = [(k, v) for k, v in value.items() if isinstance(k, str) and _is_credential(k) and isinstance(v, str)]
-        return own + [
-            f for k, v in value.items() if not (isinstance(k, str) and _is_credential(k)) for f in _credentials(v)
-        ]
+        own = [(k, v) for k, v in value.items() if _named(k, data) and isinstance(k, str) and isinstance(v, str)]
+        return own + [f for k, v in value.items() if not _named(k, data) for f in _credentials(v, data)]
     if isinstance(value, list):
-        return [f for v in value for f in _credentials(v)]
+        return [f for v in value for f in _credentials(v, data)]
     return []
 
 
-def _in_place(text: str, parsed: object) -> str | None:
+def _in_place(text: str, parsed: object, data: frozenset[str]) -> str | None:
     """The JSON text with each credential's string value replaced where it stands, every other byte as it was; None
     when a credential is not a string, or its value is not written as `json.dumps` writes it, and cannot be found."""
-    found = _credentials(parsed)
-    if len(found) != len([1 for _ in _every_credential(parsed)]):
+    found = _credentials(parsed, data)
+    if len(found) != len([1 for _ in _every_credential(parsed, data)]):
         return None
     for name, value in found:
         key = re.escape(json.dumps(name))
@@ -135,25 +140,24 @@ def _in_place(text: str, parsed: object) -> str | None:
     return text
 
 
-def _every_credential(value: object) -> list[object]:
+def _every_credential(value: object, data: frozenset[str]) -> list[object]:
     """Every credential field's value, whatever its type."""
     if isinstance(value, dict):
-        own = [v for k, v in value.items() if isinstance(k, str) and _is_credential(k)]
-        return own + [
-            f for k, v in value.items() if not (isinstance(k, str) and _is_credential(k)) for f in _every_credential(v)
-        ]
+        own = [v for k, v in value.items() if _named(k, data)]
+        return own + [f for k, v in value.items() if not _named(k, data) for f in _every_credential(v, data)]
     if isinstance(value, list):
-        return [f for v in value for f in _every_credential(v)]
+        return [f for v in value for f in _every_credential(v, data)]
     return []
 
 
-def kept(raw: bytes, content_type: str) -> tuple[str | None, bytes | None]:
+def kept(raw: bytes, content_type: str, *, data: frozenset[str] = frozenset()) -> tuple[str | None, bytes | None]:
     """A body as the record keeps it: UTF-8 text with its credentials redacted, or, when it is not UTF-8 text (a
-    file, an image, JSON in another encoding), exactly its bytes. No body is (None, None)."""
+    file, an image, JSON in another encoding), exactly its bytes. No body is (None, None). `data` names the JSON keys
+    of the answering provider's own data (`Manifest.data_keys`), kept as sent."""
     if not raw:
         return None, None
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return None, raw
-    return body(text, content_type), None
+    return body(text, content_type, data=data), None
