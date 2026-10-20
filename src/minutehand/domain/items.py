@@ -93,6 +93,33 @@ class ItemCheck(StrEnum):
     DEADLINE_MISSED = "deadline_missed"  # the deadline came and no item reached the state its work waits on
 
 
+class CheckOutcome(StrEnum):
+    """What one item check said of one of the agent's items (`ItemAssessment`)."""
+
+    FAILED = "failed"  # it found what fails the run (`Counts.FAIL`)
+    REVIEW = "review"  # it found what a person is to judge (`Counts.REVIEW`)
+    HELD = "held"  # it read the item against what the files declare and found nothing
+    NOT_MEASURED = "not_measured"  # the files declare nothing it could measure this item against
+
+
+class CheckOnItem(Model):
+    check: ItemCheck
+    outcome: CheckOutcome
+    why: str | None = Field(
+        default=None, description="For NOT_MEASURED: what the files would have to declare for it to be measured"
+    )
+
+
+class ItemAssessment(Model):
+    """One write of the agent's, with every check its item type takes and what each said of it: a check that found
+    nothing is told apart from one that had nothing to measure the item against."""
+
+    seq: int = Field(description="WorldEvent.seq of the write")
+    kind: ItemKind
+    provider: str
+    checks: list[CheckOnItem]
+
+
 class Counts(StrEnum):
     """How a finding of an item check counts toward the verdict: `domain.checks.FindingKind` FAIL or REVIEW."""
 

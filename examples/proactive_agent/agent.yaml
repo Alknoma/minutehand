@@ -8,3 +8,7 @@ inbound:
   - provider: slack
     url: "http://127.0.0.1:{run.port}/slack/events"
     secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}
+# Its work is its own file (AGENT_WORK, work.json when unset): the reviewers judge what it does against it, not
+# against the prompt of its wake decider, which is a model for one part of its work.
+instructions:
+  - file: "${AGENT_WORK:-work.json}"

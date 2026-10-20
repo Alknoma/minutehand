@@ -51,6 +51,7 @@ from minutehand.domain.checks import (
     Finding,
     FindingKind,
     HealthFinding,
+    InstructionsFrom,
     Needs,
     ObligationKind,
     RuleRead,
@@ -61,7 +62,7 @@ from minutehand.domain.checks import (
 )
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import PersonCall, Wrote
-from minutehand.domain.items import ItemCheck, ProvidedTypes, TypedItem
+from minutehand.domain.items import ItemAssessment, ItemCheck, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario
@@ -95,6 +96,11 @@ class RunResult(Model):
         default=[],
         description="The simulated world's health (`checks.health`), kept apart from the agent's findings: what did "
         "not play as the files declare, and how much of what they declare the run reached",
+    )
+    items: list[ItemAssessment] = Field(
+        default=[],
+        description="Each of the agent's writes, with what each item check it takes said of it: failed, for review, "
+        "held, or not measured and why (`checks.items`)",
     )
 
     @property
@@ -209,6 +215,7 @@ class _Tally:
         self.blocked: list[str] = []
         self.notes: list[str] = []
         self.rules_read: list[RuleRead] = []
+        self.items: list[ItemAssessment] = []
         self.met = len(view.scenario.expect)
         self.unjudged = sum(1 for e in view.scenario.expect if isinstance(e, PersonAsked) and e.about is not None)
 
@@ -217,6 +224,7 @@ class _Tally:
         self.blocked += report.blocked
         self.notes += [f"{check_id}: {n}" for n in report.notes]
         self.rules_read += report.rules_read
+        self.items += report.items
 
     def result(self, view: RunView, ended: datetime | None, stop: StopReason | None) -> RunResult:
         met = self.met - self.unjudged
@@ -231,6 +239,7 @@ class _Tally:
             assessed_by=self.assessed_by,
             rules_read=self.rules_read,
             simulation=world,
+            items=self.items,
         )
 
 
@@ -491,6 +500,7 @@ def view_of(
     unmatched_calls: list[Exchange] | None = None,
     model_calls: list[WakeModelCalls] | None = None,
     agent_instructions: Sequence[str] = (),
+    declared_instructions: Sequence[str] = (),
     broken_calls: list[Exchange] | None = None,
     contract_breaks: list[Exchange] | None = None,
     dues: list[DueEntry] | None = None,
@@ -517,7 +527,9 @@ def view_of(
         replies=replies,
         commitments=commitments,
         unmatched_calls=unmatched_calls,
-        agent_instructions=list(agent_instructions),
+        agent_instructions=list(declared_instructions or agent_instructions),
+        instructions_from=InstructionsFrom.FILES if declared_instructions else InstructionsFrom.MODEL_CALLS,
+        model_prompts=list(agent_instructions) if declared_instructions else [],
         model_calls=model_calls,
         broken_calls=broken_calls or [],
         contract_breaks=contract_breaks or [],

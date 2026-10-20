@@ -22,13 +22,14 @@ model, the prompt's version and the model's reasons. Every call is kept with the
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from pydantic import Field
 
 from minutehand.checks.facts import transitions
 from minutehand.checks.items import agent_calls, machine_of, type_of
-from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
+from minutehand.domain.checks import CheckReport, Finding, FindingKind, InstructionsFrom, Needs, RunView, Severity
 from minutehand.domain.conversation import Judgement, ModelMessage, Speaker, Wrote
 from minutehand.domain.items import EVERY_EFFECT, Assessed, AssessedKind, ItemKind, TypedItem
 from minutehand.domain.scenario import Model, Person
@@ -36,7 +37,7 @@ from minutehand.domain.services import Trigger
 from minutehand.domain.world import Actor, CaptureMode, EntityRef
 from minutehand.ports.model import Model as LanguageModel
 
-REVIEW_PROMPT_VERSION = "item-review/3"
+REVIEW_PROMPT_VERSION = "item-review/4"
 
 REVIEW_PROMPT = f"""\
 You review one effect an agent had on the world during a stretch of simulated time: a message it sent, a ticket \
@@ -135,17 +136,31 @@ def _at(moment: datetime) -> str:
     return f"{moment:%Y-%m-%d %H:%M} UTC"
 
 
+def instructions_shown(view: RunView, cut: Callable[[str], str]) -> str:
+    """The agent's work as the reviewers read it, saying where it was read: its own files, or the prompts it gave its
+    model. With its files, the prompts it gave its model are shown too, as prompts for a part of its work."""
+    if not view.agent_instructions:
+        return "The agent's own instructions: not seen (its agent file names none, and no call of its to a model was recorded)"
+    given = "\n---\n".join(cut(text) for text in view.agent_instructions)
+    if view.instructions_from is InstructionsFrom.MODEL_CALLS:
+        return f"The agent's own instructions, as it gave them to its model:\n{given}"
+    said = f"The agent's own instructions, from the files its agent file names:\n{given}"
+    if view.model_prompts:
+        prompts = "\n---\n".join(cut(text) for text in view.model_prompts)
+        said += (
+            "\n\nWhat the agent told its model for one part of its work (a sub-task it hands a model; not its work, and"
+            f" no effect is held to it):\n{prompts}"
+        )
+    return said
+
+
 def shown_to_reviewer(view: RunView, effect: TypedItem) -> str:
     """Everything the reviewer is shown for one effect, as plain text in sections."""
     scenario = view.scenario
     by_email = {p.email.casefold(): p for p in scenario.people if p.email}
     parts: list[str] = []
     head: list[str] = []
-    if view.agent_instructions:
-        given = "\n---\n".join(_cut(text, INSTRUCTIONS_CUT) for text in view.agent_instructions)
-        head.append(f"The agent's own instructions, as it gave them to its model:\n{given}")
-    else:
-        head.append("The agent's own instructions: not seen (no call of its to a model was recorded)")
+    head.append(instructions_shown(view, lambda text: _cut(text, INSTRUCTIONS_CUT)))
     if scenario.goal is not None:
         head.append(f"What an older scenario told the agent to do: {scenario.goal}")
     if scenario.deadline is not None:

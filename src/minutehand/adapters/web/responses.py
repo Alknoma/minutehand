@@ -8,12 +8,14 @@ from pydantic import AwareDatetime, Field
 
 from minutehand.application.forks import ForkAccount
 from minutehand.application.model_calls import JoinedBy, ModelCall
+from minutehand.application.program import AgentProgram
 from minutehand.checks.patterns import pattern
 from minutehand.checks.runner import RunResult
 from minutehand.domain.assessments import Rule
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, Obligation, Pattern, WakeRecord
 from minutehand.domain.clock import Drawn, DrawnFrom, DueClosed, DueKind, DueSource
 from minutehand.domain.conversation import PersonCall
+from minutehand.domain.items import ItemAssessment
 from minutehand.domain.people import PersonReply, Writing
 from minutehand.domain.run import RunRecord, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import DispatchFault, Model, Scenario
@@ -60,6 +62,11 @@ class RunResponse(Model):
     fork: ForkAccount | None = Field(
         description="For a fork: where it split, what it changed, whether its restore was verified, and how its "
         "outcome differs from its parent's; None for a run started from the beginning"
+    )
+    program: AgentProgram | None = Field(
+        default=None,
+        description="What program the agent was, as kept beside the run (`program.json`): its command, folder, git "
+        "commit and whether uncommitted changes were part of it; None for an agent Minutehand did not start",
     )
 
 
@@ -158,6 +165,14 @@ class FindingsResponse(Model):
     notes: list[str]
     simulation: list[HealthFinding] = Field(
         default=[], description="The simulated world's health, kept apart from the findings (`checks.health`)"
+    )
+    items: list[ItemAssessment] = Field(
+        default=[], description="Each of the agent's writes, with what each item check it takes said of it"
+    )
+    items_reassessed: bool = Field(
+        default=False,
+        description="The run was checked before each output's result was kept: `items` are the item checks of this "
+        "Minutehand read again over its record, not what was kept when it finished",
     )
 
 
@@ -379,8 +394,13 @@ class StoredResponse(Model):
 
 
 class ModelSide(StrEnum):
+    """Whose a model call was, as the read model's `model_calls.side` says (`adapters/query/schema.py`)."""
+
     AGENT = "agent"
-    PERSON = "person"
+    PERSON = "person"  # a person's words or move
+    SERVICE = "service"  # a declared service's answer
+    JUDGE = "judge"  # a judged check, or a person's reply checked against what they know
+    ASSESSOR = "assessor"  # the reviewer of the agent's effects
 
 
 class ModelUse(Model):

@@ -1,0 +1,77 @@
+# A world, not a task: the agent brings its own work (AGENT_WORK=team.json), eight asks of six people over three weeks
+# of onboarding, each asked when it falls due, of people who each keep their own hours. Sam answers within hours.
+# Priya always answers, but takes two to three working days. Marco is on leave for the first week and Lena covers for
+# him. Jade never answers. Ana in HR answers the next working day; Tom in security within a day or two.
+name: new_starters_team
+starts_at: "2026-08-24T09:00:00Z"   # a Monday
+runs_for: P21D
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Runs onboarding for the new starters; wants each answer passed on as it comes.
+    reply: {kind: scripted, then: silent}
+  - key: sam
+    name: Sam Okafor
+    email: sam@example.com
+    profile: Finance lead; answers within a few hours, in working hours.
+    facts: ["The cost centre for new-starter equipment is CC-4410.", "The welcome lunch budget is 600 euros."]
+    reply_within: {min: PT2H, max: PT5H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    reply: {kind: scripted, replies: [{to_ask: 1, facts: ["The cost centre for new-starter equipment is CC-4410."]}, {to_ask: 2, facts: ["The welcome lunch budget is 600 euros."]}]}
+  - key: priya
+    name: Priya Nair
+    email: priya@example.com
+    profile: Legal counsel; reads every request and always answers, but takes two to three working days.
+    facts: ["The Northwind renewal is signed off under reference NW-2291.", "Five of the six new starters have signed their NDAs; Lee Park has not yet."]
+    reply_within: {min: P2D, max: P3D}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    reply: {kind: scripted, replies: [{to_ask: 1, facts: ["The Northwind renewal is signed off under reference NW-2291."]}]}
+  - key: marco
+    name: Marco Ruiz
+    email: marco@example.com
+    profile: Runs facilities; on leave for the first week, and his automatic reply names Lena as cover.
+    absences:
+      - {trigger: at_start, lasts: P7D, delegate: lena, reason: on leave}
+    facts: ["Training room 4B is booked for the new starters' first day."]
+    reply_within: {min: PT3H, max: PT6H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    reply: {kind: scripted, replies: [{to_ask: 1, facts: ["Training room 4B is booked for the new starters' first day."]}]}
+  - key: lena
+    name: Lena Fischer
+    email: lena@example.com
+    profile: Facilities coordinator; covers for Marco while he is away.
+    reply: {kind: silent}
+  - key: ana
+    name: Ana Torres
+    email: ana@example.com
+    profile: HR partner for onboarding; answers the next working day.
+    facts: ["All six new starters start on Monday; their contracts are in folder HR-0907."]
+    reply_within: {min: PT6H, max: P1D}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    reply: {kind: scripted, replies: [{to_ask: 1, facts: ["All six new starters start on Monday; their contracts are in folder HR-0907."]}]}
+  - key: tom
+    name: Tom Becker
+    email: tom@example.com
+    profile: Runs building security; answers within a day or two.
+    facts: ["The six badges will be ready to collect from desk B12 on Friday."]
+    reply_within: {min: P1D, max: P2D}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+    reply: {kind: scripted, replies: [{to_ask: 1, facts: ["The six badges will be ready to collect from desk B12 on Friday."]}]}
+  - key: jade
+    name: Jade Kim
+    email: jade@example.com
+    profile: IT support, buried in tickets; does not answer.
+    reply: {kind: silent}
+# What its work owes Owen, as facts only each person can say, each carried by their script's step whatever words the
+# model writes: each answer passed on to him. An answer never passed on
+# fails the run, read from the record (`relayed`), not judged.
+expect:
+  - {kind: relayed, said_by: sam, to: owen, holding: ["CC-4410"]}
+  - {kind: relayed, said_by: marco, to: owen, holding: ["4B"]}
+  - {kind: relayed, said_by: priya, to: owen, holding: ["NW-2291"]}
+  - {kind: relayed, said_by: ana, to: owen, holding: ["HR-0907"]}
+  - {kind: relayed, said_by: tom, to: owen, holding: ["B12"]}
+  - {kind: relayed, said_by: sam, to: owen, holding: ["600"]}
+expect_outcome: failed   # the example agent's known mistakes: it gives up, then never passes on a late answer
+

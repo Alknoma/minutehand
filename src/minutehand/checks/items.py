@@ -34,7 +34,10 @@ from minutehand.domain.items import (
     BUILT_IN,
     FINDING,
     Assessed,
+    CheckOnItem,
+    CheckOutcome,
     Counts,
+    ItemAssessment,
     ItemCheck,
     ItemKind,
     ItemType,
@@ -154,7 +157,8 @@ class ItemChecks:
             {e for f in found if f.check is ItemCheck.DUPLICATE for e in f.evidence[-1:]}
         )
         return CheckReport(
-            findings=[_finding(f) for f in sorted(found, key=lambda f: (f.at or view.scenario.starts_at, f.check))]
+            findings=[_finding(f) for f in sorted(found, key=lambda f: (f.at or view.scenario.starts_at, f.check))],
+            items=reader.assessments(found),
         )
 
 
@@ -743,6 +747,90 @@ class _Reader:
                 [],
                 [c.position for c in done],
             )
+
+    # -- what each check said of each item ----------------------------------------------------------------------
+
+    def assessments(self, found: list[_Found]) -> list[ItemAssessment]:
+        """Each of the agent's writes, with every check its item type takes: what it found, that it found nothing,
+        or that the files declare nothing to measure this item against. A finding is of the last of its evidence that
+        is one of the agent's items taking its check: a duplicate is of the second message, not the first."""
+        mine = {t.seq: t for t in self.mine if t.operation in _WRITES}
+        flagged: dict[tuple[int, ItemCheck], Counts] = {}
+        for f in found:
+            of = next((s for s in reversed(f.evidence) if s in mine and self.takes(mine[s], f.check)), None)
+            if of is not None and flagged.get((of, f.check)) is not Counts.FAIL:
+                flagged[(of, f.check)] = FINDING[f.check].counts
+        chased = self._chased()
+        out: list[ItemAssessment] = []
+        for t in mine.values():
+            checks: list[CheckOnItem] = []
+            for check in type_of(self.view, t).checks:
+                counts = flagged.get((t.seq, check))
+                if counts is not None:
+                    outcome = CheckOutcome.FAILED if counts is Counts.FAIL else CheckOutcome.REVIEW
+                    checks.append(CheckOnItem(check=check, outcome=outcome))
+                    continue
+                duplicate = check is ItemCheck.REPEATED_WITHOUT_NEWS and (t.seq, ItemCheck.DUPLICATE) in flagged
+                why = (
+                    "it is a duplicate, which the duplicate check found"
+                    if duplicate
+                    else self._unmeasured(t, check, chased)
+                )
+                outcome = CheckOutcome.HELD if why is None else CheckOutcome.NOT_MEASURED
+                checks.append(CheckOnItem(check=check, outcome=outcome, why=why))
+            out.append(ItemAssessment(seq=t.seq, kind=t.kind, provider=t.provider, checks=checks))
+        return out
+
+    def _chased(self) -> dict[int, str | None]:
+        """Each follow-up on an open ask, by seq: None when `inside_reply_window` measures it, else why it cannot."""
+        chased: dict[int, str | None] = {}
+        for o in self._asks():
+            person = self.by_key.get(o.person or "")
+            for seq in o.agent_touches:
+                t = self.by_seq.get(seq)
+                if t is None or t.kind not in _SAID or t.operation is not Operation.CREATE:
+                    continue
+                if o.settled_at is not None and t.at >= o.settled_at:
+                    break
+                if person is None:
+                    chased[seq] = "the ask is of no one in the scenario"
+                elif person.reminded is not None:
+                    chased[seq] = f"{person.key} declares `reminded`: being chased is theirs to allow"
+                elif o.patience is None or not _declares_when(person):
+                    chased[seq] = f"{person.key} declares no time to answer (`reply_within` or a reply `delay`)"
+                else:
+                    chased[seq] = None
+        return chased
+
+    def _unmeasured(self, t: TypedItem, check: ItemCheck, chased: dict[int, str | None]) -> str | None:
+        """Why a check has nothing to measure this item against, or None when it was measured. Each reason is the
+        condition under which the check itself passes the item by."""
+        people = [p for p in (self.person(e) for e in t.people) if p is not None]
+        if check is ItemCheck.AFTER_DEADLINE:
+            return "the scenario declares no deadline" if self.view.scenario.deadline is None else None
+        if check is ItemCheck.DUPLICATE:
+            return "it has no words to compare" if t.operation is not Operation.CREATE or not _plain(t.text) else None
+        if check is ItemCheck.INSIDE_REPLY_WINDOW:
+            return chased[t.seq] if t.seq in chased else "it is not a follow-up on an open ask"
+        if check is ItemCheck.TO_SOMEONE_AWAY:
+            if not people:
+                return "it is to no one in the scenario"
+            if not any(a.delegate is not None for p in people for a in p.absences):
+                return f"{', '.join(p.key for p in people)} {'declares' if len(people) == 1 else 'declare'} no absence with someone covering"
+            return None
+        if check is ItemCheck.BREAKS_THREAD:
+            return None if any(o.opened_by == t.seq for o in self._asks()) else "it opens no new ask"
+        if check is ItemCheck.REPEATED_WITHOUT_NEWS:
+            asked = {o.opened_by for o in self.view.obligations} | {
+                s for o in self.view.obligations for s in o.agent_touches
+            }
+            if t.seq in asked:
+                return "it is an ask or a follow-up on one, which the reply-window check measures"
+            return None if people else "it is to no one in the scenario"
+        if check is ItemCheck.OUTSIDE_WORKING_HOURS:
+            declared = any(p.working_hours is not None or p.absences for p in people)
+            return None if declared else "no attendee declares working hours or an absence"
+        return None
 
     # -- helpers -----------------------------------------------------------------------------------------------
 

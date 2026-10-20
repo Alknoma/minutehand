@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
+from minutehand.domain.checks import InstructionsFrom
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.support.people import people_environment
@@ -51,6 +52,45 @@ def play(world: str, tmp_path: Path) -> tuple[VerdictKind, list[tuple[str, str, 
         "run", f"worlds/{world}.yaml", "--agent", "agent.yaml", "--state", str(state), "--", sys.executable, "agent.py"
     )
     return session.load(state, run_id).result.verdict.kind, _said(state, run_id)
+
+
+def test_four_people_four_ways_and_each_message_says_what_every_check_made_of_it(tmp_path: Path) -> None:
+    """The team world (`team.json`): its one-day patience chases Priya inside her declared window and writes to
+    Marco while Lena covers his leave, each for review, and every message carries each check its kind takes."""
+    state = tmp_path / "state"
+    done = subprocess.run(
+        [
+            str(MINUTEHAND),
+            "run",
+            "worlds/team.yaml",
+            "--agent",
+            "agent.yaml",
+            "--state",
+            str(state),
+            "--",
+            sys.executable,
+            "agent.py",
+        ],
+        cwd=EXAMPLE,
+        env=ENV | people_environment() | {"AGENT_WORK": "team.json"},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 1, done.stdout + done.stderr[-3000:]  # its verdict: failed
+    result = session.load(state, done.stdout.split()[1].rstrip(":")).result
+    flagged = {(f.check, f.kind.value) for f in result.findings}
+    assert ("inside_reply_window", "review") in flagged and ("to_someone_away", "review") in flagged
+    # what its work owes Owen, declared: each late answer it gave up on and never passed on fails the run, read from
+    # the record; the early chase and the message to someone away stay for review
+    relayed = sorted(
+        f.message.split("'")[1] for f in result.findings if f.check == "expectations" and f.kind.value == "fail"
+    )
+    assert result.verdict.kind is VerdictKind.FAILED and relayed == ["4B", "B12", "NW-2291"], relayed
+    assert result.items and all(i.checks for i in result.items), "every message says what each check made of it"
+    # its model decides only when it wakes: what the reviewers judge it by is its work file, kept with the run
+    seen = session.recorded_view(state, done.stdout.split()[1].rstrip(":"))
+    assert seen.instructions_from is InstructionsFrom.FILES and "Northwind" in seen.agent_instructions[0]
 
 
 def test_sam_answers_and_owen_is_told_his_answer(tmp_path: Path) -> None:

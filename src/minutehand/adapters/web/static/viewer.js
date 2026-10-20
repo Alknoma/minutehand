@@ -1,11 +1,11 @@
 /* The run viewer. It reads the JSON API of `minutehand view` and draws one run of any length:
 
    - the top bar: the run, its verdict, seed, simulated and real span, deadline and how it stopped; the headline
-     numbers, each a link to its view; the failed and review findings by severity, each a link to its moment;
-   - the timeline (timeline.js), the full width of the middle, one lane per kind of thing and per person, provider
-     and host, binned when dense;
-   - the views under it (views.js), one measure each, reached from the left;
-   - the inspector on the right (inspector.js), for whatever is selected anywhere.
+     numbers, each a link to its view;
+   - one page at a time beside the rail on the left: the calendar the run opens on, the timeline (timeline.js, one
+     lane per kind of thing and per person, provider and host, binned when dense), and the views (views.js), one
+     measure each;
+   - the inspector (inspector.js), a column that opens on the right for whatever is selected, and closes with it.
 
    Every listener is bound once, here, when the page loads, to the page's own shell or to an element a render
    replaces whole: re-drawing never adds one to anything that outlives the draw (the old page added one to its main
@@ -14,10 +14,11 @@
    Everything it loads comes from this server: the libraries are vendored under /static/vendor. */
 
 import { API, get, RunCache } from "./api.js";
-import { esc, $, words, when, span, seconds, count, plural, clip, median, remembered, remember } from "./util.js";
+import { esc, $, words, when, span, seconds, plural, remembered, remember } from "./util.js";
 import { Timeline } from "./timeline.js";
 import { VIEWS, VERDICT_WORD, findingTitle, batchOf } from "./views.js";
 import { inspect } from "./inspector.js";
+import { markHtml, RESULT_WORD } from "./outputs.js";
 
 const LIST_REFRESH = 5000, RUNNING_REFRESH = 3000;
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
@@ -27,7 +28,7 @@ const STOP_WORD = {
 };
 
 const S = {
-  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "findings", sel: null, memo: {}, filter: "",
+  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "time", sel: null, memo: {}, filter: "",
   handle: {}, timer: null, generation: 0, pendingWindow: null
 };
 
@@ -43,6 +44,10 @@ const ctx = {
   get batches() { return S.batches; },
   get loaded() { return S.loaded; },
   select: (ref) => select(ref, "view"),
+  scaleTo: (sc, at) => scaleTo(sc, at),
+  // the stretch the list reads: where a picked scale is going, while the axis animates there; else what it shows
+  window: () => (S.going && Date.now() < S.going.until ? S.going.win.slice() : tl.win.slice()),
+  remember: () => rememberWhere(),
   labelOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.label[l[0]] : null; },
   simOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.sim[l[0]] : NaN; },
   personKey(key) { const p = S.base.run.scenario.people.find((x) => x.key === key); return p ? p.name : key || "someone"; },
@@ -56,10 +61,13 @@ const ctx = {
 
 /* ---------- the timeline, made once ---------- */
 
-let windowTimer = null;
+let windowTimer = null, listTimer = null;
 const tl = new Timeline($("timeline"), {
   onSelect: (ref) => select(ref, "timeline"),
-  onWindow: () => { clearTimeout(windowTimer); windowTimer = setTimeout(rememberWhere, 250); },
+  onWindow: () => {
+    clearTimeout(windowTimer); windowTimer = setTimeout(rememberWhere, 250);
+    clearTimeout(listTimer); listTimer = setTimeout(() => { if (S.handle.onWindow) { S.handle.onWindow(); } }, 120);
+  },
   onFilter: (f) => { S.filter = f; if (S.handle.onFilter) { S.handle.onFilter(); } },
   // how long each frame of the timeline took, the last hundred, for whoever measures the page
   onDraw: (d) => { const kept = window.__viewerDraws || []; kept.push(d.ms); window.__viewerDraws = kept.slice(-100); }
@@ -69,12 +77,14 @@ const tl = new Timeline($("timeline"), {
 
 function where() {
   const h = new URLSearchParams(location.hash.slice(1));
-  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w") };
+  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w"), scale: h.get("scale"), at: h.get("at"), rows: h.get("rows") };
 }
 function rememberWhere() {
   const h = new URLSearchParams();
   if (S.run) { h.set("run", S.run); }
-  if (S.view !== "findings") { h.set("view", S.view); }
+  if (S.view !== "time") { h.set("view", S.view); }
+  if (S.view === "time" && S.memo.scale && S.memo.scale !== "all") { h.set("scale", S.memo.scale); h.set("at", String(S.memo.at)); }
+  if (S.memo.allRows) { h.set("rows", "all"); }
   if (S.sel) { h.set("sel", S.sel); }
   if (tl.clock !== "sim") { h.set("clock", tl.clock); }
   if (tl.data) { h.set("w", Math.round(tl.win[0]) + "~" + Math.round(tl.win[1])); }
@@ -136,8 +146,9 @@ async function loadList() {
 function open(run, at) {
   clearTimeout(S.timer);
   S.generation += 1;
-  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.memo = {}; S.handle = {};
-  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "findings";
+  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.handle = {};
+  S.memo = { scale: SCALES.some((f) => f[0] === at.scale) ? at.scale : "all", at: at.at ? Number(at.at) : null, allRows: at.rows === "all" };
+  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "time";
   S.sel = at.sel || null;
   S.pendingWindow = at.w ? at.w.split("~").map(Number) : null;
   tl.hidden = new Set();
@@ -155,9 +166,9 @@ async function load(fresh) {
     if (generation !== S.generation) { return; }
     S.base = { run: r, findings, scorecard: scorecard.scorecard, timeline };
     timeline.run = run;
-    tl.setData(timeline, findings.findings);
+    tl.setData(derive(timeline, findings.items, S.memo.allRows), findings.findings);
     if (fresh) {
-      if (S.pendingWindow && S.pendingWindow.every(isFinite)) { tl.setWindow(S.pendingWindow[0], S.pendingWindow[1], false); } else { tl.fit(); }
+      if (S.pendingWindow && S.pendingWindow.every(isFinite)) { tl.setWindow(S.pendingWindow[0], S.pendingWindow[1], false); } else if (S.memo.scale !== "all") { scaleTo(S.memo.scale, S.memo.at, false); } else { tl.fit(); }
     }
     renderHeader(); renderNav();
     if (fresh) { await renderView(); } else if (S.handle.refresh) { S.handle.refresh(); }
@@ -184,49 +195,30 @@ async function prefetch(generation) {
 
 /* ---------- the top bar ---------- */
 
+/** The top bar says which run this is and whether it passed: the scenario and run, the agent's code as it ran (its
+    commit, and whether uncommitted changes were part of it), what a fork changed from its parent, the verdict, and how
+    much time was simulated in how little. What went wrong is the pages' to show: a long run has too much of it for a
+    bar. Reference facts (seed, the span in dates, deadline, how it stopped) are in the title of the time. */
 function renderHeader() {
-  const b = S.base, r = b.run, sc = r.scenario, rec = r.record, card = b.scorecard;
+  const b = S.base, r = b.run, sc = r.scenario, rec = r.record;
   const row = S.runs.find((x) => x.run_id === r.run_id);
   $("picker-label").textContent = (row ? runLabel(row) : words(sc.name)) + " · " + r.run_id;
   const verdict = b.findings.verdict;
   const vKind = r.finished && verdict ? verdict.kind : "running";
-  const simSecs = (Date.parse(r.reached) - Date.parse(sc.starts_at)) / 1000;
-  const facts = [
-    ["seed", rec ? rec.seed : sc.seed !== null && sc.seed !== undefined ? sc.seed : "—"],
-    ["simulated", when(sc.starts_at, { year: true }) + " → " + when(r.reached, { year: true }) + " (" + span(simSecs) + ")"],
-    ["real", rec ? span(rec.wall_seconds) : "running"],
-    ["deadline", sc.deadline_after ? span(seconds(sc.deadline_after)) + " in" : "none"],
-    ["stopped", rec ? STOP_WORD[rec.stop] || words(rec.stop) : "not yet"]
-  ];
+  const simSecs = (Date.parse(r.reached) - Date.parse(sc.starts_at)) / 1000, simDays = simSecs / 86400;
+  const simulated = (simDays >= 2 ? Math.round(simDays) + " days" : span(simSecs)) + " simulated" + (rec ? " in " + span(rec.wall_seconds) : " so far");
+  const details = ["seed " + (rec ? rec.seed : sc.seed !== null && sc.seed !== undefined ? sc.seed : "—"), when(sc.starts_at) + " → " + when(r.reached),
+    "deadline " + (sc.deadline_after ? span(seconds(sc.deadline_after)) + " in" : "none"), "stopped: " + (rec ? STOP_WORD[rec.stop] || words(rec.stop) : "not yet")].join(" · ");
+  const p = r.program;
+  const agent = p ? '<span class="agent-code" title="' + esc(p.command.join(" ") + "\nin " + p.directory) + '">agent ' + esc(p.commit ? p.commit.slice(0, 7) : p.code ? "code " + p.code.slice(0, 7) : "code not named") + (p.uncommitted ? " + uncommitted changes" : "") + "</span>" : "";
+  const fork = row && row.parent_run ? '<a href="#" class="fork" data-open="' + esc(row.parent_run) + '">fork of ' + esc(row.parent_run) + "</a>" + (row.changed ? '<span class="changed">' + esc("changed: " + row.changed) + "</span>" : "") : "";
+  const early = rec && ABNORMAL_STOP.has(rec.stop) ? '<span class="stopped">' + esc("Stopped early: " + (STOP_WORD[rec.stop] || words(rec.stop))) + "</span>" : "";
   $("identity").innerHTML = '<span class="verdict ' + esc(vKind) + '" title="' + esc(verdict ? verdict.words : "Still running") + '">' + esc(vKind === "running" ? "Running" : VERDICT_WORD[vKind]) + "</span>" +
-    "<h1>" + esc(words(sc.name)) + "</h1>" +
-    '<span class="facts">' + facts.map((f) => esc(f[0]) + " <b>" + esc(f[1]) + "</b>").join("") + (row && row.parent_run ? " <b>fork of " + esc(row.parent_run) + "</b>" : "") + "</span>";
+    agent + fork + early + '<span class="spacer"></span><span class="simulated" title="' + esc(details) + '">' + esc(simulated) + "</span>";
   document.title = words(sc.name) + " · " + (vKind === "running" ? "running" : VERDICT_WORD[vKind]) + " · Minutehand";
-
-  const f = b.findings.findings, fails = f.filter((x) => x.finding.kind === "fail").length, reviews = f.filter((x) => x.finding.kind === "review").length;
-  const a = S.loaded.assessments, held = a ? a.rules.filter((x) => x.status === "passed").length : null;
-  const judged = a ? a.rules.filter((x) => ["passed", "failed", "review"].indexOf(x.status) >= 0) : [];
-  const replies = S.loaded.people ? S.loaded.people.people.flatMap((p) => p.replies.map((x) => x.reply.drawn ? (Date.parse(x.reply.at) - Date.parse(x.reply.drawn.asked_at)) / 1000 : null)).filter((x) => x !== null) : null;
-  const tokens = S.loaded.modelUse ? S.loaded.modelUse.calls.reduce((s, c) => s + (c.input_tokens || 0) + (c.output_tokens || 0), 0) : null;
-  const numbers = [
-    ["findings", r.finished ? String(fails) : "—", fails ? "failed" + (reviews ? ", " + reviews + " to review" : "") : reviews ? reviews + " to review" : "failed", fails ? "fail" : reviews ? "review" : r.finished ? "pass" : ""],
-    ["assessments", a ? (judged.length ? held + "/" + judged.length : a.rules.length ? "—" : "none") : "…", judged.length < (a ? a.rules.length : 0) ? "rules held, of those read" : "rules held", a && a.rules.some((x) => x.status === "failed") ? "fail" : ""],
-    ["followups", card ? String(card.follow_ups_made) : "—", "follow-ups", ""],
-    ["replies", replies ? (replies.length ? span(median(replies)) : "—") : "…", "median reply", ""],
-    ["response", card && card.slowest_reaction ? span(seconds(card.slowest_reaction)) : "—", "slowest comeback", ""],
-    ["cost", tokens === null ? "…" : count(tokens), "model tokens", ""],
-    ["conversations", card ? String(card.messages_to_people) : "—", "messages sent", ""]
-  ];
-  $("headline").innerHTML = numbers.map((n) => '<a href="#" data-view="' + n[0] + '"><span class="v ' + n[3] + '">' + esc(n[1]) + '</span><span class="k">' + esc(n[2]) + "</span></a>").join("");
-
-  const problems = f.filter((x) => x.finding.kind !== "informational").sort((p, q) => KIND_ORDER[p.finding.kind] - KIND_ORDER[q.finding.kind] || p.number - q.number);
-  const unwell = (b.findings.simulation || []).filter((x) => x.incomplete);
-  const world = unwell.map((x) => '<a href="#" class="problem" data-view="simulation" title="' + esc(x.words) + '"><span class="chip fail">simulation</span><span class="t">' + esc(words(x.kind) + ": " + clip(x.words, 90)) + "</span></a>").join("");
-  $("problems").innerHTML = !r.finished ? '<span class="none">The checks run when the run finishes.</span>'
-    : world + (problems.length ? problems.slice(0, 30).map((x) => '<button type="button" class="problem" data-sel="finding:' + x.number + '" aria-pressed="' + (S.sel === "finding:" + x.number) + '" title="' + esc(x.finding.message) + '"><span class="chip ' + x.finding.kind + '">' + esc(x.finding.kind) + '</span><span class="t">' + esc(findingTitle(x) + ": " + clip(x.finding.message, 90)) + "</span></button>").join("") +
-      (problems.length > 30 ? '<a href="#" data-view="findings" class="none">and ' + (problems.length - 30) + " more</a>" : "")
-      : '<span class="none">' + esc(verdict ? verdict.words : "No check failed.") + "</span>");
 }
+
+const ABNORMAL_STOP = new Set(["wake_limit", "agent_failed", "closed", "environment_failed"]);
 
 function renderNav() {
   let html = "", group = null;
@@ -241,14 +233,97 @@ function renderNav() {
 
 async function renderView() {
   const v = VIEWS.find((x) => x.id === S.view) || VIEWS[0], generation = S.generation, host = $("view");
+  // the run over time is one page in the format picked; the timeline's lanes are one of its formats
+  // the run over time is one page: its axis, at the scale picked, and the list of what the axis shows under it
+  document.querySelector(".center").classList.toggle("time-page", v.id === "time");
+  renderScales();
   S.handle = {};
-  host.innerHTML = '<p class="empty">Reading…</p>';
+  // each draw gets a page of its own: a view still reading when another is opened draws into a page no longer shown
+  host.innerHTML = '<div class="view-page"><p class="empty">Reading…</p></div>';
+  const page = host.firstChild;
   try {
-    const handle = await v.render(host, ctx);
-    if (generation === S.generation && S.view === v.id) { S.handle = handle || {}; }
+    const handle = await v.render(page, ctx);
+    if (generation === S.generation && S.view === v.id && page.isConnected) { S.handle = handle || {}; }
   } catch (e) {
-    if (generation === S.generation) { host.innerHTML = '<p class="empty">Could not read this view: ' + esc(e.message) + "</p>"; }
+    if (generation === S.generation) { page.innerHTML = '<p class="empty">Could not read this view: ' + esc(e.message) + "</p>"; }
   }
+}
+
+/* ---------- the run over time: one axis, its scale picked ---------- */
+
+const SCALES = [["all", "Whole run"], ["month", "Month"], ["week", "Week"], ["day", "Day"]];
+const UNIT = { month: () => d3.utcMonth, week: () => d3.utcMonday, day: () => d3.utcDay };
+
+/** The timeline's data for the time page: three rows read first (when the agent woke, each of its outputs in its
+    result's colour, each reply from a person), then, with every row shown, the record's own lanes. */
+function derive(tl, items, all) {
+  const result = new Map((items || []).map((i) => [ "ev:" + i.seq, outcomeOf(i) ])), itemKind = new Map((items || []).map((i) => ["ev:" + i.seq, i.kind]));
+  // the outputs' row is banded by result, so a mark's height in it says what the checks made of it
+  const bands = [["out_failed", "failed"], ["out_review", "to review"], ["out_held", "passed"], ["out_unmeasured", "not measured"]];
+  const lanes = [{ key: "sum:woke", kind: "wakes", label: "Agent woke", marks: 0, height: 18 },
+    { key: "sum:outputs", kind: "wakes", label: "Outputs", marks: 0, height: 64, bands },
+    { key: "sum:heard", kind: "person", label: "Replies from people", marks: 0 }];
+  const drawn = new Set(), m = tl.marks, out = { sim: [], sim_end: [], real: [], real_end: [], lane: [], kind: [], ref: [], label: [], item: [] };
+  const push = (i, lane, kind) => {
+    out.sim.push(m.sim[i]); out.sim_end.push(kind === "wake" ? null : m.sim_end[i]); out.real.push(m.real[i]); out.real_end.push(m.real_end[i]);
+    out.lane.push(lane); out.kind.push(kind); out.ref.push(m.ref[i]); out.label.push(m.label[i]); lanes[lane].marks += 1;
+    // an output's mark is its item's shape, as everywhere on the page: the kind of item, coloured by its result
+    out.item.push(lane === 1 ? itemKind.get(m.ref[i]) || null : null);
+  };
+  if (all) { tl.lanes.forEach((l) => lanes.push(Object.assign({}, l, { marks: 0 }))); }
+  for (let i = 0; i < m.sim.length; i++) {
+    if (m.kind[i] === "wake") { push(i, 0, "wake"); }
+    if (result.has(m.ref[i]) && !drawn.has(m.ref[i])) { drawn.add(m.ref[i]); push(i, 1, "out_" + result.get(m.ref[i])); }
+    if (m.kind[i] === "said") { push(i, 2, "said"); }
+    if (all) { push(i, 3 + m.lane[i], m.kind[i]); }
+  }
+  // keep the record's order: by simulated time, then as written
+  const order = out.sim.map((_, k) => k).sort((p, q) => out.sim[p] - out.sim[q] || p - q);
+  const sorted = {};
+  for (const key in out) { sorted[key] = order.map((k) => out[key][k]); }
+  return Object.assign({}, tl, { lanes, marks: sorted });
+}
+function outcomeOf(item) {
+  const said = item.checks.map((c) => c.outcome);
+  return said.indexOf("failed") >= 0 ? "failed" : said.indexOf("review") >= 0 ? "review" : said.indexOf("held") >= 0 ? "held" : "unmeasured";
+}
+
+/** The scale bar: the scale, the period it is on with a step either way, and whether every row is shown. */
+function renderScales() {
+  const bar = $("formats");
+  bar.hidden = S.view !== "time" || !S.base;
+  if (bar.hidden) { return; }
+  const sc = S.memo.scale || "all", at = S.memo.at;
+  const label = sc === "all" ? "" : sc === "month" ? d3.utcFormat("%B %Y")(new Date(at)) : sc === "week" ? "Week of " + d3.utcFormat("%-d %B %Y")(new Date(at)) : d3.utcFormat("%A %-d %B %Y")(new Date(at));
+  bar.innerHTML = '<span class="seg">' + SCALES.map((f) => '<button type="button" data-scale="' + f[0] + '" aria-pressed="' + (sc === f[0]) + '">' + f[1] + "</button>").join("") + "</span>" +
+    (sc !== "all" ? '<span class="on-day"><button type="button" data-step="-1" aria-label="Before">‹</button><b>' + esc(label) + '</b><button type="button" data-step="1" aria-label="After">›</button></span>' : "") +
+    '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>" +
+    // what a mark is, there when asked: each row names its marks, every mark is a tick at its moment, and its colour
+    // is the one thing its row does not say
+    '<button type="button" class="key-button" data-key aria-expanded="' + keyOpen() + '">Key</button>' +
+    '<div class="legend"' + (keyOpen() ? "" : " hidden") + '><span>Each row names what its ticks are; a tick is a moment.</span>' +
+    '<span>Colour: ' + ["failed", "review", "held", "unmeasured"].map((r) => markHtml("", r) + esc(RESULT_WORD[r].toLowerCase())).join(" ") +
+    '</span><span>In Outputs, a tick\'s band is its result too. Ticks at one moment sit side by side.</span></div>';
+}
+
+function keyOpen() { return remembered("minutehand.key", "") === "open"; }
+
+/** Show a period at a scale: the axis moves to it (animated), and the list under it follows. */
+function scaleTo(sc, at, animate) {
+  if (!SCALES.some((x) => x[0] === sc)) { return; }
+  S.memo.scale = sc;
+  const [lo, hi] = S.base ? [S.base.timeline.starts, S.base.timeline.reached] : [0, 0];
+  let win;
+  if (sc === "all") { S.memo.at = null; win = [lo, hi]; } else {
+    const unit = UNIT[sc](), start = unit.floor(new Date(at === null || at === undefined ? (tl.win[0] + tl.win[1]) / 2 : at));
+    S.memo.at = +start;
+    win = [+start, +unit.offset(start, 1)];
+  }
+  S.going = { win, until: Date.now() + 600 };
+  tl.setWindow(win[0], win[1], animate !== false);
+  if (S.handle.onWindow) { S.handle.onWindow(); }
+  renderScales();
+  rememberWhere();
 }
 
 function showView(id) {
@@ -276,7 +351,6 @@ function select(ref, from) {
     const fm = ref.indexOf("finding:") === 0 && tl.data ? tl.data.findings.find((f) => "finding:" + f.number === ref) : null;
     tl.reveal(refs.filter((r) => tl.data && tl.data.byRef.has(r)), fm ? [fm.sim] : []);
   }
-  document.querySelectorAll(".problem").forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute("data-sel") === S.sel)));
   if (S.handle.onSelect) { S.handle.onSelect(S.sel); }
   if (from !== "refresh") { renderInspector(); }
   rememberWhere();
@@ -285,14 +359,23 @@ function select(ref, from) {
 async function renderInspector() {
   const ref = S.sel, box = $("inspector");
   if (!S.base) { return; }
-  if (ref) { box.innerHTML = '<p class="insp-empty">Reading…</p>'; }
+  box.hidden = !ref; $("body").classList.toggle("inspecting", Boolean(ref));
+  if (!ref) { box.innerHTML = ""; return; }
+  box.innerHTML = '<p class="insp-empty">Reading…</p>';
   const html = await inspect(ctx, ref);
-  if (S.sel === ref) { box.innerHTML = html; box.scrollTop = 0; }
+  if (S.sel === ref) { box.innerHTML = '<button type="button" class="insp-close" data-close aria-label="Close">×</button>' + html; box.scrollTop = 0; }
 }
 
 /* ---------- every listener, bound once ---------- */
 
 document.addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-close]")) { ev.preventDefault(); select(null, "page"); return; }
+  const stepper = ev.target.closest("#formats [data-step]");
+  if (stepper) { ev.preventDefault(); const unit = UNIT[S.memo.scale](); scaleTo(S.memo.scale, +unit.offset(new Date(S.memo.at), Number(stepper.getAttribute("data-step")))); return; }
+  const scale = ev.target.closest("[data-scale]");
+  if (scale) { ev.preventDefault(); scaleTo(scale.getAttribute("data-scale"), S.memo.at); return; }
+  if (ev.target.closest("[data-key]")) { ev.preventDefault(); remember("minutehand.key", keyOpen() ? "" : "open"); renderScales(); return; }
+  if (ev.target.closest("[data-rows]")) { S.memo.allRows = ev.target.closest("[data-rows]").checked; tl.setData(derive(S.base.timeline, S.base.findings.items, S.memo.allRows), S.base.findings.findings); rememberWhere(); return; }
   const sel = ev.target.closest("[data-sel]");
   if (sel) { ev.preventDefault(); select(sel.getAttribute("data-sel"), "page"); return; }
   const openRun = ev.target.closest("[data-open]");
@@ -326,7 +409,7 @@ document.addEventListener("keydown", (ev) => {
   if (k === "-" || k === "_") { tl.zoom(2); return; }
   if (k === "0") { tl.fit(); return; }
   if (k === "f") {
-    const order = Array.from(document.querySelectorAll(".problem")).map((b) => b.getAttribute("data-sel"));
+    const order = S.base.findings.findings.filter((x) => x.finding.kind !== "informational").sort((p, q) => KIND_ORDER[p.finding.kind] - KIND_ORDER[q.finding.kind] || p.number - q.number).map((x) => "finding:" + x.number);
     if (order.length) { select(order[(order.indexOf(S.sel) + 1) % order.length], "keys"); }
     return;
   }
