@@ -73,7 +73,7 @@ function rowsHtml(ctx, d, whole, a, b) {
   });
   d.heard.filter((h) => inside(h.sim)).forEach((h) => {
     const text = (whole.get(h.ref) || h.label).split("\n\n").pop();
-    rows.push({ sim: h.sim, seq: Number(h.ref.split(":")[1]) || 0, html: '<button type="button" class="row heard" data-sel="' + esc(h.ref) + '"><time>' + hhmm(h.sim) + '</time><span class="kind"><i class="heard"></i>Reply</span><span class="to">' + esc(h.who) + '</span><span class="text">' + esc(text) + "</span></button>" });
+    rows.push({ sim: h.sim, seq: Number(h.ref.split(":")[1]) || 0, html: '<button type="button" class="row heard" data-sel="' + esc(h.ref) + '"><time>' + hhmm(h.sim) + '</time><span class="kind">' + markHtml("", "plain") + 'Reply</span><span class="to">' + esc(h.who) + '</span><span class="text">' + esc(text) + "</span></button>" });
   });
   // within a minute, in the order the record kept them: a reply before what the agent did about it
   rows.sort((p, q) => p.sim - q.sim || p.seq - q.seq);

@@ -36,11 +36,6 @@ function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m
 function upperBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) { lo = m + 1; } else { hi = m; } } return lo; }
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-function tickFormat(d) {
-  const f = d3.utcSecond(d) < d ? ".%L" : d3.utcMinute(d) < d ? ":%S" : d3.utcHour(d) < d ? "%H:%M" : d3.utcDay(d) < d ? "%H:%M"
-    : d3.utcMonth(d) < d ? (d3.utcWeek(d) < d ? "%a %d" : "%b %d") : d3.utcYear(d) < d ? "%B" : "%Y";
-  return d3.utcFormat(f)(d);
-}
 function periodWords(unit, t0) {
   const d = new Date(t0);
   if (unit === "year") { return d3.utcFormat("%Y")(d); }
@@ -97,7 +92,8 @@ export class Timeline {
     const byRef = new Map();
     for (let i = 0; i < n; i++) { const r = tl.marks.ref[i]; const l = byRef.get(r); if (l) { l.push(i); } else { byRef.set(r, [i]); } }
     const keep = this.data && this.data.run === tl.run;
-    this.data = { tl, n, kind, lane, sim, real, simEnd, realEnd, ref: tl.marks.ref, label: tl.marks.label, byRef, explained,
+    const item = tl.marks.item || [];
+    this.data = { tl, n, kind, lane, sim, real, simEnd, realEnd, ref: tl.marks.ref, label: tl.marks.label, byRef, explained, item,
       lanes: tl.lanes, findings: tl.findings };
     this.index();
     if (!keep) { this.selected = new Set(); }
@@ -360,10 +356,17 @@ export class Timeline {
     const ticks = scale.ticks(Math.max(2, Math.floor(w / 120)));
     g.fillStyle = C.muted; g.strokeStyle = C.line; g.lineWidth = 1;
     g.textBaseline = "middle";
+    // one way of saying the ticks along the whole axis, by how far apart they are: never a month here and a weekday there
+    const apart = ticks.length > 1 ? +ticks[1] - +ticks[0] : b - a;
+    const said = d3.utcFormat(apart >= 27 * 864e5 ? "%b %Y" : apart >= 864e5 ? "%a %-d %b" : apart >= 6e4 ? "%H:%M" : "%H:%M:%S");
+    let lastDay = null;
     for (const tk of ticks) {
       const px = Math.round(scale(tk)) + 0.5;
       g.beginPath(); g.moveTo(px, AXIS - 6); g.lineTo(px, h); g.stroke();
-      g.fillText(tickFormat(tk), px + 3, AXIS / 2 + 2);
+      // within a day, the first tick of each day says which day it is
+      const day = d3.utcFormat("%a %-d %b")(tk), text = apart < 864e5 && day !== lastDay ? day + "  " + said(tk) : said(tk);
+      lastDay = day;
+      g.fillText(text, px + 3, AXIS / 2 + 2);
     }
     g.strokeStyle = css("--line-strong"); g.beginPath(); g.moveTo(0, AXIS - 0.5); g.lineTo(w, AXIS - 0.5); g.stroke();
     // lane separators
@@ -433,8 +436,8 @@ export class Timeline {
     }
     const triangle = (px, color, on) => {
       g.fillStyle = color;
-      g.beginPath(); g.moveTo(px, fy + 6); g.lineTo(px - 5, fy - 5); g.lineTo(px + 5, fy - 5); g.closePath(); g.fill();
-      if (on) { g.strokeStyle = C.select; g.lineWidth = 2; g.stroke(); g.lineWidth = 1; }
+      g.fillRect(px - 1.5, fy - 7, 3, 14);
+      if (on) { g.strokeStyle = C.select; g.lineWidth = 2; g.strokeRect(px - 3.5, fy - 9, 7, 18); g.lineWidth = 1; }
     };
     const colorOf = (kind) => (kind === "fail" ? C.fail : kind === "review" ? C.review : C.faint);
     if (shownF.length > w / 12) {
@@ -574,27 +577,12 @@ export class Timeline {
       }
       return;
     }
-    g.fillStyle = fail ? C.fail : C.mark; g.strokeStyle = fail ? C.fail : C.mark; g.lineWidth = 1.5;
-    switch (kind) {
-      // an output of the agent's, in its result's colour: the same marks at every scale
-      case "out_failed": case "out_review": case "out_held": case "out_unmeasured":
-        g.fillStyle = kind === "out_failed" ? C.fail : kind === "out_review" ? C.review : kind === "out_held" ? C.pass : C.soft;
-        g.beginPath(); g.arc(px, y, 4.5, 0, Math.PI * 2); g.fill(); break;
-      case "wake": g.fillRect(px - 1.5, y0 + 4, 3, this.rowH - 8); break;
-      case "sent": g.beginPath(); g.arc(px, y, 3.5, 0, Math.PI * 2); g.fill(); break;
-      case "said": g.beginPath(); g.arc(px, y, 3.2, 0, Math.PI * 2); g.stroke(); break;
-      case "edited": g.beginPath(); g.moveTo(px, y - 4.5); g.lineTo(px + 4.5, y); g.lineTo(px, y + 4.5); g.lineTo(px - 4.5, y); g.closePath(); g.fill(); break;
-      case "wait": g.fillStyle = C.band; g.fillRect(px - 1, y0 + 6, 3, this.rowH - 12); break;
-      case "call": case "call_failed": g.fillRect(px - 1, y0 + 6, 2, this.rowH - 12); break;
-      case "change": g.strokeRect(px - 3, y - 3, 6, 6); break;
-      case "read": g.fillStyle = C.soft; g.fillRect(px - 1, y - 1, 2, 2); break;
-      case "due": case "due_fault": g.beginPath(); g.moveTo(px, y - 5); g.lineTo(px + 4, y + 3); g.lineTo(px - 4, y + 3); g.closePath(); g.fill(); break;
-      case "model_call": g.fillRect(px - 3, y - 3, 6, 6); break;
-      case "memory_write": g.fillRect(px - 1, y - 4, 2.5, 8); break;
-      case "memory_read": g.fillStyle = C.soft; g.fillRect(px - 1, y - 1, 2, 2); break;
-      case "stored": g.strokeRect(px - 3, y - 3, 6, 6); g.fillRect(px - 1, y - 1, 2, 2); break;
-      default: g.fillStyle = C.soft; g.fillRect(px - 1, y - 3, 2, 6);
-    }
+    // every mark is one form, a tick at its moment: its row says what it is, its colour the one thing the row does not
+    const colour = { out_failed: C.fail, out_review: C.review, out_held: C.pass, out_unmeasured: C.soft, call_failed: C.fail, due_fault: C.fail,
+      read: C.soft, memory_read: C.soft, wait: C.band, span: C.soft };
+    const half = kind.startsWith("out_") ? 5 : Math.max(4, this.rowH / 2 - 5);
+    g.fillStyle = colour[kind] || C.mark;
+    g.fillRect(px - 1.5, y - half, 3, half * 2);
     g.lineWidth = 1;
   }
 

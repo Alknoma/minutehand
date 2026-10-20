@@ -18,6 +18,7 @@ import { esc, $, words, when, span, seconds, plural, remembered, remember } from
 import { Timeline } from "./timeline.js";
 import { VIEWS, VERDICT_WORD, findingTitle, batchOf } from "./views.js";
 import { inspect } from "./inspector.js";
+import { markHtml, RESULT_WORD } from "./outputs.js";
 
 const LIST_REFRESH = 5000, RUNNING_REFRESH = 3000;
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
@@ -256,16 +257,18 @@ const UNIT = { month: () => d3.utcMonth, week: () => d3.utcMonday, day: () => d3
 /** The timeline's data for the time page: three rows read first (when the agent woke, each of its outputs in its
     result's colour, each reply from a person), then, with every row shown, the record's own lanes. */
 function derive(tl, items, all) {
-  const result = new Map((items || []).map((i) => [ "ev:" + i.seq, outcomeOf(i) ]));
+  const result = new Map((items || []).map((i) => [ "ev:" + i.seq, outcomeOf(i) ])), itemKind = new Map((items || []).map((i) => ["ev:" + i.seq, i.kind]));
   // the outputs' row is banded by result, so a mark's height in it says what the checks made of it
   const bands = [["out_failed", "failed"], ["out_review", "to review"], ["out_held", "passed"], ["out_unmeasured", "not measured"]];
   const lanes = [{ key: "sum:woke", kind: "wakes", label: "Agent woke", marks: 0, height: 18 },
     { key: "sum:outputs", kind: "wakes", label: "Outputs", marks: 0, height: 64, bands },
     { key: "sum:heard", kind: "person", label: "Replies from people", marks: 0 }];
-  const drawn = new Set(), m = tl.marks, out = { sim: [], sim_end: [], real: [], real_end: [], lane: [], kind: [], ref: [], label: [] };
+  const drawn = new Set(), m = tl.marks, out = { sim: [], sim_end: [], real: [], real_end: [], lane: [], kind: [], ref: [], label: [], item: [] };
   const push = (i, lane, kind) => {
     out.sim.push(m.sim[i]); out.sim_end.push(kind === "wake" ? null : m.sim_end[i]); out.real.push(m.real[i]); out.real_end.push(m.real_end[i]);
     out.lane.push(lane); out.kind.push(kind); out.ref.push(m.ref[i]); out.label.push(m.label[i]); lanes[lane].marks += 1;
+    // an output's mark is its item's shape, as everywhere on the page: the kind of item, coloured by its result
+    out.item.push(lane === 1 ? itemKind.get(m.ref[i]) || null : null);
   };
   if (all) { tl.lanes.forEach((l) => lanes.push(Object.assign({}, l, { marks: 0 }))); }
   for (let i = 0; i < m.sim.length; i++) {
@@ -295,12 +298,12 @@ function renderScales() {
   bar.innerHTML = '<span class="seg">' + SCALES.map((f) => '<button type="button" data-scale="' + f[0] + '" aria-pressed="' + (sc === f[0]) + '">' + f[1] + "</button>").join("") + "</span>" +
     (sc !== "all" ? '<span class="on-day"><button type="button" data-step="-1" aria-label="Before">‹</button><b>' + esc(label) + '</b><button type="button" data-step="1" aria-label="After">›</button></span>' : "") +
     '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>" +
-    // what each mark is, there when asked: the rows and bands name themselves, and a mark says what it is on hover
+    // what a mark is, there when asked: each row names its marks, every mark is a tick at its moment, and its colour
+    // is the one thing its row does not say
     '<button type="button" class="key-button" data-key aria-expanded="' + keyOpen() + '">Key</button>' +
-    '<div class="legend"' + (keyOpen() ? "" : " hidden") + '><span><i class="lg-find fail"></i><i class="lg-find review"></i>a finding: failed, to review</span>' +
-    '<span><i class="lg-wake"></i>the agent woke</span>' +
-    '<span><i class="lg-dot failed"></i><i class="lg-dot review"></i><i class="lg-dot held"></i><i class="lg-dot unmeasured"></i>an output, in the band and colour of its result</span>' +
-    '<span><i class="lg-ring"></i>a reply from a person</span><span class="muted">marks at one moment sit side by side</span></div>';
+    '<div class="legend"' + (keyOpen() ? "" : " hidden") + '><span>Each row names what its ticks are; a tick is a moment.</span>' +
+    '<span>Colour: ' + ["failed", "review", "held", "unmeasured"].map((r) => markHtml("", r) + esc(RESULT_WORD[r].toLowerCase())).join(" ") +
+    '</span><span>In Outputs, a tick\'s band is its result too. Ticks at one moment sit side by side.</span></div>';
 }
 
 function keyOpen() { return remembered("minutehand.key", "") === "open"; }

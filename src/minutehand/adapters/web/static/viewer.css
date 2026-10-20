@@ -151,12 +151,6 @@ a { color: inherit; }
 .formats .legend { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 11px; color: var(--muted); }
 .formats .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .formats .legend i { display: inline-block; flex: none; }
-.lg-find { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 9px solid var(--fail); }
-.lg-find.review { border-top-color: var(--review); }
-.lg-wake { width: 3px; height: 12px; border-radius: 1px; background: var(--mark); }
-.lg-dot { width: 9px; height: 9px; border-radius: 50%; }
-.lg-dot.failed { background: var(--fail); } .lg-dot.review { background: var(--review); } .lg-dot.held { background: var(--pass); } .lg-dot.unmeasured { background: var(--mark-soft); }
-.lg-ring { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--mark); }
 .formats .seg button { padding: 4px 14px; font-size: 13px; }
 .formats .on-day { display: inline-flex; align-items: center; gap: 10px; }
 .formats .on-day button { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); cursor: pointer; }
@@ -199,18 +193,10 @@ a { color: inherit; }
 .tally.heard { background: var(--sunk); color: var(--ink-2); }
 .new-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 4px; background: var(--fail); color: #fff; }
 
-/* ---------- shapes: the kind of item; colour: its result ---------- */
-.shape { display: inline-block; width: 10px; height: 10px; flex: none; background: var(--mark-soft); }
-.shape.circle { border-radius: 50%; }
-.shape.square { border-radius: 2px; }
-.shape.diamond { transform: rotate(45deg) scale(0.85); border-radius: 1px; }
-.shape.triangle { width: 0; height: 0; background: none !important; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 10px solid var(--shape-colour, var(--mark-soft)); }
-.shape.bar { height: 6px; width: 12px; border-radius: 2px; }
-.shape.failed { background: var(--fail); --shape-colour: var(--fail); }
-.shape.review { background: var(--review); --shape-colour: var(--review); }
-.shape.held { background: var(--pass); --shape-colour: var(--pass); }
-.shape.unmeasured { background: var(--mark-soft); --shape-colour: var(--mark-soft); }
-.shape.plain { background: var(--ink-2); --shape-colour: var(--ink-2); }
+/* ---------- a mark: a tick at its moment, coloured by its result ---------- */
+.shape { display: inline-block; width: 3px; height: 12px; border-radius: 1px; flex: none; background: var(--mark-soft); }
+.shape.failed { background: var(--fail); } .shape.review { background: var(--review); } .shape.held { background: var(--pass); }
+.shape.unmeasured { background: var(--mark-soft); } .shape.plain { background: var(--ink-2); }
 
 /* ---------- the day: its hours drawn, then a row for each wake, output and reply ---------- */
 .view-body.day-page { padding: 16px 28px 48px; }
@@ -251,7 +237,6 @@ a { color: inherit; }
 .row .result.failed { color: var(--fail); } .row .result.review { color: var(--review); } .row .result.held { color: var(--pass); } .row .result.unmeasured { color: var(--muted); }
 .row.wake { grid-template-columns: 56px minmax(0, 1fr); background: var(--paper); padding: 6px 14px; }
 .row.wake .what { color: var(--muted); font-size: 12px; }
-.row.heard .kind .heard { width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--ink-2); }
 
 /* ---------- timeline ---------- */
 .timeline { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }

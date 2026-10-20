@@ -1,6 +1,6 @@
 /* The agent's outputs: each write of the agent's, the kind of item it is, and what every check its kind takes said
    of it (`RunResult.items`). The calendar, the day and the inspector read them from here, and mark them one way:
-   the shape says the kind of item, the colour the result. */
+   a tick in its result's colour; what kind of item it is, its row or its words say. */
 
 import { esc, words } from "./util.js";
 
@@ -26,14 +26,12 @@ export const CHECK_WORD = {
   deadline_missed: "Deadline missed"
 };
 
-/** Each kind of item: its name and the shape it is drawn as. */
+/** Each kind of item, as a reader names it. */
 export const KIND = {
-  chat_message: ["Chat message", "circle"], email: ["Email", "square"], comment: ["Comment", "circle"],
-  ticket: ["Ticket", "diamond"], calendar_event: ["Calendar event", "triangle"], document: ["Document", "bar"],
-  service_item: ["Service item", "diamond"], stored_record: ["Stored record", "bar"]
+  chat_message: "Chat message", email: "Email", comment: "Comment", ticket: "Ticket", calendar_event: "Calendar event",
+  document: "Document", service_item: "Service item", stored_record: "Stored record"
 };
-export function kindWord(kind) { return (KIND[kind] || [words(kind)])[0]; }
-export function shapeOf(kind) { return (KIND[kind] || [null, "circle"])[1]; }
+export function kindWord(kind) { return KIND[kind] || words(kind); }
 
 /** One output's result: the worst any check said; `held` when every check measured it and found nothing, `unmeasured`
     when no check had anything declared to measure it against. */
@@ -46,9 +44,9 @@ export function resultOf(item) {
   return "unmeasured";
 }
 
-/** A mark: the item's shape in its result's colour. */
+/** A mark: a tick in its result's colour, as on the time axis; what kind of item it is, its row or its words say. */
 export function markHtml(kind, result, extra) {
-  return '<i class="shape ' + esc(shapeOf(kind)) + " " + esc(result) + '"' + (extra || "") + "></i>";
+  return '<i class="shape ' + esc(result) + '"' + (extra || "") + "></i>";
 }
 
 /** Every output of the run in time order, each with its moment, its result and the event it is. */
