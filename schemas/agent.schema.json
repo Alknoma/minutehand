@@ -1446,6 +1446,35 @@
       "title": "InboundTarget",
       "type": "object"
     },
+    "Instructions": {
+      "additionalProperties": false,
+      "description": "A file whose words state the agent's work: its prompt, its task list, its rules. Read when the agent file is,\nand kept with the run, so the reviewers judge the agent against what it was told, not against a prompt it gave a\nmodel for one part of its work.",
+      "properties": {
+        "file": {
+          "description": "A path, relative to the agent file's folder; `${NAME}` or `${NAME:-default}` reads the environment Minutehand runs in, as the agent reads it (an agent told its work file by a variable)",
+          "title": "File",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The file's words, filled when Minutehand reads the agent file; left out by hand",
+          "title": "Text"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "title": "Instructions",
+      "type": "object"
+    },
     "IntegrityCheck": {
       "description": "A fact about whether a run can be trusted, stated on every run and never judging it: a finding of one fails\nthe run only when the agent file or the scenario names it in `fail_on_integrity`.",
       "enum": [
@@ -3498,6 +3527,15 @@
         "$ref": "#/$defs/HttpInbox"
       },
       "title": "Inboxes",
+      "type": "array"
+    },
+    "instructions": {
+      "default": [],
+      "description": "The files that state the agent's work. When named, the reviewers judge every effect against them; when not, against the system prompts the agent gave its model (`docs/assessments.md`)",
+      "items": {
+        "$ref": "#/$defs/Instructions"
+      },
+      "title": "Instructions",
       "type": "array"
     },
     "name": {

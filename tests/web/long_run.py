@@ -21,11 +21,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from minutehand import session
+from minutehand.adapters.providers.slack.manifest import MANIFEST as SLACK
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import Checkpoint, Remembered, write_checkpoint
+from minutehand.application.items import provided_types, typed_items
 from minutehand.application.memory import digest
 from minutehand.application.run_clock import RunClock
-from minutehand.checks.runner import evaluate_run
+from minutehand.checks.runner import evaluate, view_of
 from minutehand.domain.assessments import Rule
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Drawn, DrawnFrom, Due, DueClosed, DueEntry, DueKind, DueSource
@@ -295,6 +297,22 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
                     wake=wake,
                 )
             )
+            # as a run does: the reply checked against what the person knows before it is sent, a judge's call
+            store.record_person_call(
+                PersonCall(
+                    key=f"{rng.getrandbits(256):064x}",
+                    person=person.key,
+                    wrote=Wrote.FACT_CHECK,
+                    asked=ref,
+                    model="m-people",
+                    prompt_version="1",
+                    input_tokens=rng.randint(200, 400),
+                    output_tokens=rng.randint(5, 20),
+                    answer=json.dumps({"within": True}),
+                    sim_time=at,
+                    wake=wake,
+                )
+            )
             store.apply(
                 Change(
                     entity=EntityRef(provider="slack", kind=EntityKind.MESSAGE, external_id=f"{ref.external_id}.r"),
@@ -327,7 +345,11 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
         write_checkpoint(store, empty.model_copy(update={"wake": wake, "now": clock.now()}))
         wakes.append(WakeRecord(index=wake, sim_time=now, world_changes=sent + 8, commitments_changed=False))
     events = store.events()
-    result = evaluate_run(played, events, wakes, store.replies(), stop=StopReason.DEADLINE_PASSED)
+    # as a run does: its messages read as Slack's item types, so each output is assessed by the checks its kind takes
+    built = view_of(played, events, wakes, store.replies(), stop=StopReason.DEADLINE_PASSED)
+    typed = typed_items(events, played, {SLACK.key: SLACK}, {}, None)
+    built = built.model_copy(update={"typed": typed, "item_types": provided_types([SLACK])})
+    result = evaluate(built, stop=StopReason.DEADLINE_PASSED)
     record = RunRecord(
         run_id=RUN_ID,
         scenario=played.name,

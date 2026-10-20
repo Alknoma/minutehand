@@ -16,7 +16,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from minutehand.checks.facts import transitions
-from minutehand.checks.judged.review import reviewed
+from minutehand.checks.judged.review import instructions_shown, reviewed
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.conversation import Judgement, ModelMessage, Speaker, Wrote
 from minutehand.domain.items import Assessed, AssessedKind
@@ -24,7 +24,7 @@ from minutehand.domain.scenario import Model
 from minutehand.domain.world import EntityRef
 from minutehand.ports.model import Model as LanguageModel
 
-UNDONE_PROMPT_VERSION = "work-undone/1"
+UNDONE_PROMPT_VERSION = "work-undone/2"
 
 UNDONE_PROMPT = """\
 You read how an agent spent a stretch of simulated time. It works on its own: its own instructions say what its \
@@ -60,7 +60,7 @@ def _cut(text: str, most: int = 400) -> str:
 def shown_whole(view: RunView) -> str:
     """The window as the reviewer reads it: instructions, world, acts, what was said, how items ended."""
     scenario = view.scenario
-    parts = ["The agent's own instructions, as it gave them to its model:\n" + "\n---\n".join(view.agent_instructions)]
+    parts = [instructions_shown(view, lambda text: text)]
     people = [
         f"- {p.name} <{p.email}>" + (f": {_cut(p.profile)}" if p.profile.strip() else "") for p in scenario.people
     ]

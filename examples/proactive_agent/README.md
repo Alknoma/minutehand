@@ -1,7 +1,7 @@
 # A small proactive agent
 
 `agent.py` gets answers from people and passes them on. Its work is its own: `work.json` lists each ask (who answers,
-the question, who is told), and the code names no one. It asks in Slack, follows up at most twice, a working day
+the question, who is told, and for work not due yet, from when: `not_before`), and the code names no one. It asks in Slack, follows up at most twice, a working day
 apart, and tells the answer on, or that none came. Nothing hands it this work, and nothing wakes it on a schedule: it
 decides when it next wakes.
 
@@ -23,6 +23,7 @@ The worlds are the people `work.json` names; the example's work asks Sam, in fin
 |---|---|
 | `worlds/answers.yaml` | Sam answers a few hours after he is asked. The agent tells Owen his answer at once, and names no wake after. |
 | `worlds/quiet.yaml` | Sam never answers. The agent follows up a working day after its question, again a day after that, then tells Owen, and stops. |
+| `worlds/team.yaml` with `AGENT_WORK=team.json` | Three weeks of onboarding: eight asks of six people, each asked when it falls due (`not_before`). Sam answers within hours, Priya always answers but takes two to three working days, Marco is on leave the first week with Lena covering, Jade never answers, Ana answers the next day, Tom in a day or two. Its one-day patience chases Priya inside her window and writes to Marco while he is away (both for review). Its work owes Owen each answer, declared as `relayed` expectations, so each late answer it gave up on and never passed on (Marco's, Priya's, Tom's) fails the run, read from the record. The reviewer (`--judge`) reads what no rule can: it passes Marco's automatic reply on to Owen as his answer. |
 
 ## Run it
 

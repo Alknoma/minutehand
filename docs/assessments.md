@@ -1,8 +1,12 @@
 # Assessments: what a run is judged by
 
 Write the scenario, get the assessment. The agent brings its own work: its prompt, and the state and items it sets.
-Every run's effects on the world are assessed, automatically, against the agent's own instructions to its model (read
-from its recorded model calls, `application.model_calls.agent_instructions`) and the world the scenario and the agent
+Every run's effects on the world are assessed, automatically, against the agent's own instructions: the files its
+agent file names (`instructions`, read when the run starts and kept with it), or, when it names none, its instructions
+to its model (read from its recorded model calls, `application.model_calls.agent_instructions`). An agent whose model
+does one part of its work (deciding when to wake, wording a message) names its files: otherwise that part's prompt
+would be read as its whole work. With files named, the prompts it gave its model are shown to the reviewers as
+prompts for a part of its work and the world the scenario and the agent
 file declare: the people with their profiles, facts, reply windows, working hours and absences, the declared services
 with their descriptions and machines, the agent's declared rhythm. Nobody writes how an item is assessed, and nothing is measured against an opinion of how agents
 in general should work: a finding always names the declaration it was measured against.
@@ -68,7 +72,7 @@ review.
 
 ### The shared reviewer
 
-Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/3`), it reads each effect for what
+Run with `--judge` and a configured model (`checks/judged/review.py`, `item-review/4`), it reads each effect for what
 only meaning can tell. It is shown, per effect, as the agent could know it at that moment: the agent's own
 instructions to its model, and an older scenario's goal and deadline when it has them; the people, their profiles and
 their part (a declared service's responder) and what each knows, as theirs until they
@@ -93,7 +97,7 @@ run's notes say the reviewer did not assess it; the deterministic checks still r
 ### Work left undone
 
 Every other check reads something the agent did, so an agent that does nothing does nothing wrong and passes them
-all. With `--judge`, the window is also read whole (`checks/judged/undone.py`, `work-undone/1`): the reviewer is shown
+all. With `--judge`, the window is also read whole (`checks/judged/undone.py`, `work-undone/2`): the reviewer is shown
 the agent's own instructions, the world, everything the agent did, what people said to it, and how each item stood at
 the end, and names each part of the work its instructions give it that it left undone, quoting what in the world
 allowed it (the answer came, the decision was made, the item was open to its move). Work the world kept from the
@@ -411,3 +415,11 @@ every run; `review` when the reviewer read them; then each rule's id, `expectati
 agent's own checks), so a reader of a run, or of its JSON, sees what was and was not asked of it. Each finding of the
 assessment is in the read model's `findings` with `assessed_kind`, `item_kind`, `against`, `calls` and `judged_by`
 (`docs/querying.md`).
+
+Each of the agent's writes is in `RunResult.items` with every check its kind of item takes and what each said of it
+(`domain.items.ItemAssessment`): `failed` or `review` when it found something, `held` when it measured the item and
+found nothing, and `not_measured` with why when the files declare nothing to measure it against (a follow-up to
+someone who declares no `reply_within` or reply delay, a message to someone with no absence a delegate covers, a
+scenario with no deadline). A check that passed an item and one that had nothing to read are never the same answer.
+A finding is of the last of its evidence that is one of the agent's items taking its check: a duplicate is of the
+second message. `minutehand view` reads them for its calendar, its days and each output in its inspector.

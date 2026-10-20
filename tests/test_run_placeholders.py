@@ -116,3 +116,22 @@ def test_the_wake_and_push_waits_default_to_room_for_a_models_turn() -> None:
     assert Reported(wake_url="http://a/w", report_url="http://a/r").wake_timeout == timedelta(minutes=10)
     assert Marked(wake_url="http://a/w").wake_timeout == timedelta(minutes=10)
     assert InboundTarget(provider="slack", url="http://a/e").push_timeout == timedelta(minutes=5)
+
+
+def test_an_agent_files_instructions_are_read_when_it_is_and_name_their_file_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its work file's words are kept with the agent as read, so the run keeps what the agent was told; the file may
+    be the one the agent's own environment names, and one named by an unset variable with no default is refused."""
+    (tmp_path / "work.json").write_text('["ask sam"]', encoding="utf-8")
+    (tmp_path / "team.json").write_text('["ask priya"]', encoding="utf-8")
+    agent = tmp_path / "agent.yaml"
+    wakes = "wakes: [{kind: reported, wake_url: 'http://a.test/w', report_url: 'http://a.test/r'}]\n"
+    agent.write_text("name: a\n" + wakes + 'instructions: [{file: "${AGENT_WORK:-work.json}"}]\n', encoding="utf-8")
+    monkeypatch.delenv("AGENT_WORK", raising=False)
+    assert [i.text for i in load_agent(agent).instructions] == ['["ask sam"]']
+    monkeypatch.setenv("AGENT_WORK", "team.json")
+    assert [i.text for i in load_agent(agent).instructions] == ['["ask priya"]']
+    agent.write_text("name: a\n" + wakes + 'instructions: [{file: "${NOT_SET_ANYWHERE}"}]\n', encoding="utf-8")
+    with pytest.raises(FileRefused, match="NOT_SET_ANYWHERE"):
+        load_agent(agent)

@@ -1,8 +1,9 @@
 /* The views under the timeline: one measure each, said large, with what it is made of beneath (a chart where the
    shape matters, a table to find the row). Each view reads only the paths it needs, when it is first opened. */
 
-import { esc, when, span, seconds, words, title, plural, count, clip, median } from "./util.js";
+import { esc, when, span, seconds, words, title, plural, count, clip, median, day } from "./util.js";
 import { VList } from "./vlist.js";
+import { timeList } from "./time.js";
 
 const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed", simulation_incomplete: "Simulation incomplete" };
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
@@ -34,23 +35,43 @@ function table(host, ctx, columns, rows, refOf, rowHeight) {
   return { onSelect: (ref) => list.select(ref, true) };
 }
 
+/** What kind of failure a finding is, in words: its check's title and, when it was assessed, what was wrong with
+    which item. The calendar marks the first day of each kind; the top bar names them. */
+export function failureSort(x) {
+  const a = x.finding.assessed;
+  return findingTitle(x) + (a ? " " + a.item + " · " + words(a.kind) : "");
+}
+
 export const VIEWS = [
+  {
+    // the run over time, in the format picked: a month to a page, a day, or the timeline's lanes (`calendar.js`)
+    id: "time", group: "Outcome", label: "Time",
+    count: (ctx) => { const kinds = new Set(ctx.base.findings.findings.filter((x) => x.finding.kind === "fail").map(failureSort)); return { n: kinds.size || "", cls: kinds.size ? "fail" : "" }; },
+    render: timeList
+  },
   {
     id: "findings", group: "Outcome", label: "Findings",
     count: (ctx) => { const f = ctx.base.findings.findings; const fails = f.filter((x) => x.finding.kind === "fail").length; return { n: fails || f.length, cls: fails ? "fail" : "" }; },
     render(host, ctx) {
+      // a long run can hold hundreds: one row for each kind, with how often and between when, opening to each one
       const fs = ctx.base.findings;
-      if (!fs.finished) { host.innerHTML = headHtml("—", "The checks run when the run finishes.") ; return {}; }
-      const f = sortedFindings(ctx), c = { fail: 0, review: 0, informational: 0 };
-      f.forEach((x) => { c[x.finding.kind] += 1; });
-      host.innerHTML = headHtml(String(c.fail), "failed · " + c.review + " to review · " + plural(c.informational, "note") + (fs.blocked.length ? " · " + plural(fs.blocked.length, "check") + " could not run" : ""), c.fail ? "fail" : "pass") + '<div class="view-body" data-role="t"></div>';
-      return table(host.querySelector('[data-role="t"]'), ctx, [
-        { label: "Kind", width: "84px", html: (x) => chip(x.finding.kind, x.finding.kind === "informational" ? "note" : x.finding.kind), sort: (x) => KIND_ORDER[x.finding.kind] },
-        { label: "Finding", width: "minmax(160px, 1fr)", html: (x) => esc(findingTitle(x)) },
-        { label: "What it found", width: "minmax(200px, 2.4fr)", html: (x) => esc(x.finding.message) },
-        { label: "When", width: "130px", html: (x) => esc(x.finding.at ? when(x.finding.at) : "—"), sort: (x) => x.finding.at || "" },
-        { label: "Evidence", width: "74px", align: "r", html: (x) => String(x.finding.evidence.length), sort: (x) => x.finding.evidence.length }
-      ], f, (x) => "finding:" + x.number, 34);
+      if (!fs.finished) { host.innerHTML = headHtml("—", "The checks run when the run finishes."); return {}; }
+      const groups = new Map();
+      fs.findings.slice().sort((a, b) => (a.finding.at || "").localeCompare(b.finding.at || "") || a.number - b.number).forEach((x) => {
+        const k = x.finding.kind + "\u0000" + failureSort(x);
+        if (!groups.has(k)) { groups.set(k, { kind: x.finding.kind, name: failureSort(x), all: [] }); }
+        groups.get(k).all.push(x);
+      });
+      const rows = Array.from(groups.values()).sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.all.length - a.all.length);
+      const fails = fs.findings.filter((x) => x.finding.kind === "fail").length;
+      host.innerHTML = headHtml(String(rows.filter((g) => g.kind === "fail").length), plural(rows.filter((g) => g.kind === "fail").length, "kind") + " of failure, " + plural(fails, "time") + " in all · " + plural(rows.filter((g) => g.kind === "review").length, "kind") + " to review" + (fs.blocked.length ? " · " + plural(fs.blocked.length, "check") + " could not run" : ""), fails ? "fail" : "pass") +
+        '<div class="view-body groups">' + (rows.length ? rows.map((g) => {
+          const first = g.all[0].finding.at, last = g.all[g.all.length - 1].finding.at;
+          return '<details class="group ' + esc(g.kind) + '"><summary>' + chip(g.kind, g.kind === "informational" ? "note" : g.kind) + '<span class="name">' + esc(g.name) + '</span><span class="times">' + esc(plural(g.all.length, "time")) + '</span><span class="span">' + esc(first ? day(first) + (last && day(last) !== day(first) ? " – " + day(last) : "") : "—") + "</span></summary>" +
+            '<ul class="links">' + g.all.slice(0, 200).map((x) => "<li>" + '<button type="button" class="link" data-sel="finding:' + x.number + '">' + esc((x.finding.at ? when(x.finding.at) + " · " : "") + clip(x.finding.message, 140)) + "</button></li>").join("") +
+            (g.all.length > 200 ? '<li class="muted">and ' + (g.all.length - 200) + " more</li>" : "") + "</ul></details>";
+        }).join("") : '<p class="empty">No check found anything.</p>') + "</div>";
+      return {};
     }
   },
   {
@@ -103,14 +124,19 @@ export const VIEWS = [
       let current = ctx.memo.person && people.find((x) => x.key === ctx.memo.person) ? ctx.memo.person : people[0].key;
       const side = host.querySelector('[data-role="people"]'), chatHost = host.querySelector('[data-role="chat"]');
       const WRITTEN = { script: "script, worded by a model", verbatim: "the script's words", conversing: "a model", automatic: "automatic reply", by_hand: "by hand" };
+      // a message's first line is its subject when a blank line follows it: a line of its own, the body under it
+      const said = (text) => {
+        const parts = text.split("\n\n"), subject = parts.length > 1 && parts[0].length < 120 ? parts.shift() : "";
+        return (subject ? '<div class="subject">' + esc(subject) + "</div>" : "") + '<div class="text' + (subject ? "" : " long") + '">' + esc(parts.join("\n\n")) + "</div>";
+      };
       const refOf = (l) => (l.seq !== null && l.from_agent ? "ev:" + l.seq : l.reply !== null ? "reply:" + l.reply : "ev:" + l.seq);
       const list = new VList(chatHost, {
-        rowHeight: 66, key: refOf, onPick: (l) => ctx.select(refOf(l)),
+        rowHeight: 104, key: refOf, onPick: (l) => ctx.select(refOf(l)),
         rowHtml: (l, on, i, y, rh) => {
           const who = l.from_agent ? "agent" : (people.find((x) => x.key === current) || {}).name;
           const how = l.from_agent ? (l.change !== "sent" ? l.change : "") : WRITTEN[l.writing] + (l.written_by ? " (" + l.written_by + ")" : "");
           return '<div class="chat-row ' + (l.from_agent ? "agent" : "person") + (on ? " on" : "") + '" data-row="' + i + '" style="top:' + y + "px;height:" + rh + 'px"><div class="bubble"><div class="who"><b>' + esc(who) + "</b><span>" + esc(when(l.at)) + "</span>" +
-            (how ? '<span class="' + (l.change === "edited" || l.change === "deleted" ? "edited" : "") + '">' + esc(how) + "</span>" : "") + '</div><div class="text">' + esc(l.text) + "</div></div></div>";
+            (how ? '<span class="' + (l.change === "edited" || l.change === "deleted" ? "edited" : "") + '">' + esc(how) + "</span>" : "") + "</div>" + said(l.text) + "</div></div>";
         }
       });
       const show = () => {
@@ -237,7 +263,7 @@ export const VIEWS = [
         (Object.keys(tunnelled).length ? " · " + Object.keys(tunnelled).map((h) => plural(tunnelled[h], "call") + " to " + h + " relayed unopened, its tokens unknown").join(", ") : "") +
         ' · <span class="muted">' + (use.priced ? plural(use.calls.length - costs.length, "call") + " no price named" : "no prices given: <code>minutehand view --prices FILE</code> adds a cost") + "</span>") +
         '<div class="chart" data-role="chart"></div><div class="view-body" data-role="t" style="display:flex;flex-direction:column;min-height:200px"></div>';
-      const rows = use.calls.map((c) => ({ ref: c.side === "agent" ? "mc:" + c.span_id : "pc:" + c.person_call_id, who: c.side === "agent" ? "agent" : ctx.personKey(c.person), side: c.side, model: c.model || "not named", at: ms(c.at), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: c.duration_ms === null ? null : c.duration_ms / 1000, cost: c.cost, note: c.replayed ? "replayed" : c.failure ? "failed" : c.wrote || "" }));
+      const rows = use.calls.map((c) => ({ ref: c.side === "agent" ? "mc:" + c.span_id : "pc:" + c.person_call_id, who: c.side === "agent" ? "agent" : c.side === "person" ? ctx.personKey(c.person) : c.side, side: c.side, model: c.model || "not named", at: ms(c.at), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: c.duration_ms === null ? null : c.duration_ms / 1000, cost: c.cost, note: c.replayed ? "replayed" : c.failure ? "failed" : c.wrote || "" }));
       if (!rows.length) { host.querySelector('[data-role="t"]').innerHTML = '<p class="empty">The run holds no model call: the agent sent no telemetry of one, and no person\'s words were written by a model.</p>'; return {}; }
       const chartHost = host.querySelector('[data-role="chart"]');
       const extent = Math.max(...rows.map((r) => r.at)) - Math.min(...rows.map((r) => r.at));
@@ -266,13 +292,18 @@ export const VIEWS = [
     count: (ctx) => ({ n: count(laneCount(ctx, "memory")) }),
     async render(host, ctx) {
       const m = await ctx.cache.read("memory");
-      host.innerHTML = headHtml(count(m.keys.length), "keys · " + count(m.changes.length) + " writes · " + count(m.reads) + " reads") +
+      const collections = Array.from(new Set(m.keys.map((k) => k.collection))).sort();
+      let only = ctx.memo.memoryCollection && collections.indexOf(ctx.memo.memoryCollection) >= 0 ? ctx.memo.memoryCollection : null;
+      host.innerHTML = headHtml(count(m.keys.length), "keys · " + count(m.changes.length) + " writes · " + count(m.reads) + " reads",
+        "", collections.length > 1 ? '<span class="seg" data-role="only"></span>' : "") +
         '<div class="view-split"><div class="side" data-role="keys" style="display:flex;flex-direction:column"></div><div class="main" data-role="history"></div></div>';
       if (!m.keys.length) { host.querySelector('[data-role="history"]').innerHTML = '<p class="empty">The agent kept nothing in its memory (minutehand.agent.store).</p>'; return {}; }
       const keyOf = (k) => k.collection + "/" + k.key;
       let current = ctx.memo.memoryKey || null;
       const historyHost = host.querySelector('[data-role="history"]');
-      const history = new VList(historyHost, {
+      historyHost.innerHTML = '<p class="empty" data-role="none" hidden></p><div data-role="list" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>';
+      const none = historyHost.querySelector('[data-role="none"]');
+      const history = new VList(historyHost.querySelector('[data-role="list"]'), {
         columns: [
           { label: "When", width: "140px", html: (c) => esc(when(c.at)), sort: (c) => c.seq },
           { label: "Key", width: "minmax(120px, 1fr)", html: (c) => esc(c.collection + " / " + c.key) },
@@ -283,11 +314,22 @@ export const VIEWS = [
         rowHeight: 44, key: keyOf, onPick: (k) => { current = current === keyOf(k) ? null : keyOf(k); ctx.memo.memoryKey = current; keys.select(current, false); show(); },
         rowHtml: (k, on, i, y, rh) => '<div class="vt-row' + (keyOf(k) === current ? " on" : "") + '" data-row="' + i + '" style="top:' + y + "px;height:" + rh + 'px;display:block;padding:4px 12px"><div style="display:flex;justify-content:space-between;gap:6px"><span>' + esc(k.key) + '</span><span class="muted num">' + k.writes + "w " + k.reads + 'r</span></div><div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(k.collection + " · " + (k.writes === 0 ? "read, never written" : k.value === null ? "deleted" : clip(k.value, 60))) + "</div></div>"
       });
-      keys.setRows(m.keys);
+      const seg = host.querySelector('[data-role="only"]');
       const show = () => {
-        history.setRows(current ? m.changes.filter((c) => c.collection + "/" + c.key === current) : m.changes);
+        if (seg) { seg.innerHTML = [null].concat(collections).map((c) => '<button type="button" data-only="' + esc(c || "") + '" aria-pressed="' + (c === only) + '">' + esc(c || "All") + "</button>").join(""); }
+        const inView = (c) => only === null || c.collection === only;
+        if (current && !inView({ collection: current.split("/")[0] })) { current = null; ctx.memo.memoryKey = null; }
+        keys.setRows(m.keys.filter(inView));
+        keys.select(current, false);
+        const rows = m.changes.filter((c) => inView(c) && (!current || c.collection + "/" + c.key === current));
+        const k = current ? m.keys.find((x) => keyOf(x) === current) : null;
+        // a key the agent only ever read has no history to list: say what it was, not an empty table
+        none.hidden = rows.length > 0;
+        none.textContent = k && k.writes === 0 ? k.key + " was read " + plural(k.reads, "time") + " and never written: the agent looked for it and it was never there." : "Nothing was written here.";
+        history.setRows(rows);
         if (ctx.sel) { history.select(ctx.sel, true); }
       };
+      if (seg) { seg.addEventListener("click", (ev) => { const b = ev.target.closest("[data-only]"); if (b) { only = b.getAttribute("data-only") || null; ctx.memo.memoryCollection = only; show(); } }); }
       show();
       return { onSelect: (ref) => history.select(ref, true) };
     }

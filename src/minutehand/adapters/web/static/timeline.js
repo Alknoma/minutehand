@@ -14,12 +14,13 @@
 import { esc, when, clock as realClock, plural, words, count } from "./util.js";
 
 const KINDS = ["wake", "sent", "said", "edited", "wait", "call", "call_failed", "change", "read", "due", "due_fault",
-  "model_call", "memory_write", "memory_read", "stored", "span"];
-const FAILED = new Set(["call_failed", "due_fault"]);
+  "model_call", "memory_write", "memory_read", "stored", "span", "out_failed", "out_review", "out_held", "out_unmeasured"];
+const FAILED = new Set(["call_failed", "due_fault", "out_failed"]);
 const KIND_WORD = {
   wake: "wake", sent: "from the agent", said: "from the person", edited: "rewritten or deleted", wait: "wait",
   call: "call", call_failed: "failed call", change: "change", read: "read", due: "due entry", due_fault: "faulted entry",
-  model_call: "model call", memory_write: "memory write", memory_read: "memory read", stored: "stored item", span: "span"
+  model_call: "model call", memory_write: "memory write", memory_read: "memory read", stored: "stored item", span: "span",
+  out_failed: "output, failed", out_review: "output, to review", out_held: "output, passed", out_unmeasured: "output, not measured"
 };
 const AXIS = 26, ROW = 22, MIN_SIM = 1000, MIN_REAL = 20, DENSE = 4;
 const UNITS = [
@@ -29,18 +30,12 @@ const UNITS = [
   ["day", () => d3.utcDay, 864e5], ["week", () => d3.utcMonday, 6048e5],
   ["month", () => d3.utcMonth, 2.63e9], ["year", () => d3.utcYear, 3.156e10]
 ];
-const PRESETS = [["all", "All"], ["year", "Year"], ["month", "Month"], ["week", "Week"], ["day", "Day"], ["hour", "Hour"]];
 const PRESET_MS = { year: 3.156e10, month: 2.63e9, week: 6048e5, day: 864e5, hour: 36e5 };
 
 function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) { lo = m + 1; } else { hi = m; } } return lo; }
 function upperBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] <= x) { lo = m + 1; } else { hi = m; } } return lo; }
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
-function tickFormat(d) {
-  const f = d3.utcSecond(d) < d ? ".%L" : d3.utcMinute(d) < d ? ":%S" : d3.utcHour(d) < d ? "%H:%M" : d3.utcDay(d) < d ? "%H:%M"
-    : d3.utcMonth(d) < d ? (d3.utcWeek(d) < d ? "%a %d" : "%b %d") : d3.utcYear(d) < d ? "%B" : "%Y";
-  return d3.utcFormat(f)(d);
-}
 function periodWords(unit, t0) {
   const d = new Date(t0);
   if (unit === "year") { return d3.utcFormat("%Y")(d); }
@@ -66,7 +61,6 @@ export class Timeline {
     this.cycle = null;
     root.innerHTML =
       '<div class="tl-tools">' +
-      '<span class="seg" role="group" aria-label="Range">' + PRESETS.map((p) => '<button type="button" data-preset="' + p[0] + '">' + p[1] + "</button>").join("") + "</span>" +
       '<span class="seg" role="group" aria-label="Zoom"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><button type="button" data-zoom="in" aria-label="Zoom in">+</button></span>' +
       '<span class="seg" role="group" aria-label="Clock"><button type="button" data-clock="sim" aria-pressed="true">Simulated</button><button type="button" data-clock="real" aria-pressed="false">Real</button></span>' +
       '<span class="tl-range" data-role="range"></span><span class="tl-note" data-role="note"></span>' +
@@ -98,7 +92,8 @@ export class Timeline {
     const byRef = new Map();
     for (let i = 0; i < n; i++) { const r = tl.marks.ref[i]; const l = byRef.get(r); if (l) { l.push(i); } else { byRef.set(r, [i]); } }
     const keep = this.data && this.data.run === tl.run;
-    this.data = { tl, n, kind, lane, sim, real, simEnd, realEnd, ref: tl.marks.ref, label: tl.marks.label, byRef, explained,
+    const item = tl.marks.item || [];
+    this.data = { tl, n, kind, lane, sim, real, simEnd, realEnd, ref: tl.marks.ref, label: tl.marks.label, byRef, explained, item,
       lanes: tl.lanes, findings: tl.findings };
     this.index();
     if (!keep) { this.selected = new Set(); }
@@ -284,18 +279,30 @@ export class Timeline {
     this.request();
   }
 
+  /** Each lane's top and height: a lane may say its own (`height`), and one with `bands` gives each a strip. */
+  layout() {
+    const d = this.data;
+    this.tops = []; this.heights = [];
+    let y = AXIS + ROW;
+    d.lanes.forEach((l, i) => { this.tops[i] = y; this.heights[i] = l.height || ROW; y += this.heights[i]; });
+    this.totalH = y;
+  }
+
   renderLabels() {
     const d = this.data;
+    this.layout();
     const rows = ['<div class="axis-cell" style="height:' + AXIS + 'px">' + (this.clock === "sim" ? "UTC, simulated" : "UTC, real") + "</div>",
       '<div style="height:' + ROW + 'px"><span>Findings</span><span class="c">' + d.findings.length + "</span></div>"];
     const counts = d.order[this.clock].map((o) => o.idx.length);
     d.lanes.forEach((l, i) => {
       const off = this.hidden.has(l.key);
-      rows.push('<div style="height:' + ROW + "px" + (off ? ";opacity:.4" : "") + '" data-lane="' + esc(l.key) + '" title="' + esc(l.label + ": " + plural(l.marks, "mark") + ". Click to " + (off ? "show" : "hide")) + '">' +
-        "<span>" + esc(l.label) + '</span><span class="c">' + count(this.filter ? counts[i] : l.marks) + "</span></div>");
+      // a banded lane names its bands beside them, where its marks' height is read
+      const bands = l.bands ? '<span class="bands">' + l.bands.map((band) => '<span style="height:' + (this.heights[i] / l.bands.length) + 'px">' + esc(band[1]) + "</span>").join("") + "</span>" : "";
+      rows.push('<div class="' + (l.bands ? "banded" : "") + '" style="height:' + this.heights[i] + "px" + (off ? ";opacity:.4" : "") + '" data-lane="' + esc(l.key) + '" title="' + esc(l.label + ": " + plural(l.marks, "mark") + ". Click to " + (off ? "show" : "hide")) + '">' +
+        "<span>" + esc(l.label) + '</span>' + bands + '<span class="c">' + count(this.filter ? counts[i] : l.marks) + "</span></div>");
     });
     this.labels.innerHTML = rows.join("");
-    this.canvas.style.height = (AXIS + ROW * (d.lanes.length + 1)) + "px";
+    this.canvas.style.height = this.totalH + "px";
   }
 
   /* ---------- drawing ---------- */
@@ -315,7 +322,7 @@ export class Timeline {
     const d = this.data;
     if (!d) { return; }
     const t0 = performance.now();
-    const dpr = window.devicePixelRatio || 1, w = this.box.clientWidth, h = AXIS + ROW * (d.lanes.length + 1);
+    const dpr = window.devicePixelRatio || 1, w = this.box.clientWidth, h = this.totalH;
     if (w <= 0) { return; }
     const cv = this.canvas;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
@@ -326,23 +333,55 @@ export class Timeline {
     g.clearRect(0, 0, w, h);
     const [a, b] = this.win, k = w / (b - a), x = (t) => (t - a) * k;
     const C = { ink: css("--ink"), mark: css("--mark"), soft: css("--mark-soft"), faint: css("--faint"), line: css("--line"), band: css("--band"),
-      heat: css("--heat"), fail: css("--fail"), review: css("--review"), info: css("--info"), select: css("--select"), paper: css("--paper"), muted: css("--muted") };
+      heat: css("--heat"), fail: css("--fail"), review: css("--review"), pass: css("--pass"), info: css("--info"), select: css("--select"), paper: css("--paper"), muted: css("--muted") };
     g.font = "11px " + css("--sans");
+
+    // time as segments: each simulated day a stripe, every other one shaded and weekends darker, so a mark in a row
+    // whose height means nothing still reads as on a day
+    const dayW = 864e5 * k;
+    if (dayW >= 4 && this.clock === "sim") {
+      for (let dd = d3.utcDay.floor(new Date(a)); +dd < b; dd = d3.utcDay.offset(dd, 1)) {
+        const x0 = x(+dd), x1 = x(+d3.utcDay.offset(dd, 1)), weekend = dd.getUTCDay() === 0 || dd.getUTCDay() === 6;
+        const odd = Math.floor(+dd / 864e5) % 2 === 1;
+        if (!weekend && !odd) { continue; }
+        g.fillStyle = weekend ? css("--weekend") : css("--sunk");
+        g.globalAlpha = weekend ? 1 : 0.55;
+        g.fillRect(x0, AXIS, x1 - x0, h - AXIS);
+        g.globalAlpha = 1;
+      }
+    }
 
     // axis and grid
     const scale = d3.scaleUtc().domain([new Date(a), new Date(b)]).range([0, w]);
     const ticks = scale.ticks(Math.max(2, Math.floor(w / 120)));
     g.fillStyle = C.muted; g.strokeStyle = C.line; g.lineWidth = 1;
     g.textBaseline = "middle";
+    // one way of saying the ticks along the whole axis, by how far apart they are: never a month here and a weekday there
+    const apart = ticks.length > 1 ? +ticks[1] - +ticks[0] : b - a;
+    const said = d3.utcFormat(apart >= 27 * 864e5 ? "%b %Y" : apart >= 864e5 ? "%a %-d %b" : apart >= 6e4 ? "%H:%M" : "%H:%M:%S");
+    let lastDay = null;
     for (const tk of ticks) {
       const px = Math.round(scale(tk)) + 0.5;
       g.beginPath(); g.moveTo(px, AXIS - 6); g.lineTo(px, h); g.stroke();
-      g.fillText(tickFormat(tk), px + 3, AXIS / 2 + 2);
+      // within a day, the first tick of each day says which day it is
+      const day = d3.utcFormat("%a %-d %b")(tk), text = apart < 864e5 && day !== lastDay ? day + "  " + said(tk) : said(tk);
+      lastDay = day;
+      g.fillText(text, px + 3, AXIS / 2 + 2);
     }
     g.strokeStyle = css("--line-strong"); g.beginPath(); g.moveTo(0, AXIS - 0.5); g.lineTo(w, AXIS - 0.5); g.stroke();
     // lane separators
     g.strokeStyle = C.line;
-    for (let r = 1; r <= d.lanes.length + 1; r++) { const y = AXIS + r * ROW - 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    const bottoms = [AXIS + ROW].concat(d.lanes.map((_, i) => this.tops[i] + this.heights[i]));
+    for (const yb of bottoms) { const y = yb - 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    // a banded lane's strips, each named at its left: its y says which band a mark is in
+    d.lanes.forEach((lane, li) => {
+      if (!lane.bands || this.hidden.has(lane.key)) { return; }
+      const bh = this.heights[li] / lane.bands.length;
+      lane.bands.forEach((band, bi) => {
+        const y = this.tops[li] + bi * bh;
+        if (bi) { g.save(); g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, Math.round(y) + 0.5); g.lineTo(w, Math.round(y) + 0.5); g.stroke(); g.restore(); }
+      });
+    });
 
     // the run's own moments: deadline, split, end
     const moments = [];
@@ -364,9 +403,11 @@ export class Timeline {
     const unit = this.unitFor(k);
     let binned = false, drawn = 0;
     this.layoutState = [];
+    this.nudge = new Map();
     const match = this.matcher();
     d.lanes.forEach((lane, li) => {
-      const y0 = AXIS + ROW * (li + 1), mid = y0 + ROW / 2;
+      const y0 = this.tops[li], mid = y0 + this.heights[li] / 2;
+      this.rowH = this.heights[li];
       if (this.hidden.has(lane.key)) { this.layoutState[li] = { mode: "hidden" }; return; }
       const o = d.order[this.clock][li];
       // a range that began before the window still shows: look back by the longest range of the lane
@@ -374,11 +415,11 @@ export class Timeline {
       const visible = hi - lo;
       if (visible > w / DENSE) {
         binned = true;
-        this.layoutState[li] = this.drawBins(g, o, unit, a, b, x, y0, C);
+        this.layoutState[li] = lane.bands ? this.drawBandBins(g, o, lane.bands, unit, a, b, x, y0, C) : this.drawBins(g, o, unit, a, b, x, y0, C);
         drawn += this.layoutState[li].bins.length;
       } else {
         this.layoutState[li] = { mode: "marks", lo, hi, o };
-        this.drawMarks(g, o, lo, hi, x, mid, y0, w, C, match);
+        this.drawMarks(g, o, lo, hi, x, mid, y0, w, C, match, lane.bands);
         drawn += visible;
       }
     });
@@ -395,8 +436,8 @@ export class Timeline {
     }
     const triangle = (px, color, on) => {
       g.fillStyle = color;
-      g.beginPath(); g.moveTo(px, fy + 6); g.lineTo(px - 5, fy - 5); g.lineTo(px + 5, fy - 5); g.closePath(); g.fill();
-      if (on) { g.strokeStyle = C.select; g.lineWidth = 2; g.stroke(); g.lineWidth = 1; }
+      g.fillRect(px - 1.5, fy - 7, 3, 14);
+      if (on) { g.strokeStyle = C.select; g.lineWidth = 2; g.strokeRect(px - 3.5, fy - 9, 7, 18); g.lineWidth = 1; }
     };
     const colorOf = (kind) => (kind === "fail" ? C.fail : kind === "review" ? C.review : C.faint);
     if (shownF.length > w / 12) {
@@ -423,7 +464,7 @@ export class Timeline {
     for (const i of sel) {
       const li = d.lane[i];
       if (this.hidden.has(d.lanes[li].key)) { continue; }
-      const px = x(this.timeOf(i)), y = AXIS + ROW * (li + 1) + ROW / 2;
+      const px = x(this.timeOf(i)) + (this.nudge.get(i) || 0), y = this.yOf(i, li);
       if (px < -8 || px > w + 8) { continue; }
       g.beginPath(); g.arc(px, y, 6, 0, Math.PI * 2); g.stroke();
     }
@@ -464,7 +505,7 @@ export class Timeline {
       const f = o.failed.length ? lowerBound(o.failed, e) - lowerBound(o.failed, s) : 0;
       if (c) { bins.push({ s, e, c, f }); most = Math.max(most, c); }
     }
-    const top = y0 + 3, hh = ROW - 6;
+    const top = y0 + 3, hh = this.rowH - 6;
     for (const bn of bins) {
       const x0 = Math.max(x(bn.s), -1), x1 = Math.min(x(bn.e), x(b) + 1), wd = Math.max(1, x1 - x0 - 1);
       const shade = 0.1 + 0.55 * Math.log(1 + bn.c) / Math.log(1 + most);
@@ -480,18 +521,48 @@ export class Timeline {
     return { mode: "bins", bins, unit: unit[0] };
   }
 
-  drawMarks(g, o, lo, hi, x, mid, y0, w, C, match) {
-    const d = this.data, endOf = this.clock === "sim" ? d.simEnd : d.realEnd;
-    let lastX = -1e9, stack = 0;
+  /** The y of a mark: its lane's middle, or, in a banded lane, the middle of its band. Never moved to fit. */
+  yOf(i, li) {
+    const lane = this.data.lanes[li], kind = KINDS[this.data.kind[i]];
+    if (!lane.bands) { return this.tops[li] + this.heights[li] / 2; }
+    const bh = this.heights[li] / lane.bands.length, bi = Math.max(0, lane.bands.findIndex((b) => b[0] === kind));
+    return this.tops[li] + (bi + 0.5) * bh;
+  }
+
+  drawMarks(g, o, lo, hi, x, mid, y0, w, C, match, bands) {
+    const d = this.data, endOf = this.clock === "sim" ? d.simEnd : d.realEnd, li = d.lane[o.idx[lo]];
+    // marks at one instant (a wake's work on the simulated clock) sit side by side, never moved up or down: a mark's
+    // height in its lane means its band, or nothing
+    const last = new Map();
     for (let k = lo; k < hi; k++) {
-      const i = o.idx[k], kind = KINDS[d.kind[i]], px = x(o.times[k]);
-      const e = endOf[i];
-      // marks at one instant (a wake's work on the simulated clock) step down the lane a little
-      stack = Math.abs(px - lastX) < 1 ? (stack + 1) % 4 : 0;
-      lastX = px;
-      const y = mid + (stack - 1.5) * 2;
-      this.drawMark(g, kind, px, isNaN(e) ? null : x(e), y, y0, C, d.label[i]);
+      const i = o.idx[k], kind = KINDS[d.kind[i]], at = x(o.times[k]), e = endOf[i];
+      const y = bands ? this.yOf(i, li) : mid, seen = last.get(y);
+      const n = seen && Math.abs(at - seen.at) < 1 ? seen.n + 1 : 0;
+      last.set(y, { at, n });
+      const nudge = Math.min(n, 6) * 8;
+      this.nudge.set(i, nudge);
+      this.drawMark(g, kind, at + nudge, isNaN(e) ? null : x(e), y, y0, C, d.label[i]);
     }
+  }
+
+  /** A banded lane too dense for its marks: each band binned on its own strip, in its band's colour. */
+  drawBandBins(g, o, bands, unit, a, b, x, y0, C) {
+    const d = this.data, interval = unit[1](), bh = this.rowH / bands.length, all = [];
+    const colour = { out_failed: C.fail, out_review: C.review, out_held: C.pass, out_unmeasured: C.soft };
+    bands.forEach((band, bi) => {
+      const times = [];
+      for (let k = 0; k < o.idx.length; k++) { if (KINDS[d.kind[o.idx[k]]] === band[0]) { times.push(o.times[k]); } }
+      const counts = new Map();
+      for (const t of times) { if (t < a || t > b) { continue; } const key = +interval.floor(new Date(t)); counts.set(key, (counts.get(key) || 0) + 1); }
+      for (const [key, c] of counts) {
+        const x0 = Math.max(x(key), -1), x1 = Math.min(x(+interval.offset(new Date(key), 1)), x(b) + 1), wd = Math.max(2, x1 - x0 - 1);
+        g.fillStyle = colour[band[0]] || C.soft; g.globalAlpha = 0.25 + 0.6 * Math.min(1, c / 4);
+        g.fillRect(x0, y0 + bi * bh + 2, wd, bh - 4); g.globalAlpha = 1;
+        if (wd >= 22) { g.fillStyle = C.ink; g.fillText(count(c), x0 + 3, y0 + (bi + 0.5) * bh + 1); }
+        all.push({ s: key, e: +interval.offset(new Date(key), 1), c, f: band[0] === "out_failed" ? c : 0, x0, x1: x0 + wd });
+      }
+    });
+    return { mode: "bins", bins: all, unit: unit[0] };
   }
 
   drawMark(g, kind, px, pxEnd, y, y0, C, label) {
@@ -499,30 +570,19 @@ export class Timeline {
     if (pxEnd !== null && pxEnd - px > 2) {
       const tall = kind === "wait" ? 10 : kind === "span" ? 4 : 8;
       g.fillStyle = kind === "wait" ? C.band : fail ? C.fail : kind === "span" ? C.soft : C.mark;
-      g.fillRect(px, y0 + (ROW - tall) / 2, pxEnd - px, tall);
+      g.fillRect(px, y0 + (this.rowH - tall) / 2, pxEnd - px, tall);
       if (kind === "wait" && pxEnd - px > 60) {
-        g.fillStyle = C.muted; g.save(); g.beginPath(); g.rect(px, y0, pxEnd - px, ROW); g.clip();
-        g.fillText(label, px + 4, y0 + ROW / 2 + 1); g.restore();
+        g.fillStyle = C.muted; g.save(); g.beginPath(); g.rect(px, y0, pxEnd - px, this.rowH); g.clip();
+        g.fillText(label, px + 4, y0 + this.rowH / 2 + 1); g.restore();
       }
       return;
     }
-    g.fillStyle = fail ? C.fail : C.mark; g.strokeStyle = fail ? C.fail : C.mark; g.lineWidth = 1.5;
-    switch (kind) {
-      case "wake": g.fillRect(px - 1.5, y0 + 4, 3, ROW - 8); break;
-      case "sent": g.beginPath(); g.arc(px, y, 3.5, 0, Math.PI * 2); g.fill(); break;
-      case "said": g.beginPath(); g.arc(px, y, 3.2, 0, Math.PI * 2); g.stroke(); break;
-      case "edited": g.beginPath(); g.moveTo(px, y - 4.5); g.lineTo(px + 4.5, y); g.lineTo(px, y + 4.5); g.lineTo(px - 4.5, y); g.closePath(); g.fill(); break;
-      case "wait": g.fillStyle = C.band; g.fillRect(px - 1, y0 + 6, 3, ROW - 12); break;
-      case "call": case "call_failed": g.fillRect(px - 1, y0 + 6, 2, ROW - 12); break;
-      case "change": g.strokeRect(px - 3, y - 3, 6, 6); break;
-      case "read": g.fillStyle = C.soft; g.fillRect(px - 1, y - 1, 2, 2); break;
-      case "due": case "due_fault": g.beginPath(); g.moveTo(px, y - 5); g.lineTo(px + 4, y + 3); g.lineTo(px - 4, y + 3); g.closePath(); g.fill(); break;
-      case "model_call": g.fillRect(px - 3, y - 3, 6, 6); break;
-      case "memory_write": g.fillRect(px - 1, y - 4, 2.5, 8); break;
-      case "memory_read": g.fillStyle = C.soft; g.fillRect(px - 1, y - 1, 2, 2); break;
-      case "stored": g.strokeRect(px - 3, y - 3, 6, 6); g.fillRect(px - 1, y - 1, 2, 2); break;
-      default: g.fillStyle = C.soft; g.fillRect(px - 1, y - 3, 2, 6);
-    }
+    // every mark is one form, a tick at its moment: its row says what it is, its colour the one thing the row does not
+    const colour = { out_failed: C.fail, out_review: C.review, out_held: C.pass, out_unmeasured: C.soft, call_failed: C.fail, due_fault: C.fail,
+      read: C.soft, memory_read: C.soft, wait: C.band, span: C.soft };
+    const half = kind.startsWith("out_") ? 5 : Math.max(4, this.rowH / 2 - 5);
+    g.fillStyle = colour[kind] || C.mark;
+    g.fillRect(px - 1.5, y - half, 3, half * 2);
     g.lineWidth = 1;
   }
 
@@ -536,7 +596,7 @@ export class Timeline {
       const o = st.o;
       for (let k = 0; k < st.lo; k++) {
         const i = o.idx[k];
-        if (!isNaN(e[i]) && e[i] > a) { this.drawMark(g, KINDS[d.kind[i]], x(t[i]), x(e[i]), AXIS + ROW * (li + 1) + ROW / 2, AXIS + ROW * (li + 1), C, d.label[i]); }
+        if (!isNaN(e[i]) && e[i] > a) { this.rowH = this.heights[li]; this.drawMark(g, KINDS[d.kind[i]], x(t[i]), x(e[i]), this.yOf(i, li), this.tops[li], C, d.label[i]); }
       }
     });
   }
@@ -580,7 +640,7 @@ export class Timeline {
   hit(px, py) {
     const d = this.data;
     if (!d || py < AXIS) { return null; }
-    const row = Math.floor((py - AXIS) / ROW);
+    const row = py < AXIS + ROW ? 0 : 1 + this.tops.findIndex((top, i) => py >= top && py < top + this.heights[i]);
     if (row === 0) {
       let best = null;
       for (const item of this.findingX || []) { if (Math.abs(item[0] - px) <= 7 && (!best || Math.abs(item[0] - px) < Math.abs(best[0] - px))) { best = item; } }

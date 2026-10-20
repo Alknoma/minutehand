@@ -8,6 +8,7 @@ it was written as, and pydantic parses it against the field's own type.
 from __future__ import annotations
 
 import json
+import os
 import re
 from enum import StrEnum
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import TypeVar
 import yaml
 from pydantic import BaseModel, JsonValue, ValidationError
 
-from minutehand.domain.agent import AgentUnderTest
+from minutehand.domain.agent import AgentUnderTest, Instructions
 from minutehand.domain.experiment import Fork, ReplayCases
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
@@ -86,8 +87,31 @@ def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
         update={
             "checks": [str((base / c).resolve()) for c in agent.checks],
             "watches": [str((base / w).resolve()) for w in agent.watches],
+            "instructions": [_read_instructions(path, base, i) for i in agent.instructions],
         }
     )
+
+
+_FROM_ENVIRONMENT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _read_instructions(path: Path, base: Path, named: Instructions) -> Instructions:
+    """An instructions file of the agent's, its words read now, so the run keeps what the agent was told."""
+    if named.text is not None:
+        return named
+
+    def filled(found: re.Match[str]) -> str:
+        if found.group(1) in os.environ:
+            return os.environ[found.group(1)]
+        if found.group(2) is not None:
+            return found.group(2)
+        raise FileRefused(f"{path}: instructions name ${{{found.group(1)}}}, which is not set and has no default")
+
+    where = (base / _FROM_ENVIRONMENT.sub(filled, named.file)).resolve()
+    try:
+        return Instructions(file=str(where), text=where.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise FileRefused(f"{path}: its instructions file {where} cannot be read: {e.strerror}") from e
 
 
 _S = TypeVar("_S", WrittenScenario, Seed)
