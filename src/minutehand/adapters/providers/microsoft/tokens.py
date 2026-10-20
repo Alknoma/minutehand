@@ -1,7 +1,7 @@
 """The JSON Web Tokens this provider issues and reads: Microsoft identity platform access and refresh tokens, and
 the Bot Framework's token on every activity pushed to a bot.
 
-Every token is a real RS256 JWT signed with `keys.private_key()`, so a caller that validates one against the
+Every token is a real RS256 JWT signed with `keys.KEY`, so a caller that validates one against the
 published key set (`/discovery/v2.0/keys`, `/v1/.well-known/keys`) accepts it, and Graph and the connector can
 tell from a bearer token which tenant, app and user a call is for.
 
@@ -25,6 +25,7 @@ import time
 
 from pydantic import ValidationError
 
+from minutehand.adapters.derived_key import b64url
 from minutehand.adapters.providers.microsoft import keys, wire
 from minutehand.adapters.providers.microsoft.wire import TokenUse
 
@@ -49,10 +50,10 @@ def issuer_for(tenant: str) -> str:
 
 
 def encode(claims: wire.Claims) -> str:
-    header = keys.b64url(json.dumps({"alg": "RS256", "kid": keys.key_id(), "typ": "JWT"}).encode())
-    payload = keys.b64url(wire.dump_claims(claims).encode())
+    header = b64url(json.dumps({"alg": "RS256", "kid": keys.KEY.thumbprint, "typ": "JWT"}).encode())
+    payload = b64url(wire.dump_claims(claims).encode())
     signing_input = f"{header}.{payload}"
-    return f"{signing_input}.{keys.sign(signing_input.encode())}"
+    return f"{signing_input}.{b64url(keys.KEY.sign(signing_input.encode()))}"
 
 
 def presented(token: str | None) -> wire.Claims | None:

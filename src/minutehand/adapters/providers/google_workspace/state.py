@@ -34,6 +34,7 @@ import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 
+from minutehand.adapters.google_account import account_id
 from minutehand.adapters.providers.google_workspace import docs, slides, wire
 from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.domain.scenario import AccessRole, Model
@@ -67,6 +68,9 @@ UPLOADS = "uploads"
 SEEDED = "seeded"
 PEOPLE = "people"
 ANY_CREDENTIAL = "*"
+RUNTIME_ACCOUNT = "runtime"
+"""The credential entity of the runtime service account, which the metadata server answers
+(`WorkspaceSeed.runtime_service_account`)."""
 """The credential entity every world has: whom any credential the world does not hold, or none at all, acts as
 (`WorkspaceSeed.unknown_credentials_act_as`, by default the scenario's owner)."""
 
@@ -128,8 +132,9 @@ def root_id(email: str) -> str:
 
 
 def permission_id(email: str) -> str:
-    """A user's permission id: one per address, the same on every file, as Drive's is."""
-    return str(int(_digest("permission", email.lower())[:15], 16)).zfill(20)
+    """A user's permission id: one per address, the same on every file, as Drive's is; the account's id
+    (`adapters.google_account`), zero-padded."""
+    return account_id(email).zfill(20)
 
 
 def domain_permission_id(domain: str) -> str:
@@ -482,6 +487,10 @@ class DriveWorld:
 
     def credential_by_key(self, key: str) -> wire.Credential | None:
         return self._record(wire.Credential, key, CREDENTIALS)
+
+    def runtime_account(self) -> wire.Credential | None:
+        """The service account the code of this world runs as, which the metadata server names."""
+        return self._record(wire.Credential, RUNTIME_ACCOUNT, CREDENTIALS)
 
     # ------------------------------------------------------------------ channels, faults, uploads
 

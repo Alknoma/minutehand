@@ -356,9 +356,9 @@ def key_set(*, endorsed: bool) -> wire.JwkSet:
     return wire.JwkSet(
         keys=[
             wire.Jwk(
-                kid=keys.key_id(),
-                n=keys.modulus(),
-                e=keys.exponent(),
+                kid=keys.KEY.thumbprint,
+                n=keys.KEY.modulus,
+                e=keys.KEY.exponent,
                 endorsements=["msteams"] if endorsed else None,
             )
         ]
