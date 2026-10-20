@@ -119,8 +119,8 @@ async def test_a_document_written_with_a_heading_a_list_a_table_and_a_link_reads
         (23, 29, "First\n"),
         (29, 36, "Second\n"),
         (36, 37, "\n"),
-        (37, 52, "table"),
-        (52, 53, "\n"),
+        (37, 53, "table"),
+        (53, 54, "\n"),
     ]
     elements = content(document)
     heading = elements[1]["paragraph"]
