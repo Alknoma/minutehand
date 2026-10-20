@@ -257,7 +257,10 @@ const UNIT = { month: () => d3.utcMonth, week: () => d3.utcMonday, day: () => d3
     result's colour, each reply from a person), then, with every row shown, the record's own lanes. */
 function derive(tl, items, all) {
   const result = new Map((items || []).map((i) => [ "ev:" + i.seq, outcomeOf(i) ]));
-  const lanes = [{ key: "sum:woke", kind: "wakes", label: "Agent woke", marks: 0 }, { key: "sum:outputs", kind: "wakes", label: "Agent's outputs", marks: 0 },
+  // the outputs' row is banded by result, so a mark's height in it says what the checks made of it
+  const bands = [["out_failed", "failed"], ["out_review", "to review"], ["out_held", "passed"], ["out_unmeasured", "not measured"]];
+  const lanes = [{ key: "sum:woke", kind: "wakes", label: "Agent woke", marks: 0, height: 18 },
+    { key: "sum:outputs", kind: "wakes", label: "Outputs", marks: 0, height: 64, bands },
     { key: "sum:heard", kind: "person", label: "Replies from people", marks: 0 }];
   const drawn = new Set(), m = tl.marks, out = { sim: [], sim_end: [], real: [], real_end: [], lane: [], kind: [], ref: [], label: [] };
   const push = (i, lane, kind) => {
@@ -291,7 +294,12 @@ function renderScales() {
   const label = sc === "all" ? "" : sc === "month" ? d3.utcFormat("%B %Y")(new Date(at)) : sc === "week" ? "Week of " + d3.utcFormat("%-d %B %Y")(new Date(at)) : d3.utcFormat("%A %-d %B %Y")(new Date(at));
   bar.innerHTML = '<span class="seg">' + SCALES.map((f) => '<button type="button" data-scale="' + f[0] + '" aria-pressed="' + (sc === f[0]) + '">' + f[1] + "</button>").join("") + "</span>" +
     (sc !== "all" ? '<span class="on-day"><button type="button" data-step="-1" aria-label="Before">‹</button><b>' + esc(label) + '</b><button type="button" data-step="1" aria-label="After">›</button></span>' : "") +
-    '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>";
+    '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>" +
+    // what each mark is: left to right is time; up and down means something only in a banded row
+    '<div class="legend"><span><i class="lg-find fail"></i><i class="lg-find review"></i>a finding: failed, to review</span>' +
+    '<span><i class="lg-wake"></i>the agent woke</span>' +
+    '<span><i class="lg-dot failed"></i><i class="lg-dot review"></i><i class="lg-dot held"></i><i class="lg-dot unmeasured"></i>an output, in the band and colour of its result</span>' +
+    '<span><i class="lg-ring"></i>a reply from a person</span><span class="muted">marks at one moment sit side by side</span></div>';
 }
 
 /** Show a period at a scale: the axis moves to it (animated), and the list under it follows. */

@@ -25,6 +25,7 @@
   --info-soft: #ececef;
   --select: #2563eb;
   --select-soft: rgba(37, 99, 235, 0.14);
+  --weekend: rgba(0, 0, 0, 0.06);
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -36,7 +37,7 @@
     --ink: #f1f1f3; --ink-2: #d4d4d8; --muted: #a1a1aa; --faint: #71717a; --mark: #d4d4d8; --mark-soft: #7c7c85;
     --band: rgba(244, 244, 245, 0.12); --heat: 244, 244, 245;
     --pass: #4ade80; --pass-soft: #12331f; --fail: #f87171; --fail-soft: #3b1614; --review: #fbbf24; --review-soft: #3a2a0c;
-    --info: #a1a1aa; --info-soft: #26262b; --select: #60a5fa; --select-soft: rgba(96, 165, 250, 0.18);
+    --info: #a1a1aa; --info-soft: #26262b; --select: #60a5fa; --select-soft: rgba(96, 165, 250, 0.18); --weekend: rgba(255, 255, 255, 0.045);
     --shadow: 0 6px 24px rgba(0, 0, 0, 0.5); color-scheme: dark;
   }
 }
@@ -45,7 +46,7 @@
   --ink: #f1f1f3; --ink-2: #d4d4d8; --muted: #a1a1aa; --faint: #71717a; --mark: #d4d4d8; --mark-soft: #7c7c85;
   --band: rgba(244, 244, 245, 0.12); --heat: 244, 244, 245;
   --pass: #4ade80; --pass-soft: #12331f; --fail: #f87171; --fail-soft: #3b1614; --review: #fbbf24; --review-soft: #3a2a0c;
-  --info: #a1a1aa; --info-soft: #26262b; --select: #60a5fa; --select-soft: rgba(96, 165, 250, 0.18);
+  --info: #a1a1aa; --info-soft: #26262b; --select: #60a5fa; --select-soft: rgba(96, 165, 250, 0.18); --weekend: rgba(255, 255, 255, 0.045);
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.5); color-scheme: dark;
 }
 
@@ -144,7 +145,16 @@ a { color: inherit; }
 .row.day-row.quiet { background: var(--paper); color: var(--faint); }
 .row.day-row.failed { box-shadow: inset 3px 0 0 var(--fail); } .row.day-row.review { box-shadow: inset 3px 0 0 var(--review); }
 .rows.days .row.head { grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1.4fr); }
-.formats { display: flex; align-items: center; gap: 16px; padding: 10px 28px; border-bottom: 1px solid var(--line); }
+.formats { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 28px; border-bottom: 1px solid var(--line); }
+.formats .legend { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 11px; color: var(--muted); }
+.formats .legend span { display: inline-flex; align-items: center; gap: 4px; }
+.formats .legend i { display: inline-block; flex: none; }
+.lg-find { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 9px solid var(--fail); }
+.lg-find.review { border-top-color: var(--review); }
+.lg-wake { width: 3px; height: 12px; border-radius: 1px; background: var(--mark); }
+.lg-dot { width: 9px; height: 9px; border-radius: 50%; }
+.lg-dot.failed { background: var(--fail); } .lg-dot.review { background: var(--review); } .lg-dot.held { background: var(--pass); } .lg-dot.unmeasured { background: var(--mark-soft); }
+.lg-ring { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--mark); }
 .formats .seg button { padding: 4px 14px; font-size: 13px; }
 .formats .on-day { display: inline-flex; align-items: center; gap: 10px; }
 .formats .on-day button { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); cursor: pointer; }
@@ -258,6 +268,8 @@ a { color: inherit; }
 }
 .tl-labels div span:first-child { overflow: hidden; text-overflow: ellipsis; }
 .tl-labels div .c { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tl-labels div.banded .bands { display: flex; flex-direction: column; align-self: stretch; margin-left: auto; font-size: 10px; color: var(--faint); text-align: right; }
+.tl-labels div.banded .bands span { display: flex; align-items: center; justify-content: flex-end; }
 .tl-labels .axis-cell { border-bottom: 1px solid var(--line-strong); color: var(--faint); font-size: 11px; }
 .tl-labels .group { color: var(--faint); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
 .tl-canvas-box { position: relative; min-width: 0; }

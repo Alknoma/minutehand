@@ -77,11 +77,16 @@ def test_four_people_four_ways_and_each_message_says_what_every_check_made_of_it
         text=True,
         timeout=600,
     )
-    assert done.returncode == 0, done.stdout + done.stderr[-3000:]
+    assert done.returncode == 1, done.stdout + done.stderr[-3000:]  # its verdict: failed
     result = session.load(state, done.stdout.split()[1].rstrip(":")).result
     flagged = {(f.check, f.kind.value) for f in result.findings}
     assert ("inside_reply_window", "review") in flagged and ("to_someone_away", "review") in flagged
-    assert result.verdict.kind is VerdictKind.PASSED, "for review is not a failure"
+    # what its work owes Owen, declared: each late answer it gave up on and never passed on fails the run, read from
+    # the record; the early chase and the message to someone away stay for review
+    relayed = sorted(
+        f.message.split("'")[1] for f in result.findings if f.check == "expectations" and f.kind.value == "fail"
+    )
+    assert result.verdict.kind is VerdictKind.FAILED and relayed == ["4B", "B12", "NW-2291"], relayed
     assert result.items and all(i.checks for i in result.items), "every message says what each check made of it"
     # its model decides only when it wakes: what the reviewers judge it by is its work file, kept with the run
     seen = session.recorded_view(state, done.stdout.split()[1].rstrip(":"))

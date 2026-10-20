@@ -103,7 +103,7 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
     )
     assert page.locator("#inspector").is_hidden(), "the inspector opens only for something selected"
     summary = page.locator(".tl-labels [data-lane]").all_inner_texts()
-    assert [label.split("\n")[0] for label in summary] == ["Agent woke", "Agent's outputs", "Replies from people"]
+    assert [label.split("\n")[0] for label in summary] == ["Agent woke", "Outputs", "Replies from people"]
     page.click("[data-rows]")
     page.wait_for_function("document.querySelector('.tl-canvas-box canvas').getBoundingClientRect().height > 200")
     box = page.locator(".tl-canvas-box canvas").bounding_box()
