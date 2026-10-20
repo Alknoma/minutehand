@@ -162,13 +162,18 @@ async def test_a_project_without_the_period_fields_tracks_time_with_none_named(t
         assert answer == {"enabled": True, "estimate": None, "timeSpent": None, "$type": "ProjectTimeTrackingSettings"}
 
 
-async def test_time_tracking_of_a_project_made_through_the_api_is_refused_501_naming_it(yt: httpx.AsyncClient) -> None:
+async def test_time_tracking_of_a_project_made_through_the_api_is_off_with_no_fields(yt: httpx.AsyncClient) -> None:
     made = {"name": "Fresh", "shortName": "FRESH", "leader": {"id": "1-0"}}
     entity(await yt.post("/api/admin/projects", params={"fields": "id"}, json=made))
 
-    refused = refusal(await yt.get("/api/admin/projects/FRESH/timeTrackingSettings", params={"fields": "enabled"}), 501)
+    answer = entity(
+        await yt.get(
+            "/api/admin/projects/FRESH/timeTrackingSettings",
+            params={"fields": "enabled,estimate(field(name)),timeSpent(field(name))"},
+        )
+    )
 
-    assert "the time-tracking settings of FRESH, made through POST /admin/projects" in str(refused["error_description"])
+    assert answer == {"enabled": False, "estimate": None, "timeSpent": None, "$type": "ProjectTimeTrackingSettings"}
 
 
 async def test_a_time_tracking_attribute_the_fake_keeps_none_of_is_refused_501_naming_it(yt: httpx.AsyncClient) -> None:
