@@ -812,6 +812,9 @@ class Editor:
             raise _invalid(f"{self._where}: The range should not be empty.")
         first = self._find(start)
         last = self._find(end, for_range_end=True)
+        if last.segment is not first.segment and end == first.base + span(first.segment):
+            # A table's last cell ends where the table does, so the end alone names both; the start says which.
+            last = Spot(first.segment, len(first.segment), first.base, first.in_table)
         if first.segment is not last.segment:
             raise _invalid(f"{self._where}: The range cannot span the boundary of a table cell.")
         return first, last, start, end
