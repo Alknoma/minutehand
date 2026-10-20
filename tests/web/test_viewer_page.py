@@ -97,11 +97,12 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
     page, errors = _open(browser, days)
     assert page.locator(".verdict").inner_text().lower() == "failed"
     assert page.locator(".identity h1").inner_text() == "year of follow ups"
-    assert page.locator("#headline a").count() == 7 and page.locator(".problem").count() > 0
+    assert page.locator("#headline a").count() == 7
     assert page.locator(".views a[aria-current=page]").get_attribute("data-view") == "calendar", (
         "the run opens on its calendar"
     )
-    page.click(".views a[data-view=findings]")
+    assert page.locator("#inspector").is_hidden(), "the inspector opens only for something selected"
+    page.click(".views a[data-view=timeline]")
     box = page.locator(".tl-canvas-box canvas").bounding_box()
     assert box is not None and box["width"] > 600 and box["height"] > 200
     labels = page.locator(".tl-labels [data-lane]").all_inner_texts()
@@ -111,14 +112,19 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
 
     views = page.locator(".views a[data-view]")
     names = [views.nth(i).get_attribute("data-view") for i in range(views.count())]
-    assert len(names) == 15
+    assert len(names) == 16
     for name in names:
         page.click(f".views a[data-view={name}]")
+        if name == "timeline":
+            assert page.locator("#timeline").is_visible() and page.locator("#view").is_hidden()
+            continue
         page.wait_for_function("!document.querySelector('#view').textContent.startsWith('Reading')")
         assert page.locator("#view .measure, #view .empty").count() > 0, name
 
-    page.click(".problem >> nth=0")
+    page.click(".views a[data-view=calendar]")
+    page.click(".ev.finding >> nth=0")
     page.wait_for_selector(".insp-kind:has-text('Finding')")
+    page.click(".views a[data-view=timeline]")
     page.keyboard.press("j")
     page.wait_for_function("location.hash.includes('sel=') && !location.hash.includes('sel=finding')")
     page.wait_for_selector(".insp-head")
@@ -130,7 +136,7 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
     switch, a refresh of a running run) doubled the work of the next one until the tab hung: 14 switches took 4 s.
     Here every listener on the window, the document and the page's shell is bound once."""
     page, errors = _open(browser, days, counting=True)
-    page.click(".views a[data-view=findings]")
+    page.click(".views a[data-view=timeline]")
     page.wait_for_timeout(300)
     bound = page.evaluate("window.__lasting")
     took: list[float] = []
@@ -139,10 +145,11 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
         page.click("[data-clock=real]")
         page.click("[data-clock=sim]")
         took.append(time.monotonic() - began)
-    for view in ("calls", "memory", "conversations", "calendar", "dispatch", "findings"):
+    for view in ("calls", "memory", "conversations", "timeline", "dispatch", "calendar"):
         page.click(f".views a[data-view={view}]")
     for n in range(4):
-        page.click(f".problem >> nth={n}")
+        page.click(f".moments .ev >> nth={n}")
+    page.click("[data-close]")
     run = page.evaluate("location.hash.match(/run=([^&]+)/)[1]")
     for _ in range(3):
         page.evaluate(f"location.hash = 'run=other'; location.hash = 'run={run}'")
@@ -170,7 +177,7 @@ def test_a_year_long_run_loads_and_pans_and_zooms_at_interactive_speed(
         page, errors = _open(browser, url)
         loaded = time.monotonic() - began
         marks = page.evaluate("window.__viewerLoaded.marks")
-        page.click(".views a[data-view=findings]")
+        page.click(".views a[data-view=timeline]")
         page.evaluate("window.__viewerDraws = []")
         for preset in ("year", "month", "week", "day", "hour", "all"):
             page.click(f"[data-preset={preset}]")
@@ -213,31 +220,33 @@ FAILED_DAYS = """
 def test_the_calendar_marks_each_day_a_check_failed_and_opens_that_day_at_its_failure(
     browser: Browser, days: str
 ) -> None:
-    """The run opens on its calendar: a cell per simulated day, red exactly on the days a finding failed, each drawn
-    with its failures where in the day they fell; a click on one tells that day with the failure among what the agent
-    did, and a finding picked anywhere else opens its day."""
+    """The run opens on its calendar: a cell per simulated day, red exactly on the days a finding failed, filled on
+    the first day of each kind of failure and pale where that failure only happens again; the chosen day is drawn
+    as its twenty-four hours and told moment by moment, and a finding picked in another view opens its day."""
     page, errors = _open(browser, days)
     page.wait_for_selector(".cal-day")
     failed: list[int] = page.evaluate(FAILED_DAYS)
     cells = page.locator(".cal-day")
-    marked = [i for i in range(cells.count()) if "fail" in (cells.nth(i).get_attribute("class") or "").split()]
+    classes = [(cells.nth(i).get_attribute("class") or "").split() for i in range(cells.count())]
+    marked = [i for i, c in enumerate(classes) if "fail" in c or "again" in c]
     assert failed and marked == failed
     assert f"{len(failed)} of {cells.count()} days failed" in page.locator("#view .measure-caption").inner_text()
-    # each kind of failure is news once: its first day is marked as such and every later one as that failure again
-    firsts = [i for i in marked if "again" not in (cells.nth(i).get_attribute("class") or "").split()]
+    # each kind of failure is news once: its first day is filled and every later one marked as that failure again
+    firsts = [i for i, c in enumerate(classes) if "fail" in c]
     assert firsts and firsts[0] == failed[0] and page.locator("#view .measure").inner_text() == str(len(firsts))
-    assert page.locator(f".cal-day[data-goto='{failed[0]}'] .lane.finding i.fail").count() > 0
+    assert page.locator(".chart-row.findings .m.finding").count() > 0, "the day it opens on draws its failure"
 
     last = failed[-1]
     page.click(f".cal-day[data-goto='{last}']")
-    section = page.locator(f".story [data-day='{last}']")
-    section.wait_for()
+    page.locator(f".moments[data-day='{last}']").wait_for()
     assert "chosen" in (page.locator(f".cal-day[data-goto='{last}']").get_attribute("class") or "")
-    section.locator(".act.finding").first.click()
+    page.click(".moments .ev.finding >> nth=0")
     page.wait_for_selector(".insp-kind:has-text('Finding')")
 
-    page.click(".problem >> nth=0")
+    page.click(".views a[data-view=findings]")
+    page.click("#view .vt-row >> nth=0")
     page.wait_for_function("location.hash.includes('sel=finding')")
     number = page.evaluate("location.hash.match(/sel=finding%3A(\\d+)/)[1]")
-    page.locator(f".story .act.finding.on[data-sel='finding:{number}']").wait_for()
+    page.click(".views a[data-view=calendar]")
+    page.locator(f".moments .ev.finding.on[data-sel='finding:{number}']").wait_for()
     assert errors == []

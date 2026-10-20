@@ -1,11 +1,11 @@
 /* The run viewer. It reads the JSON API of `minutehand view` and draws one run of any length:
 
    - the top bar: the run, its verdict, seed, simulated and real span, deadline and how it stopped; the headline
-     numbers, each a link to its view; the failed and review findings by severity, each a link to its moment;
-   - the timeline (timeline.js), the full width of the middle, one lane per kind of thing and per person, provider
-     and host, binned when dense;
-   - the views under it (views.js), one measure each, reached from the left;
-   - the inspector on the right (inspector.js), for whatever is selected anywhere.
+     numbers, each a link to its view;
+   - one page at a time beside the rail on the left: the calendar the run opens on, the timeline (timeline.js, one
+     lane per kind of thing and per person, provider and host, binned when dense), and the views (views.js), one
+     measure each;
+   - the inspector (inspector.js), a column that opens on the right for whatever is selected, and closes with it.
 
    Every listener is bound once, here, when the page loads, to the page's own shell or to an element a render
    replaces whole: re-drawing never adds one to anything that outlives the draw (the old page added one to its main
@@ -14,7 +14,7 @@
    Everything it loads comes from this server: the libraries are vendored under /static/vendor. */
 
 import { API, get, RunCache } from "./api.js";
-import { esc, $, words, when, span, seconds, count, plural, clip, median, remembered, remember } from "./util.js";
+import { esc, $, words, when, span, seconds, count, plural, median, remembered, remember } from "./util.js";
 import { Timeline } from "./timeline.js";
 import { VIEWS, VERDICT_WORD, findingTitle, batchOf } from "./views.js";
 import { inspect } from "./inspector.js";
@@ -218,14 +218,6 @@ function renderHeader() {
     ["conversations", card ? String(card.messages_to_people) : "—", "messages sent", ""]
   ];
   $("headline").innerHTML = numbers.map((n) => '<a href="#" data-view="' + n[0] + '"><span class="v ' + n[3] + '">' + esc(n[1]) + '</span><span class="k">' + esc(n[2]) + "</span></a>").join("");
-
-  const problems = f.filter((x) => x.finding.kind !== "informational").sort((p, q) => KIND_ORDER[p.finding.kind] - KIND_ORDER[q.finding.kind] || p.number - q.number);
-  const unwell = (b.findings.simulation || []).filter((x) => x.incomplete);
-  const world = unwell.map((x) => '<a href="#" class="problem" data-view="simulation" title="' + esc(x.words) + '"><span class="chip fail">simulation</span><span class="t">' + esc(words(x.kind) + ": " + clip(x.words, 90)) + "</span></a>").join("");
-  $("problems").innerHTML = !r.finished ? '<span class="none">The checks run when the run finishes.</span>'
-    : world + (problems.length ? problems.slice(0, 30).map((x) => '<button type="button" class="problem" data-sel="finding:' + x.number + '" aria-pressed="' + (S.sel === "finding:" + x.number) + '" title="' + esc(x.finding.message) + '"><span class="chip ' + x.finding.kind + '">' + esc(x.finding.kind) + '</span><span class="t">' + esc(findingTitle(x) + ": " + clip(x.finding.message, 90)) + "</span></button>").join("") +
-      (problems.length > 30 ? '<a href="#" data-view="findings" class="none">and ' + (problems.length - 30) + " more</a>" : "")
-      : '<span class="none">' + esc(verdict ? verdict.words : "No check failed.") + "</span>");
 }
 
 function renderNav() {
@@ -241,15 +233,17 @@ function renderNav() {
 
 async function renderView() {
   const v = VIEWS.find((x) => x.id === S.view) || VIEWS[0], generation = S.generation, host = $("view");
-  // the day-by-day story is read, not glanced at: it takes the timeline's room, its strip of days the overview
-  document.querySelector(".center").classList.toggle("story", v.id === "calendar");
+  // one page at a time: the timeline is a page of its own, not a frame around the others
+  document.querySelector(".center").classList.toggle("tl-page", v.id === "timeline");
   S.handle = {};
-  host.innerHTML = '<p class="empty">Reading…</p>';
+  // each draw gets a page of its own: a view still reading when another is opened draws into a page no longer shown
+  host.innerHTML = '<div class="view-page"><p class="empty">Reading…</p></div>';
+  const page = host.firstChild;
   try {
-    const handle = await v.render(host, ctx);
-    if (generation === S.generation && S.view === v.id) { S.handle = handle || {}; }
+    const handle = await v.render(page, ctx);
+    if (generation === S.generation && S.view === v.id && page.isConnected) { S.handle = handle || {}; }
   } catch (e) {
-    if (generation === S.generation) { host.innerHTML = '<p class="empty">Could not read this view: ' + esc(e.message) + "</p>"; }
+    if (generation === S.generation) { page.innerHTML = '<p class="empty">Could not read this view: ' + esc(e.message) + "</p>"; }
   }
 }
 
@@ -278,7 +272,6 @@ function select(ref, from) {
     const fm = ref.indexOf("finding:") === 0 && tl.data ? tl.data.findings.find((f) => "finding:" + f.number === ref) : null;
     tl.reveal(refs.filter((r) => tl.data && tl.data.byRef.has(r)), fm ? [fm.sim] : []);
   }
-  document.querySelectorAll(".problem").forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute("data-sel") === S.sel)));
   if (S.handle.onSelect) { S.handle.onSelect(S.sel); }
   if (from !== "refresh") { renderInspector(); }
   rememberWhere();
@@ -287,14 +280,17 @@ function select(ref, from) {
 async function renderInspector() {
   const ref = S.sel, box = $("inspector");
   if (!S.base) { return; }
-  if (ref) { box.innerHTML = '<p class="insp-empty">Reading…</p>'; }
+  box.hidden = !ref; $("body").classList.toggle("inspecting", Boolean(ref));
+  if (!ref) { box.innerHTML = ""; return; }
+  box.innerHTML = '<p class="insp-empty">Reading…</p>';
   const html = await inspect(ctx, ref);
-  if (S.sel === ref) { box.innerHTML = html; box.scrollTop = 0; }
+  if (S.sel === ref) { box.innerHTML = '<button type="button" class="insp-close" data-close aria-label="Close">×</button>' + html; box.scrollTop = 0; }
 }
 
 /* ---------- every listener, bound once ---------- */
 
 document.addEventListener("click", (ev) => {
+  if (ev.target.closest("[data-close]")) { ev.preventDefault(); select(null, "page"); return; }
   const sel = ev.target.closest("[data-sel]");
   if (sel) { ev.preventDefault(); select(sel.getAttribute("data-sel"), "page"); return; }
   const openRun = ev.target.closest("[data-open]");
@@ -328,7 +324,7 @@ document.addEventListener("keydown", (ev) => {
   if (k === "-" || k === "_") { tl.zoom(2); return; }
   if (k === "0") { tl.fit(); return; }
   if (k === "f") {
-    const order = Array.from(document.querySelectorAll(".problem")).map((b) => b.getAttribute("data-sel"));
+    const order = S.base.findings.findings.filter((x) => x.finding.kind !== "informational").sort((p, q) => KIND_ORDER[p.finding.kind] - KIND_ORDER[q.finding.kind] || p.number - q.number).map((x) => "finding:" + x.number);
     if (order.length) { select(order[(order.indexOf(S.sel) + 1) % order.length], "keys"); }
     return;
   }
