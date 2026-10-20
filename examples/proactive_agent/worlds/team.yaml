@@ -1,0 +1,45 @@
+# A world, not a task: the agent brings its own work (AGENT_WORK=team.json), four asks of four people who each keep
+# their own hours. Sam answers within hours. Priya always answers, but takes two to three working days. Marco is on
+# leave for the first week and Lena covers for him. Jade never answers.
+name: new_starters_team
+starts_at: "2026-08-24T09:00:00Z"   # a Monday
+runs_for: P21D
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Runs onboarding for the new starters; wants each answer passed on as it comes.
+    reply: {kind: scripted, then: silent}
+  - key: sam
+    name: Sam Okafor
+    email: sam@example.com
+    profile: Finance lead; answers within a few hours, in working hours.
+    facts: ["The cost centre for new-starter equipment is CC-4410."]
+    reply_within: {min: PT2H, max: PT5H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+  - key: priya
+    name: Priya Nair
+    email: priya@example.com
+    profile: Legal counsel; reads every request and always answers, but takes two to three working days.
+    facts: ["The Northwind support contract renewal is signed off."]
+    reply_within: {min: P2D, max: P3D}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+  - key: marco
+    name: Marco Ruiz
+    email: marco@example.com
+    profile: Runs facilities; on leave for the first week, and his automatic reply names Lena as cover.
+    absences:
+      - {trigger: at_start, lasts: P7D, delegate: lena, reason: on leave}
+    facts: ["The training room is booked for 7 September."]
+    reply_within: {min: PT3H, max: PT6H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}
+  - key: lena
+    name: Lena Fischer
+    email: lena@example.com
+    profile: Facilities coordinator; covers for Marco while he is away.
+    reply: {kind: silent}
+  - key: jade
+    name: Jade Kim
+    email: jade@example.com
+    profile: IT support, buried in tickets; does not answer.
+    reply: {kind: silent}

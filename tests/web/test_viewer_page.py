@@ -96,8 +96,8 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
 ) -> None:
     page, errors = _open(browser, days)
     assert page.locator(".verdict").inner_text().lower() == "failed"
-    assert page.locator(".identity h1").inner_text() == "year of follow ups"
-    assert page.locator("#headline a").count() == 7
+    assert page.locator("#picker-label").inner_text().startswith("year of follow ups")
+    assert "days simulated in" in page.locator(".identity .simulated").inner_text()
     assert page.locator(".views a[aria-current=page]").get_attribute("data-view") == "calendar", (
         "the run opens on its calendar"
     )
@@ -118,12 +118,16 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
         if name == "timeline":
             assert page.locator("#timeline").is_visible() and page.locator("#view").is_hidden()
             continue
+        if name == "calendar":
+            assert page.locator("#view .cal-cell").count() > 0
+            continue
         page.wait_for_function("!document.querySelector('#view').textContent.startsWith('Reading')")
         assert page.locator("#view .measure, #view .empty").count() > 0, name
 
     page.click(".views a[data-view=calendar]")
-    page.click(".ev.finding >> nth=0")
-    page.wait_for_selector(".insp-kind:has-text('Finding')")
+    page.click(".cal-cell.failed >> nth=0")
+    page.click(".day-page .row.output >> nth=0")
+    page.wait_for_selector(".insp-head")
     page.click(".views a[data-view=timeline]")
     page.keyboard.press("j")
     page.wait_for_function("location.hash.includes('sel=') && !location.hash.includes('sel=finding')")
@@ -147,8 +151,9 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
         took.append(time.monotonic() - began)
     for view in ("calls", "memory", "conversations", "timeline", "dispatch", "calendar"):
         page.click(f".views a[data-view={view}]")
+    page.click(".cal-cell.failed >> nth=0")
     for n in range(4):
-        page.click(f".moments .ev >> nth={n}")
+        page.click(f".day-page .row >> nth={n + 1}")
     page.click("[data-close]")
     run = page.evaluate("location.hash.match(/run=([^&]+)/)[1]")
     for _ in range(3):
@@ -211,42 +216,50 @@ FAILED_DAYS = """
 (async () => {
   const run = window.__viewerLoaded.run;
   const t = await (await fetch("/api/runs/" + run + "/timeline")).json();
+  const f = await (await fetch("/api/runs/" + run + "/findings")).json();
+  const at = new Map(); t.marks.ref.forEach((r, i) => { if (!at.has(r)) { at.set(r, t.marks.sim[i]); } });
   const first = Math.floor(t.starts / 86400000);
-  return Array.from(new Set(t.findings.filter((f) => f.kind === "fail").map((f) => Math.floor(f.sim / 86400000) - first))).sort((a, b) => a - b);
+  const failed = f.items.filter((i) => i.checks.some((c) => c.outcome === "failed")).map((i) => Math.floor(at.get("ev:" + i.seq) / 86400000) - first);
+  return Array.from(new Set(failed)).sort((a, b) => a - b);
 })()
 """
 
 
-def test_the_calendar_marks_each_day_a_check_failed_and_opens_that_day_at_its_failure(
+def test_the_calendar_counts_each_days_outputs_by_result_and_a_day_opens_into_its_rows_and_each_output_its_checks(
     browser: Browser, days: str
 ) -> None:
-    """The run opens on its calendar: a cell per simulated day, red exactly on the days a finding failed, filled on
-    the first day of each kind of failure and pale where that failure only happens again; the chosen day is drawn
-    as its twenty-four hours and told moment by moment, and a finding picked in another view opens its day."""
+    """The calendar lists nothing: a cell a day, marked failed exactly on the days one of the agent's outputs failed a
+    check, the first day of each kind of failure marked new. A day opens into its own page, a row for each output;
+    an output opens in the inspector with every check its kind takes and what each said."""
     page, errors = _open(browser, days)
-    page.wait_for_selector(".cal-day")
+    page.wait_for_selector(".cal-cell")
     failed: list[int] = page.evaluate(FAILED_DAYS)
-    cells = page.locator(".cal-day")
+    cells = page.locator(".cal-cell")
     classes = [(cells.nth(i).get_attribute("class") or "").split() for i in range(cells.count())]
-    marked = [i for i, c in enumerate(classes) if "fail" in c or "again" in c]
-    assert failed and marked == failed
-    assert f"{len(failed)} of {cells.count()} days failed" in page.locator("#view .measure-caption").inner_text()
-    # each kind of failure is news once: its first day is filled and every later one marked as that failure again
-    firsts = [i for i, c in enumerate(classes) if "fail" in c]
-    assert firsts and firsts[0] == failed[0] and page.locator("#view .measure").inner_text() == str(len(firsts))
-    assert page.locator(".chart-row.findings .m.finding").count() > 0, "the day it opens on draws its failure"
+    assert failed and [i for i, c in enumerate(classes) if "failed" in c] == failed
+    news = [i for i, c in enumerate(classes) if "new" in c]
+    assert news and news[0] == failed[0], "the first failure is news"
+    assert page.locator(".cal-page .row").count() == 0, "the calendar itemises nothing"
 
     last = failed[-1]
-    page.click(f".cal-day[data-goto='{last}']")
-    page.locator(f".moments[data-day='{last}']").wait_for()
-    assert "chosen" in (page.locator(f".cal-day[data-goto='{last}']").get_attribute("class") or "")
-    page.click(".moments .ev.finding >> nth=0")
-    page.wait_for_selector(".insp-kind:has-text('Finding')")
+    page.click(f".cal-cell[data-day='{last}']")
+    page.locator(".day-page .row.output.failed").first.wait_for()
+    assert page.locator(".day-page .cal-cell").count() == 0, "a day is a page of its own"
+    assert "day=" in page.evaluate("location.hash")
+    page.click(".day-page .row.output.failed >> nth=0")
+    page.wait_for_selector(".insp-head")
+    assert page.locator(".checks li.failed").count() >= 1
+    assert (
+        page.locator(".checks li").count()
+        == page.locator(".checks li.failed, .checks li.review, .checks li.held, .checks li.not_measured").count()
+    )
 
+    page.click("[data-calendar]")
+    page.wait_for_selector(".cal-cell")
     page.click(".views a[data-view=findings]")
-    page.click("#view .vt-row >> nth=0")
+    page.click(".group.fail summary >> nth=0")
+    page.click(".group.fail .links button >> nth=0")
     page.wait_for_function("location.hash.includes('sel=finding')")
-    number = page.evaluate("location.hash.match(/sel=finding%3A(\\d+)/)[1]")
     page.click(".views a[data-view=calendar]")
-    page.locator(f".moments .ev.finding.on[data-sel='finding:{number}']").wait_for()
+    page.wait_for_selector(".cal-cell")
     assert errors == []

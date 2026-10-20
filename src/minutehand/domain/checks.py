@@ -14,7 +14,7 @@ from minutehand.domain.agent import Commitment
 from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement, PersonCall
-from minutehand.domain.items import Assessed, ProvidedTypes, TypedItem
+from minutehand.domain.items import Assessed, ItemAssessment, ProvidedTypes, TypedItem
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import EntityRef, Exchange, RecordedCall, WorldEvent
@@ -144,6 +144,9 @@ class CheckReport(Model):
     blocked: list[str] = []
     notes: list[str] = []
     rules_read: list[RuleRead] = Field(default=[], description="The team's rules, each with how often it was read")
+    items: list[ItemAssessment] = Field(
+        default=[], description="Each of the agent's writes, with what each item check it takes said of it"
+    )
 
 
 class ObligationKind(StrEnum):

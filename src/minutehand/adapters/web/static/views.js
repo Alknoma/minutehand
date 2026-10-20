@@ -1,8 +1,9 @@
 /* The views under the timeline: one measure each, said large, with what it is made of beneath (a chart where the
    shape matters, a table to find the row). Each view reads only the paths it needs, when it is first opened. */
 
-import { esc, when, span, seconds, words, title, plural, count, clip, median, day, hhmm } from "./util.js";
+import { esc, when, span, seconds, words, title, plural, count, clip, median, day } from "./util.js";
 import { VList } from "./vlist.js";
+import { calendarView } from "./calendar.js";
 
 const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed", simulation_incomplete: "Simulation incomplete" };
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
@@ -34,206 +35,17 @@ function table(host, ctx, columns, rows, refOf, rowHeight) {
   return { onSelect: (ref) => list.select(ref, true) };
 }
 
-/* ---------- the calendar: the run a day to a cell, and the chosen day told ---------- */
-
-const DAY = 86400000, MINUTE = 60000, MOMENTS_A_DAY = 60;
-/** What a person reads as something happening; every other mark (a call answered, a read, a model call, memory, a
-    stored item, a span, an entry of the table falling due) is the plumbing of a moment, counted beside it. */
-const ACTS = new Set(["wake", "sent", "said", "edited", "wait", "change", "call_failed", "due_fault"]);
-const AGENT_ACTS = new Set(["wake", "sent", "edited", "call_failed", "due_fault"]), PEOPLE_ACTS = new Set(["said", "change"]);
-const PLUMBING_WORD = { call: ["call", "calls"], read: ["read", "reads"], model_call: ["model call", "model calls"], memory_write: ["memory write", "memory writes"], memory_read: ["memory read", "memory reads"], stored: ["stored item", "stored items"], span: ["span", "spans"], due: ["due entry", "due entries"] };
-
-function upper(text) { return String(text).replace(/^\w/, (c) => c.toUpperCase()); }
-function longDay(t) { return new Date(t).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }); }
-
-/** Every simulated day of the run from its first to the one it reached, each with its moments (marks and findings at
-    the same simulated minute) in order. */
-function runDays(ctx) {
-  const t = ctx.base.timeline, m = t.marks, lanes = t.lanes;
-  const message = {};
-  ctx.base.findings.findings.forEach((x) => { message[x.number] = x; });
-  // the run's own days; a mark past the moment it reached (an entry booked for later) is told on its last day
-  const first = Math.floor(ms(t.starts) / DAY), last = Math.max(first, Math.floor((ms(t.reached) - 1) / DAY));
-  const days = [];
-  for (let d = first; d <= last; d++) { days.push({ start: d * DAY, moments: new Map(), acts: 0, sent: 0, said: 0, plumbing: 0, fails: 0, reviews: 0, firstFails: [] }); }
-  const momentOf = (sim) => {
-    const dd = days[Math.min(days.length - 1, Math.max(0, Math.floor(sim / DAY) - first))], at = Math.floor(sim / MINUTE) * MINUTE;
-    if (!dd.moments.has(at)) { dd.moments.set(at, { at, wake: null, acts: [], plumbing: {}, plumbingRef: null, findings: [] }); }
-    return [dd, dd.moments.get(at)];
-  };
-  for (let i = 0; i < m.sim.length; i++) {
-    const [dd, mo] = momentOf(m.sim[i]), kind = m.kind[i];
-    if (!ACTS.has(kind)) { mo.plumbing[kind] = (mo.plumbing[kind] || 0) + 1; mo.plumbingRef = mo.plumbingRef || m.ref[i]; dd.plumbing += 1; continue; }
-    const act = { kind, ref: m.ref[i], label: m.label[i], lane: lanes[m.lane[i]], at: m.sim[i] };
-    if (kind === "wake" && !mo.wake) { mo.wake = act; } else { mo.acts.push(act); }
-    dd.acts += 1;
-    if (kind === "sent") { dd.sent += 1; }
-    if (kind === "said") { dd.said += 1; }
-  }
-  // a failure of the same kind as one on an earlier day is that failure again: only its first day is news
-  const seen = new Set();
-  t.findings.slice().sort((a, b) => a.sim - b.sim).forEach((f) => {
-    const x = message[f.number];
-    if (!x || f.kind === "informational") { return; }
-    const [dd, mo] = momentOf(f.sim);
-    mo.findings.push({ x, sim: f.sim, again: false });
-    if (f.kind !== "fail") { dd.reviews += 1; return; }
-    dd.fails += 1;
-    const sort = failureSort(x);
-    if (seen.has(sort)) { mo.findings[mo.findings.length - 1].again = true; } else { seen.add(sort); dd.firstFails.push(x); }
-  });
-  days.forEach((dd) => { dd.moments = Array.from(dd.moments.values()).sort((a, b) => a.at - b.at); });
-  return days;
-}
-
-/** What kind of failure a finding is, in words: its check's title and, when it was assessed, what was wrong with what. */
-function failureSort(x) {
+/** What kind of failure a finding is, in words: its check's title and, when it was assessed, what was wrong with
+    which item. The calendar marks the first day of each kind; the top bar names them. */
+export function failureSort(x) {
   const a = x.finding.assessed;
   return findingTitle(x) + (a ? " " + a.item + " · " + words(a.kind) : "");
-}
-
-/* ----- the calendar ----- */
-
-function cellHtml(dd, i, chosen, busiest) {
-  const cls = dd.firstFails.length ? "fail" : dd.fails ? "again" : dd.reviews ? "review" : dd.acts ? "busy" : "quiet";
-  const tip = day(dd.start) + ": " + [dd.firstFails.length ? "first " + dd.firstFails.map(failureSort).join(", ") : dd.fails ? plural(dd.fails, "failure") + " seen before" : "", dd.reviews ? dd.reviews + " to review" : "", plural(dd.sent, "message") + " sent", plural(dd.said, "reply", "replies")].filter(Boolean).join(" · ");
-  const busy = dd.acts ? Math.max(12, Math.round(100 * dd.acts / busiest)) : 0;
-  return '<button type="button" class="cal-day ' + cls + (chosen ? " chosen" : "") + '" data-goto="' + i + '" title="' + esc(tip) + '"><span class="dom">' + new Date(dd.start).getUTCDate() + "</span>" +
-    (dd.fails ? '<span class="n">' + dd.fails + "</span>" : "") + (busy ? '<span class="busy" style="width:' + busy + '%"></span>' : "") + "</button>";
-}
-
-/** A month to a block and a week to a row; under it, what the colours say and each kind of failure from its first day. */
-function calendarHtml(days, chosen, began) {
-  const months = [], busiest = Math.max(1, ...days.map((d) => d.acts));
-  days.forEach((dd, i) => {
-    const d = new Date(dd.start), key = d.getUTCFullYear() * 12 + d.getUTCMonth();
-    if (!months.length || months[months.length - 1].key !== key) { months.push({ key, d, cells: [] }); }
-    months[months.length - 1].cells.push(i);
-  });
-  const grid = months.map((mo) => {
-    const lead = (new Date(days[mo.cells[0]].start).getUTCDay() + 6) % 7;
-    return '<div class="cal-month"><h3>' + esc(mo.d.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" })) + '</h3><div class="cal-grid">' +
-      ["M", "T", "W", "T", "F", "S", "S"].map((w) => '<span class="dow">' + w + "</span>").join("") +
-      '<span class="pad"></span>'.repeat(lead) + mo.cells.map((i) => cellHtml(days[i], i, i === chosen, busiest)).join("") + "</div></div>";
-  }).join("");
-  const kinds = began.length ? '<div class="cal-kinds"><h3>' + esc(began.length === 1 ? "What went wrong" : began.length + " kinds of failure") + "</h3>" +
-    began.map((b) => '<button type="button" data-goto="' + b.i + '"><span class="k">' + esc(failureSort(b.x)) + '</span><span class="d">first on ' + esc(day(days[b.i].start)) + "</span></button>").join("") + "</div>" : "";
-  const key = '<div class="cal-key"><span><i class="fail"></i>a failure, first day</span><span><i class="again"></i>the same failure again</span><span><i class="review"></i>to review</span><span><i class="busy"></i>how busy the day was</span></div>';
-  return grid + key + kinds;
-}
-
-/* ----- the chosen day ----- */
-
-/** The day as a chart: its twenty-four hours left to right, a row for the agent, for people and for the findings. */
-function chartHtml(dd) {
-  const pos = (t) => (100 * (t - dd.start) / DAY).toFixed(3) + "%";
-  const rows = { agent: [], people: [], findings: [] };
-  dd.moments.forEach((mo) => {
-    (mo.wake ? [mo.wake] : []).concat(mo.acts).forEach((a) => {
-      const row = AGENT_ACTS.has(a.kind) ? "agent" : PEOPLE_ACTS.has(a.kind) ? "people" : null;
-      if (row) { rows[row].push('<i class="m ' + esc(a.kind) + '" style="left:' + pos(a.at) + '" data-sel="' + esc(a.ref) + '" title="' + esc(hhmm(a.at) + " " + (a.kind === "wake" ? "the agent woke" : a.label)) + '"></i>'); }
-    });
-    mo.findings.forEach((f) => rows.findings.push('<i class="m finding ' + esc(f.x.finding.kind) + (f.again ? " again" : "") + '" style="left:' + pos(f.sim) + '" data-sel="finding:' + f.x.number + '" title="' + esc(hhmm(f.sim) + " " + failureSort(f.x)) + '"></i>'));
-  });
-  const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => '<span style="left:' + (100 * h / 24) + '%">' + (h < 10 ? "0" : "") + h + ":00</span>").join("");
-  return '<div class="chart"><div class="chart-hours"><span></span><div>' + hours + "</div></div>" +
-    [["agent", "Agent"], ["people", "People"], ["findings", "Findings"]].map(([k, label]) => '<div class="chart-row ' + k + '"><span class="chart-label">' + label + '</span><div class="chart-track">' + rows[k].join("") + "</div></div>").join("") + "</div>";
-}
-
-function actHtml(a) {
-  const who = a.lane.label;
-  const said = {
-    sent: ["To " + who, a.label], said: [who, a.label], change: [who, a.label], edited: ["Changed what " + who + " was sent", a.label],
-    call_failed: [who + " refused a call", a.label], due_fault: ["A wake was held back", a.label], wait: [upper(a.label), ""]
-  }[a.kind] || [who, a.label];
-  return '<button type="button" class="ev ' + esc(a.kind) + '" data-sel="' + esc(a.ref) + '"><span class="ev-title">' + esc(said[0]) + "</span>" + (said[1] ? '<span class="ev-text">' + esc(said[1]) + "</span>" : "") + "</button>";
-}
-
-function findingHtml(f) {
-  const x = f.x, a = x.finding.assessed, kind = x.finding.kind;
-  const tag = f.again ? "Again" : kind === "fail" ? "Failed" : "To review";
-  return '<button type="button" class="ev finding ' + esc(kind) + (f.again ? " again" : "") + '" data-sel="finding:' + x.number + '"><span class="ev-title"><span class="tag">' + tag + "</span>" + esc(failureSort(x)) + '</span><span class="ev-text">' + esc(upper(a ? a.against : x.finding.message)) + "</span></button>";
-}
-
-function plumbingHtml(mo) {
-  const parts = Object.keys(mo.plumbing).map((k) => { const w = PLUMBING_WORD[k] || [words(k), words(k)]; return mo.plumbing[k] + " " + (mo.plumbing[k] === 1 ? w[0] : w[1]); });
-  return parts.length ? '<button type="button" class="m-foot" data-sel="' + esc(mo.plumbingRef) + '">' + esc(parts.join(" · ")) + "</button>" : "";
-}
-
-function momentHtml(mo) {
-  const wake = mo.wake && /^Wake (\d+): (\d+) changes? \((.+)\)$/.exec(mo.wake.label);
-  const head = mo.wake ? '<button type="button" class="m-head" data-sel="' + esc(mo.wake.ref) + '">' + esc(wake ? "Agent woke · " + words(wake[3]) : mo.wake.label) + "</button>" : "";
-  const bad = mo.findings.some((f) => f.x.finding.kind === "fail" && !f.again) ? " fail" : mo.findings.some((f) => f.x.finding.kind === "fail") ? " again" : mo.findings.length ? " review" : "";
-  return '<div class="moment' + bad + '"><time>' + esc(hhmm(mo.at)) + '</time><span class="dot"></span><div class="m-card">' + head +
-    mo.acts.map(actHtml).join("") + mo.findings.map(findingHtml).join("") + plumbingHtml(mo) + "</div></div>";
-}
-
-function dayHtml(days, i, whole) {
-  const dd = days[i];
-  const failed = dd.fails ? (dd.firstFails.length ? plural(dd.fails, "failure") + ", " + dd.firstFails.length + " new" : plural(dd.fails, "failure") + ", " + (dd.fails === 1 ? "seen before" : "all seen before")) : dd.reviews ? plural(dd.reviews, "finding") + " to review" : "no failures";
-  const facts = [failed, plural(dd.sent, "message") + " sent", dd.said ? plural(dd.said, "reply", "replies") : "no replies"];
-  const shown = whole ? dd.moments : dd.moments.slice(0, MOMENTS_A_DAY);
-  return '<header class="day-head"><div><h2>' + esc(longDay(dd.start)) + '</h2><p>' + facts.map((f, k) => '<span class="' + (k === 0 && dd.fails ? (dd.firstFails.length ? "fail" : "again") : "") + '">' + esc(f) + "</span>").join("") + "</p></div>" +
-    '<div class="day-nav"><button type="button" data-goto="' + (i - 1) + '"' + (i ? "" : " disabled") + ' aria-label="The day before">‹</button><button type="button" data-goto="' + (i + 1) + '"' + (i < days.length - 1 ? "" : " disabled") + ' aria-label="The day after">›</button></div></header>' +
-    chartHtml(dd) +
-    (dd.moments.length ? '<div class="moments" data-day="' + i + '">' + shown.map(momentHtml).join("") + "</div>" : '<p class="empty">Nothing happened this day.</p>') +
-    (dd.moments.length > shown.length ? '<button type="button" class="more" data-whole="' + i + '">' + esc("Show the " + (dd.moments.length - shown.length) + " more moments of this day") + "</button>" : "");
-}
-
-function calendarView(host, ctx) {
-  const days = runDays(ctx), fs = ctx.base.findings;
-  const bad = days.filter((d) => d.fails).length, unsure = days.filter((d) => !d.fails && d.reviews).length;
-  const began = [];
-  days.forEach((dd, i) => dd.firstFails.forEach((x) => began.push({ i, x })));
-  // which day each mark and finding falls on, so a selection made anywhere opens its day
-  const dayOf = new Map();
-  days.forEach((dd, i) => dd.moments.forEach((mo) => {
-    (mo.wake ? [mo.wake] : []).concat(mo.acts).forEach((a) => dayOf.set(a.ref, i));
-    mo.findings.forEach((f) => dayOf.set("finding:" + f.x.number, i));
-    if (mo.plumbingRef) { dayOf.set(mo.plumbingRef, i); }
-  }));
-  const firstBad = began.length ? began[0].i : -1, firstBusy = days.findIndex((d) => d.acts);
-  let chosen = dayOf.has(ctx.sel) ? dayOf.get(ctx.sel) : ctx.memo.day !== undefined && ctx.memo.day < days.length ? ctx.memo.day : firstBad >= 0 ? firstBad : Math.max(0, firstBusy);
-  const caption = !fs.finished ? "days so far · the checks run when the run finishes"
-    : (began.length === 1 ? "kind of failure" : "kinds of failure") + " · " + bad + " of " + plural(days.length, "day") + " failed" + (unsure ? " · " + plural(unsure, "day") + " to review" : "");
-  host.innerHTML = headHtml(fs.finished ? String(began.length) : String(days.length), caption, began.length ? "fail" : fs.finished ? "pass" : "") +
-    '<div class="cal-split"><aside class="cal" data-role="cal"></aside><div class="view-body day-page" data-role="day"></div></div>';
-  const cal = host.querySelector('[data-role="cal"]'), body = host.querySelector('[data-role="day"]');
-  const mark = (ref) => {
-    body.querySelectorAll("[data-sel].on").forEach((el) => el.classList.remove("on"));
-    if (!ref) { return; }
-    body.querySelectorAll('[data-sel="' + CSS.escape(ref) + '"]').forEach((el) => el.classList.add("on"));
-    const el = body.querySelector('.moments [data-sel="' + CSS.escape(ref) + '"]');
-    if (el) { el.scrollIntoView({ block: "nearest" }); }
-  };
-  const show = (i, whole) => {
-    if (i < 0 || i >= days.length) { return; }
-    chosen = i; ctx.memo.day = i;
-    cal.querySelectorAll(".cal-day.chosen").forEach((el) => el.classList.remove("chosen"));
-    const cell = cal.querySelector('.cal-day[data-goto="' + i + '"]');
-    if (cell) { cell.classList.add("chosen"); cell.scrollIntoView({ block: "nearest" }); }
-    body.innerHTML = dayHtml(days, i, whole);
-    body.scrollTop = 0;
-    mark(ctx.sel);
-  };
-  cal.innerHTML = calendarHtml(days, chosen, began);
-  // bound to what this draw made, never to the view itself, which outlives it
-  const pick = (ev) => {
-    const go = ev.target.closest("[data-goto]"), whole = ev.target.closest("[data-whole]");
-    if (go) { show(Number(go.getAttribute("data-goto")), false); } else if (whole) { show(Number(whole.getAttribute("data-whole")), true); }
-  };
-  cal.addEventListener("click", pick);
-  body.addEventListener("click", pick);
-  show(chosen, false);
-  // a selection opens its day, unless the day shown already holds it (a mark can be told on more than one day)
-  const shown = (ref) => body.querySelector('[data-sel="' + CSS.escape(ref) + '"]') !== null;
-  return { onSelect: (ref) => { if (ref && dayOf.has(ref) && !shown(ref)) { show(dayOf.get(ref), false); } mark(ref); } };
 }
 
 export const VIEWS = [
   {
     id: "calendar", group: "Outcome", label: "Calendar",
-    count: (ctx) => { const t = ctx.base.timeline; const failed = new Set(t.findings.filter((f) => f.kind === "fail").map((f) => Math.floor(f.sim / DAY))); return { n: failed.size ? failed.size + "d" : "", cls: failed.size ? "fail" : "" }; },
+    count: (ctx) => { const kinds = new Set(ctx.base.findings.findings.filter((x) => x.finding.kind === "fail").map(failureSort)); return { n: kinds.size || "", cls: kinds.size ? "fail" : "" }; },
     render: calendarView
   },
   {
@@ -246,18 +58,25 @@ export const VIEWS = [
     id: "findings", group: "Outcome", label: "Findings",
     count: (ctx) => { const f = ctx.base.findings.findings; const fails = f.filter((x) => x.finding.kind === "fail").length; return { n: fails || f.length, cls: fails ? "fail" : "" }; },
     render(host, ctx) {
+      // a long run can hold hundreds: one row for each kind, with how often and between when, opening to each one
       const fs = ctx.base.findings;
-      if (!fs.finished) { host.innerHTML = headHtml("—", "The checks run when the run finishes.") ; return {}; }
-      const f = sortedFindings(ctx), c = { fail: 0, review: 0, informational: 0 };
-      f.forEach((x) => { c[x.finding.kind] += 1; });
-      host.innerHTML = headHtml(String(c.fail), "failed · " + c.review + " to review · " + plural(c.informational, "note") + (fs.blocked.length ? " · " + plural(fs.blocked.length, "check") + " could not run" : ""), c.fail ? "fail" : "pass") + '<div class="view-body" data-role="t"></div>';
-      return table(host.querySelector('[data-role="t"]'), ctx, [
-        { label: "Kind", width: "84px", html: (x) => chip(x.finding.kind, x.finding.kind === "informational" ? "note" : x.finding.kind), sort: (x) => KIND_ORDER[x.finding.kind] },
-        { label: "Finding", width: "minmax(160px, 1fr)", html: (x) => esc(findingTitle(x)) },
-        { label: "What it found", width: "minmax(200px, 2.4fr)", html: (x) => esc(x.finding.message) },
-        { label: "When", width: "130px", html: (x) => esc(x.finding.at ? when(x.finding.at) : "—"), sort: (x) => x.finding.at || "" },
-        { label: "Evidence", width: "74px", align: "r", html: (x) => String(x.finding.evidence.length), sort: (x) => x.finding.evidence.length }
-      ], f, (x) => "finding:" + x.number, 34);
+      if (!fs.finished) { host.innerHTML = headHtml("—", "The checks run when the run finishes."); return {}; }
+      const groups = new Map();
+      fs.findings.slice().sort((a, b) => (a.finding.at || "").localeCompare(b.finding.at || "") || a.number - b.number).forEach((x) => {
+        const k = x.finding.kind + "\u0000" + failureSort(x);
+        if (!groups.has(k)) { groups.set(k, { kind: x.finding.kind, name: failureSort(x), all: [] }); }
+        groups.get(k).all.push(x);
+      });
+      const rows = Array.from(groups.values()).sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || b.all.length - a.all.length);
+      const fails = fs.findings.filter((x) => x.finding.kind === "fail").length;
+      host.innerHTML = headHtml(String(rows.filter((g) => g.kind === "fail").length), plural(rows.filter((g) => g.kind === "fail").length, "kind") + " of failure, " + plural(fails, "time") + " in all · " + plural(rows.filter((g) => g.kind === "review").length, "kind") + " to review" + (fs.blocked.length ? " · " + plural(fs.blocked.length, "check") + " could not run" : ""), fails ? "fail" : "pass") +
+        '<div class="view-body groups">' + (rows.length ? rows.map((g) => {
+          const first = g.all[0].finding.at, last = g.all[g.all.length - 1].finding.at;
+          return '<details class="group ' + esc(g.kind) + '"><summary>' + chip(g.kind, g.kind === "informational" ? "note" : g.kind) + '<span class="name">' + esc(g.name) + '</span><span class="times">' + esc(plural(g.all.length, "time")) + '</span><span class="span">' + esc(first ? day(first) + (last && day(last) !== day(first) ? " – " + day(last) : "") : "—") + "</span></summary>" +
+            '<ul class="links">' + g.all.slice(0, 200).map((x) => "<li>" + '<button type="button" class="link" data-sel="finding:' + x.number + '">' + esc((x.finding.at ? when(x.finding.at) + " · " : "") + clip(x.finding.message, 140)) + "</button></li>").join("") +
+            (g.all.length > 200 ? '<li class="muted">and ' + (g.all.length - 200) + " more</li>" : "") + "</ul></details>";
+        }).join("") : '<p class="empty">No check found anything.</p>') + "</div>";
+      return {};
     }
   },
   {
@@ -444,7 +263,7 @@ export const VIEWS = [
         (Object.keys(tunnelled).length ? " · " + Object.keys(tunnelled).map((h) => plural(tunnelled[h], "call") + " to " + h + " relayed unopened, its tokens unknown").join(", ") : "") +
         ' · <span class="muted">' + (use.priced ? plural(use.calls.length - costs.length, "call") + " no price named" : "no prices given: <code>minutehand view --prices FILE</code> adds a cost") + "</span>") +
         '<div class="chart" data-role="chart"></div><div class="view-body" data-role="t" style="display:flex;flex-direction:column;min-height:200px"></div>';
-      const rows = use.calls.map((c) => ({ ref: c.side === "agent" ? "mc:" + c.span_id : "pc:" + c.person_call_id, who: c.side === "agent" ? "agent" : ctx.personKey(c.person), side: c.side, model: c.model || "not named", at: ms(c.at), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: c.duration_ms === null ? null : c.duration_ms / 1000, cost: c.cost, note: c.replayed ? "replayed" : c.failure ? "failed" : c.wrote || "" }));
+      const rows = use.calls.map((c) => ({ ref: c.side === "agent" ? "mc:" + c.span_id : "pc:" + c.person_call_id, who: c.side === "agent" ? "agent" : c.side === "person" ? ctx.personKey(c.person) : c.side, side: c.side, model: c.model || "not named", at: ms(c.at), tin: c.input_tokens || 0, tout: c.output_tokens || 0, took: c.duration_ms === null ? null : c.duration_ms / 1000, cost: c.cost, note: c.replayed ? "replayed" : c.failure ? "failed" : c.wrote || "" }));
       if (!rows.length) { host.querySelector('[data-role="t"]').innerHTML = '<p class="empty">The run holds no model call: the agent sent no telemetry of one, and no person\'s words were written by a model.</p>'; return {}; }
       const chartHost = host.querySelector('[data-role="chart"]');
       const extent = Math.max(...rows.map((r) => r.at)) - Math.min(...rows.map((r) => r.at));
@@ -473,13 +292,18 @@ export const VIEWS = [
     count: (ctx) => ({ n: count(laneCount(ctx, "memory")) }),
     async render(host, ctx) {
       const m = await ctx.cache.read("memory");
-      host.innerHTML = headHtml(count(m.keys.length), "keys · " + count(m.changes.length) + " writes · " + count(m.reads) + " reads") +
+      const collections = Array.from(new Set(m.keys.map((k) => k.collection))).sort();
+      let only = ctx.memo.memoryCollection && collections.indexOf(ctx.memo.memoryCollection) >= 0 ? ctx.memo.memoryCollection : null;
+      host.innerHTML = headHtml(count(m.keys.length), "keys · " + count(m.changes.length) + " writes · " + count(m.reads) + " reads",
+        "", collections.length > 1 ? '<span class="seg" data-role="only"></span>' : "") +
         '<div class="view-split"><div class="side" data-role="keys" style="display:flex;flex-direction:column"></div><div class="main" data-role="history"></div></div>';
       if (!m.keys.length) { host.querySelector('[data-role="history"]').innerHTML = '<p class="empty">The agent kept nothing in its memory (minutehand.agent.store).</p>'; return {}; }
       const keyOf = (k) => k.collection + "/" + k.key;
       let current = ctx.memo.memoryKey || null;
       const historyHost = host.querySelector('[data-role="history"]');
-      const history = new VList(historyHost, {
+      historyHost.innerHTML = '<p class="empty" data-role="none" hidden></p><div data-role="list" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>';
+      const none = historyHost.querySelector('[data-role="none"]');
+      const history = new VList(historyHost.querySelector('[data-role="list"]'), {
         columns: [
           { label: "When", width: "140px", html: (c) => esc(when(c.at)), sort: (c) => c.seq },
           { label: "Key", width: "minmax(120px, 1fr)", html: (c) => esc(c.collection + " / " + c.key) },
@@ -490,11 +314,22 @@ export const VIEWS = [
         rowHeight: 44, key: keyOf, onPick: (k) => { current = current === keyOf(k) ? null : keyOf(k); ctx.memo.memoryKey = current; keys.select(current, false); show(); },
         rowHtml: (k, on, i, y, rh) => '<div class="vt-row' + (keyOf(k) === current ? " on" : "") + '" data-row="' + i + '" style="top:' + y + "px;height:" + rh + 'px;display:block;padding:4px 12px"><div style="display:flex;justify-content:space-between;gap:6px"><span>' + esc(k.key) + '</span><span class="muted num">' + k.writes + "w " + k.reads + 'r</span></div><div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(k.collection + " · " + (k.writes === 0 ? "read, never written" : k.value === null ? "deleted" : clip(k.value, 60))) + "</div></div>"
       });
-      keys.setRows(m.keys);
+      const seg = host.querySelector('[data-role="only"]');
       const show = () => {
-        history.setRows(current ? m.changes.filter((c) => c.collection + "/" + c.key === current) : m.changes);
+        if (seg) { seg.innerHTML = [null].concat(collections).map((c) => '<button type="button" data-only="' + esc(c || "") + '" aria-pressed="' + (c === only) + '">' + esc(c || "All") + "</button>").join(""); }
+        const inView = (c) => only === null || c.collection === only;
+        if (current && !inView({ collection: current.split("/")[0] })) { current = null; ctx.memo.memoryKey = null; }
+        keys.setRows(m.keys.filter(inView));
+        keys.select(current, false);
+        const rows = m.changes.filter((c) => inView(c) && (!current || c.collection + "/" + c.key === current));
+        const k = current ? m.keys.find((x) => keyOf(x) === current) : null;
+        // a key the agent only ever read has no history to list: say what it was, not an empty table
+        none.hidden = rows.length > 0;
+        none.textContent = k && k.writes === 0 ? k.key + " was read " + plural(k.reads, "time") + " and never written: the agent looked for it and it was never there." : "Nothing was written here.";
+        history.setRows(rows);
         if (ctx.sel) { history.select(ctx.sel, true); }
       };
+      if (seg) { seg.addEventListener("click", (ev) => { const b = ev.target.closest("[data-only]"); if (b) { only = b.getAttribute("data-only") || null; ctx.memo.memoryCollection = only; show(); } }); }
       show();
       return { onSelect: (ref) => history.select(ref, true) };
     }

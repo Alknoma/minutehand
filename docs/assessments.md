@@ -411,3 +411,11 @@ every run; `review` when the reviewer read them; then each rule's id, `expectati
 agent's own checks), so a reader of a run, or of its JSON, sees what was and was not asked of it. Each finding of the
 assessment is in the read model's `findings` with `assessed_kind`, `item_kind`, `against`, `calls` and `judged_by`
 (`docs/querying.md`).
+
+Each of the agent's writes is in `RunResult.items` with every check its kind of item takes and what each said of it
+(`domain.items.ItemAssessment`): `failed` or `review` when it found something, `held` when it measured the item and
+found nothing, and `not_measured` with why when the files declare nothing to measure it against (a follow-up to
+someone who declares no `reply_within` or reply delay, a message to someone with no absence a delegate covers, a
+scenario with no deadline). A check that passed an item and one that had nothing to read are never the same answer.
+A finding is of the last of its evidence that is one of the agent's items taking its check: a duplicate is of the
+second message. `minutehand view` reads them for its calendar, its days and each output in its inspector.

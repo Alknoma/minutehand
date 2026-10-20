@@ -53,6 +53,37 @@ def play(world: str, tmp_path: Path) -> tuple[VerdictKind, list[tuple[str, str, 
     return session.load(state, run_id).result.verdict.kind, _said(state, run_id)
 
 
+def test_four_people_four_ways_and_each_message_says_what_every_check_made_of_it(tmp_path: Path) -> None:
+    """The team world (`team.json`): its one-day patience chases Priya inside her declared window and writes to
+    Marco while Lena covers his leave, each for review, and every message carries each check its kind takes."""
+    state = tmp_path / "state"
+    done = subprocess.run(
+        [
+            str(MINUTEHAND),
+            "run",
+            "worlds/team.yaml",
+            "--agent",
+            "agent.yaml",
+            "--state",
+            str(state),
+            "--",
+            sys.executable,
+            "agent.py",
+        ],
+        cwd=EXAMPLE,
+        env=ENV | people_environment() | {"AGENT_WORK": "team.json"},
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr[-3000:]
+    result = session.load(state, done.stdout.split()[1].rstrip(":")).result
+    flagged = {(f.check, f.kind.value) for f in result.findings}
+    assert ("inside_reply_window", "review") in flagged and ("to_someone_away", "review") in flagged
+    assert result.verdict.kind is VerdictKind.PASSED, "for review is not a failure"
+    assert result.items and all(i.checks for i in result.items), "every message says what each check made of it"
+
+
 def test_sam_answers_and_owen_is_told_his_answer(tmp_path: Path) -> None:
     verdict, said = play("answers", tmp_path)
 

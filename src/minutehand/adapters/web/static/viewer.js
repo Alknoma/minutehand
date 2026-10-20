@@ -14,7 +14,7 @@
    Everything it loads comes from this server: the libraries are vendored under /static/vendor. */
 
 import { API, get, RunCache } from "./api.js";
-import { esc, $, words, when, span, seconds, count, plural, median, remembered, remember } from "./util.js";
+import { esc, $, words, when, span, seconds, plural, remembered, remember } from "./util.js";
 import { Timeline } from "./timeline.js";
 import { VIEWS, VERDICT_WORD, findingTitle, batchOf } from "./views.js";
 import { inspect } from "./inspector.js";
@@ -43,6 +43,7 @@ const ctx = {
   get batches() { return S.batches; },
   get loaded() { return S.loaded; },
   select: (ref) => select(ref, "view"),
+  remember: () => rememberWhere(),
   labelOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.label[l[0]] : null; },
   simOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.sim[l[0]] : NaN; },
   personKey(key) { const p = S.base.run.scenario.people.find((x) => x.key === key); return p ? p.name : key || "someone"; },
@@ -69,12 +70,13 @@ const tl = new Timeline($("timeline"), {
 
 function where() {
   const h = new URLSearchParams(location.hash.slice(1));
-  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w") };
+  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w"), day: h.get("day") };
 }
 function rememberWhere() {
   const h = new URLSearchParams();
   if (S.run) { h.set("run", S.run); }
   if (S.view !== "calendar") { h.set("view", S.view); }
+  if (S.view === "calendar" && S.memo.day !== null && S.memo.day !== undefined) { h.set("day", String(S.memo.day)); }
   if (S.sel) { h.set("sel", S.sel); }
   if (tl.clock !== "sim") { h.set("clock", tl.clock); }
   if (tl.data) { h.set("w", Math.round(tl.win[0]) + "~" + Math.round(tl.win[1])); }
@@ -136,7 +138,7 @@ async function loadList() {
 function open(run, at) {
   clearTimeout(S.timer);
   S.generation += 1;
-  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.memo = {}; S.handle = {};
+  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.memo = at.day !== null && at.day !== undefined ? { day: Number(at.day) } : {}; S.handle = {};
   S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "calendar";
   S.sel = at.sel || null;
   S.pendingWindow = at.w ? at.w.split("~").map(Number) : null;
@@ -184,41 +186,30 @@ async function prefetch(generation) {
 
 /* ---------- the top bar ---------- */
 
+/** The top bar says which run this is and whether it passed: the scenario and run, the agent's code as it ran (its
+    commit, and whether uncommitted changes were part of it), what a fork changed from its parent, the verdict, and how
+    much time was simulated in how little. What went wrong is the pages' to show: a long run has too much of it for a
+    bar. Reference facts (seed, the span in dates, deadline, how it stopped) are in the title of the time. */
 function renderHeader() {
-  const b = S.base, r = b.run, sc = r.scenario, rec = r.record, card = b.scorecard;
+  const b = S.base, r = b.run, sc = r.scenario, rec = r.record;
   const row = S.runs.find((x) => x.run_id === r.run_id);
   $("picker-label").textContent = (row ? runLabel(row) : words(sc.name)) + " · " + r.run_id;
   const verdict = b.findings.verdict;
   const vKind = r.finished && verdict ? verdict.kind : "running";
-  const simSecs = (Date.parse(r.reached) - Date.parse(sc.starts_at)) / 1000;
-  const facts = [
-    ["seed", rec ? rec.seed : sc.seed !== null && sc.seed !== undefined ? sc.seed : "—"],
-    ["simulated", when(sc.starts_at, { year: true }) + " → " + when(r.reached, { year: true }) + " (" + span(simSecs) + ")"],
-    ["real", rec ? span(rec.wall_seconds) : "running"],
-    ["deadline", sc.deadline_after ? span(seconds(sc.deadline_after)) + " in" : "none"],
-    ["stopped", rec ? STOP_WORD[rec.stop] || words(rec.stop) : "not yet"]
-  ];
+  const simSecs = (Date.parse(r.reached) - Date.parse(sc.starts_at)) / 1000, simDays = simSecs / 86400;
+  const simulated = (simDays >= 2 ? Math.round(simDays) + " days" : span(simSecs)) + " simulated" + (rec ? " in " + span(rec.wall_seconds) : " so far");
+  const details = ["seed " + (rec ? rec.seed : sc.seed !== null && sc.seed !== undefined ? sc.seed : "—"), when(sc.starts_at) + " → " + when(r.reached),
+    "deadline " + (sc.deadline_after ? span(seconds(sc.deadline_after)) + " in" : "none"), "stopped: " + (rec ? STOP_WORD[rec.stop] || words(rec.stop) : "not yet")].join(" · ");
+  const p = r.program;
+  const agent = p ? '<span class="agent-code" title="' + esc(p.command.join(" ") + "\nin " + p.directory) + '">agent ' + esc(p.commit ? p.commit.slice(0, 7) : p.code ? "code " + p.code.slice(0, 7) : "code not named") + (p.uncommitted ? " + uncommitted changes" : "") + "</span>" : "";
+  const fork = row && row.parent_run ? '<a href="#" class="fork" data-open="' + esc(row.parent_run) + '">fork of ' + esc(row.parent_run) + "</a>" + (row.changed ? '<span class="changed">' + esc("changed: " + row.changed) + "</span>" : "") : "";
+  const early = rec && ABNORMAL_STOP.has(rec.stop) ? '<span class="stopped">' + esc("Stopped early: " + (STOP_WORD[rec.stop] || words(rec.stop))) + "</span>" : "";
   $("identity").innerHTML = '<span class="verdict ' + esc(vKind) + '" title="' + esc(verdict ? verdict.words : "Still running") + '">' + esc(vKind === "running" ? "Running" : VERDICT_WORD[vKind]) + "</span>" +
-    "<h1>" + esc(words(sc.name)) + "</h1>" +
-    '<span class="facts">' + facts.map((f) => esc(f[0]) + " <b>" + esc(f[1]) + "</b>").join("") + (row && row.parent_run ? " <b>fork of " + esc(row.parent_run) + "</b>" : "") + "</span>";
+    agent + fork + early + '<span class="spacer"></span><span class="simulated" title="' + esc(details) + '">' + esc(simulated) + "</span>";
   document.title = words(sc.name) + " · " + (vKind === "running" ? "running" : VERDICT_WORD[vKind]) + " · Minutehand";
-
-  const f = b.findings.findings, fails = f.filter((x) => x.finding.kind === "fail").length, reviews = f.filter((x) => x.finding.kind === "review").length;
-  const a = S.loaded.assessments, held = a ? a.rules.filter((x) => x.status === "passed").length : null;
-  const judged = a ? a.rules.filter((x) => ["passed", "failed", "review"].indexOf(x.status) >= 0) : [];
-  const replies = S.loaded.people ? S.loaded.people.people.flatMap((p) => p.replies.map((x) => x.reply.drawn ? (Date.parse(x.reply.at) - Date.parse(x.reply.drawn.asked_at)) / 1000 : null)).filter((x) => x !== null) : null;
-  const tokens = S.loaded.modelUse ? S.loaded.modelUse.calls.reduce((s, c) => s + (c.input_tokens || 0) + (c.output_tokens || 0), 0) : null;
-  const numbers = [
-    ["findings", r.finished ? String(fails) : "—", fails ? "failed" + (reviews ? ", " + reviews + " to review" : "") : reviews ? reviews + " to review" : "failed", fails ? "fail" : reviews ? "review" : r.finished ? "pass" : ""],
-    ["assessments", a ? (judged.length ? held + "/" + judged.length : a.rules.length ? "—" : "none") : "…", judged.length < (a ? a.rules.length : 0) ? "rules held, of those read" : "rules held", a && a.rules.some((x) => x.status === "failed") ? "fail" : ""],
-    ["followups", card ? String(card.follow_ups_made) : "—", "follow-ups", ""],
-    ["replies", replies ? (replies.length ? span(median(replies)) : "—") : "…", "median reply", ""],
-    ["response", card && card.slowest_reaction ? span(seconds(card.slowest_reaction)) : "—", "slowest comeback", ""],
-    ["cost", tokens === null ? "…" : count(tokens), "model tokens", ""],
-    ["conversations", card ? String(card.messages_to_people) : "—", "messages sent", ""]
-  ];
-  $("headline").innerHTML = numbers.map((n) => '<a href="#" data-view="' + n[0] + '"><span class="v ' + n[3] + '">' + esc(n[1]) + '</span><span class="k">' + esc(n[2]) + "</span></a>").join("");
 }
+
+const ABNORMAL_STOP = new Set(["wake_limit", "agent_failed", "closed", "environment_failed"]);
 
 function renderNav() {
   let html = "", group = null;
@@ -249,6 +240,7 @@ async function renderView() {
 
 function showView(id) {
   if (!VIEWS.some((v) => v.id === id)) { return; }
+  if (id === "calendar") { S.memo.day = null; }  // the rail's calendar is the calendar, not the last day opened from it
   S.view = id;
   renderNav();
   renderView();

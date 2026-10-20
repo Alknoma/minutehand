@@ -3,6 +3,7 @@
    `span:<id>`, `wait:<key>`. Each kind reads what it needs from the API (kept per run) and nothing more. */
 
 import { esc, when, clock, span, seconds, words, title, plural, prettyJson, isJson, diffLines, layout, count } from "./util.js";
+import { CHECK_WORD, RESULT_WORD, kindWord, resultOf, findingOf } from "./outputs.js";
 
 const ANSWERED = {
   provider: "answered by the provider's fake", declaration: "answered as declared, never sent", pass_through: "passed through to the real host",
@@ -74,6 +75,39 @@ function empty(ctx) {
     (f.finished ? "" : "<p>The run is still going: the findings come when it finishes.</p>") + "</div>";
 }
 
+const OUTCOME_SIGN = { failed: "✗", review: "?", held: "✓", not_measured: "–" };
+const OUTCOME_WORD = { failed: "Failed", review: "To review", held: "Passed", not_measured: "Not measured" };
+
+/** One of the agent's outputs, in four parts: what it was, exactly; what every check its kind takes said of it; why
+    it was made then; and what made it. The record and the call that carried it are folded away beneath. */
+function output(ctx, d, item) {
+  const e = d.event, a = e.after, result = resultOf(item);
+  const message = a && a.kind === "message";
+  const parts = message ? a.text.split("\n\n") : [];
+  const subject = parts.length > 1 && parts[0].length < 120 ? parts.shift() : null;
+  const what = message
+    ? kv([["To", esc(a.recipient_emails.join(", ") || "nobody in the scenario")], ["Where", esc(a.channel + (a.thread_of ? " · in a thread" : ""))], ["Through", esc(e.entity.provider)], ["Subject", subject ? esc(subject) : null]]) +
+      '<p class="said">' + esc(parts.join("\n\n")) + "</p>"
+    : kv([["Item", '<span class="mono">' + esc(e.entity.kind + " " + e.entity.external_id) + "</span>"], ["Through", esc(e.entity.provider)], ["Operation", esc(e.operation)]]) +
+      (a ? '<pre class="json">' + prettyJson(JSON.stringify(a)) + "</pre>" : "");
+  const checks = '<ul class="checks">' + item.checks.map((c) => {
+    const found = c.outcome === "failed" || c.outcome === "review" ? findingOf(ctx, item.seq, c.check) : null;
+    const said = found ? esc(found.finding.message) + (found.finding.assessed ? '<span class="against">Measured against ' + esc(found.finding.assessed.against) + "</span>" : "") + " " + link("finding:" + found.number, "Finding " + found.number)
+      : c.outcome === "not_measured" ? esc(c.why ? "Nothing to measure it against: " + c.why + "." : "Nothing to measure it against.") : "Found nothing.";
+    return '<li class="' + c.outcome + '"><span class="sign">' + OUTCOME_SIGN[c.outcome] + '</span><div><b>' + esc(CHECK_WORD[c.check] || words(c.check)) + '</b> <span class="outcome">' + OUTCOME_WORD[c.outcome] + '</span><p>' + said + "</p></div></li>";
+  }).join("") + "</ul>";
+  const woke = e.wake ? ctx.labelOf("wake:" + e.wake) : null;
+  const before = message ? d.thread.filter((m) => m.seq < e.seq && m.actor !== "agent").pop() : null;
+  const why = kv([["Wake", woke ? link("wake:" + e.wake, woke) : e.wake ? esc("wake " + e.wake) : esc("before the first wake")],
+    ["In answer to", before ? link("ev:" + before.seq, before.actor + ": " + before.text.slice(0, 80)) : message ? esc("nothing: no one had written in this conversation since the agent last did") : null]]);
+  const madeBy = d.written_by ? kv([["Model call", link("mc:" + d.written_by.span_id, d.written_by.model || "a model")], ["How joined", esc(JOINED[d.written_by.joined_by])]]) : "";
+  const record = '<details class="insp-more"><summary>The record and the call</summary>' + section("Record", kv([["Entity", '<span class="mono">' + esc(e.entity.kind + " " + e.entity.external_id) + "</span>"], ["Seq", esc(e.seq)], ["Real time", esc(clock(e.wall_time))]])) +
+    (e.exchange ? exchangeBlocks(e.exchange) : "") + (d.call !== null ? section("The call that made it", "<p>" + link("call:" + d.call, "Call " + d.call) + "</p>") : "") + "</details>";
+  const chip = ' <span class="chip ' + (result === "failed" ? "fail" : result === "review" ? "review" : result === "held" ? "passed" : "plain") + '">' + esc(RESULT_WORD[result]) + "</span>";
+  return head(kindWord(item.kind), subject || (message ? a.text.split("\n")[0] : e.entity.external_id), simWhen(e.sim_time, e.wake), chip) +
+    section("Output", what) + section("Evaluation", checks) + section("Why then", why) + section("Made by", madeBy) + record;
+}
+
 const KINDS = {
   async finding(ctx, rest) {
     const x = ctx.base.findings.findings.find((f) => String(f.number) === rest);
@@ -92,6 +126,8 @@ const KINDS = {
 
   async ev(ctx, rest) {
     const d = await ctx.cache.read("event", { seq: rest });
+    const item = (ctx.base.findings.items || []).find((i) => String(i.seq) === rest);
+    if (item) { return output(ctx, d, item); }
     const e = d.event, a = e.after;
     let body = "", kindWord = words(e.entity.kind), name = e.entity.external_id;
     const facts = [["Provider", esc(e.entity.provider)], ["Entity", '<span class="mono">' + esc(e.entity.kind + " " + e.entity.external_id) + "</span>"],

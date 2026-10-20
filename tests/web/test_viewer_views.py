@@ -6,6 +6,7 @@ with their tokens, stored items, the agent's spans and model calls, a dispatch r
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -40,7 +41,9 @@ from minutehand.adapters.web.responses import (
     TimelineResponse,
 )
 from minutehand.application.run_clock import RunClock
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import DrawnFrom, DueKind, DueSource
+from minutehand.domain.conversation import Wrote
 from minutehand.domain.people import Writing
 from minutehand.domain.prices import Price, Prices
 from minutehand.domain.run import VerdictKind
@@ -193,7 +196,9 @@ async def test_a_person_whose_words_a_model_wrote_carries_each_call_and_its_toke
     replied = [p for p in people.people if p.replies]
     assert replied
     for person in replied:
-        assert len(person.model_calls) == len(person.replies)
+        # each reply is written by one call and checked against what the person knows by another
+        assert [m.call.wrote for m in person.model_calls].count(Wrote.REPLY) == len(person.replies)
+        assert [m.call.wrote for m in person.model_calls].count(Wrote.FACT_CHECK) == len(person.replies)
         assert all(r.reply.writing is Writing.SCRIPT and r.reply.written_by is not None for r in person.replies)
         assert all((m.call.input_tokens or 0) > 0 for m in person.model_calls)
         theirs = [line for line in person.conversation if not line.from_agent]
@@ -326,6 +331,34 @@ async def test_model_use_is_the_read_models_and_costs_only_what_a_declared_price
     people = [c for c in use.calls if c.side is ModelSide.PERSON]
     agent = [c for c in use.calls if c.side is ModelSide.AGENT]
     assert people and agent and all(c.cost is None for c in agent) and all(c.cost is None for c in unpriced.calls)
+    # a person's reply checked against what they know is a judge's call: the page reads it, as the read model keeps it
+    assert any(c.side is ModelSide.JUDGE for c in use.calls)
     for c in people:
         assert c.input_tokens is not None and c.output_tokens is not None and c.currency == "EUR"
         assert c.cost == pytest.approx((c.input_tokens * 2.0 + c.output_tokens * 8.0) / 1e6)
+
+
+async def test_a_run_checked_before_each_outputs_result_was_kept_has_them_read_again_from_its_record(
+    days: Path, tmp_path: Path
+) -> None:
+    """The item checks read only the record, so the viewer says them again for an older run's result that kept
+    none, says it did, and writes nothing into the run."""
+    older = tmp_path / "older"
+    shutil.copytree(days, older)
+    # as every run `minutehand run` plays keeps one; the synthetic run is written without
+    agent = AgentUnderTest.model_validate(
+        {
+            "name": "long",
+            "wakes": [{"kind": "reported", "wake_url": "http://a.test/wake", "report_url": "http://a.test/r"}],
+        }
+    )
+    (session.run_dir(older, long_run.RUN_ID) / session.AGENT).write_text(agent.model_dump_json(), encoding="utf-8")
+    kept = session.run_dir(older, long_run.RUN_ID) / session.RESULT
+    result = json.loads(kept.read_text(encoding="utf-8"))
+    assert result["items"], "the fixture's run keeps them"
+    result["items"] = []
+    kept.write_text(json.dumps(result), encoding="utf-8")
+    async with client(older) as c:
+        said = await read(c, f"/api/runs/{long_run.RUN_ID}/findings", FindingsResponse)
+    assert said.items_reassessed and len(said.items) == len(session.load(days, long_run.RUN_ID).result.items)
+    assert json.loads(kept.read_text(encoding="utf-8"))["items"] == [], "nothing written into the run"

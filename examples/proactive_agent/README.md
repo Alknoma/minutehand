@@ -23,6 +23,7 @@ The worlds are the people `work.json` names; the example's work asks Sam, in fin
 |---|---|
 | `worlds/answers.yaml` | Sam answers a few hours after he is asked. The agent tells Owen his answer at once, and names no wake after. |
 | `worlds/quiet.yaml` | Sam never answers. The agent follows up a working day after its question, again a day after that, then tells Owen, and stops. |
+| `worlds/team.yaml` with `AGENT_WORK=team.json` | Four asks of four people over three weeks: Sam answers within hours, Priya always answers but takes two to three working days, Marco is on leave the first week with Lena covering, Jade never answers. Its one-day patience chases Priya inside her window and writes to Marco while he is away (both for review). Two mistakes no deterministic check reads, for the reviewer (`--judge`): it passes Marco's automatic reply on to Owen as his answer, and once it has told Owen there is no answer it never acts on Marco's real one or Priya's late sign-off. |
 
 ## Run it
 

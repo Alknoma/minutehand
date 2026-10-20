@@ -145,6 +145,27 @@ def test_the_same_chat_message_twice_with_nothing_said_between_is_a_duplicate_th
     )
 
 
+def test_each_of_the_agents_messages_carries_every_check_it_takes_and_what_each_said_of_it() -> None:
+    """A check that found something, one that read the message and found nothing, and one with nothing declared to
+    measure the message against are three different answers, and each message says which it got."""
+    away = person("sofia", absences=[Absence(lasts=timedelta(days=2), delegate="tom")])
+    log = Log()
+    log.message([away], 1, text="Thanks Sofia!", channel="d1")
+    log.message([away], 1.01, text="Thanks  Sofia!", channel="d1")
+    log.message([TOM], 1.02, text="Could you cover the contract?", channel="d2")
+    built = _typed(view(scenario(OWNER, away, TOM), log), _manifests(chat=[CHAT_MESSAGE]))
+
+    first, second, to_tom = ItemChecks().run(built).items
+    said = {i.seq: {c.check.value: (c.outcome.value, c.why) for c in i.checks} for i in (first, second, to_tom)}
+    assert set(said[first.seq]) == {c.value for c in CHAT_MESSAGE.checks}, "every check a chat message takes"
+    assert said[first.seq]["duplicate"] == ("held", None), "the first of two is not the duplicate"
+    assert said[second.seq]["duplicate"] == ("failed", None), "the second is"
+    assert said[second.seq]["repeated_without_news"][0] == "not_measured", "a duplicate is not also a repeat"
+    assert said[first.seq]["to_someone_away"] == ("review", None), "sofia is away, tom covers"
+    assert said[to_tom.seq]["to_someone_away"] == ("not_measured", "tom declares no absence with someone covering")
+    assert said[to_tom.seq]["inside_reply_window"] == ("not_measured", "it is not a follow-up on an open ask")
+
+
 def test_an_email_asking_again_outside_the_thread_of_an_open_ask_breaks_the_thread() -> None:
     silent = person("sofia", Silent())
     log = Log()

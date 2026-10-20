@@ -1,0 +1,22 @@
+[
+  {
+    "ask": "sam@example.com",
+    "question": "Could you tell me the cost centre for PO-7731 (40 laptops for the new starters)?",
+    "tell": "owen@example.com"
+  },
+  {
+    "ask": "priya@example.com",
+    "question": "Could you sign off the renewal of the Northwind support contract before it lapses on the 11th?",
+    "tell": "owen@example.com"
+  },
+  {
+    "ask": "marco@example.com",
+    "question": "Could you book the training room for the new starters' first day, 7 September?",
+    "tell": "owen@example.com"
+  },
+  {
+    "ask": "jade@example.com",
+    "question": "When will the 40 laptops be imaged and ready to hand out?",
+    "tell": "owen@example.com"
+  }
+]

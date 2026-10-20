@@ -82,8 +82,10 @@ from minutehand.adapters.web.responses import (
 )
 from minutehand.application.model_calls import JoinedBy, is_model_call, model_call, trace_of
 from minutehand.application.refusals import RunRefused
+from minutehand.checks.items import ItemChecks
 from minutehand.checks.runner import RunResult, view_of
 from minutehand.domain.checks import FindingKind
+from minutehand.domain.items import ItemAssessment
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import SpanSource
@@ -104,6 +106,9 @@ def _json(model: Model, status: int = 200) -> Response:
 
 def create_app(state: Path, prices: Prices | None = None) -> Starlette:
     """The viewer over one state directory; `prices` gives each model call a cost, as `minutehand query --prices`."""
+
+    reassessed: dict[str, list[ItemAssessment]] = {}
+    lock = threading.Lock()
 
     def page(_: Request) -> Response:
         return HTMLResponse(PAGE.read_text(encoding="utf-8"))
@@ -143,6 +148,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
                 checkpoints=checkpoints,
                 driven=session.driven(state, run_id),
                 fork=session.fork_account(state, run_id),
+                program=session.program_record(state, run_id),
             )
         )
 
@@ -179,6 +185,16 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
         if not session.find(state, run_id).finished:
             return _json(FindingsResponse(finished=False, verdict=None, findings=[], blocked=[], notes=[]))
         result = session.load(state, run_id).result
+        items, again = result.items, False
+        if not items:
+            # a run checked before each output's result was kept: the item checks read only its record, so they say
+            # it again on read, kept in memory and never written into the run
+            with lock:
+                if run_id not in reassessed:
+                    reassessed[run_id] = ItemChecks().run(session.recorded_view(state, run_id)).items
+                    while len(reassessed) > KEEP:
+                        del reassessed[next(iter(reassessed))]
+                items, again = reassessed[run_id], True
         return _json(
             FindingsResponse(
                 finished=True,
@@ -187,6 +203,8 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
                 blocked=result.blocked,
                 notes=result.notes,
                 simulation=result.simulation,
+                items=items,
+                items_reassessed=again,
             )
         )
 
