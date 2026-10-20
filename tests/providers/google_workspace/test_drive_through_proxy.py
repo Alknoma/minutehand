@@ -261,8 +261,8 @@ say(cells=cells, replied=replied, got=got)
         (23, 29, "NORMAL_TEXT"),
         (29, 34, "NORMAL_TEXT"),
         (34, 35, "NORMAL_TEXT"),
-        (35, 50, "table"),
-        (50, 51, "NORMAL_TEXT"),
+        (35, 51, "table"),
+        (51, 52, "NORMAL_TEXT"),
     ]
     assert content[1]["paragraph"]["paragraphStyle"]["alignment"] == "CENTER"
     terms = content[2]["paragraph"]["elements"][0]

@@ -300,7 +300,8 @@ def width(unit: Unit) -> int:
         return utf16(unit.char)
     if unit.kind is UnitKind.TABLE:
         assert unit.table is not None
-        return 1 + sum(1 + sum(1 + span(cell) for cell in row) for row in unit.table)
+        # its start, every row and cell marker, and its own end: a table's end is one past its last cell's
+        return 2 + sum(1 + sum(1 + span(cell) for cell in row) for row in unit.table)
     return 1
 
 
@@ -764,6 +765,10 @@ class Editor:
                         if index < inner + cell_span or (for_range_end and index == inner + cell_span):
                             return self._find_in(cell, inner, index, for_range_end=for_range_end, in_table=True)
                         inner += cell_span
+                raise _invalid(
+                    f"{self._where}: The insertion index must be inside the bounds of an existing paragraph. You can "
+                    "still create new paragraphs by inserting newlines."
+                )
             at += size
         if at == index and for_range_end:
             return Spot(segment, len(segment), base, in_table)
@@ -812,9 +817,6 @@ class Editor:
             raise _invalid(f"{self._where}: The range should not be empty.")
         first = self._find(start)
         last = self._find(end, for_range_end=True)
-        if last.segment is not first.segment and end == first.base + span(first.segment):
-            # A table's last cell ends where the table does, so the end alone names both; the start says which.
-            last = Spot(first.segment, len(first.segment), first.base, first.in_table)
         if first.segment is not last.segment:
             raise _invalid(f"{self._where}: The range cannot span the boundary of a table cell.")
         return first, last, start, end
@@ -1542,6 +1544,7 @@ def _render_blocks(blocks: list[Block], at: int) -> tuple[list[StructuralElement
                 inner, at = _render_blocks(list(cell.content), at)
                 cells.append(TableCellOut(startIndex=cell_start, endIndex=at, content=inner))
             rows.append(TableRowOut(startIndex=row_start, endIndex=at, tableCells=cells))
+        at += 1
         columns = len(block.rows[0].cells)
         table = TableOut(
             rows=len(block.rows),
