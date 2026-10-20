@@ -282,7 +282,7 @@ def new_project(
     created_by: str,
     team: list[str],
     project_fields: list[wire.StoredProjectField],
-    time_tracking: wire.StoredTimeTracking | None,
+    time_tracking: wire.StoredTimeTracking,
     description: str = "",
     created_through_api: bool = False,
 ) -> wire.StoredProject:
