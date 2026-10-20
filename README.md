@@ -146,6 +146,7 @@ the views stay stable, and a dozen ready-made queries.
 | Work tracking | Asana, Jira, YouTrack, GitHub |
 | Documents | Notion, Google Drive with Docs and Slides |
 | Scheduling and queues | AWS EventBridge Scheduler and SQS (through moto), Google Cloud Tasks |
+| Sign-in | Firebase Authentication |
 
 Each fake is tested against the service's own client library; none has been checked against the real service's wire
 details. A host no fake answers is declared in the agent file: acknowledge, pass through, replay, or forward to an

@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
+from minutehand.adapters.providers.firebase_auth.manifest import MANIFEST as FIREBASE
 from minutehand.adapters.providers.jira.manifest import MANIFEST as JIRA
 from minutehand.adapters.providers.microsoft import docx as word
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST as MICROSOFT
@@ -71,6 +72,17 @@ def test_a_form_presents_client_credentials_a_client_assertion_and_slacks_legacy
     assert read("token=xoxb-legacy&channel=C1") == ["xoxb-legacy"]
 
 
+def test_a_world_key_is_read_from_exactly_one_of_the_host_the_path_and_the_query_and_two_are_refused() -> None:
+    from pydantic import ValidationError
+
+    from minutehand.domain.provider import WorldKey
+
+    assert WorldKey(query="key").found("h", "/a?key=k1&key=k2") == "k1"
+    assert WorldKey(query="key").found("h", "/a?other=k1") is None
+    with pytest.raises(ValidationError, match="exactly one"):
+        WorldKey(path="/v1/{key}/", query="key")
+
+
 @pytest.mark.parametrize(
     ("manifest", "host", "path", "keys"),
     [
@@ -87,6 +99,12 @@ def test_a_form_presents_client_credentials_a_client_assertion_and_slacks_legacy
         (JIRA, "api.atlassian.com", "/oauth/token/accessible-resources", []),
         (YOUTRACK, "acme.youtrack.cloud", "/api/issues", ["acme"]),
         (YOUTRACK, "acme.myjetbrains.com", "/youtrack/api/issues", ["acme"]),
+        (FIREBASE, "identitytoolkit.googleapis.com", "/v1/projects/proj-a/accounts:lookup", ["proj-a"]),
+        (FIREBASE, "identitytoolkit.googleapis.com", "/v1/accounts:signUp?key=web-key-a", ["web-key-a"]),
+        (FIREBASE, "identitytoolkit.googleapis.com", "/v1/projects/proj-a/accounts:batchGet?key=k&maxResults=1",
+         ["proj-a", "k"]),
+        (FIREBASE, "securetoken.googleapis.com", "/v1/token?key=web-key-a", ["web-key-a"]),
+        (FIREBASE, "identitytoolkit.googleapis.com", "/v1/accounts:signUp?key=", []),
     ],
 )  # fmt: skip
 def test_a_providers_manifest_says_which_part_of_a_url_names_a_world(

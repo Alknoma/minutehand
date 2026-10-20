@@ -72,7 +72,7 @@ pass, and a vendor that genuinely differs is a declared, reasoned exception in i
 
 ## The matrix
 
-Generated from a run of `test/conformance` with `integration-main` merged (`eb0663d`) on 2026-10-07. Each cell is
+Generated from a run of `test/conformance` with `integration-main` merged (`eb0663d`) on 2026-10-07; the `firebase_auth` row from its own run, 2026-10-20. Each cell is
 **pass / known failure / not applicable**, counted in cases; — means the property does not apply to the provider's families. Every known failure is one line of
 `tests/conformance/known_failures.py`, which says what was observed.
 
@@ -80,6 +80,7 @@ Generated from a run of `test/conformance` with `integration-main` merged (`eb06
 |---|---|---|---|---|---|---|---|---|---|---|
 | asana | 8 / 3 / 3 | 0 / 1 / 0 | 9 / 6 / 0 | 1 / 0 / 3 | 1 / 1 / 1 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | aws | 0 / 1 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 1 / 1 / 0 | 2 / 0 / 1 | 0 / 1 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
+| firebase_auth | 1 / 0 / 6 | — | 1 / 0 / 3 | 1 / 0 / 4 | 0 / 0 / 3 | 1 / 0 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
 | github | 0 / 5 / 2 | — | 4 / 0 / 0 | 3 / 1 / 0 | 0 / 2 / 1 | 0 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 4 / 0 / 0 | 0 / 1 / 0 |
 | google_cloud_tasks | 1 / 0 / 6 | — | 1 / 0 / 3 | 0 / 0 / 4 | 0 / 0 / 3 | 0 / 1 / 1 | 3 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 1 |
 | google_workspace | 8 / 2 / 16 | 0 / 1 / 2 | 11 / 1 / 12 | 0 / 0 / 4 | 0 / 1 / 2 | 1 / 2 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 11 / 0 / 0 | 1 / 0 / 2 |
@@ -88,7 +89,7 @@ Generated from a run of `test/conformance` with `integration-main` merged (`eb06
 | notion | 2 / 5 / 9 | 0 / 2 / 0 | 9 / 1 / 1 | 0 / 0 / 4 | 1 / 1 / 1 | 1 / 2 / 0 | 3 / 0 / 0 | 0 / 1 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
 | slack | 15 / 2 / 0 | 2 / 2 / 0 | 17 / 0 / 0 | 0 / 3 / 1 | 3 / 0 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 5 / 0 / 0 | 2 / 0 / 0 |
 | youtrack | 7 / 4 / 3 | 1 / 1 / 0 | 15 / 0 / 0 | 1 / 2 / 1 | 2 / 1 / 0 | 1 / 1 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 3 / 0 / 0 | 2 / 0 / 0 |
-| **all** | **57 / 42 / 49** | **4 / 12 / 2** | **101 / 12 / 20** | **8 / 9 / 23** | **10 / 8 / 12** | **8 / 14 / 1** | **26 / 3 / 1** | **7 / 3 / 0** | **38 / 0 / 0** | **14 / 1 / 4** |
+| **all** | **58 / 42 / 55** | **4 / 12 / 2** | **102 / 12 / 23** | **9 / 9 / 27** | **10 / 8 / 15** | **9 / 14 / 1** | **29 / 3 / 1** | **8 / 3 / 0** | **39 / 0 / 0** | **14 / 1 / 5** |
 
 ### Not applicable, and why
 
@@ -106,6 +107,11 @@ a known failure.
 - aws state.concurrent: SigV4 is no OAuth credential: a world claims the host, or is the default, one at a time (docs/serve.md), and moto answers only the regions it knows, so no two worlds can claim hosts of their own
 - aws: its docs let a seed declare no id
 - aws: nothing of the shared seed is its to show
+- firebase_auth accounts.people: a Firebase project's accounts are its app's own end users, made by sign-up or the Admin SDK (https://firebase.google.com/docs/auth/admin/manage-users); the scenario's people hold no account in it, so it has no account of theirs to list or act as
+- firebase_auth accounts.whoami: the Admin SDK's calls act as the project's service account, and Identity Toolkit has no call that answers who that is: accounts.lookup answers whose an end user's ID token is (https://cloud.google.com/identity-platform/docs/reference/rest/v1/accounts/lookup)
+- firebase_auth listing.people: a Firebase project's accounts are its app's own end users, made by sign-up or the Admin SDK (https://firebase.google.com/docs/auth/admin/manage-users); the scenario's people hold no account in it, so it has no account of theirs to list or act as
+- firebase_auth: its docs let a seed declare no id
+- firebase_auth: nothing of the shared seed is its to show
 - github accounts.deactivated: GitHub.com keeps no deactivated account an organization still lists: a removed member drops out of the members listing, and suspending a user exists only on GitHub Enterprise Server.
 - github accounts.title: A GitHub account has a name, company, location and bio, and no job title anywhere in the REST or GraphQL user objects.
 - github: its docs let a seed declare no id

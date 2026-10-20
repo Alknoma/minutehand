@@ -31,7 +31,9 @@ Tests run in parallel against one stack, so the proxy decides per call. In order
 1. **The host**, when a world claims it (`claims.hosts`: a self-hosted tracker's `acme.youtrack.cloud`).
 2. **A world key its URL names**, when a world claims it (`claims.keys`). Each provider's manifest declares
    where a request names its world without a credential (`Manifest.world_keys`, a host with `{key}` for one
-   label or a path prefix with `{key}` for one segment); the router reads those and knows no vendor. Microsoft:
+   label, a path prefix with `{key}` for one segment, or a query parameter whose value is the key); the router
+   reads those and knows no vendor. Firebase Authentication: the project id in an admin call's
+   `/v1/projects/{projectId}/…`, and the web API key of an end user's `?key=`. Microsoft:
    the tenant id or domain in `/{tenant}/oauth2/v2.0/…`, `/{tenant}/v2.0/.well-known/…` and
    `/{tenant}/discovery/…`, and `<label>.sharepoint.com` / `<label>-my.sharepoint.com` (pre-authenticated
    downloads and upload sessions). Jira: `<site>.atlassian.net` and `/ex/jira/{cloudId}/`. YouTrack:
@@ -48,6 +50,9 @@ Tests run in parallel against one stack, so the proxy decides per call. In order
    `access_token` and `refresh_token` are claimed by that world from then on. A Google service account claimed
    by its email signs in and its Drive calls follow it (`test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_world`).
 5. **The default world**, when one is open (`claims.default: true`; at most one).
+   A call to a host or path answered the same in every world (`Manifest.shared_hosts`; a `Manifest.paths` claim
+   marked `shared`: Firebase's and Google's ID-token certificates), which none of the above names, is answered with
+   no world rather than refused.
 6. **None**: the call is refused with 502 and kept in the lobby, read with `GET /v1/unmatched`. A call that
    carries a claim of a world already closed (one of the last 1,000 closed) is kept there as that world's late
    call: `Exchange.late_for` names the world, its 502 says the world was closed before it came, and
@@ -76,7 +81,8 @@ Per provider, given only what a client sends:
 | YouTrack | Yes | The instance host or the permanent token |
 | Notion | Yes | The integration token, or a public integration's token request |
 | GitHub | Yes | The personal access token |
-| Google Drive | Yes | The refresh token or the service account's assertion, then the token Google's endpoint mints |
+| Google Drive | Yes | The refresh token or the service account's assertion, then the token Google's endpoint mints. The metadata server (`metadata.google.internal`) carries no credential: a world claims its host, or is the default, one at a time |
+| Firebase Authentication | Yes, when each test's project id and web API key are its own | The project id in an admin call's path; the web API key (`?key=`) of an end user's call and of a refresh; a service's Admin SDK calls carry the bearer Google's token endpoint minted for its Application Default Credentials too. Two worlds cannot claim one API key, so a stack whose clients all hold one key reaches one world at a time with it |
 | AWS | No | SigV4 is no OAuth credential: a world claims the host, or is the default, one at a time |
 
 ## The control API
