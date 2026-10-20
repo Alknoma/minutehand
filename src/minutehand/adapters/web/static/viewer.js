@@ -295,12 +295,15 @@ function renderScales() {
   bar.innerHTML = '<span class="seg">' + SCALES.map((f) => '<button type="button" data-scale="' + f[0] + '" aria-pressed="' + (sc === f[0]) + '">' + f[1] + "</button>").join("") + "</span>" +
     (sc !== "all" ? '<span class="on-day"><button type="button" data-step="-1" aria-label="Before">‹</button><b>' + esc(label) + '</b><button type="button" data-step="1" aria-label="After">›</button></span>' : "") +
     '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>" +
-    // what each mark is: left to right is time; up and down means something only in a banded row
-    '<div class="legend"><span><i class="lg-find fail"></i><i class="lg-find review"></i>a finding: failed, to review</span>' +
+    // what each mark is, there when asked: the rows and bands name themselves, and a mark says what it is on hover
+    '<button type="button" class="key-button" data-key aria-expanded="' + keyOpen() + '">Key</button>' +
+    '<div class="legend"' + (keyOpen() ? "" : " hidden") + '><span><i class="lg-find fail"></i><i class="lg-find review"></i>a finding: failed, to review</span>' +
     '<span><i class="lg-wake"></i>the agent woke</span>' +
     '<span><i class="lg-dot failed"></i><i class="lg-dot review"></i><i class="lg-dot held"></i><i class="lg-dot unmeasured"></i>an output, in the band and colour of its result</span>' +
     '<span><i class="lg-ring"></i>a reply from a person</span><span class="muted">marks at one moment sit side by side</span></div>';
 }
+
+function keyOpen() { return remembered("minutehand.key", "") === "open"; }
 
 /** Show a period at a scale: the axis moves to it (animated), and the list under it follows. */
 function scaleTo(sc, at, animate) {
@@ -368,6 +371,7 @@ document.addEventListener("click", (ev) => {
   if (stepper) { ev.preventDefault(); const unit = UNIT[S.memo.scale](); scaleTo(S.memo.scale, +unit.offset(new Date(S.memo.at), Number(stepper.getAttribute("data-step")))); return; }
   const scale = ev.target.closest("[data-scale]");
   if (scale) { ev.preventDefault(); scaleTo(scale.getAttribute("data-scale"), S.memo.at); return; }
+  if (ev.target.closest("[data-key]")) { ev.preventDefault(); remember("minutehand.key", keyOpen() ? "" : "open"); renderScales(); return; }
   if (ev.target.closest("[data-rows]")) { S.memo.allRows = ev.target.closest("[data-rows]").checked; tl.setData(derive(S.base.timeline, S.base.findings.items, S.memo.allRows), S.base.findings.findings); rememberWhere(); return; }
   const sel = ev.target.closest("[data-sel]");
   if (sel) { ev.preventDefault(); select(sel.getAttribute("data-sel"), "page"); return; }

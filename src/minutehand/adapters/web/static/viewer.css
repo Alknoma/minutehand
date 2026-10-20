@@ -137,6 +137,8 @@ a { color: inherit; }
 .center { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .center.time-page { grid-template-rows: auto auto minmax(0, 1fr); }
 .center.time-page .timeline { max-height: 55vh; border-bottom: 1px solid var(--line); }
+.formats .key-button { border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 3px 10px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.formats .key-button[aria-expanded="true"] { color: var(--ink); border-color: var(--line-strong); }
 .formats .all-rows { margin-left: auto; color: var(--muted); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 .view-body.time-list { padding: 14px 28px 40px; }
 .time-list .note { margin: 0 0 10px; font-size: 12px; }
