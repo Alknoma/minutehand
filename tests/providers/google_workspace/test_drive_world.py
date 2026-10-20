@@ -168,6 +168,7 @@ def test_the_provider_is_registered_and_its_manifest_imports_nothing_else() -> N
         "docs.googleapis.com",
         "slides.googleapis.com",
         "iamcredentials.googleapis.com",
+        "metadata.google.internal",
     ]
     assert (
         MANIFEST.kinds == [EntityKind.DOCUMENT, EntityKind.COMMENT, EntityKind.MESSAGE] and not MANIFEST.pushes_events

@@ -93,10 +93,39 @@ mailbox is "Delegation denied", an unshared calendar a 404, a file not shared wi
   `test_an_authorization_code_is_answered_with_a_refresh_token_that_signs_in_again`,
   `test_any_service_account_assertion_signs_in`, `test_the_seed_names_who_an_unknown_credential_acts_as`).
   A grant missing its required parameter is still `invalid_request`
-  (`test_a_grant_missing_its_required_parameter_is_refused_invalid_request`). No `id_token` is issued for an `openid`
-  scope: the run holds no Google signing key to sign one with.
+  (`test_a_grant_missing_its_required_parameter_is_refused_invalid_request`). An `id_token` is issued for an
+  identity scope (below).
+- `signBlob` and `signJwt` for a service account the caller may not sign as: 403 `PERMISSION_DENIED`
+  (https://cloud.google.com/iam/docs/service-account-creds#sign-jwt). Any service account signs here, with its own key.
 - `/revoke` of a token Google does not hold, or already revoked: 400 `invalid_token`
   (https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke). Always 200 here.
+
+## Google's identity infrastructure
+
+`identity.py`. Tests are in `tests/providers/google_workspace/test_identity.py`; the Admin SDK's use of them in
+`tests/providers/firebase_auth/test_firebase_auth.py`.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| `signBlob` takes `{"payload": base64}` and answers `keyId` and `signedBlob`, an RSA SHA-256 signature by the service account's key | documented | `test_sign_blob_signs_with_the_service_accounts_key_and_names_it` | https://cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/signBlob |
+| `signJwt` takes the claims as a serialized JSON object and answers `keyId` and `signedJwt`, the claims as given, signed with RS256 and the key's id in the header | documented | `test_sign_jwt_signs_the_claims_as_given` | https://cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/signJwt |
+| The resource name's project must be the `-` wildcard; a project id is INVALID_ARGUMENT | documented | `test_a_sign_call_naming_a_project_instead_of_the_wildcard_is_refused` | https://cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/signBlob |
+| google-auth's `iam.Signer`, which the Firebase Admin SDK signs custom tokens with on user or compute credentials, posts to `signBlob` and reads `signedBlob` | observed | `test_create_custom_token_on_user_credentials_signs_through_iam_as_the_runtime_service_account` | https://github.com/googleapis/google-auth-library-python/blob/main/google/auth/iam.py |
+| The metadata server is `http://metadata.google.internal/`; `/computeMetadata/v1/instance/service-accounts/default/email` is the runtime service account's address, asked for with `Metadata-Flavor: Google` | documented | `test_the_metadata_server_answers_the_runtime_service_account_over_plain_http` | https://cloud.google.com/run/docs/container-contract#metadata-server |
+| A request without `Metadata-Flavor: Google` is denied | documented | `test_the_metadata_server_answers_the_runtime_service_account_over_plain_http` | https://cloud.google.com/compute/docs/metadata/querying-metadata |
+| The metadata server's answers carry `Metadata-Flavor: Google`, which google-auth's detection of Google's compute environments reads | observed | `test_the_metadata_server_answers_the_runtime_service_account_over_plain_http` | https://github.com/googleapis/google-auth-library-python/blob/main/google/auth/compute_engine/_metadata.py |
+| The Firebase Admin SDK with no service account key and no `serviceAccountId` reads the address to sign custom tokens as from `instance/service-accounts/default/email` | observed | `test_create_custom_token_on_user_credentials_signs_through_iam_as_the_runtime_service_account` | https://github.com/firebase/firebase-admin-python/blob/master/firebase_admin/_token_gen.py (`METADATA_SERVICE_URL`) |
+| The token endpoint answers an `id_token` beside the access token when the scope includes `openid`, `email` or `profile` | documented | `test_an_identity_scope_adds_an_id_token_google_auth_verifies_against_the_published_certificates` | https://developers.google.com/identity/protocols/oauth2/web-server#exchange-authorization-code |
+| The ID token's claims: `iss` `https://accounts.google.com`, `aud` and `azp` the client id, `sub` the account's id, `email`, `email_verified`, `name`, `iat`, `exp` | documented | the same | https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload |
+| `sub` is the account's id, the same as `userinfo`'s `id` | documented | the same | https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload |
+| Its signing certificates are at `www.googleapis.com/oauth2/v1/certs` (x509, by key id) and `/oauth2/v3/certs` (a JSON Web Key Set), fetched with no credential | documented | the same | https://developers.google.com/identity/openid-connect/openid-connect#validatinganidtoken |
+
+What is the fake's own, outside the table: each service account's key, and the ID-token key, are derived from a
+fixed seed (`adapters/derived_key.py`), the same in every world, since a verifier caches the certificates it fetched;
+the certificates are answered with no world under `minutehand serve` (`Manifest.paths`, `shared`). A signing call
+with `delegates`, and every metadata path but the runtime service account's address (its token included), are
+refused 501 by name. A world that seeds no `runtime_service_account` refuses the metadata server by name. The
+metadata server's answer to a request without the header is undocumented, so it is refused 501 by name too.
 
 ## Not carried over
 

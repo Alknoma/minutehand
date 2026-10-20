@@ -49,6 +49,8 @@ from minutehand.adapters.providers.google_workspace.access import Caller, bearer
 from minutehand.adapters.providers.google_workspace.calendars import CalendarApi
 from minutehand.adapters.providers.google_workspace.channels import DRIVE_LIFETIME, Channels
 from minutehand.adapters.providers.google_workspace.gmail import GMAIL_HOST, GmailApi
+from minutehand.adapters.providers.google_workspace.identity import METADATA_HOST, IdentityApi, id_token
+from minutehand.adapters.providers.google_workspace.identity import asks_for_identity as identity_scopes
 from minutehand.adapters.providers.google_workspace.state import ROLE_RANK, ROOT_ALIAS, DriveWorld
 from minutehand.domain.errors import NotServed
 from minutehand.domain.scenario import Commented, DocumentHappening, Edited, FieldSet, Model, Moved, Renamed, Shared
@@ -201,6 +203,10 @@ class DriveApi:
     @property
     def drive(self) -> DriveWorld:
         return self._drive
+
+    @property
+    def clock(self) -> Clock:
+        return self._clock
 
     # ------------------------------------------------------------------ the gate every call passes
 
@@ -1392,7 +1398,17 @@ class DriveApi:
             access,
             wire.AccessToken(email=email, expires=wire.rfc3339(expires), credential=key),
         )
-        return _json(wire.TokenAnswer(access_token=access, scope=scope, refresh_token=refresh))
+        identity = None
+        if identity_scopes(scope):
+            user = self._drive.user(email)
+            identity = id_token(
+                email=email,
+                name=user.displayName if user is not None else None,
+                client_id=asked.client_id or "",
+                issued=int(self._clock.now().timestamp()),
+                lifetime=wire.TOKEN_LIFETIME,
+            )
+        return _json(wire.TokenAnswer(access_token=access, scope=scope, refresh_token=refresh, id_token=identity))
 
     async def revoke(self, request: Request) -> Response:
         """Revoke an access token or a refresh token, and with either the whole grant: the credential and every
@@ -1641,22 +1657,36 @@ def build_app(api: DriveApi, gmail: GmailApi, calendar: CalendarApi) -> HostRout
             methods=["GET"],
         ),
     ]
+    identity = IdentityApi(api.drive, api.clock)
     iam = [
         Route(
             "/v1/projects/{project}/serviceAccounts/{account}/allowedLocations", api.allowed_locations, methods=["GET"]
-        )
+        ),
+        Route("/v1/projects/{project}/serviceAccounts/{account}:signBlob", identity.sign_blob, methods=["POST"]),
+        Route("/v1/projects/{project}/serviceAccounts/{account}:signJwt", identity.sign_jwt, methods=["POST"]),
+    ]
+    certs = [
+        Route("/oauth2/v1/certs", identity.certs_v1, methods=["GET"]),
+        Route("/oauth2/v3/certs", identity.certs_v3, methods=["GET"]),
+    ]
+    metadata = [
+        Route(
+            "/computeMetadata/v1/instance/service-accounts/{account}/email", identity.metadata_email, methods=["GET"]
+        ),
+        Route("/{rest:path}", identity.metadata_unserved, methods=["GET", "PUT", "POST"]),
     ]
     mail = gmail.routes()
     calendars = calendar.routes()
     return HostRouter(
         {
-            DRIVE_HOST: Router(routes=[*routes, *calendars]),
+            DRIVE_HOST: Router(routes=[*certs, *routes, *calendars]),
             GMAIL_HOST: Router(routes=mail),
             OAUTH_HOST: Router(routes=oauth),
             DOCS_HOST: Router(routes=documents),
             SLIDES_HOST: Router(routes=presentations),
             IAM_HOST: Router(routes=iam),
+            METADATA_HOST: Router(routes=metadata),
         },
-        Router(routes=[*routes, *calendars, *mail, *oauth, *documents, *presentations, *iam]),
+        Router(routes=[*certs, *routes, *calendars, *mail, *oauth, *documents, *presentations, *iam]),
         api.channels,
     )

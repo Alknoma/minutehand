@@ -174,6 +174,13 @@ class WorkspaceSeed(Model):
         description="Person.key to their primary calendar's time zone, an IANA name; where it names none, their "
         "working hours' zone, else UTC",
     )
+    runtime_service_account: str | None = Field(
+        default=None,
+        pattern=r"^[^@\s]+@[^@\s]+$",
+        description="The service account the code under test runs as on Cloud Run or Compute Engine: what the "
+        "metadata server answers at `instance/service-accounts/default/email`; None: the metadata server is not "
+        "served",
+    )
     unknown_credentials_act_as: str | None = Field(
         default=None,
         description="Key of the person every credential the world does not hold, or none at all, acts as (an "
@@ -287,6 +294,12 @@ def seed(scenario: Scenario, world: Store) -> None:
         wire.Credential(email=default.held_email(MANIFEST.key, "a Google account is its email address")),
         operation=Operation.CREATE,
     )
+    if own.runtime_service_account is not None:
+        drive.keep_credential(
+            state.RUNTIME_ACCOUNT,
+            wire.Credential(email=own.runtime_service_account, service_account=True),
+            operation=Operation.CREATE,
+        )
     for sign_in in sign_ins:
         email = (
             people[sign_in.person].held_email(MANIFEST.key, "a Google account is its email address")

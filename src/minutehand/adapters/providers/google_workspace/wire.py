@@ -749,6 +749,7 @@ class TokenAnswer(Model):
     token_type: Literal["Bearer"] = "Bearer"
     scope: str | None = None
     refresh_token: str | None = Field(default=None, description="Issued on the authorization-code grant")
+    id_token: str | None = Field(default=None, description="When the scope asked for asks for identity")
 
 
 class Userinfo(Model):
