@@ -314,9 +314,9 @@ class StoredProject(Wire):
         description="Made by POST /admin/projects: Hub's permissions cache lists nobody holding Update Project on it",
     )
     fields: list[StoredProjectField]
-    timeTracking: StoredTimeTracking | None = Field(
-        description="None on a project made through POST /admin/projects: what YouTrack gives one is neither "
-        "documented nor recorded"
+    timeTracking: StoredTimeTracking = Field(
+        description="Off with no fields on a project made through POST /admin/projects: time tracking is enabled "
+        "per project, and enabling it is what adds Estimation and Spent time"
     )
 
 

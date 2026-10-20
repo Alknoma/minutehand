@@ -229,7 +229,7 @@ class YouTrackApi:
             created_by=call.caller.id,
             team=list(dict.fromkeys([leader.id, call.caller.id])),
             project_fields=[self._template_field(ids, f) for f in fields.TEMPLATES[template]],
-            time_tracking=None,
+            time_tracking=wire.StoredTimeTracking(id=f"169-{number}", enabled=False, estimate=None, timeSpent=None),
             description=body.description or "",
             created_through_api=True,
         )
@@ -318,8 +318,6 @@ class YouTrackApi:
 
     def project_time_tracking(self, call: Call) -> Answered:
         project = self.project(call)
-        if project.timeTracking is None:
-            raise _undocumented(f"the time-tracking settings of {project.shortName}, made through POST /admin/projects")
         self.world.saw(state.project_ref(project.id), Operation.READ)
         return self.answer(call, self.presenter().time_tracking(project, project.timeTracking))
 
