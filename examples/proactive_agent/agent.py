@@ -1,8 +1,8 @@
 """A small proactive agent: it gets answers from people and passes them on.
 
-Its work is its own, a file it reads (AGENT_WORK, `work.json`): for each ask, who answers, the question, and who is
-told. It asks in Slack, follows up at most twice, a working day apart, and tells the answer on, or that none came. The
-run hands it nothing, and it is proactive: it decides when it next wakes. That one decision is the `wake` package: a
+Its work is its own, a file it reads (AGENT_WORK, `work.json`): for each ask, who answers, the question, who is told,
+and, for work not due yet, from when (`not_before`). It asks in Slack, follows up at most twice, a working day apart,
+and tells the answer on, or that none came. The run hands it nothing, and it is proactive: it decides when it next wakes. That one decision is the `wake` package: a
 Pydantic AI sub-agent proposes the moment, and plain code makes it safe. Everything else here is plain code.
 
     POST /wake          {"now": ..., "reason": ...}: it is now `now`; do what is due
@@ -43,6 +43,7 @@ class Ask(BaseModel):
     ask: str  # who answers, by email
     question: str
     tell: str  # who is told the answer, or that none came, by email
+    not_before: datetime | None = None  # work that is not due yet: asked at the first wake from then on
 
 
 ASKS = TypeAdapter(list[Ask]).validate_json(Path(os.environ.get("AGENT_WORK", "work.json")).read_bytes())
@@ -65,11 +66,21 @@ def say(email: str, text: str) -> None:
     slack.chat_postMessage(channel=channel, text=text)
 
 
-def open_items(work: dict[str, Any]) -> list[Open]:
-    """What it is waiting on: each answer asked for and not yet given, until the asker is told none came."""
+def open_items(work: dict[str, Any], now: datetime) -> list[Open]:
+    """What it is waiting on: each answer asked for and not yet given, until the asker is told none came, and each
+    piece of its work not due yet, from when it is."""
     found = []
     for n, ask in enumerate(ASKS):
         done = work.get("asks", {}).get(str(n), {})
+        if "asked_at" not in done and ask.not_before is not None and ask.not_before > now:
+            found.append(
+                Open(
+                    what=f"its own work, due then: ask {ask.ask} {ask.question}",
+                    since=now,
+                    due=in_hours(ask.not_before),
+                )
+            )
+            continue
         if "asked_at" in done and "ended" not in done:
             due = in_hours(datetime.fromisoformat(done["last_contact"]) + ANSWER_TAKES)
             since = datetime.fromisoformat(done["asked_at"])
@@ -86,6 +97,8 @@ def wake(now: datetime) -> None:
         for n, ask in enumerate(ASKS):
             done = progress.setdefault(str(n), {})
             if "asked_at" not in done:
+                if ask.not_before is not None and now < ask.not_before:
+                    continue  # not due yet: its wake is booked for it
                 say(ask.ask, ask.question)
                 done |= {"asked_at": now.isoformat(), "last_contact": now.isoformat(), "follow_ups": 0}
                 continue
@@ -113,7 +126,7 @@ def report() -> dict[str, object]:
     with lock:
         work = remembered()
         now = datetime.fromisoformat(work["last_wake"]) if "last_wake" in work else datetime.now().astimezone()
-        moment = next_wake(open_items(work), now)
+        moment = next_wake(open_items(work, now), now)
     return {"status": "idle", "next_wake": moment.isoformat() if moment else None}
 
 

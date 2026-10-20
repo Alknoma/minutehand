@@ -164,6 +164,7 @@ in TypeScript.
 | `expect` | scenario | What must be true of the world at the end |
 | `expect_outcome` | scenario | The verdict the scenario is written to reach: `passed` (default), `failed`, `unfinished`, `not_judged`, `simulation_incomplete`. Read by `minutehand run-all`, which exits 1 when a run's verdict differs |
 | `checks` | agent file | Python checks of the team's own (above) |
+| `instructions` | agent file | The files that state the agent's work (`- file: prompt.md`; `${NAME}` or `${NAME:-default}` reads Minutehand's environment), read when the run starts and kept with it. The reviewers judge every effect against them; unnamed, against the system prompts the agent gave its model. Name them when the agent's model does one part of its work only (`docs/assessments.md`) |
 
 `RunResult.assessed_by` records what judged a run: each rule's id, `expectations`, `near_miss_name` and each of the
 agent's own checks. A rule may not take the id of a check.

@@ -298,6 +298,11 @@ class WakeModelCalls(Model):
     calls: int = Field(ge=0, description="Spans of a model call placed in this wake")
 
 
+class InstructionsFrom(StrEnum):
+    FILES = "files"  # the files the agent file names (`AgentUnderTest.instructions`)
+    MODEL_CALLS = "model_calls"  # the system prompts of its model calls
+
+
 class RunView(Model):
     """Everything a check may read. A check never reaches past this."""
 
@@ -311,8 +316,17 @@ class RunView(Model):
     commitments: list[Commitment] | None = None
     agent_instructions: list[str] = Field(
         default=[],
-        description="Every distinct system prompt the agent gave its model, in the order it first gave each: its own "
-        "statement of its work (`application.model_calls.agent_instructions`); empty when no call of its was seen",
+        description="The agent's own statement of its work: the files its agent file names (`instructions`), or, when "
+        "it names none, every distinct system prompt it gave its model (`application.model_calls.agent_instructions`); "
+        "empty when neither was seen",
+    )
+    instructions_from: InstructionsFrom = Field(
+        default=InstructionsFrom.MODEL_CALLS, description="Where `agent_instructions` were read"
+    )
+    model_prompts: list[str] = Field(
+        default=[],
+        description="With instructions from its files: the system prompts the agent gave its model, for a part of its "
+        "work, shown to the reviewers as that and never as its work",
     )
     model_calls: list[WakeModelCalls] | None = Field(
         default=None,

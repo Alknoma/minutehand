@@ -96,7 +96,7 @@ def _role(speaker: Speaker) -> Literal["user", "assistant"]:
 
 def strict_schema(answer: type[BaseModel]) -> dict[str, JsonValue]:
     """The answer's JSON schema as strict structured output accepts it: every property required, no other
-    property allowed, and no defaults."""
+    property allowed, no defaults, and a reference with nothing beside it."""
     schema = answer.model_json_schema()
     _tighten(schema)
     return schema
@@ -110,6 +110,11 @@ def _tighten(node: JsonValue) -> None:
     if not isinstance(node, dict):
         return
     node.pop("default", None)
+    if "$ref" in node:
+        # strict structured output takes a reference alone: a field's description beside its `$ref` is refused
+        for key in [k for k in node if k != "$ref"]:
+            del node[key]
+        return
     properties = node["properties"] if "properties" in node else None
     if isinstance(properties, dict):
         node["required"] = list(properties)

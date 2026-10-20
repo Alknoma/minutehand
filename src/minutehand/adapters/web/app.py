@@ -47,6 +47,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
@@ -100,6 +101,17 @@ KEEP = 8
 """Timelines of finished runs kept built, the latest read first: a finished run's log no longer changes."""
 
 
+class _Static(StaticFiles):
+    """The page's own files, each to be asked again before it is used (`no-cache`, answered 304 by its ETag while it
+    is unchanged): with no word on caching a browser guesses how long to keep them, and after an upgrade runs a mix of
+    old and new modules, one importing a file that is gone."""
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        answered = super().file_response(*args, **kwargs)
+        answered.headers["Cache-Control"] = "no-cache"
+        return answered
+
+
 def _json(model: Model, status: int = 200) -> Response:
     return Response(model.model_dump_json(), status_code=status, media_type="application/json")
 
@@ -111,7 +123,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
     lock = threading.Lock()
 
     def page(_: Request) -> Response:
-        return HTMLResponse(PAGE.read_text(encoding="utf-8"))
+        return HTMLResponse(PAGE.read_text(encoding="utf-8"), headers={"Cache-Control": "no-cache"})
 
     def runs(_: Request) -> Response:
         hidden = set(session.case_members(state))
@@ -388,7 +400,7 @@ def create_app(state: Path, prices: Prices | None = None) -> Starlette:
             Route("/api/runs/{run_id}/assessments", one_run(assessments)),
             Route("/api/runs/{run_id}/spans/{span_id}", one_span),
             Route("/api/batches", batches),
-            Mount("/static", StaticFiles(directory=STATIC), name="static"),
+            Mount("/static", _Static(directory=STATIC), name="static"),
         ],
         middleware=[Middleware(GZipMiddleware, minimum_size=2048)],
     )

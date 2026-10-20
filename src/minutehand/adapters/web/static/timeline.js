@@ -14,12 +14,13 @@
 import { esc, when, clock as realClock, plural, words, count } from "./util.js";
 
 const KINDS = ["wake", "sent", "said", "edited", "wait", "call", "call_failed", "change", "read", "due", "due_fault",
-  "model_call", "memory_write", "memory_read", "stored", "span"];
-const FAILED = new Set(["call_failed", "due_fault"]);
+  "model_call", "memory_write", "memory_read", "stored", "span", "out_failed", "out_review", "out_held", "out_unmeasured"];
+const FAILED = new Set(["call_failed", "due_fault", "out_failed"]);
 const KIND_WORD = {
   wake: "wake", sent: "from the agent", said: "from the person", edited: "rewritten or deleted", wait: "wait",
   call: "call", call_failed: "failed call", change: "change", read: "read", due: "due entry", due_fault: "faulted entry",
-  model_call: "model call", memory_write: "memory write", memory_read: "memory read", stored: "stored item", span: "span"
+  model_call: "model call", memory_write: "memory write", memory_read: "memory read", stored: "stored item", span: "span",
+  out_failed: "output, failed", out_review: "output, to review", out_held: "output, passed", out_unmeasured: "output, not measured"
 };
 const AXIS = 26, ROW = 22, MIN_SIM = 1000, MIN_REAL = 20, DENSE = 4;
 const UNITS = [
@@ -29,7 +30,6 @@ const UNITS = [
   ["day", () => d3.utcDay, 864e5], ["week", () => d3.utcMonday, 6048e5],
   ["month", () => d3.utcMonth, 2.63e9], ["year", () => d3.utcYear, 3.156e10]
 ];
-const PRESETS = [["all", "All"], ["year", "Year"], ["month", "Month"], ["week", "Week"], ["day", "Day"], ["hour", "Hour"]];
 const PRESET_MS = { year: 3.156e10, month: 2.63e9, week: 6048e5, day: 864e5, hour: 36e5 };
 
 function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) { lo = m + 1; } else { hi = m; } } return lo; }
@@ -66,7 +66,6 @@ export class Timeline {
     this.cycle = null;
     root.innerHTML =
       '<div class="tl-tools">' +
-      '<span class="seg" role="group" aria-label="Range">' + PRESETS.map((p) => '<button type="button" data-preset="' + p[0] + '">' + p[1] + "</button>").join("") + "</span>" +
       '<span class="seg" role="group" aria-label="Zoom"><button type="button" data-zoom="out" aria-label="Zoom out">−</button><button type="button" data-zoom="in" aria-label="Zoom in">+</button></span>' +
       '<span class="seg" role="group" aria-label="Clock"><button type="button" data-clock="sim" aria-pressed="true">Simulated</button><button type="button" data-clock="real" aria-pressed="false">Real</button></span>' +
       '<span class="tl-range" data-role="range"></span><span class="tl-note" data-role="note"></span>' +
@@ -326,7 +325,7 @@ export class Timeline {
     g.clearRect(0, 0, w, h);
     const [a, b] = this.win, k = w / (b - a), x = (t) => (t - a) * k;
     const C = { ink: css("--ink"), mark: css("--mark"), soft: css("--mark-soft"), faint: css("--faint"), line: css("--line"), band: css("--band"),
-      heat: css("--heat"), fail: css("--fail"), review: css("--review"), info: css("--info"), select: css("--select"), paper: css("--paper"), muted: css("--muted") };
+      heat: css("--heat"), fail: css("--fail"), review: css("--review"), pass: css("--pass"), info: css("--info"), select: css("--select"), paper: css("--paper"), muted: css("--muted") };
     g.font = "11px " + css("--sans");
 
     // axis and grid
@@ -508,6 +507,10 @@ export class Timeline {
     }
     g.fillStyle = fail ? C.fail : C.mark; g.strokeStyle = fail ? C.fail : C.mark; g.lineWidth = 1.5;
     switch (kind) {
+      // an output of the agent's, in its result's colour: the same marks at every scale
+      case "out_failed": case "out_review": case "out_held": case "out_unmeasured":
+        g.fillStyle = kind === "out_failed" ? C.fail : kind === "out_review" ? C.review : kind === "out_held" ? C.pass : C.soft;
+        g.beginPath(); g.arc(px, y, 4.5, 0, Math.PI * 2); g.fill(); break;
       case "wake": g.fillRect(px - 1.5, y0 + 4, 3, ROW - 8); break;
       case "sent": g.beginPath(); g.arc(px, y, 3.5, 0, Math.PI * 2); g.fill(); break;
       case "said": g.beginPath(); g.arc(px, y, 3.2, 0, Math.PI * 2); g.stroke(); break;

@@ -347,6 +347,7 @@ async def play(
                 rhythm=declared_rhythm(agent),
                 collections=declared_collections(agent),
                 messengers=declared_messengers(agent),
+                instructions=[i.text for i in agent.instructions if i.text is not None],
             )
             scorer.receiver = proxy.receiver
             signing = signing_for(agent, scenario.people)
@@ -558,6 +559,7 @@ async def fork(
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
         messengers=declared_messengers(agent),
+        instructions=[i.text for i in agent.instructions if i.text is not None],
     )
     signing = signing_for(agent, changed.people)
 
@@ -688,6 +690,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
         rhythm=declared_rhythm(agent),
         collections=declared_collections(agent),
         messengers=declared_messengers(agent),
+        instructions=[i.text for i in agent.instructions if i.text is not None],
     )
     world = SqliteStore(_root_dir(state, outcome.record) / WORLD, run_id, RunClock(scenario.starts_at))
     try:
@@ -1222,7 +1225,9 @@ class _Judge:
         rhythm: timedelta | None = None,
         collections: Sequence[DeclaredCollection] = (),
         messengers: Mapping[ProviderKey, ItemKind] | None = None,
+        instructions: Sequence[str] = (),
     ) -> None:
+        self._instructions = list(instructions)
         self._claims = claims
         self._messengers = dict(messengers or {})
         self._rhythm = rhythm
@@ -1269,6 +1274,7 @@ class _Judge:
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
             agent_instructions=agent_instructions(spans),
+            declared_instructions=self._instructions,
             broken_calls=broken(calls),
             contract_breaks=contract_breaks(calls),
             dues=due_entries(world),

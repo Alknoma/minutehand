@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
+from minutehand.domain.checks import InstructionsFrom
 from minutehand.domain.run import VerdictKind
 from minutehand.domain.world import Actor, MessageSnapshot
 from tests.support.people import people_environment
@@ -82,6 +83,9 @@ def test_four_people_four_ways_and_each_message_says_what_every_check_made_of_it
     assert ("inside_reply_window", "review") in flagged and ("to_someone_away", "review") in flagged
     assert result.verdict.kind is VerdictKind.PASSED, "for review is not a failure"
     assert result.items and all(i.checks for i in result.items), "every message says what each check made of it"
+    # its model decides only when it wakes: what the reviewers judge it by is its work file, kept with the run
+    seen = session.recorded_view(state, done.stdout.split()[1].rstrip(":"))
+    assert seen.instructions_from is InstructionsFrom.FILES and "Northwind" in seen.agent_instructions[0]
 
 
 def test_sam_answers_and_owen_is_told_his_answer(tmp_path: Path) -> None:

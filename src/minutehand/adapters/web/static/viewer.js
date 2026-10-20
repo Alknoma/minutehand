@@ -27,7 +27,7 @@ const STOP_WORD = {
 };
 
 const S = {
-  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "calendar", sel: null, memo: {}, filter: "",
+  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "time", sel: null, memo: {}, filter: "",
   handle: {}, timer: null, generation: 0, pendingWindow: null
 };
 
@@ -43,6 +43,9 @@ const ctx = {
   get batches() { return S.batches; },
   get loaded() { return S.loaded; },
   select: (ref) => select(ref, "view"),
+  scaleTo: (sc, at) => scaleTo(sc, at),
+  // the stretch the list reads: where a picked scale is going, while the axis animates there; else what it shows
+  window: () => (S.going && Date.now() < S.going.until ? S.going.win.slice() : tl.win.slice()),
   remember: () => rememberWhere(),
   labelOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.label[l[0]] : null; },
   simOf(ref) { const d = tl.data; const l = d && d.byRef.get(ref); return l ? d.sim[l[0]] : NaN; },
@@ -57,10 +60,13 @@ const ctx = {
 
 /* ---------- the timeline, made once ---------- */
 
-let windowTimer = null;
+let windowTimer = null, listTimer = null;
 const tl = new Timeline($("timeline"), {
   onSelect: (ref) => select(ref, "timeline"),
-  onWindow: () => { clearTimeout(windowTimer); windowTimer = setTimeout(rememberWhere, 250); },
+  onWindow: () => {
+    clearTimeout(windowTimer); windowTimer = setTimeout(rememberWhere, 250);
+    clearTimeout(listTimer); listTimer = setTimeout(() => { if (S.handle.onWindow) { S.handle.onWindow(); } }, 120);
+  },
   onFilter: (f) => { S.filter = f; if (S.handle.onFilter) { S.handle.onFilter(); } },
   // how long each frame of the timeline took, the last hundred, for whoever measures the page
   onDraw: (d) => { const kept = window.__viewerDraws || []; kept.push(d.ms); window.__viewerDraws = kept.slice(-100); }
@@ -70,13 +76,14 @@ const tl = new Timeline($("timeline"), {
 
 function where() {
   const h = new URLSearchParams(location.hash.slice(1));
-  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w"), day: h.get("day") };
+  return { run: h.get("run"), view: h.get("view"), sel: h.get("sel"), clock: h.get("clock"), w: h.get("w"), scale: h.get("scale"), at: h.get("at"), rows: h.get("rows") };
 }
 function rememberWhere() {
   const h = new URLSearchParams();
   if (S.run) { h.set("run", S.run); }
-  if (S.view !== "calendar") { h.set("view", S.view); }
-  if (S.view === "calendar" && S.memo.day !== null && S.memo.day !== undefined) { h.set("day", String(S.memo.day)); }
+  if (S.view !== "time") { h.set("view", S.view); }
+  if (S.view === "time" && S.memo.scale && S.memo.scale !== "all") { h.set("scale", S.memo.scale); h.set("at", String(S.memo.at)); }
+  if (S.memo.allRows) { h.set("rows", "all"); }
   if (S.sel) { h.set("sel", S.sel); }
   if (tl.clock !== "sim") { h.set("clock", tl.clock); }
   if (tl.data) { h.set("w", Math.round(tl.win[0]) + "~" + Math.round(tl.win[1])); }
@@ -138,8 +145,9 @@ async function loadList() {
 function open(run, at) {
   clearTimeout(S.timer);
   S.generation += 1;
-  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.memo = at.day !== null && at.day !== undefined ? { day: Number(at.day) } : {}; S.handle = {};
-  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "calendar";
+  S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.handle = {};
+  S.memo = { scale: SCALES.some((f) => f[0] === at.scale) ? at.scale : "all", at: at.at ? Number(at.at) : null, allRows: at.rows === "all" };
+  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "time";
   S.sel = at.sel || null;
   S.pendingWindow = at.w ? at.w.split("~").map(Number) : null;
   tl.hidden = new Set();
@@ -157,9 +165,9 @@ async function load(fresh) {
     if (generation !== S.generation) { return; }
     S.base = { run: r, findings, scorecard: scorecard.scorecard, timeline };
     timeline.run = run;
-    tl.setData(timeline, findings.findings);
+    tl.setData(derive(timeline, findings.items, S.memo.allRows), findings.findings);
     if (fresh) {
-      if (S.pendingWindow && S.pendingWindow.every(isFinite)) { tl.setWindow(S.pendingWindow[0], S.pendingWindow[1], false); } else { tl.fit(); }
+      if (S.pendingWindow && S.pendingWindow.every(isFinite)) { tl.setWindow(S.pendingWindow[0], S.pendingWindow[1], false); } else if (S.memo.scale !== "all") { scaleTo(S.memo.scale, S.memo.at, false); } else { tl.fit(); }
     }
     renderHeader(); renderNav();
     if (fresh) { await renderView(); } else if (S.handle.refresh) { S.handle.refresh(); }
@@ -224,8 +232,10 @@ function renderNav() {
 
 async function renderView() {
   const v = VIEWS.find((x) => x.id === S.view) || VIEWS[0], generation = S.generation, host = $("view");
-  // one page at a time: the timeline is a page of its own, not a frame around the others
-  document.querySelector(".center").classList.toggle("tl-page", v.id === "timeline");
+  // the run over time is one page in the format picked; the timeline's lanes are one of its formats
+  // the run over time is one page: its axis, at the scale picked, and the list of what the axis shows under it
+  document.querySelector(".center").classList.toggle("time-page", v.id === "time");
+  renderScales();
   S.handle = {};
   // each draw gets a page of its own: a view still reading when another is opened draws into a page no longer shown
   host.innerHTML = '<div class="view-page"><p class="empty">Reading…</p></div>';
@@ -238,9 +248,72 @@ async function renderView() {
   }
 }
 
+/* ---------- the run over time: one axis, its scale picked ---------- */
+
+const SCALES = [["all", "Whole run"], ["month", "Month"], ["week", "Week"], ["day", "Day"]];
+const UNIT = { month: () => d3.utcMonth, week: () => d3.utcMonday, day: () => d3.utcDay };
+
+/** The timeline's data for the time page: three rows read first (when the agent woke, each of its outputs in its
+    result's colour, each reply from a person), then, with every row shown, the record's own lanes. */
+function derive(tl, items, all) {
+  const result = new Map((items || []).map((i) => [ "ev:" + i.seq, outcomeOf(i) ]));
+  const lanes = [{ key: "sum:woke", kind: "wakes", label: "Agent woke", marks: 0 }, { key: "sum:outputs", kind: "wakes", label: "Agent's outputs", marks: 0 },
+    { key: "sum:heard", kind: "person", label: "Replies from people", marks: 0 }];
+  const drawn = new Set(), m = tl.marks, out = { sim: [], sim_end: [], real: [], real_end: [], lane: [], kind: [], ref: [], label: [] };
+  const push = (i, lane, kind) => {
+    out.sim.push(m.sim[i]); out.sim_end.push(kind === "wake" ? null : m.sim_end[i]); out.real.push(m.real[i]); out.real_end.push(m.real_end[i]);
+    out.lane.push(lane); out.kind.push(kind); out.ref.push(m.ref[i]); out.label.push(m.label[i]); lanes[lane].marks += 1;
+  };
+  if (all) { tl.lanes.forEach((l) => lanes.push(Object.assign({}, l, { marks: 0 }))); }
+  for (let i = 0; i < m.sim.length; i++) {
+    if (m.kind[i] === "wake") { push(i, 0, "wake"); }
+    if (result.has(m.ref[i]) && !drawn.has(m.ref[i])) { drawn.add(m.ref[i]); push(i, 1, "out_" + result.get(m.ref[i])); }
+    if (m.kind[i] === "said") { push(i, 2, "said"); }
+    if (all) { push(i, 3 + m.lane[i], m.kind[i]); }
+  }
+  // keep the record's order: by simulated time, then as written
+  const order = out.sim.map((_, k) => k).sort((p, q) => out.sim[p] - out.sim[q] || p - q);
+  const sorted = {};
+  for (const key in out) { sorted[key] = order.map((k) => out[key][k]); }
+  return Object.assign({}, tl, { lanes, marks: sorted });
+}
+function outcomeOf(item) {
+  const said = item.checks.map((c) => c.outcome);
+  return said.indexOf("failed") >= 0 ? "failed" : said.indexOf("review") >= 0 ? "review" : said.indexOf("held") >= 0 ? "held" : "unmeasured";
+}
+
+/** The scale bar: the scale, the period it is on with a step either way, and whether every row is shown. */
+function renderScales() {
+  const bar = $("formats");
+  bar.hidden = S.view !== "time" || !S.base;
+  if (bar.hidden) { return; }
+  const sc = S.memo.scale || "all", at = S.memo.at;
+  const label = sc === "all" ? "" : sc === "month" ? d3.utcFormat("%B %Y")(new Date(at)) : sc === "week" ? "Week of " + d3.utcFormat("%-d %B %Y")(new Date(at)) : d3.utcFormat("%A %-d %B %Y")(new Date(at));
+  bar.innerHTML = '<span class="seg">' + SCALES.map((f) => '<button type="button" data-scale="' + f[0] + '" aria-pressed="' + (sc === f[0]) + '">' + f[1] + "</button>").join("") + "</span>" +
+    (sc !== "all" ? '<span class="on-day"><button type="button" data-step="-1" aria-label="Before">‹</button><b>' + esc(label) + '</b><button type="button" data-step="1" aria-label="After">›</button></span>' : "") +
+    '<label class="all-rows"><input type="checkbox" data-rows' + (S.memo.allRows ? " checked" : "") + "> Show all rows</label>";
+}
+
+/** Show a period at a scale: the axis moves to it (animated), and the list under it follows. */
+function scaleTo(sc, at, animate) {
+  if (!SCALES.some((x) => x[0] === sc)) { return; }
+  S.memo.scale = sc;
+  const [lo, hi] = S.base ? [S.base.timeline.starts, S.base.timeline.reached] : [0, 0];
+  let win;
+  if (sc === "all") { S.memo.at = null; win = [lo, hi]; } else {
+    const unit = UNIT[sc](), start = unit.floor(new Date(at === null || at === undefined ? (tl.win[0] + tl.win[1]) / 2 : at));
+    S.memo.at = +start;
+    win = [+start, +unit.offset(start, 1)];
+  }
+  S.going = { win, until: Date.now() + 600 };
+  tl.setWindow(win[0], win[1], animate !== false);
+  if (S.handle.onWindow) { S.handle.onWindow(); }
+  renderScales();
+  rememberWhere();
+}
+
 function showView(id) {
   if (!VIEWS.some((v) => v.id === id)) { return; }
-  if (id === "calendar") { S.memo.day = null; }  // the rail's calendar is the calendar, not the last day opened from it
   S.view = id;
   renderNav();
   renderView();
@@ -283,6 +356,11 @@ async function renderInspector() {
 
 document.addEventListener("click", (ev) => {
   if (ev.target.closest("[data-close]")) { ev.preventDefault(); select(null, "page"); return; }
+  const stepper = ev.target.closest("#formats [data-step]");
+  if (stepper) { ev.preventDefault(); const unit = UNIT[S.memo.scale](); scaleTo(S.memo.scale, +unit.offset(new Date(S.memo.at), Number(stepper.getAttribute("data-step")))); return; }
+  const scale = ev.target.closest("[data-scale]");
+  if (scale) { ev.preventDefault(); scaleTo(scale.getAttribute("data-scale"), S.memo.at); return; }
+  if (ev.target.closest("[data-rows]")) { S.memo.allRows = ev.target.closest("[data-rows]").checked; tl.setData(derive(S.base.timeline, S.base.findings.items, S.memo.allRows), S.base.findings.findings); rememberWhere(); return; }
   const sel = ev.target.closest("[data-sel]");
   if (sel) { ev.preventDefault(); select(sel.getAttribute("data-sel"), "page"); return; }
   const openRun = ev.target.closest("[data-open]");

@@ -3,7 +3,7 @@
 
 import { esc, when, span, seconds, words, title, plural, count, clip, median, day } from "./util.js";
 import { VList } from "./vlist.js";
-import { calendarView } from "./calendar.js";
+import { timeList } from "./time.js";
 
 const VERDICT_WORD = { passed: "Passed", failed: "Failed", unfinished: "Not finished", tool_failed: "Not scored", not_judged: "Not judged", environment_failed: "Environment failed", simulation_incomplete: "Simulation incomplete" };
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
@@ -44,15 +44,10 @@ export function failureSort(x) {
 
 export const VIEWS = [
   {
-    id: "calendar", group: "Outcome", label: "Calendar",
+    // the run over time, in the format picked: a month to a page, a day, or the timeline's lanes (`calendar.js`)
+    id: "time", group: "Outcome", label: "Time",
     count: (ctx) => { const kinds = new Set(ctx.base.findings.findings.filter((x) => x.finding.kind === "fail").map(failureSort)); return { n: kinds.size || "", cls: kinds.size ? "fail" : "" }; },
-    render: calendarView
-  },
-  {
-    // the timeline is drawn by timeline.js into its own page; this view only names it in the rail
-    id: "timeline", group: "Outcome", label: "Timeline",
-    count: (ctx) => ({ n: count(ctx.base.timeline.marks.sim.length) }),
-    render(host) { host.innerHTML = ""; return {}; }
+    render: timeList
   },
   {
     id: "findings", group: "Outcome", label: "Findings",
@@ -129,14 +124,19 @@ export const VIEWS = [
       let current = ctx.memo.person && people.find((x) => x.key === ctx.memo.person) ? ctx.memo.person : people[0].key;
       const side = host.querySelector('[data-role="people"]'), chatHost = host.querySelector('[data-role="chat"]');
       const WRITTEN = { script: "script, worded by a model", verbatim: "the script's words", conversing: "a model", automatic: "automatic reply", by_hand: "by hand" };
+      // a message's first line is its subject when a blank line follows it: a line of its own, the body under it
+      const said = (text) => {
+        const parts = text.split("\n\n"), subject = parts.length > 1 && parts[0].length < 120 ? parts.shift() : "";
+        return (subject ? '<div class="subject">' + esc(subject) + "</div>" : "") + '<div class="text' + (subject ? "" : " long") + '">' + esc(parts.join("\n\n")) + "</div>";
+      };
       const refOf = (l) => (l.seq !== null && l.from_agent ? "ev:" + l.seq : l.reply !== null ? "reply:" + l.reply : "ev:" + l.seq);
       const list = new VList(chatHost, {
-        rowHeight: 66, key: refOf, onPick: (l) => ctx.select(refOf(l)),
+        rowHeight: 104, key: refOf, onPick: (l) => ctx.select(refOf(l)),
         rowHtml: (l, on, i, y, rh) => {
           const who = l.from_agent ? "agent" : (people.find((x) => x.key === current) || {}).name;
           const how = l.from_agent ? (l.change !== "sent" ? l.change : "") : WRITTEN[l.writing] + (l.written_by ? " (" + l.written_by + ")" : "");
           return '<div class="chat-row ' + (l.from_agent ? "agent" : "person") + (on ? " on" : "") + '" data-row="' + i + '" style="top:' + y + "px;height:" + rh + 'px"><div class="bubble"><div class="who"><b>' + esc(who) + "</b><span>" + esc(when(l.at)) + "</span>" +
-            (how ? '<span class="' + (l.change === "edited" || l.change === "deleted" ? "edited" : "") + '">' + esc(how) + "</span>" : "") + '</div><div class="text">' + esc(l.text) + "</div></div></div>";
+            (how ? '<span class="' + (l.change === "edited" || l.change === "deleted" ? "edited" : "") + '">' + esc(how) + "</span>" : "") + "</div>" + said(l.text) + "</div></div>";
         }
       });
       const show = () => {

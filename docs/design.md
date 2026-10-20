@@ -52,7 +52,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | The agent contract: `agent_api.py`, `schemas/`, `minutehand schema`, `minutehand validate` | One page of every touch point (`docs/agent-contract.md`), JSON Schemas of the files, an OpenAPI document of what an agent may implement, a file validated without a run | Built and tested | 5 functions, 7 cases (`tests/test_schemas.py`) | The older placeholders and dotted paths are listed as debt, not changed. |
 | MCP tools: `adapters/mcp/`, `minutehand mcp` | The command line over stdio: every command a tool of the same name, its flags the parameters, generated from the parser; see "What a coding agent calls" | Built and tested | 4 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | Each call is a process of its own, as the command typed is. |
 | Read model: `adapters/query/`, `minutehand query`, `trace`, `explain` | A run's (or a fork's) record as documented, versioned views over one SQLite database built on demand from the store's own readers, every body decoded: `actions`, `messages` with what the ledger knows of each, `recipients` in their working hours, `calls` with their bodies, `wakes` with their reasons, `dispatch`, `memory` over time, `stored`, `replies`, `model_calls` with tokens and declared prices, `findings`, `evidence`, `spans`; read-only SQL, a trace of the agent's acts and an explanation of one event, on the command line and over MCP; see `docs/querying.md` | Built and tested | 49 functions, 74 cases (`tests/query/`), on a run written by hand and its fork; 12 functions, 43 cases on real runs of the follow-up example and the reference agent through the installed command (`tests/architecture/test_read_model_on_real_runs.py`) | Built per process on first read and kept while the run's files are unchanged; a run with very many events is built in full before the first row. A message's sender among people is known only when a reply of theirs landed as it. |
-| Run viewer: `adapters/web/`, `minutehand view` | One page for inspecting a run of any length: the verdict and headline numbers, a calendar the run opens on (a cell a simulated day counting the agent's outputs by result, the first day of each kind of failure marked new) and a page for each day (its 24 hours drawn, a row for each wake, output and reply), each output opening with what it was and what every check said of it, a canvas swimlane timeline on a page of its own that bins dense lanes by calendar unit, one view per measure, an inspector that opens for whatever is selected; a typed read-only JSON API over a state directory, its tables read from the run's read model (`adapters/query`); plain ES modules with d3 and Observable Plot vendored under `static/`, no build. See "The viewer" | Built and tested | 37 (`tests/web/`), of which 4 drive the page in Chromium (`-m browser`, the `browser` CI job) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. The timeline does not draw the parent's record after a fork's split; the forks view gives the fork's account instead. |
+| Run viewer: `adapters/web/`, `minutehand view` | One page for inspecting a run of any length: the verdict and headline numbers, the run over time it opens on (one axis at a picked scale, its rows the agent's wakes, its outputs in their results' colours and replies, and a list under it that follows it: a row a day, or at a day a row for each wake, output and reply), each output opening with what it was and what every check said of it, a canvas swimlane timeline on a page of its own that bins dense lanes by calendar unit, one view per measure, an inspector that opens for whatever is selected; a typed read-only JSON API over a state directory, its tables read from the run's read model (`adapters/query`); plain ES modules with d3 and Observable Plot vendored under `static/`, no build. See "The viewer" | Built and tested | 37 (`tests/web/`), of which 4 drive the page in Chromium (`-m browser`, the `browser` CI job) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. The timeline does not draw the parent's record after a fork's split; the forks view gives the fork's account instead. |
 | Container image, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
@@ -1661,8 +1661,8 @@ of years.
   were part of it, from `program.json`), what a fork changed from its parent, and how much simulated time ran in how
   much real time, with the seed, the span in dates, the deadline and how it stopped in that line's title; a run that
   stopped before its window ended says so. What went wrong is the pages' to show: a long run has too much of it for
-  a bar. Below, a rail on the left naming every page, and one page at a time beside it: the calendar the run opens
-  on, the timeline, or a view. The inspector is a column that opens on the right when something is selected and
+  a bar. Below, a rail on the left naming every page, and one page at a time beside it: the run over time, which it
+  opens on, or a view. The inspector is a column that opens on the right when something is selected and
   closes with the selection (`Esc`, or its ×). Each draw of a page gets an element of its own, so a view still
   reading when another is opened draws into a page no longer shown. Colour is kept for results and the selection;
   everything else is greys. Light and dark follow the system, with a toggle kept per viewer.
@@ -1673,21 +1673,23 @@ of years.
   spans, with a row of findings on top. A lane holding more marks in the window than it has room for is binned by
   the calendar unit that fits (year, month, week, day, six hours, hour, ten minutes, minute, ten seconds, second): a
   heat strip with each bin's count and a red stripe for its failures; the findings likewise. Zoomed in, each mark is
-  drawn, a range as a bar. Range presets (all, year, month, week, day, hour), a minimap of the whole run with the
+  drawn, a range as a bar. The time page's scales (whole run, month, week, day), a minimap of the whole run with the
   window to drag, drag to pan, wheel or pinch to zoom, the simulated or the real clock, a filter, a hidden lane per
   click on its name. Hover says what a mark or bin holds; a click selects a mark, or zooms into a bin.
-- **The calendar and the day** (`static/calendar.js`, `static/outputs.js`), two pages, one at a time. The calendar
-  is the run seen from above and lists nothing: a cell a simulated day (UTC), a month to a block, each counting the
-  agent's outputs that day by their result (`RunResult.items`: failed, to review, passed), the first day each kind of
-  failure appears marked new; however many outputs and failures a run holds, a cell says how many and the day says
-  which. A cell opens its day (`#day=` in the address): its date, its twenty-four hours drawn (a tick for each wake,
-  each output as its kind's shape in its result's colour, each reply from a person), and a row for each wake (why the
-  agent woke), each output (its kind, to whom, its first line, and the checks it failed or "Passed") and each reply,
-  in time order; ‹ › step a day, and a finding or mark selected elsewhere opens its day. An output opens in the
-  inspector in four parts: the output exactly as sent (to, where, through which service, subject and body); its
-  evaluation, every check its kind takes with what each said (failed or to review with what it was measured
-  against and a link to the finding, passed, or not measured and why); why then (the wake, and the message it
-  answered); and the model call that wrote it; the record and the call that carried it are folded beneath.
+- **The run over time** (`static/time.js`, `static/outputs.js`, `static/timeline.js`), the page a run opens on: one
+  time axis whose scale is picked (whole run, month, week, day; ‹ › step a period; `#scale=` and `#at=` in the
+  address), and under it a list of what the axis shows, which follows it as it moves. The axis is the timeline,
+  read first as three rows: when the agent woke, each of its outputs in its result's colour (`RunResult.items`:
+  failed, to review, passed, not measured), and each reply from a person; "Show all rows" adds the record's own lanes
+  (each person, provider and host, memory, the dispatch table, model calls, spans). A scale animates the axis to its
+  period; the marks and their colours are the same at every scale, binned by the calendar unit that fits when dense.
+  The list reads the stretch in view: wider than a day and a half, a row a day counting its outputs by result and
+  its replies and naming the kinds of failure first seen on it (a row zooms to its day); a day, a row for each wake
+  (why the agent woke), each output (its kind, to whom, its first line, the checks it failed or "Passed") and each
+  reply, in the order the record kept them. An output opens in the inspector in four parts: the output exactly as
+  sent; its evaluation, every check its kind takes with what each said (failed or to review with what it was
+  measured against and a link to the finding, passed, or not measured and why); why then (the wake, and the message
+  it answered); and the model call that wrote it, with the record and the call folded beneath.
 - **Views** (`static/views.js`), one measure each with what it is made of: findings, grouped by kind (each kind's count, first and last day, opening to every occurrence), so a run with hundreds of one failure lists it once; assessments (each of the team's
   rules: held, failed, review, unread or not applied, how often read, its findings; from `RunResult.rules_read`);
   conversations (per person, chat-style, who wrote each line: the agent, a script worded by a model, the script's own

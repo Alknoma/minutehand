@@ -8,8 +8,9 @@ import pytest
 from pydantic import BaseModel
 
 from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE, from_environment
-from minutehand.adapters.model.openai_compatible import DEFAULT_BASE_URL, OpenAICompatible
+from minutehand.adapters.model.openai_compatible import DEFAULT_BASE_URL, OpenAICompatible, strict_schema
 from minutehand.application.refusals import RunRefused
+from minutehand.checks.judged.review import ItemReview
 from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.domain.scenario import Model
 from minutehand.ports.model import ModelFailed
@@ -54,6 +55,22 @@ async def test_the_request_carries_the_system_text_the_messages_and_a_strict_sch
     }
     assert received.schema["required"] == ["sunny", "note"]
     assert received.schema["additionalProperties"] is False
+
+
+def _references(node: object) -> list[dict[str, object]]:
+    if isinstance(node, list):
+        return [r for item in node for r in _references(item)]
+    if not isinstance(node, dict):
+        return []
+    here = [node] if "$ref" in node else []
+    return here + [r for value in node.values() for r in _references(value)]
+
+
+def test_a_described_field_of_a_model_or_enum_type_is_sent_as_its_reference_alone() -> None:
+    """OpenAI's strict structured output refuses keywords beside a `$ref` ("$ref cannot have keywords
+    {'description'}"), which a described field of an enum or model type has; the reviewer's answer is one."""
+    refs = _references(strict_schema(ItemReview))
+    assert refs and all(list(r) == ["$ref"] for r in refs), refs
 
 
 async def test_a_request_may_name_another_model_and_leave_the_temperature_to_the_provider() -> None:

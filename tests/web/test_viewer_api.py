@@ -211,9 +211,20 @@ async def test_the_page_is_served_and_refers_to_nothing_beyond_this_machine(tmp_
         assert re.findall(r"https?://", response.text, flags=re.IGNORECASE) == []
         referenced = re.findall(r"""\b(?:src|href)\s*=\s*["']([^"'#][^"']*)["']""", response.text)
         assert referenced and all(r.startswith("/static/") for r in referenced), referenced
-        for ref in referenced:
+        # the page and every file it loads are asked again before use, so an upgrade never runs beside stale modules
+        assert response.headers["cache-control"] == "no-cache"
+        modules = [
+            f"/static/{m}"
+            for m in sorted(
+                set(re.findall(r'from\s+"\./([^"]+)"', "".join(p.read_text(encoding="utf-8") for p in _own())))
+            )
+        ]
+        for ref in referenced + modules:
             served = await c.get(ref)
             assert served.status_code == 200 and served.content, ref
+            assert served.headers["cache-control"] == "no-cache", ref
+            again = await c.get(ref, headers={"If-None-Match": served.headers["etag"]})
+            assert again.status_code == 304, ref
             assert "@import" not in served.text and not re.search(r"url\(\s*['\"]?(?:https?:)?//", served.text), ref
     own = "".join(p.read_text(encoding="utf-8") for p in _own())
     assert re.findall(r"https?://", own, flags=re.IGNORECASE) == []

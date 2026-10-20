@@ -248,6 +248,20 @@ AGENT_FILE_VERSION = 1
 naming a later version is refused, since it may hold what this one would misread. Absent: this one."""
 
 
+class Instructions(Model):
+    """A file whose words state the agent's work: its prompt, its task list, its rules. Read when the agent file is,
+    and kept with the run, so the reviewers judge the agent against what it was told, not against a prompt it gave a
+    model for one part of its work."""
+
+    file: str = Field(
+        description="A path, relative to the agent file's folder; `${NAME}` or `${NAME:-default}` reads the "
+        "environment Minutehand runs in, as the agent reads it (an agent told its work file by a variable)"
+    )
+    text: str | None = Field(
+        default=None, description="The file's words, filled when Minutehand reads the agent file; left out by hand"
+    )
+
+
 class AgentUnderTest(Model):
     """How the monitor reaches the agent. Replies and pushed events always wake it;
     `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
@@ -270,6 +284,11 @@ class AgentUnderTest(Model):
         default=[],
         description="Where work waits on a person inside the agent's own product (an approval, a question on its "
         "own page), read and decided as each person (`domain.inboxes`)",
+    )
+    instructions: list[Instructions] = Field(
+        default=[],
+        description="The files that state the agent's work. When named, the reviewers judge every effect against "
+        "them; when not, against the system prompts the agent gave its model (`docs/assessments.md`)",
     )
     watches: list[str] = Field(
         default=[],

@@ -98,11 +98,14 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
     assert page.locator(".verdict").inner_text().lower() == "failed"
     assert page.locator("#picker-label").inner_text().startswith("year of follow ups")
     assert "days simulated in" in page.locator(".identity .simulated").inner_text()
-    assert page.locator(".views a[aria-current=page]").get_attribute("data-view") == "calendar", (
-        "the run opens on its calendar"
+    assert page.locator(".views a[aria-current=page]").get_attribute("data-view") == "time", (
+        "the run opens on its time page"
     )
     assert page.locator("#inspector").is_hidden(), "the inspector opens only for something selected"
-    page.click(".views a[data-view=timeline]")
+    summary = page.locator(".tl-labels [data-lane]").all_inner_texts()
+    assert [label.split("\n")[0] for label in summary] == ["Agent woke", "Agent's outputs", "Replies from people"]
+    page.click("[data-rows]")
+    page.wait_for_function("document.querySelector('.tl-canvas-box canvas').getBoundingClientRect().height > 200")
     box = page.locator(".tl-canvas-box canvas").bounding_box()
     assert box is not None and box["width"] > 600 and box["height"] > 200
     labels = page.locator(".tl-labels [data-lane]").all_inner_texts()
@@ -112,23 +115,24 @@ def test_the_page_draws_the_run_its_verdict_numbers_findings_timeline_and_every_
 
     views = page.locator(".views a[data-view]")
     names = [views.nth(i).get_attribute("data-view") for i in range(views.count())]
-    assert len(names) == 16
+    assert len(names) == 15
     for name in names:
         page.click(f".views a[data-view={name}]")
-        if name == "timeline":
-            assert page.locator("#timeline").is_visible() and page.locator("#view").is_hidden()
+        if name == "time":
+            for sc in ("all", "month", "week", "day"):
+                page.click(f"[data-scale={sc}]")
+                assert page.locator("#timeline").is_visible(), sc
+            page.click("[data-scale=all]")
+            page.wait_for_selector("#view .day-row")
             continue
-        if name == "calendar":
-            assert page.locator("#view .cal-cell").count() > 0
-            continue
+        assert page.locator("#timeline").is_hidden(), name
         page.wait_for_function("!document.querySelector('#view').textContent.startsWith('Reading')")
         assert page.locator("#view .measure, #view .empty").count() > 0, name
 
-    page.click(".views a[data-view=calendar]")
-    page.click(".cal-cell.failed >> nth=0")
-    page.click(".day-page .row.output >> nth=0")
+    page.click(".views a[data-view=time]")
+    page.click(".day-row.failed >> nth=0")
+    page.click(".time-list .row.output >> nth=0")
     page.wait_for_selector(".insp-head")
-    page.click(".views a[data-view=timeline]")
     page.keyboard.press("j")
     page.wait_for_function("location.hash.includes('sel=') && !location.hash.includes('sel=finding')")
     page.wait_for_selector(".insp-head")
@@ -140,7 +144,6 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
     switch, a refresh of a running run) doubled the work of the next one until the tab hung: 14 switches took 4 s.
     Here every listener on the window, the document and the page's shell is bound once."""
     page, errors = _open(browser, days, counting=True)
-    page.click(".views a[data-view=timeline]")
     page.wait_for_timeout(300)
     bound = page.evaluate("window.__lasting")
     took: list[float] = []
@@ -149,11 +152,12 @@ def test_redrawing_never_adds_a_listener_to_what_outlives_the_draw(browser: Brow
         page.click("[data-clock=real]")
         page.click("[data-clock=sim]")
         took.append(time.monotonic() - began)
-    for view in ("calls", "memory", "conversations", "timeline", "dispatch", "calendar"):
+    for view in ("calls", "memory", "conversations", "time", "dispatch", "time"):
         page.click(f".views a[data-view={view}]")
-    page.click(".cal-cell.failed >> nth=0")
+    page.click("[data-scale=all]")
+    page.click(".day-row.failed >> nth=0")
     for n in range(4):
-        page.click(f".day-page .row >> nth={n + 1}")
+        page.click(f".time-list .row >> nth={n + 1}")
     page.click("[data-close]")
     run = page.evaluate("location.hash.match(/run=([^&]+)/)[1]")
     for _ in range(3):
@@ -182,10 +186,10 @@ def test_a_year_long_run_loads_and_pans_and_zooms_at_interactive_speed(
         page, errors = _open(browser, url)
         loaded = time.monotonic() - began
         marks = page.evaluate("window.__viewerLoaded.marks")
-        page.click(".views a[data-view=timeline]")
+        page.click("[data-rows]")
         page.evaluate("window.__viewerDraws = []")
-        for preset in ("year", "month", "week", "day", "hour", "all"):
-            page.click(f"[data-preset={preset}]")
+        for scale in ("month", "week", "day", "all"):
+            page.click(f"[data-scale={scale}]")
             page.wait_for_timeout(350)
         for _ in range(10):
             page.keyboard.press("ArrowRight")
@@ -225,41 +229,43 @@ FAILED_DAYS = """
 """
 
 
-def test_the_calendar_counts_each_days_outputs_by_result_and_a_day_opens_into_its_rows_and_each_output_its_checks(
+def test_the_run_over_time_is_one_axis_whose_scale_is_picked_and_the_list_under_it_follows(
     browser: Browser, days: str
 ) -> None:
-    """The calendar lists nothing: a cell a day, marked failed exactly on the days one of the agent's outputs failed a
-    check, the first day of each kind of failure marked new. A day opens into its own page, a row for each output;
-    an output opens in the inspector with every check its kind takes and what each said."""
+    """One page over time: an axis whose rows are when the agent woke, its outputs in their results' colours and
+    replies, at the scale picked, and under it what the axis shows. Wider than a day, a row a day, marked failed
+    exactly on the days an output failed a check and new on the first day of each kind of failure; a day, a row for
+    each output, opening in the inspector with every check its kind takes and what each said."""
     page, errors = _open(browser, days)
-    page.wait_for_selector(".cal-cell")
+    page.wait_for_selector(".day-row")
     failed: list[int] = page.evaluate(FAILED_DAYS)
-    cells = page.locator(".cal-cell")
-    classes = [(cells.nth(i).get_attribute("class") or "").split() for i in range(cells.count())]
+    rows = page.locator(".day-row")
+    classes = [(rows.nth(i).get_attribute("class") or "").split() for i in range(rows.count())]
     assert failed and [i for i, c in enumerate(classes) if "failed" in c] == failed
-    news = [i for i, c in enumerate(classes) if "new" in c]
+    news = [i for i in range(rows.count()) if rows.nth(i).locator(".new-tag").count()]
     assert news and news[0] == failed[0], "the first failure is news"
-    assert page.locator(".cal-page .row").count() == 0, "the calendar itemises nothing"
 
     last = failed[-1]
-    page.click(f".cal-cell[data-day='{last}']")
-    page.locator(".day-page .row.output.failed").first.wait_for()
-    assert page.locator(".day-page .cal-cell").count() == 0, "a day is a page of its own"
-    assert "day=" in page.evaluate("location.hash")
-    page.click(".day-page .row.output.failed >> nth=0")
+    page.click(f".day-row >> nth={last}")
+    page.wait_for_function("document.querySelector('.tl-range').textContent.endsWith('· 24 h')")
+    assert "scale=day" in page.evaluate("location.hash")
+    page.locator(".time-list .row.output.failed").first.wait_for()
+    assert page.locator(".time-list .day-row").count() == 0, "a day reads as its outputs"
+    page.click(".time-list .row.output.failed >> nth=0")
     page.wait_for_selector(".insp-head")
     assert page.locator(".checks li.failed").count() >= 1
-    assert (
-        page.locator(".checks li").count()
-        == page.locator(".checks li.failed, .checks li.review, .checks li.held, .checks li.not_measured").count()
-    )
+    said = ".checks li.failed, .checks li.review, .checks li.held, .checks li.not_measured"
+    assert page.locator(".checks li").count() == page.locator(said).count()
 
-    page.click("[data-calendar]")
-    page.wait_for_selector(".cal-cell")
+    page.click("[data-scale=week]")
+    page.wait_for_function("document.querySelector('.tl-range').textContent.endsWith('· 7 days')")
+    assert 0 < page.locator(".time-list .day-row").count() <= 7, "a week reads as its days in the run"
+    page.click("#formats [data-step='-1']")
+    page.wait_for_function("document.querySelectorAll('.time-list .day-row').length === 7")
     page.click(".views a[data-view=findings]")
     page.click(".group.fail summary >> nth=0")
     page.click(".group.fail .links button >> nth=0")
     page.wait_for_function("location.hash.includes('sel=finding')")
-    page.click(".views a[data-view=calendar]")
-    page.wait_for_selector(".cal-cell")
+    page.click(".views a[data-view=time]")
+    page.wait_for_selector(".time-list")
     assert errors == []
