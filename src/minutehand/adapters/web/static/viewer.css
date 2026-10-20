@@ -152,6 +152,67 @@ a { color: inherit; }
 .center { display: grid; grid-template-rows: minmax(240px, 46%) minmax(0, 1fr); min-width: 0; min-height: 0; }
 .view { overflow: hidden; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line); }
 .inspector { border-left: 1px solid var(--line); overflow: auto; background: var(--paper); min-width: 0; }
+.center.story { grid-template-rows: minmax(0, 1fr); }
+.center.story .timeline { display: none; }
+
+/* ---------- calendar: the run a day to a cell, each day drawn as its twenty-four hours ---------- */
+.cal-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(300px, 1.25fr) minmax(340px, 1fr); }
+.cal { overflow: auto; padding: 12px 16px 16px; border-right: 1px solid var(--line); }
+.cal-month { margin-bottom: 14px; }
+.cal-month h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; max-width: 640px; }
+.cal-grid .dow { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; text-align: center; }
+.cal-day {
+  position: relative; height: 78px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); padding: 0;
+  cursor: pointer; text-align: left; font: inherit; color: var(--ink-2);
+}
+.cal-day:hover { border-color: var(--line-strong); }
+.cal-day.quiet { background: transparent; color: var(--faint); }
+.cal-day.fail { background: var(--fail-soft); border-color: color-mix(in srgb, var(--fail) 45%, transparent); }
+.cal-day.review { background: var(--review-soft); }
+.cal-day.fail.again { background: var(--panel); border-color: color-mix(in srgb, var(--fail) 45%, transparent); }
+.cal-day.fail.again .dom { color: var(--ink-2); }
+.cal-day.fail.again .n { color: var(--muted); }
+.cal-day.fail.again .lane.finding i.fail { background: color-mix(in srgb, var(--fail) 45%, transparent); }
+.cal-day.chosen { outline: 2px solid var(--select); outline-offset: 1px; }
+.cal-day .dom { position: absolute; top: 5px; left: 7px; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.cal-day.fail .dom, .cal-day .n { color: var(--fail); }
+.cal-day .n { position: absolute; top: 6px; right: 7px; font-size: 11px; font-weight: 700; }
+.cal-day .ticks { position: absolute; left: 6px; right: 6px; bottom: 7px; display: grid; gap: 3px; }
+.cal-day .lane {
+  position: relative; height: 8px; border-radius: 2px; background-color: color-mix(in srgb, var(--line) 55%, transparent);
+  /* 06:00, 12:00 and 18:00 */
+  background-image: linear-gradient(90deg, transparent calc(25% - 0.5px), var(--line-strong) calc(25% - 0.5px), var(--line-strong) calc(25% + 0.5px), transparent calc(25% + 0.5px), transparent calc(50% - 0.5px), var(--line-strong) calc(50% - 0.5px), var(--line-strong) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent calc(75% - 0.5px), var(--line-strong) calc(75% - 0.5px), var(--line-strong) calc(75% + 0.5px), transparent calc(75% + 0.5px));
+}
+.cal-day .lane i { position: absolute; top: 0; bottom: 0; width: 4px; margin-left: -2px; border-radius: 1px; }
+.cal-day .lane.agent i { background: var(--select); }
+.cal-day .lane.people i { background: var(--pass); }
+.cal-day .lane.finding i.fail { background: var(--fail); }
+.cal-day .lane.finding i.review { background: var(--review); }
+.cal-key { display: grid; gap: 4px; font-size: 11px; color: var(--muted); margin-top: 4px; max-width: 470px; }
+.cal-key i { display: inline-block; width: 10px; height: 6px; border-radius: 1px; margin-right: 6px; vertical-align: middle; }
+.cal-key i.agent { background: var(--select); } .cal-key i.people { background: var(--pass); } .cal-key i.finding { background: var(--fail); }
+.story { padding: 4px 0 24px; }
+@media (max-width: 1280px) { .cal-day { height: 66px; } }
+.story .day { border-bottom: 1px solid var(--line); padding: 10px 16px 8px; border-left: 3px solid transparent; }
+.story .day.fail { border-left-color: var(--fail); }
+.story .day.review { border-left-color: var(--review); }
+.story .day header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+.story .day-name { margin: 0; font-size: 15px; font-weight: 650; color: var(--ink); }
+.story .moment { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; padding: 3px 0; }
+.story .moment .at { color: var(--faint); font-family: var(--mono); font-size: 12px; padding-top: 3px; }
+.story .what { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.story .act { display: block; text-align: left; border: none; background: none; padding: 2px 6px; margin-left: -6px; border-radius: 4px; color: var(--ink-2); cursor: pointer; font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.story .act:hover { background: var(--sunk); }
+.story .act.on { background: var(--select-soft); }
+.story .act b { color: var(--ink); font-weight: 600; }
+.story .act .bad, .story .act.call_failed b, .story .act.due_fault b { color: var(--fail); }
+.story .act.plumbing, .story .act.more { color: var(--faint); font-size: 12px; }
+.story .act.finding { white-space: normal; background: var(--fail-soft); margin: 2px 0 2px -6px; padding: 4px 6px; }
+.story .act.finding b { color: var(--fail); }
+.story .act.finding.again { background: transparent; border: 1px solid color-mix(in srgb, var(--fail) 35%, transparent); }
+.story .act.finding.review { background: var(--review-soft); }
+.story .act.finding.review b { color: var(--review); }
 
 /* ---------- timeline ---------- */
 .timeline { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }

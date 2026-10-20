@@ -1,6 +1,7 @@
 /* Small things every part of the page uses: escaping, building elements, and saying times, spans and counts the
    way the rest of Minutehand says them (UTC, the simulated clock unless named otherwise). */
 
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export function esc(s) {
@@ -21,6 +22,18 @@ export function when(t, { seconds = false, year = true } = {}) {
   const d = new Date(ms(t));
   return d.getUTCDate() + " " + MONTHS[d.getUTCMonth()] + (year ? " " + d.getUTCFullYear() : "") + " " +
     pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + (seconds ? ":" + pad(d.getUTCSeconds()) : "");
+}
+
+/** "Tue 25 Aug" in UTC, the day a simulated moment falls on. */
+export function day(t) {
+  const d = new Date(ms(t));
+  return WEEKDAYS[d.getUTCDay()] + " " + d.getUTCDate() + " " + MONTHS[d.getUTCMonth()];
+}
+
+/** "09:00" in UTC. */
+export function hhmm(t) {
+  const d = new Date(ms(t));
+  return pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes());
 }
 
 export function clock(t) {

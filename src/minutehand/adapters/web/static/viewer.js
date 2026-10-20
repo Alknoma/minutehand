@@ -27,7 +27,7 @@ const STOP_WORD = {
 };
 
 const S = {
-  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "findings", sel: null, memo: {}, filter: "",
+  runs: [], batches: [], run: null, base: null, cache: null, loaded: {}, view: "calendar", sel: null, memo: {}, filter: "",
   handle: {}, timer: null, generation: 0, pendingWindow: null
 };
 
@@ -74,7 +74,7 @@ function where() {
 function rememberWhere() {
   const h = new URLSearchParams();
   if (S.run) { h.set("run", S.run); }
-  if (S.view !== "findings") { h.set("view", S.view); }
+  if (S.view !== "calendar") { h.set("view", S.view); }
   if (S.sel) { h.set("sel", S.sel); }
   if (tl.clock !== "sim") { h.set("clock", tl.clock); }
   if (tl.data) { h.set("w", Math.round(tl.win[0]) + "~" + Math.round(tl.win[1])); }
@@ -137,7 +137,7 @@ function open(run, at) {
   clearTimeout(S.timer);
   S.generation += 1;
   S.run = run; S.cache = new RunCache(run); S.loaded = {}; S.memo = {}; S.handle = {};
-  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "findings";
+  S.view = at.view && VIEWS.some((v) => v.id === at.view) ? at.view : "calendar";
   S.sel = at.sel || null;
   S.pendingWindow = at.w ? at.w.split("~").map(Number) : null;
   tl.hidden = new Set();
@@ -241,6 +241,8 @@ function renderNav() {
 
 async function renderView() {
   const v = VIEWS.find((x) => x.id === S.view) || VIEWS[0], generation = S.generation, host = $("view");
+  // the day-by-day story is read, not glanced at: it takes the timeline's room, its strip of days the overview
+  document.querySelector(".center").classList.toggle("story", v.id === "calendar");
   S.handle = {};
   host.innerHTML = '<p class="empty">Reading…</p>';
   try {
