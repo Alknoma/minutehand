@@ -132,7 +132,9 @@ class BaseUrls:
 
     def _routable(self, rebased: _Rebased) -> Callable[[str, bytes], bool]:
         def routable(authority: str, rest: bytes) -> bool:
-            manifest = self.routing.claimant(authority.split(":", 1)[0].lower())
+            manifest = self.routing.answering(
+                authority.split(":", 1)[0].lower(), rest.replace(b"\\/", b"/").decode("utf-8", errors="replace")
+            )
             if manifest is None:
                 return authority.lower() == rebased.host
             prefix = manifest.path_prefix.encode()

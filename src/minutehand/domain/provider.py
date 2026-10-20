@@ -7,6 +7,7 @@ import re
 from enum import StrEnum
 from types import UnionType
 from typing import Annotated, ClassVar, Self, Union, get_args, get_origin
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, Field, JsonValue, model_validator
 
@@ -55,9 +56,11 @@ class PersonChange(StrEnum):
 
 class WorldKey(Model):
     """A part of a request's URL that names whose service it is, with no credential needed to say so: a site's
-    own host label (`acme` of `acme.atlassian.net`), or a path segment (a Microsoft tenant in
-    `/{tenant}/oauth2/v2.0/token`, an Atlassian cloud id in `/ex/jira/{cloudId}/`). `minutehand serve` routes a
-    call carrying one to the world that claims that key, as it routes a token. Exactly one of the two."""
+    own host label (`acme` of `acme.atlassian.net`), a path segment (a Microsoft tenant in
+    `/{tenant}/oauth2/v2.0/token`, an Atlassian cloud id in `/ex/jira/{cloudId}/`, a Firebase project in
+    `/v1/projects/{projectId}/`), or a query parameter's value (the web API key in Identity Toolkit's `?key=`).
+    `minutehand serve` routes a call carrying one to the world that claims that key, as it routes a token. Exactly
+    one of the three."""
 
     host: str | None = Field(
         default=None, pattern=r"^[^/]*\{key\}[^/]*$", description="A host with `{key}` in place of one label"
@@ -67,15 +70,23 @@ class WorldKey(Model):
         pattern=r"^/.*\{key\}",
         description="A path prefix with `{key}` in place of one segment; the query is not read",
     )
+    query: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+        description="The name of a query parameter whose value is the key; every value it is given is read",
+    )
 
     @model_validator(mode="after")
     def _one(self) -> Self:
-        if (self.host is None) == (self.path is None):
-            raise ValueError("a world key is read from the host or from the path; give exactly one")
+        if sum(given is not None for given in (self.host, self.path, self.query)) != 1:
+            raise ValueError("a world key is read from the host, the path or the query; give exactly one")
         return self
 
     def found(self, host: str, path: str) -> str | None:
         """The key this request's host or path carries, or None when it does not have this shape."""
+        if self.query is not None:
+            parsed = parse_qs(urlsplit(path).query)
+            return next((v for v in parsed[self.query] if v), None) if self.query in parsed else None
         if self.host is not None:
             pattern = re.escape(self.host.lower()).replace(re.escape("{key}"), "([^./]+)")
             matched = re.fullmatch(pattern, host.lower())
@@ -84,6 +95,23 @@ class WorldKey(Model):
             pattern = re.escape(self.path).replace(re.escape("{key}"), "([^/?#]+)")
             matched = re.match(pattern, path.split("?", 1)[0])
         return matched.group(1) if matched else None
+
+
+class ClaimedPath(Model):
+    """A path under a host another provider claims, answered by this one: what one vendor publishes on a host
+    shared with its siblings (Firebase's ID-token certificates on `www.googleapis.com`, beside Drive). The
+    request is answered by this provider whatever the host's own provider is, its path as sent."""
+
+    host: str = Field(pattern=r"^[a-z0-9.-]+$", description="An exact lower-case host")
+    prefix: str = Field(pattern=r"^/", description="The path, or the start of every path, claimed")
+    shared: bool = Field(
+        default=False,
+        description="Answered the same in every world and needing no world's state (a published signing key): "
+        "under `minutehand serve`, a call to it that no world claims is answered rather than refused",
+    )
+
+    def matches(self, host: str, path: str) -> bool:
+        return host.lower() == self.host and path.split("?", 1)[0].startswith(self.prefix)
 
 
 class Manifest(Model):
@@ -122,6 +150,11 @@ class Manifest(Model):
         description="Hosts whose answers are the same in every world and need no world's state (published signing "
         "keys and their metadata): under `minutehand serve`, a call to one that no world claims is answered "
         "rather than refused",
+    )
+    paths: list[ClaimedPath] = Field(
+        default=[],
+        description="Paths this provider answers under hosts another provider claims; a path claim wins over a "
+        "host claim, and two providers claiming overlapping paths are refused when registered",
     )
     holds_spaces: bool = Field(
         default=False,

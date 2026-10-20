@@ -28,7 +28,7 @@ ENTRY_POINT_GROUP = "minutehand.providers"
 
 
 class ProviderConflict(ValueError):
-    """Two providers claim the same key or an overlapping host."""
+    """Two providers claim the same key, an overlapping host or an overlapping path."""
 
 
 @dataclass
@@ -67,6 +67,17 @@ class Registry:
                         raise ProviderConflict(
                             f"{manifest.key!r} claims {mine.text!r}, which {entry.manifest.key!r} already claims"
                             f" as {theirs.text!r}"
+                        )
+        for entry in self._entries.values():
+            for mine_path in manifest.paths:
+                for theirs_path in entry.manifest.paths:
+                    if mine_path.host == theirs_path.host and (
+                        mine_path.prefix.startswith(theirs_path.prefix)
+                        or theirs_path.prefix.startswith(mine_path.prefix)
+                    ):
+                        raise ProviderConflict(
+                            f"{manifest.key!r} claims {mine_path.host}{mine_path.prefix}, which {entry.manifest.key!r}"
+                            f" already claims as {theirs_path.host}{theirs_path.prefix}"
                         )
         self._entries[manifest.key] = _Entry(manifest=manifest, patterns=patterns, build=build)
 
@@ -107,6 +118,22 @@ class Registry:
             if pattern.matches(host)
         ]
         return min(found, key=lambda claim: claim[0])[1] if found else None
+
+    def answering(self, host: str, path: str) -> Manifest | None:
+        """The manifest of the provider that answers a request to `host` at `path`: one claiming the path
+        (`Manifest.paths`) before one claiming the host, since a path under another provider's host is claimed only
+        to be answered apart from it."""
+        found = [
+            (len(claimed.prefix), entry.manifest)
+            for entry in self._entries.values()
+            for claimed in entry.manifest.paths
+            if claimed.matches(host, path)
+        ]
+        return max(found, key=lambda claim: claim[0])[1] if found else self.claimant(host)
+
+    def claims_paths_under(self, host: str) -> bool:
+        """Whether any provider claims a path under `host` (`Manifest.paths`)."""
+        return any(claimed.host == host.lower() for entry in self._entries.values() for claimed in entry.manifest.paths)
 
     def provider(self, manifest: Manifest) -> Provider:
         """The provider for a manifest this registry holds, built on first use."""

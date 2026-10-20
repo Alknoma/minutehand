@@ -630,7 +630,8 @@ def create_app(serving: Serving) -> Starlette:
         kept = [
             c
             for c in recorded[since:]
-            if not standing.shared(c.exchange.host) and (late_for is None or c.exchange.late_for == late_for)
+            if not standing.shared(c.exchange.host, c.exchange.path)
+            and (late_for is None or c.exchange.late_for == late_for)
         ]
         kinds = {k: sum(1 for c in kept if lobby_kind(c) is k) for k in LobbyKind}
         listed = [c for c in kept if lobby_kind(c) in wanted]

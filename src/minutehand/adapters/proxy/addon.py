@@ -612,7 +612,7 @@ class ProxyAddon:
             self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
-        manifest = self.routing.claimant(host)
+        manifest = self.routing.answering(host, request.path)
         presented = credentials.presented(
             authorization=_first_header(request, "authorization"),
             path=request.path,
@@ -620,7 +620,7 @@ class ProxyAddon:
             body=request.get_content(strict=False) or b"",
         )
         world = self.worlds.world_for(
-            host, presented, world_keys(manifest, host, request.path) if manifest is not None else []
+            host, request.path, presented, world_keys(manifest, host, request.path) if manifest is not None else []
         )
         if world is not None and world is not self.worlds.lobby:
             self._routed(flow.id, world, f"{request.method} {host}{redact.path(request.path)}")

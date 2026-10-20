@@ -19,7 +19,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.experiment import ModelSwap
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import ClaimedPath, Manifest, Tier
 from minutehand.domain.scenario import Scenario
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp
@@ -83,6 +83,39 @@ def test_a_host_inside_another_providers_wildcard_is_answered_by_the_one_claimin
     assert found is not None and found.key == "inner"
     other = registry.claimant("us.ledger.test")
     assert other is not None and other.key != "inner"
+
+
+def test_a_path_claimed_under_another_providers_host_is_answered_by_the_one_claiming_the_path(
+    registry: Registry,
+) -> None:
+    manifest = Manifest(
+        key="keys",
+        tier=Tier.FINISHED,
+        hosts=["keys.test"],
+        paths=[ClaimedPath(host="ledger.example", prefix="/published/keys")],
+    )
+    registry.register(manifest, lambda: Loopback(manifest))
+    found = registry.answering("ledger.example", "/published/keys?alt=json")
+    assert found is not None and found.key == "keys"
+    host = registry.answering("ledger.example", "/published/other")
+    assert host is not None and host.key == "ledger", "the rest of the host is its own provider's"
+    claimant = registry.claimant("ledger.example")
+    assert claimant is not None and claimant.key == "ledger", "a host's claimant is still the host's provider"
+
+
+def test_two_providers_claiming_overlapping_paths_are_rejected(registry: Registry) -> None:
+    first = Manifest(
+        key="first", tier=Tier.FINISHED, hosts=["first.test"], paths=[ClaimedPath(host="ledger.example", prefix="/a")]
+    )
+    registry.register(first, lambda: Loopback(first))
+    second = Manifest(
+        key="second",
+        tier=Tier.FINISHED,
+        hosts=["second.test"],
+        paths=[ClaimedPath(host="ledger.example", prefix="/a/b")],
+    )
+    with pytest.raises(ProviderConflict, match=r"ledger\.example/a/b"):
+        registry.register(second, lambda: Loopback(second))
 
 
 def test_two_wildcards_over_one_domain_are_rejected(registry: Registry) -> None:

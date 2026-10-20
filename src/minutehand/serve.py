@@ -316,6 +316,7 @@ class Standing:
         self._lobby_clock = RunClock(_now())
         self.lobby_store = SqliteStore(directory / WORLD, lobby_id, self._lobby_clock)
         self._shared = {h.lower(): m for m in registry.manifests for h in m.shared_hosts}
+        self._shared_paths = [(c, m) for m in registry.manifests for c in m.paths if c.shared]
         self._shared_apps: dict[ProviderKey, ASGIApp] = {}
         self._lobby = Mounted(
             store=self.lobby_store,
@@ -355,13 +356,15 @@ class Standing:
         except EmulatorRefused as e:
             raise WorldRefused(str(e)) from e
 
-    def shared(self, host: str) -> bool:
-        """Whether a provider answers `host` the same in every world (`Manifest.shared_hosts`)."""
-        return host.lower() in self._shared
+    def shared(self, host: str, path: str) -> bool:
+        """Whether a provider answers `host`, or `path` under it, the same in every world (`Manifest.shared_hosts`,
+        a `Manifest.paths` claim that is `shared`)."""
+        return host.lower() in self._shared or any(c.matches(host, path) for c, _ in self._shared_paths)
 
     def _shared_provider(self, manifest: Manifest) -> Provider:
-        """The lobby has a provider only for its shared hosts; any other is refused, as `_shared_app` refuses it."""
-        if manifest.key not in {m.key for m in self._shared.values()}:
+        """The lobby has a provider only for its shared hosts and paths; any other is refused, as `_shared_app`
+        refuses it."""
+        if manifest.key not in {m.key for m in self._shared.values()} | {m.key for _, m in self._shared_paths}:
             raise RunRefused(f"the lobby answers no provider; a call to {manifest.key} here is refused")
         return self._registry.provider(manifest)
 
@@ -375,7 +378,7 @@ class Standing:
 
     # -- adapters.proxy.worlds.Worlds -------------------------------------------------------------------------
 
-    def world_for(self, host: str, credentials: Sequence[str], keys: Sequence[str]) -> Mounted | None:
+    def world_for(self, host: str, path: str, credentials: Sequence[str], keys: Sequence[str]) -> Mounted | None:
         found = self._hosts[host.lower()] if host.lower() in self._hosts else None
         if found is None:
             found = next((self._keys[k.lower()] for k in keys if k.lower() in self._keys), None)
@@ -383,7 +386,7 @@ class Standing:
             found = next((self._tokens[c] for c in credentials if c in self._tokens), None)
         if found is None:
             found = self._default
-        if found is None and host.lower() in self._shared:
+        if found is None and self.shared(host, path):
             return self._lobby
         return self.worlds[found].mounted if found is not None else None
 

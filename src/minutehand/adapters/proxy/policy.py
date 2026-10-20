@@ -108,7 +108,7 @@ class Routing:
         return [e for e in self.edits if e.where.host is None or e.where.host.lower() == host.lower()]
 
     def policy(self, host: str) -> HostPolicy:
-        if self.claimant(host) is not None:
+        if self.claimant(host) is not None or self.registry.claims_paths_under(host):
             return HostPolicy.ANSWER
         if self.is_model_host(host):
             return HostPolicy.EDIT if self.edits_for(host) else HostPolicy.TUNNEL
@@ -116,3 +116,7 @@ class Routing:
 
     def claimant(self, host: str) -> Manifest | None:
         return self.registry.claimant(host)
+
+    def answering(self, host: str, path: str) -> Manifest | None:
+        """The provider that answers a request to `host` at `path` (`Registry.answering`)."""
+        return self.registry.answering(host, path)
