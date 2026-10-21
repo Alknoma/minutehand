@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from minutehand.domain.items import CALENDAR_EVENT, CHAT_MESSAGE, DOCUMENT, EMAIL
-from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier, WorldKey
+from minutehand.domain.provider import AgentSends, DocumentChange, Manifest, PersonChange, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="microsoft",
+    sends=AgentSends.UNRECORDED,
     tier=Tier.FINISHED,
     hosts=[
         "login.microsoftonline.com",

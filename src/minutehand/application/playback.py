@@ -26,7 +26,8 @@ from minutehand.application.restore import PlaybackParted, Played
 from minutehand.application.sandbox import SandboxClock
 from minutehand.application.trace import TraceReplay, Unplayable
 from minutehand.application.traffic import Traffic
-from minutehand.domain.world import EntityKind, PushSnapshot
+from minutehand.domain.scenario import ProviderKey
+from minutehand.domain.world import EntityKind, InboxAct, PushSnapshot
 from minutehand.ports.services import Delivered
 from minutehand.ports.store import Store
 
@@ -67,8 +68,21 @@ class TracePlayback:
     memory: HoldsMemory
     door: Resends
     traffic: Traffic | None
+    unrecorded_senders: frozenset[ProviderKey] = frozenset()
+    """Providers in the run whose requests to the agent the door does not yet carry (`Manifest.sends`)."""
+    unrecorded_channels: frozenset[str] = frozenset()
+    """Captured channels people answer through (`outbound[].replies`), whose deliveries the door does not yet carry."""
 
     async def play(self, progress: Callable[[str], None]) -> Played:
+        missing = sends_not_recorded(
+            self.parent, self.at_seq, senders=self.unrecorded_senders, channels=self.unrecorded_channels
+        )
+        if missing:
+            raise RunRefused(
+                f"the record of run {self.parent.run_id} up to seq {self.at_seq} holds requests to the agent that were "
+                f"not recorded whole, so a fork cannot send them again: {'; '.join(missing)}. Fork from a checkpoint "
+                "before the first, or rerun from the beginning"
+            )
         calls = [c for c in self.parent.calls() if c.wake <= self.checkpoint.wake and c.last_seq <= self.at_seq]
         try:
             trace = TraceReplay.of(self.parent.run_id, calls)
@@ -143,3 +157,34 @@ class TracePlayback:
 def _sent(trace: TraceReplay) -> str:
     said = trace.parted or ""
     return said.split("the agent sent ", 1)[1].split(", which", 1)[0] if "the agent sent " in said else said
+
+
+def sends_not_recorded(
+    parent: Store, at_seq: int, *, senders: frozenset[ProviderKey], channels: frozenset[str]
+) -> list[str]:
+    """What the record up to `at_seq` holds of requests to the agent that went outside the door, each named: a
+    provider among `senders` that acted in the run by then (its sends leave no whole record, so nothing can be
+    sent again), a decision or use Minutehand made in the agent's own product (`InboxCall`), and a person's answer
+    on one of `channels`. Empty when every request the agent received is in the record."""
+    found: list[str] = []
+    acted = {e.entity.provider for e in parent.events(until=at_seq, providers=sorted(senders))} if senders else set()
+    found += [f"{key}'s requests to the agent (pushed events, webhooks, deliveries)" for key in sorted(acted)]
+    inbox = {
+        c.exchange.inbox_call.inbox
+        for c in parent.calls()
+        if c.exchange.inbox_call is not None
+        and c.exchange.inbox_call.act is not InboxAct.LIST
+        and c.first_seq - 1 <= at_seq
+    }
+    found += [f"decisions and uses made as a person in the agent's own product ({name})" for name in sorted(inbox)]
+    answered = (
+        {
+            e.entity.provider
+            for e in parent.events(until=at_seq, providers=sorted(channels))
+            if e.entity.kind is EntityKind.MESSAGE
+        }
+        if channels
+        else set()
+    )
+    found += [f"people's answers delivered on the captured channel {name!r}" for name in sorted(answered)]
+    return found
