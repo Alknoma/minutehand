@@ -15,7 +15,7 @@ from pydantic import Field
 
 from minutehand.domain.scenario import Model
 
-VERSION = 2
+VERSION = 3
 """The read model's version, in `minutehand_schema.version` and `run.read_model_version`."""
 
 
@@ -142,8 +142,7 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "kind",
                 T,
-                "message, write, read, memory, stored, next_wake, call (an HTTP call that wrote and read no "
-                "event) or model_call",
+                "message, write, read, memory, stored, call (an HTTP call that wrote and read no event) or model_call",
             ),
             _c(
                 "operation",
@@ -266,7 +265,7 @@ VIEWS: tuple[View, ...] = (
     ),
     View(
         name="wakes",
-        description="Every wake of the agent, with why it began, what the agent reported as it ended, and what it did.",
+        description="Every wake of the agent, with why it began and what it did.",
         order="wake",
         columns=[
             _c("wake", N, "The wake, from 1"),
@@ -274,20 +273,13 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "reason",
                 T,
-                "start, due, person_replied, direction or tick; NULL for a run recorded before reasons were kept",
+                "start, due, person_replied or direction; NULL for a run recorded before reasons were kept",
             ),
             _c("woken_by", T, "Comma-separated sources of what fell due and fired at that moment (dispatch.source)"),
             _c("world_changes", N, "The agent's changes to the world in it"),
             _c("memory_reads", N, "Gets and listings of its memory"),
             _c("memory_writes", N, "Keys of its memory written or deleted"),
-            _c("commitments_changed", N, "1 when its reported commitments changed"),
             _c("checkpoint_seq", N, "The seq of the checkpoint written as it ended; NULL when none"),
-            _c(
-                "reported_status",
-                T,
-                "working, idle or done, as the agent reported at that checkpoint; NULL when it reported nothing",
-            ),
-            _c("reported_next_wake", T, "The next wake it reported then"),
             _c("actions", N, "The agent's acts in it (actions rows)"),
             _c("model_calls", N, "The agent's model calls placed in it"),
         ],
@@ -304,7 +296,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "source",
                 T,
-                "reported, booked, polled, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it)",
+                "booked, reply, happening, direction, machine, timer, transition, service, or call (a call of the "
+                "agent's held until the world could answer it)",
             ),
             _c("due_at", T, f"When it was due; {TIME}"),
             _c("entered_at", T, "When it entered the table"),

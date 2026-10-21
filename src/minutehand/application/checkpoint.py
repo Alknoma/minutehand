@@ -11,7 +11,6 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.agent import AgentReport, Commitment, WakeReason
 from minutehand.domain.clock import Due
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
@@ -37,21 +36,8 @@ class PendingTransition(Model):
     pending: EntityRef = Field(description="The people engine's record of the item (`EntityKind.PENDING`)")
 
 
-class PendingWake(Model):
-    """A wake the agent asked for (`DUE`, from `AgentReport.next_wake`) or a `Polled` tick (`TICK`)."""
-
-    kind: Literal["wake"] = "wake"
-    due: Due
-    reason: WakeReason
-    repeat: bool = Field(
-        default=False,
-        description="A late or second delivery the scenario's dispatch rules made of a wake already due: a tick of "
-        "it books no next tick, which the wake it repeats already did",
-    )
-
-
 class PendingTimer(Model):
-    """The earliest deadline of the agent's own timers, read from its sandbox (`Contained`)."""
+    """The earliest deadline of the agent's own timers, read from its sandbox."""
 
     kind: Literal["timer"] = "timer"
     due: Due
@@ -110,7 +96,6 @@ class PendingCall(Model):
 
 Pending = Annotated[
     PendingHappening
-    | PendingWake
     | PendingDirection
     | PendingBooking
     | PendingMachine
@@ -124,14 +109,11 @@ Pending = Annotated[
 
 class Remembered(Model):
     """The agent's state at this checkpoint, as far as the run holds it: its memory is the run's log up to here
-    (`application.memory`), so a fork from here starts from exactly that memory, and its report, which the agent
-    must give again once the fork is made."""
+    (`application.memory`), so a fork from here starts from exactly that memory; everything else of it is in its
+    sandbox, which a fork brings back by playing the agent's recorded inputs into a fresh one
+    (`application.restore`)."""
 
     kind: Literal["remembered"] = "remembered"
-    report: AgentReport | None = Field(
-        description="What the agent last reported, which it must report again after a fork from here; None when it "
-        "has not reported and cannot be asked"
-    )
     memory: str = Field(description="The agent's memory here, as one SHA-256 (`application.memory.digest`)")
     outside: list[str] = Field(
         default=[],
@@ -160,9 +142,8 @@ class Checkpoint(Model):
         description="Items pending on people whose move or answer did not land (a model failed), tried again on the "
         "next turn",
     )
-    commitments: list[Commitment] | None = None
     pending: list[Pending]
-    agent: Remembered = Field(description="The agent's memory and report at this moment")
+    agent: Remembered = Field(description="The agent's memory at this moment")
 
 
 def write_checkpoint(store: Store, checkpoint: Checkpoint) -> int:

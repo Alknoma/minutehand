@@ -1,21 +1,22 @@
-"""The sandbox whose clock Minutehand owns (`Contained`): reading whether it is idle and when its earliest deadline
-falls, and moving its clock with the run's."""
+"""The sandbox every agent runs in, whose clock Minutehand owns (`domain.agent.Sandbox`): reading whether it is idle
+and when its earliest deadline falls, and moving its clock with the run's."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import time
+from datetime import datetime
 
 from pydantic import ConfigDict, Field
 
 from minutehand.application.traffic import Traffic
-from minutehand.domain.agent import Contained
+from minutehand.domain.agent import Sandbox
 from minutehand.domain.scenario import Model
 
 
 class SandboxFailed(RuntimeError):
-    """A sandbox command could not be run, or did not answer as `Contained` says."""
+    """A sandbox command could not be run, or did not answer as `Sandbox` says."""
 
 
 HOUSEKEEPING_SLACK = 1.02
@@ -32,11 +33,12 @@ class TaskWait(Model):
 
 
 class SandboxDeadlines(Model):
-    """As `Contained.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
+    """As `Sandbox.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     idle: bool
+    now_ns: int = Field(description="The sandbox's realtime clock, nanoseconds since the epoch")
     earliest_ns: int = Field(description="Until the earliest deadline any blocked task waits for; -1 for none")
     waits: list[TaskWait] | None = Field(
         default=None,
@@ -71,7 +73,7 @@ async def _run(argv: list[str]) -> str:
 
 
 class SandboxClock:
-    def __init__(self, source: Contained) -> None:
+    def __init__(self, source: Sandbox) -> None:
         self._source = source
 
     async def deadlines(self) -> SandboxDeadlines:
@@ -85,10 +87,17 @@ class SandboxClock:
             raise SandboxFailed(f"{' '.join(self._source.deadlines)} printed {lines[-1]!r}: {e}") from e
 
     async def advance(self, nanoseconds: int) -> None:
-        """Move the sandbox's clock forward with the run's; nothing for a step of none."""
-        if nanoseconds <= 0:
+        """Move the sandbox's clock by a signed step: forward with the run's, or back to a run's start when the
+        sandbox was started after it; nothing for a step of none."""
+        if nanoseconds == 0:
             return
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
+
+    async def sync(self, to: datetime) -> None:
+        """Set the sandbox's clock to the run's: back to a run's start when the sandbox was started after it (a
+        run, a fork or a replay of a scenario that began before now), or forward."""
+        said = await self.deadlines()
+        await self.advance(int(to.timestamp() * 1_000_000_000) - said.now_ns)
 
     async def settle(self, traffic: Traffic | None) -> SandboxDeadlines | None:
         """Wait until the sandbox is idle on two reads `quiet` apart with no call of the agent's in flight, and

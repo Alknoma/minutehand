@@ -378,8 +378,9 @@ async def test_a_model_that_fails_is_answered_502_and_nothing_is_sent_is_refused
 async def test_capturing_unknown_by_model_with_no_model_configured_is_refused(tmp_path: Path) -> None:
     from minutehand import session
     from minutehand.application.refusals import RunRefused
-    from minutehand.domain.agent import AgentUnderTest, Reported
+    from minutehand.domain.agent import AgentUnderTest
     from minutehand.domain.scenario import Person, Scenario, Silent
+    from tests.support.scenarios import SANDBOX
 
     scn = Scenario.model_validate(
         {
@@ -390,9 +391,7 @@ async def test_capturing_unknown_by_model_with_no_model_configured_is_refused(tm
             "people": [Person(key="owen", name="Owen", email="owen@example.com", reply=Silent())],
         }
     )
-    agent = AgentUnderTest(
-        name="a", wakes=[Reported(wake_url="http://127.0.0.1:9/w", report_url="http://127.0.0.1:9/r")]
-    )
+    agent = AgentUnderTest(name="a", sandbox=SANDBOX)
     with pytest.raises(RunRefused, match="--capture-unknown model needs a model"):
         await session.play(
             scn, agent, state=tmp_path / "state", listen=session.Listen(capture_unknown=UnknownHosts.MODEL), model=None

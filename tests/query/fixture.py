@@ -15,10 +15,10 @@ from pathlib import Path
 
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import Checkpoint, Remembered, write_checkpoint
-from minutehand.application.memory import NEXT_WAKE, ref
+from minutehand.application.memory import ref
 from minutehand.application.run_clock import RunClock
 from minutehand.checks.runner import evaluate_run
-from minutehand.domain.agent import AgentReport, AgentStatus, WakeReason
+from minutehand.domain.agent import WakeReason
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Drawn, DrawnFrom, Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.conversation import PersonCall, Provenance, Wrote
@@ -50,7 +50,6 @@ from minutehand.domain.world import (
     Exchange,
     MemorySnapshot,
     MessageSnapshot,
-    NextWakeSnapshot,
     Operation,
     StoredSnapshot,
 )
@@ -236,7 +235,7 @@ class _Writer:
             )
         )
 
-    def checkpoint(self, replies: int, status: AgentStatus, next_wake: datetime | None) -> int:
+    def checkpoint(self, replies: int) -> int:
         return write_checkpoint(
             self.store,
             Checkpoint(
@@ -244,7 +243,7 @@ class _Writer:
                 now=self.clock.now(),
                 replies=replies,
                 pending=[],
-                agent=Remembered(report=AgentReport(status=status, next_wake=next_wake), memory="0" * 64),
+                agent=Remembered(memory="0" * 64),
             ),
         )
 
@@ -255,7 +254,6 @@ def _wake(index: int, at: datetime, reason: WakeReason, changes: int, reads: int
         sim_time=at,
         reason=reason.value,
         world_changes=changes,
-        commitments_changed=False,
         memory_reads=reads,
         memory_writes=writes,
     )
@@ -281,7 +279,7 @@ def build_fixture(state: Path) -> Fixture:
     store = SqliteStore(directory / WORLD, run_id, clock)
     w = _Writer(store, clock)
     w.memory("team", Operation.CREATE, '{"name":"core"}', actor=Actor.SCENARIO)
-    w.checkpoint(0, AgentStatus.WORKING, None)
+    w.checkpoint(0)
 
     # wake 1, at the start: read, ask Sofia and Dania, remember, store, notify, be refused, plan the next wake
     clock.begin_wake()
@@ -364,18 +362,9 @@ def build_fixture(state: Path) -> Fixture:
         first_seq=head + 1,
         last_seq=head,
     )
-    w.change(
-        Change(
-            entity=NEXT_WAKE,
-            operation=Operation.CREATE,
-            actor=Actor.AGENT,
-            body=json.dumps({"at": (T0 + timedelta(hours=26)).isoformat()}),
-            after=NextWakeSnapshot(at=T0 + timedelta(hours=26)),
-        )
-    )
     next_wake = DueEntry(
-        due=Due(at=T0 + timedelta(hours=26), kind=DueKind.AGENT_WAKE, ref="next_wake"),
-        source=DueSource.REPORTED,
+        due=Due(at=T0 + timedelta(hours=26), kind=DueKind.AGENT_WAKE, ref="timer"),
+        source=DueSource.TIMER,
         entered_at=T0,
         entered_wake=1,
     )
@@ -422,7 +411,7 @@ def build_fixture(state: Path) -> Fixture:
         drawn=reply.drawn,
     )
     w.due(2, landing)
-    fork_at = w.checkpoint(1, AgentStatus.WORKING, T0 + timedelta(hours=26))
+    fork_at = w.checkpoint(1)
     wakes = [_wake(1, T0, WakeReason.START, 4, 1, 1)]
 
     # wake 2, a day later: the agent follows up
@@ -433,7 +422,7 @@ def build_fixture(state: Path) -> Fixture:
     w.model_call(FOLLOW_UP, (900, 60), "b2b2b2b2b2b2b2b2")
     follow_up = w.message("D0SOFIA", "1724587200.000100", FOLLOW_UP, [SOFIA], thread="D0SOFIA/1724493600.000100")
     w.memory("asks/sofia", Operation.UPDATE, '{"status":"chased"}')
-    w.checkpoint(1, AgentStatus.WORKING, None)
+    w.checkpoint(1)
     wakes.append(_wake(2, clock.now(), WakeReason.DUE, 1, 1, 1))
 
     # wake 3: Sofia's answer lands; the agent tells the owner and is done, then writes its memory once more
@@ -446,7 +435,7 @@ def build_fixture(state: Path) -> Fixture:
     w.memory("asks/sofia", Operation.READ)
     told = w.message("D0OWNER", "1724601600.000200", TOLD, [OWNER])
     w.memory("asks/sofia", Operation.UPDATE, '{"status":"answered"}')
-    w.checkpoint(1, AgentStatus.DONE, None)
+    w.checkpoint(1)
     late_write = w.memory("notes/last", Operation.CREATE, '"told the owner"')
     wakes.append(_wake(3, clock.now(), WakeReason.PERSON_REPLIED, 1, 1, 2))
     record = RunRecord(
@@ -472,7 +461,7 @@ def build_fixture(state: Path) -> Fixture:
     fw.due(1, next_wake.model_copy(update={"closed": DueClosed.FIRED, "closed_at": fork_clock.now(), "closed_wake": 1}))
     fork_clock.begin_wake()
     fw.message("D0SOFIA", "1724587200.000900", FORK_FOLLOW_UP, [SOFIA], thread="D0SOFIA/1724493600.000100")
-    fw.checkpoint(1, AgentStatus.DONE, None)
+    fw.checkpoint(1)
     fork_wakes = [wakes[0], _wake(2, fork_clock.now(), WakeReason.DUE, 1, 0, 0)]
     fork_record = record.model_copy(
         update={

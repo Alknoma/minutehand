@@ -4,9 +4,14 @@ This page lists every way Minutehand and an agent's own repository touch, with o
 command output and errors use these terms. Where a name in the code says otherwise, it is listed under "Known debt"
 at the end and has not been renamed.
 
-**Almost nothing is required.** An agent that takes its goal by message and books its own wakes implements none of
-the endpoints below. An agent that remembers anything across wakes keeps it through one import, `minutehand.agent`
-("The agent's memory and its next wake", below): that is its whole contact with Minutehand in its own code.
+**Nothing is asked of the agent.** Every agent runs unchanged, in a sandbox whose clock and network Minutehand owns
+(`sandbox` in the agent file; `docs/design.md`, "A sandbox whose clock Minutehand owns"). Its calls reach the fakes
+because the sandbox has no other way out; its next wake is observed, never declared: a scheduler it books with
+(Cloud Tasks, EventBridge Scheduler) delivers when the clock reaches the booking, and a timer or sleep of its own
+fires when the sandbox's clock passes it. The agent carries no endpoint, protocol or import that exists for
+Minutehand, with one exception an agent opts into: an agent that remembers anything across wakes may keep it through
+`minutehand.agent.store` ("The agent's memory", below), so a fork starts from the memory as it stood at the
+checkpoint.
 
 ## The terms
 
@@ -14,10 +19,11 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 |---|---|---|
 | **agent file** | The YAML or JSON file an agent's repository keeps: `AgentUnderTest` | config, manifest |
 | **scenario**, **seed** | The situation a run plays (`Scenario`), or a standing world opens with (`Seed`) | fixture |
-| **wake** | Minutehand telling the agent it is now `now`, and to go | tick (except a `Polled` one), trigger |
-| **report** | The agent's answer: still working, done, when it next needs a wake | status call |
+| **sandbox** | Where the agent runs: a gVisor sandbox whose clock Minutehand moves and whose only route out is the proxy | container (that is the outer one), VM |
+| **wake** | One go of the agent's, as the run records it: from the moment something reaches it (a delivery, its own timer going off) until its sandbox is idle again | tick, trigger, turn |
+| **timer** | A deadline a task in the sandbox waits for (a sleep, a scheduler loop's next check), read from the sandbox: the agent's own next wake | schedule (that is its own scheduler's) |
+| **booking** | A wake the agent asked a faked scheduler for, by calling it | cron |
 | **memory** | What the agent remembers across wakes, through `minutehand.agent.store`: the run's own under Minutehand | state, snapshot |
-| **mark** | The agent saying when it next wants to be woken, through `minutehand.agent.wake` | schedule (that is its own scheduler's) |
 | **deliver** | Minutehand handing the agent what a person did: a reply, a press, a happening | push (that is the provider's word) |
 | **inbox** | Where work waits on a person in the agent's own product | queue, human action |
 | **item** | One thing waiting in an inbox | task, request |
@@ -25,69 +31,76 @@ the endpoints below. An agent that remembers anything across wakes keeps it thro
 | **use** | A person doing something in the agent's own product unprompted: opening a page, writing to it | event, interaction |
 | **declared host** | A host the agent calls that Minutehand captures: acknowledge, pass through, replay, forward | mock |
 | **operation** | An `operationId` in an OpenAPI document that a declaration names instead of a template | endpoint |
+| **playback** | A fork bringing the agent back to a checkpoint by playing its recorded inputs into a fresh sandbox | restore (that is the memory's word), snapshot |
 
 ## Touch points
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
-| **wake** | Minutehand → agent, each moment something is due | `WakeRequest` → any 2xx | `wakes[].wake_url` (`reported`, `marked`, `polled`); `command` (stdin) | Only to take the goal or wakes this way |
-| **report** | Minutehand → agent, polled after a wake, and at the start of a fork to prove the agent is the checkpoint's | none → `AgentReport` | `wakes[].report_url` | Only for `reported` |
+| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced) | `deadlines` → `{"idle", "now_ns", "earliest_ns"}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
-| **mark** | The agent → Minutehand's receiver, when it knows its next wake | `minutehand.agent.wake` (`POST $MINUTEHAND_AGENT_URL/wake`) | `wakes[]` of kind `marked` takes nothing else | No: a report's `next_wake` does the same |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
 | **deliver a reply** (provider) | Minutehand → agent, when a person's reply falls due | The provider's own event (Slack Events API, Bot Framework activity) → 2xx | `inbound[]` | Only for a provider that pushes |
 | **socket** (Slack) | The agent → Slack's `apps.connections.open`, then a WebSocket it holds open; replies arrive on it | `events_api` envelopes → the agent's `{"envelope_id": …}` | `inbound[]` with `delivery: socket_mode` and no `url` | Instead of a request URL |
 | **deliver a press** (provider) | Minutehand → agent, when a person uses a control | The provider's own interactivity payload → 2xx | `inbound[].interactivity_url` | Only for controls |
 | **deliver a reply** (declared host) | Minutehand → agent, an answer to a captured send | `DeliveredReply` (the default shape, no `body`), or the declared `body` → 2xx | `outbound[].replies` | Only when people answer a send |
+| **deliver a booking** (scheduler) | The faked scheduler → agent, when the clock reaches a booking | The scheduler's own delivery (a Cloud Tasks HTTP request, a message in an SQS queue the agent polls) | Nothing: the agent's own call booked it | No |
 | **inbox list** | Minutehand → agent, as each person, after each wake or step and before the clock moves | Declared template or operation (default `listPending`, `PendingPage`) | `inboxes[].pending` | Only with an inbox |
 | **decide** | Minutehand → agent, as the person, when a decision falls due | Declared template or operation (default `decide`, `DecisionMade`) → declared success | `inboxes[].decisions[]` | Only with an inbox |
 | **use** | Minutehand → agent, as the person, when a scenario's `uses` happening falls due | Declared template or operation → declared success | `inboxes[].uses[]` | Only to play people using the product unprompted |
 | **declared hosts** | The agent → a host no provider claims | Captured as declared | `outbound[]` (`acknowledge`, `pass_through`, `replay`, `forward`) | No |
 | **emulators** | Minutehand → a fake outside it, for `forward` hosts | The emulator's own | `emulators[]` | No |
 | **base URLs** | The agent → the proxy's `/_host/…`, for a client without a proxy | As the real host | `base_urls[]` | No |
-| **model hosts** | The agent → its model API, tunnelled or recorded | As the real host | `--model-host`, `CreateWorld.model_hosts` | No |
+| **model hosts** | The agent → its model API, recorded or tunnelled | As the real host | `--model-host`, `CreateWorld.model_hosts` | No |
 | **telemetry** | The agent → Minutehand's OTLP receiver | OTLP/HTTP or gRPC | Environment Minutehand hands out | No |
 | **assessments** | Every run's effects on the world, by kind of item, against the world its files declare (goal, deadline, people's facts and windows, services and their machines, the agent's rhythm); the team's own rules over the facts on top | findings that name what they were measured against (`docs/assessments.md`); with `--judge`, the shared reviewer's, for review | nothing for the automatic assessment; `assess[]` in the agent file, `assess[]` and `assess_off[]` in a scenario for the team's own | No |
-| **own checks** | Minutehand runs the agent's checks after every run and fork: the escape hatch for what a rule cannot say | A class with `id`, `needs` and `run(view) -> CheckReport`, reading the facts `minutehand.checks.facts` gives (`asks`, `messages`, `writes`, `planned_wakes`, `reported`) | `checks[]`: Python files, a relative path read from the agent file's folder | No |
+| **own checks** | Minutehand runs the agent's checks after every run and fork: the escape hatch for what a rule cannot say | A class with `id`, `needs` and `run(view) -> CheckReport`, reading the facts `minutehand.checks.facts` gives (`asks`, `messages`, `writes`, `planned_wakes`) | `checks[]`: Python files, a relative path read from the agent file's folder | No |
 
-## The report, and how long Minutehand waits
+Everything the world sends the agent goes through one door (`adapters/agent/delivery.py`) and is recorded whole:
+method, URL, every header and the body (`PushSnapshot`). With the answer to every call the agent made (`Exchange`:
+status, headers, body) and its memory read back, the record holds everything the agent ever received.
 
-**`AgentReport.status`** is the agent's answer to `GET report_url`:
+## A wake, and how long Minutehand waits
 
-| Status | Means | What Minutehand does |
-|---|---|---|
-| `working` | This wake is still in progress: the agent is still acting on it (a model's turn, a tool call) | Asks again, the wait doubling from `report_first_after` to `report_at_most_every`, until the status changes; a wake still `working` after `working_limit` (default 30 minutes) stops the run `agent_failed`, saying so. Nothing is printed while it waits |
-| `idle` | This wake is over; wake me at `next_wake` (or not at all) | Checkpoints the wake and moves the clock |
-| `done` | The agent says its work is finished | Nothing, for a scenario that is only a world: the agent's work never finishes, and the run watches it to the end of `runs_for` (`window_ended`). An older scenario that hands the agent a `goal` stops the run `agent_done` |
+A wake begins when something reaches the agent and ends when its sandbox is idle: every task in it blocked, on two
+reads `sandbox.quiet` apart (default 50 ms), with no call of the agent's in flight. A sandbox still busy after
+`sandbox.settle_limit` (default 30 s of real time) stops the run `agent_failed`, saying so. Nothing is printed while
+it waits.
 
-An agent that answers `working` for "I have work open" rather than "this wake is still running" keeps every wake
-open until `working_limit`: say `idle`, with the work in `commitments`.
-
-**Timeouts, sized for a model's turns.** A scripted agent answers in milliseconds; an LLM agent may take minutes
-inside one call. Both waits are the agent file's:
+A run ends when nothing is due and the agent has planned nothing (`nothing_pending`), at the end of the scenario's
+window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, or when the agent's sandbox
+fails to fall idle. There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
+verdict"), never from the agent.
 
 | Field | Default | What it bounds |
 |---|---|---|
-| `wakes[].wake_timeout` (`reported`, `marked`) | `PT10M` | One call to `wake_url` or `report_url`; a `marked` wake is the whole call |
+| `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
+| `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
+| `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 
 Slack itself waits three seconds for an event's 2xx and then retries: an app that handles an event inside the request
 (a model's turn in the handler) is sent it again by the real service, and handles it more than once. The default
 `push_timeout` leaves room for such a handler so a first run is not cut short; set `push_timeout: PT3S` to be held to
 Slack's own window, which is how the duplicate handling a slow handler causes shows up in a run. A Socket Mode
-envelope is always held to Slack's three seconds.
+envelope is always held to Slack's three seconds. A pushed request is signed with the simulated moment it is sent at
+(`X-Slack-Request-Timestamp`), since the agent's verifier checks it against its own clock, which is the sandbox's.
 
-**A person's reply is delivered twice, by design.** When a person answers on a provider that pushes (a Slack message,
-a Bot Framework activity), the provider pushes the event to `inbound[].url` as the real service would, and the same
-moment is a wake: an agent with a wake endpoint is also woken with `reason: person_replied`. An agent that acts on
-the pushed event and again on the wake takes two turns for one reply; one that takes the event as its notice treats
-a `person_replied` wake as possibly handled already (its memory says so), or declares no wake source and hears only
-pushes.
+## The sandbox's clock
 
-## The agent's memory and its next wake
+The agent's clock is the sandbox's, and Minutehand moves it: set to the scenario's `starts_at` when the sandbox
+starts (back, when the scenario began before now), then forward with every jump of the run's clock, so a sleep,
+a backoff, a scheduler loop's next check and a date the agent reads all follow simulated time with no change to the
+agent. Between wakes Minutehand reads the sandbox's deadlines: the earliest a task waits for is the agent's own next
+wake, entered in the run's table as its timer (`planned_wakes`, `dispatch.source = timer`). A timer that fires and
+does nothing the run can see (an HTTP server's poll, a garbage collector's tick) is a runtime's housekeeping, learned
+and not counted as a wake.
+
+## The agent's memory
 
 ```python
-from minutehand.agent import store, wake
+from minutehand.agent import store
 
 store.configure(store.SqliteBackend("agent.db"))  # once, at start: production's backend, ignored under Minutehand
 
@@ -101,24 +114,23 @@ with store.batch() as b:  # all or none; `async with` too
     b.delete("asks/rosa")
 store.collection("jobs").put("1", {...})  # a namespace of its own keys
 await store.aget("asks/sam")  # aput, adelete, alist, aquery
-
-wake.at(expected_by)  # the next wake, an aware moment; wake.clear() for none
 ```
 
 **In production** (MINUTEHAND_ON unset) `store` passes every call to the backend `configure` named and records
-nothing, and `wake` does nothing. **Under Minutehand** (`minutehand run` and `minutehand env` set MINUTEHAND_ON and
-MINUTEHAND_AGENT_URL) both go to the run: every write is the agent's in the run's log, every read is answered from
-the run, each run starts from the scenario's `memory:` and each fork from its parent's memory at the checkpoint, and
-the configured backend is never called. If the run cannot be reached the call raises `MinutehandUnreachable`; it
-never falls back to the agent's own database. The package imports nothing but the standard library.
+nothing. **Under Minutehand** (`minutehand run` and `minutehand env` set MINUTEHAND_ON and MINUTEHAND_AGENT_URL) it
+goes to the run: every write is the agent's in the run's log, every read is answered from the run, each run starts
+from the scenario's `memory:` and each fork from its parent's memory at the checkpoint, and the configured backend
+is never called. If the run cannot be reached the call raises `MinutehandUnreachable`; it never falls back to the
+agent's own database. The package imports nothing but the standard library.
 
-**What is not part of a run.** Only state written through the store. Whatever the agent writes anywhere else (its
-own database, files, a cache, a variable in a process that outlives a wake) is not simulated, not kept apart between
-runs, and not rewound by a fork, so its later calls can depend on state from another moment or another run. What
-Minutehand detects: the store's reads and writes per wake (`WakeRecord.memory_reads`, `memory_writes`); a database the
-agent file names under `own_databases`, handed fresh and empty to every run and fork and noted as outside forks; and
-a fork whose agent's report differs from the one recorded at its checkpoint, refused, naming state outside the store
-as the likely cause.
+**What a fork brings back.** The world as of the checkpoint, from the log it shares with its parent; the agent's
+memory, the same way; and the agent's sandbox, by playback: a fresh sandbox is started at the run's start, and the
+agent's recorded inputs are played into it wake by wake up to the checkpoint, its calls answered from the record and
+nothing written. At the checkpoint the agent stands where it stood, its own files, processes and timers included. A
+fork is refused where the agent does not do what it did before (a call the record does not hold next, naming it): a
+changed program, or something the agent draws from outside the record (a random number, a thread's timing). What
+Minutehand reports besides: the store's reads and writes per wake (`WakeRecord.memory_reads`, `memory_writes`), and a
+database the agent file names under `own_databases`, handed fresh and empty to every run and fork.
 
 ### Writing an adapter
 
@@ -149,9 +161,7 @@ agent's `NO_PROXY`); `collection` defaults to `default`:
 | `{"op": "list", "collection": "default", "prefix": "asks/"}` | `{"items": [{"key": "asks/sam", "value": …}, …]}`, ordered by key |
 | `{"op": "write", "writes": [{"op": "put", "key": "k", "value": …}, {"op": "delete", "key": "j"}]}` | `{"seq": n}`, the last entry's seq in the run's log |
 
-`POST $MINUTEHAND_AGENT_URL/wake` with `{"at": "2026-09-03T09:00:00+00:00"}` or `{"at": null}` answers 204. A body
-the receiver cannot read is answered 400 saying why. `examples/recipes/vercel_ai_sdk/minutehand-store.ts` is a client
-in TypeScript.
+A body the receiver cannot read is answered 400 saying why.
 
 ## Judging a run
 
@@ -171,22 +181,23 @@ agent's own checks. A rule may not take the id of a check.
 
 ## The wake limit
 
-A run stops after its wake limit. The scenario's `max_wakes` sets it. Without one, a scenario with a deadline and an
-agent with a rhythm of its own get every tick up to the deadline and 20 more, for the wakes replies and happenings
-bring; the rhythm is a polled wake's `every`, or `tick` in the agent file for an agent that reports or books its own
-next wake (`tick: PT1H`). Otherwise the limit is 20. A run that stops there says the limit and where it came from.
+A run stops after its wake limit. The scenario's `max_wakes` sets it. Without one, a scenario with a window or a
+deadline and an agent with a rhythm of its own (`tick` in the agent file: how often its timers or bookings bring it
+back at most, `tick: PT1H`) get every tick across it and 20 more, for the wakes replies and happenings bring; a window
+with no rhythm declared gets one wake a simulated minute across it, a guard against an agent waking itself without
+end. Otherwise the limit is 20. A run that stops there says the limit and where it came from.
 
 ## Types the agent may generate
 
 `schemas/agent-api.openapi.json` (`minutehand schema agent-api`) is an OpenAPI 3.1 document. It is generated from the
 models that cross the endpoints and committed with a drift test (`tests/test_schemas.py`). It covers:
 
-- `wake` and `report`;
 - `deliverReply`, the default shape of a reply delivered to a declared host's webhook;
 - `listPending` and `decide`, the default shape of an inbox.
 
-An agent's team can generate types from it in any language. Every operation is optional, and the paths in it are
-suggestions: the agent file names each URL.
+None of these exists for Minutehand: each is a place the agent's own product already has, which the agent file
+points at. An agent's team can generate types from it in any language. Every operation is optional, and the paths in
+it are suggestions: the agent file names each URL.
 
 **A press has no default shape.** Only a provider delivers presses, in its own wire format.
 
@@ -198,6 +209,9 @@ suggestions: the agent file names each URL.
 | An editor header | A first line of `# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/main/schemas/agent.schema.json` (or `scenario`, `seed`) gives completion and inline errors in any editor using the YAML language server. |
 | `minutehand validate <file>…` | Loads each file with every load-time check, resolves each inbox operation in its document, and reads every rule of `assess` (an anchor its `each` lacks, no bound, a pattern there is not); given an agent file with scenarios, also the rules each scenario would be judged by. It prints each problem with its place (`inboxes[0].pending.id: …`) and exits 1 when there is any. It warns, without failing, of a declared service's responder who never acts on its items (declared silent, or a script that ends in silence with nothing pinned). |
 | `version: 1` | An agent file may name the version it was written for. A file naming a later version is refused, saying so. Absent means the current version. |
+
+An agent file written for the kinds of wake that are gone (`wakes:` with `reported`, `marked`, `polled`, `command`
+or `contained`) is refused by name: every agent runs in a sandbox, and nothing is asked of it.
 
 ## Using the agent's own API description
 
@@ -225,7 +239,6 @@ It is built for inboxes only. How the other declarations would take it up:
 | Declaration | How it would take `operation` |
 |---|---|
 | `outbound[].replies` | `request: {kind: operation, …}` in place of `url`, `method`, `headers` and `body`. Signing stays as it is. |
-| `wakes[].wake_url`, `report_url` | `wake: {document, operation}` and `report: {document, operation}`. The report's answer would be checked against the document as well as against `AgentReport`. |
 | `inbound[]` | Not applicable. Those are the provider's wire formats, not the agent's. |
 
 ## One template syntax, one path syntax
@@ -257,6 +270,7 @@ What existed before inboxes, and stays as it is for now:
 | `{message_id}` | `outbound[].answer` (acknowledged answers) |
 | `{hex}` `{base64}` `{timestamp}` | `outbound[].replies.signing.format` |
 | `{port}` | `emulators[].upstream.url`, `.command`, `.env` |
+| `{nanoseconds}` | `sandbox.advance` |
 | `{key}` | `Manifest.world_keys` (provider code, not files) |
 | `{{start+P2D}}` `{{start+P2D:iso}}` `{{start+P2D:time}}` | Any text of a scenario (`DATED`) |
 | Dotted paths with `[n]`, `[*]`, no `$` (`personalizations[*].to[*].email`) | `outbound[].message`, `.redact`, `.ignore_body`, `.replies.thread` (`adapters/proxy/capture.values_at`), and `emulators[].errors[].at` (its own `BodyPath`, read by `adapters/emulator/answers.py`). Each is a clean subset of JSONPath without the `$`. |
@@ -265,21 +279,16 @@ What existed before inboxes, and stays as it is for now:
 
 Each line is a name or shape that disagrees with this page. None is renamed in this change.
 
-1. **`wakes[].kind: reported` is the term "report".** The source is named after the endpoint it adds, not after the
-   wake.
-2. **`inbound[]` is the provider's push, which this page calls "deliver".** `InboundTarget`, `inbound.py` and
+1. **`inbound[]` is the provider's push, which this page calls "deliver".** `InboundTarget`, `inbound.py` and
    `PushesEvents.deliver` mix the two words.
-3. **`outbound[].replies` is "deliver a reply" to a declared host.** `ReplyDelivery` and `TakesReplies` name it
+2. **`outbound[].replies` is "deliver a reply" to a declared host.** `ReplyDelivery` and `TakesReplies` name it
    three ways.
-4. **The older placeholders listed above** (`{reply_id}`, `{message_id}`, `{port}`, `{hex}`) should move to
+3. **The older placeholders listed above** (`{reply_id}`, `{message_id}`, `{port}`, `{hex}`) should move to
    `{reply.id}`, `{message.id}`, `{emulator.port}` and `{signature.hex}`.
-5. **The dotted path syntax and its two readers** (`capture.values_at`, the emulator's) should become
+4. **The dotted path syntax and its two readers** (`capture.values_at`, the emulator's) should become
    `domain/jsonpath.py`, with paths written `$.personalizations[*].to[*].email`.
-6. **`BodyPath` is declared twice**, in `domain/outbound.py` and `domain/emulator.py`.
-7. **`Scripted.replies[].to_ask` counts asks, while `Take.nth` counts items in a provider, or asks when it names
+5. **`BodyPath` is declared twice**, in `domain/outbound.py` and `domain/emulator.py`.
+6. **`Scripted.replies[].to_ask` counts asks, while `Take.nth` counts items in a provider, or asks when it names
    none.** Both are "the nth ask".
-8. **Only the agent file is versioned.** A scenario and a seed carry no version.
-9. **`application/restore.py` and `restore.json` say "restore"** for a fork's start, where nothing is restored: the
-   memory is read from the log, and the agent's report compared.
-10. **`--telemetry-port` names the receiver's port,** which holds the agent's memory as well as its telemetry.
-11. **`docs/design.md` still calls a wake source "how it comes back to work"**, and uses "monitor" for Minutehand.
+7. **`PushSnapshot` is named for the provider's word.** Every send through the door is a delivery, and the entity
+   kind is still `push`.

@@ -390,42 +390,6 @@
       "title": "Comments",
       "type": "object"
     },
-    "CommitmentState": {
-      "enum": [
-        "open",
-        "met",
-        "dropped"
-      ],
-      "title": "CommitmentState",
-      "type": "string"
-    },
-    "Commitments": {
-      "additionalProperties": false,
-      "description": "What the agent reported it was waiting on, as each wake ended, counted at that wake's end.",
-      "properties": {
-        "status": {
-          "default": [],
-          "description": "In any of these states; empty: any",
-          "items": {
-            "$ref": "#/$defs/CommitmentState"
-          },
-          "title": "Status",
-          "type": "array"
-        },
-        "waiting_on": {
-          "default": [],
-          "description": "Waiting on any of these people; empty: on anyone or nothing",
-          "items": {
-            "pattern": "^[a-z][a-z0-9_]*$",
-            "type": "string"
-          },
-          "title": "Waiting On",
-          "type": "array"
-        }
-      },
-      "title": "Commitments",
-      "type": "object"
-    },
     "Comparison": {
       "enum": [
         ">=",
@@ -456,17 +420,6 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Calls"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "commitments": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Commitments"
             },
             {
               "type": "null"
@@ -681,7 +634,7 @@
     },
     "DispatchRule": {
       "additionalProperties": false,
-      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate.",
+      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own booked wakes are covered: when a person answers is their `reply`, a ticket's pace its fate,\nand a timer of the agent's own fires inside its sandbox, which no scheduler stands between.",
       "properties": {
         "by": {
           "anyOf": [
@@ -2570,18 +2523,16 @@
       "type": "object"
     },
     "PlannedBy": {
-      "description": "How the agent asked for one of its own wakes: which of them a dispatch rule is about.",
+      "description": "How the agent asked for one of its own wakes that a scheduler delivers: which of them a dispatch rule is\nabout. Its own timers fire inside its sandbox and are nobody's to deliver.",
       "enum": [
-        "reported",
-        "booked",
-        "polled"
+        "booked"
       ],
       "title": "PlannedBy",
       "type": "string"
     },
     "PlannedWakes": {
       "additionalProperties": false,
-      "description": "Wakes the agent asked for itself (reported, booked, its rhythm, its own timer), counted at the moment each\nwas due, from the run loop's table. Only a run Minutehand played keeps that table.",
+      "description": "Wakes the agent asked for itself (a booking, its own timer), counted at the moment each\nwas due, from the run loop's table. Only a run Minutehand played keeps that table.",
       "properties": {},
       "title": "PlannedWakes",
       "type": "object"
@@ -4516,18 +4467,6 @@
       "additionalProperties": false,
       "description": "The agent's wakes.",
       "properties": {
-        "changed_commitments": {
-          "anyOf": [
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Changed Commitments"
-        },
         "changed_world": {
           "anyOf": [
             {
@@ -4947,7 +4886,7 @@
         }
       ],
       "default": null,
-      "description": "Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so an older scenario still loads; when given, it is handed to the agent on its first wake, verbatim",
+      "description": "Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so an older scenario still loads; when given, its owner sends it to the agent as a message, verbatim",
       "title": "Goal"
     },
     "happenings": {

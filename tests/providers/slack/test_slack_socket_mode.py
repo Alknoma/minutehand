@@ -39,6 +39,7 @@ from minutehand.session import _services
 from tests.providers.google_workspace.proxied import Client, client_environment
 from tests.providers.slack.slack_workspace import SCENARIO, START, TOKEN, Workspace, form
 from tests.providers.slack.test_slack_interactions import CARD, REJECT_MODAL, tomas_presses
+from tests.support.scenarios import SANDBOX
 
 pytestmark = pytest.mark.timeout(90)
 
@@ -280,6 +281,7 @@ def test_an_inbound_target_at_a_request_url_that_names_none_is_refused() -> None
 def test_an_agent_in_socket_mode_on_a_provider_that_serves_no_sockets_is_refused() -> None:
     agent = AgentUnderTest(
         name="teams_bot",
+        sandbox=SANDBOX,
         goal=GoalByMessage(provider="microsoft"),
         inbound=[InboundTarget(provider="microsoft", delivery=Delivery.SOCKET_MODE)],
     )

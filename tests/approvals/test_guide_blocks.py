@@ -1,5 +1,5 @@
 """docs/approvals.md quotes its examples, never paraphrases them: every YAML and SQL block names the file under
-tests/agents/approvals it comes from, and is that file whole or a run of its lines."""
+docs/approvals it comes from, and is that file whole or a run of its lines."""
 
 from __future__ import annotations
 

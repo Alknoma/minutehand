@@ -8,18 +8,18 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
-from minutehand.domain.agent import AgentReport, AgentUnderTest, Polled
+from minutehand.domain.agent import AgentReport, AgentUnderTest
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import CaptureMode
 
 
 class StopReason(StrEnum):
-    AGENT_DONE = "agent_done"  # the agent reported it had finished
+    AGENT_DONE = "agent_done"  # a standing world: whoever drove the agent relayed that it had finished
     WAKE_LIMIT = "wake_limit"  # Scenario.max_wakes reached
     DEADLINE_PASSED = "deadline_passed"  # the clock passed an older scenario's deadline
     WINDOW_ENDED = "window_ended"  # the clock reached the end of the scenario's runs_for
-    NOTHING_PENDING = "nothing_pending"  # nothing is due and the agent named no next wake: it is stuck
+    NOTHING_PENDING = "nothing_pending"  # nothing is due and the agent planned no next wake: it is stuck
     AGENT_FAILED = "agent_failed"  # the agent could not be reached or answered with an error
     CLOSED = "closed"  # a standing world (`minutehand serve`) was closed by whoever opened it
     ENVIRONMENT_FAILED = "environment_failed"  # an external emulator the run used was unavailable: not the agent
@@ -27,8 +27,8 @@ class StopReason(StrEnum):
 
 
 class VerdictKind(StrEnum):
-    PASSED = "passed"  # no check failed, and the agent finished: it reported done, or nothing was left open
-    UNFINISHED = "unfinished"  # no check failed, but the agent never reported done and work was still open
+    PASSED = "passed"  # no check failed, and nothing was left open (or a standing world's harness said done)
+    UNFINISHED = "unfinished"  # no check failed, but work was still open
     FAILED = "failed"  # a check failed
     ENVIRONMENT_FAILED = "environment_failed"  # the run's environment failed under the agent: nothing is judged
     TOOL_FAILED = "tool_failed"  # Minutehand broke while answering a call; the agent is not scored on this run
@@ -153,12 +153,12 @@ reaches; it stops one that wakes itself without end."""
 
 def wake_limit(scenario: Scenario, agent: AgentUnderTest) -> WakeLimit:
     """The scenario's `max_wakes`; else, with a window (`runs_for`, or an older scenario's deadline) and a rhythm the
-    agent keeps (a polled wake's `every`, or the agent file's `tick`), every tick across it and `DEFAULT_WAKES` more;
+    agent keeps (the agent file's `tick`), every tick across it and `DEFAULT_WAKES` more;
     else, with a window and no rhythm, one wake a `RUNAWAY` across it, a guard against an agent waking itself without
     end and never a limit an agent at work meets; else `DEFAULT_WAKES`."""
     if scenario.max_wakes is not None:
         return WakeLimit(wakes=scenario.max_wakes, why="the scenario's max_wakes")
-    ticks = [w.every for w in agent.wakes if isinstance(w, Polled)] + ([agent.tick] if agent.tick else [])
+    ticks = [agent.tick] if agent.tick else []
     window = scenario.runs_for or scenario.deadline_after
     said = "window" if scenario.runs_for is not None else "deadline"
     if window is not None and ticks:

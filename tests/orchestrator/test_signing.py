@@ -13,6 +13,7 @@ from minutehand.domain.agent import AgentUnderTest, GoalByMessage
 from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, SigningSecret
 from minutehand.domain.people import InboundTarget
 from minutehand.session import signing_for
+from tests.support.scenarios import SANDBOX
 
 URL = "http://127.0.0.1:9/slack/events"
 
@@ -20,6 +21,7 @@ URL = "http://127.0.0.1:9/slack/events"
 def _agent(secret: SigningSecret | None) -> AgentUnderTest:
     return AgentUnderTest(
         name="pushed",
+        sandbox=SANDBOX,
         goal=GoalByMessage(provider="slack"),
         inbound=[InboundTarget(provider="slack", url=URL, secret=secret)],
     )
@@ -61,7 +63,8 @@ def test_a_target_naming_no_secret_is_still_signed_and_hands_nothing_to_the_agen
 def test_an_agent_file_says_where_its_secret_comes_from(tmp_path: Path) -> None:
     path = tmp_path / "agent.yaml"
     path.write_text(
-        "name: running\ngoal: {kind: by_message, provider: slack}\n"
+        'name: running\nsandbox: {deadlines: [runsc, debug, --deadlines, a], advance: [runsc, debug, "--advance-clock={nanoseconds}ns", a]}\n'
+        "goal: {provider: slack}\n"
         f"inbound:\n  - {{provider: slack, url: '{URL}', secret: {{kind: from_env, env: SLACK_SIGNING_SECRET}}}}\n"
     )
 

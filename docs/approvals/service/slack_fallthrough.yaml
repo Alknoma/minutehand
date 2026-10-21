@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
+# A host a provider claims, declared too: Slack's fake answers every method it serves; a method it does not serve
+# (here `functions.completeSuccess`, how a custom step of a Slack workflow reports its outputs) falls through to
+# this declaration and is kept, instead of being refused 501 by name.
+version: 1
+name: purchasing_agent_in_a_workflow
+
+sandbox:                               # the gVisor sandbox the agent runs in, whose clock Minutehand owns
+  deadlines: [runsc, debug, --deadlines, purchasing_agent]
+  advance: [runsc, debug, "--advance-clock={nanoseconds}ns", purchasing_agent]
+
+outbound:
+  - host: slack.com
+    name: slack_functions              # not `slack`: that is the provider's own name
+    kind: store
+    collections: [{path: /api/functions.completeSuccess, name: step_outputs}]
+    answer: {json_body: {ok: true}}

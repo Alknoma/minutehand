@@ -20,6 +20,7 @@ import httpx
 import pytest
 import uvicorn
 from slack_sdk import WebClient
+from slack_sdk.signature import Clock as VerifierClock
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web import SlackResponse
 from slack_sdk.web.async_client import AsyncWebClient
@@ -33,6 +34,7 @@ from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.domain.people import InboundTarget
+from minutehand.ports.clock import Clock
 from tests.providers.slack.slack_workspace import TOKEN, Workspace
 
 T = TypeVar("T")
@@ -103,21 +105,46 @@ async def _empty(_: Received) -> Response:
     return Response(status_code=200)
 
 
+class SimulatedTime(VerifierClock):
+    """The verifier's replay window read on the run's clock: an agent's own clock is its sandbox's, which Minutehand
+    keeps at the run's time, so a request signed with the simulated send time is fresh to it."""
+
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+
+    def now(self) -> float:
+        return self._clock.now().timestamp()
+
+
+class _AtTheSend(VerifierClock):
+    """The verifier's clock for an endpoint given no run clock: the moment the request says it was sent, which is
+    the sandbox's clock at that instant, since Minutehand releases the sandbox to the moment before it sends."""
+
+    def __init__(self, headers: dict[str, str]) -> None:
+        self._stamp = headers.get("x-slack-request-timestamp", "0")
+
+    def now(self) -> float:
+        return float(self._stamp)
+
+
 @dataclass
 class AgentEndpoint:
-    """The agent's Slack request URL. Every request is checked by `SignatureVerifier`; one that fails is answered
-    401 and kept in `forged`, so a test sees a bad signature rather than a silent pass."""
+    """The agent's Slack request URL. Every request is checked by `SignatureVerifier`, on the run's clock when the
+    test gives one (`clock`), as an agent in its sandbox would check it; one that fails is answered 401 and kept in
+    `forged`, so a test sees a bad signature rather than a silent pass."""
 
     answer: Answer = _empty
     received: list[Received] = field(default_factory=list)
     forged: list[Received] = field(default_factory=list)
     status: int = 200
     url: str = ""
+    clock: Clock | None = None
 
     async def handle(self, request: Request) -> Response:
         body = await request.body()
         got = Received(headers=dict(request.headers), body=body)
-        if not SignatureVerifier(SECRET).is_valid_request(body, dict(request.headers)):
+        at = SimulatedTime(self.clock) if self.clock is not None else _AtTheSend(got.headers)
+        if not SignatureVerifier(SECRET, clock=at).is_valid_request(body, dict(request.headers)):
             self.forged.append(got)
             return JSONResponse({"error": "bad signature"}, status_code=401)
         self.received.append(got)

@@ -382,18 +382,26 @@ async def test_by_default_a_push_waits_out_a_handler_that_takes_a_model_turn(
     assert agent.target().push_timeout == timedelta(minutes=5)
 
 
-async def test_url_verification_wants_the_challenge_back(agent: AgentEndpoint) -> None:
+async def test_url_verification_wants_the_challenge_back(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint
+) -> None:
     async def echo(got: Received) -> Response:
         return JSONResponse({"challenge": got.json["challenge"]})
 
     agent.answer = echo
-    await inbound.verify_url(agent.target(), SECRET, "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P")
+    _, store, _ = seeded
+    await inbound.verify_url(
+        store, agent.target(), SECRET, "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P", at=int(START.timestamp())
+    )
     assert agent.received[0].json["type"] == "url_verification"
 
 
-async def test_url_verification_answered_without_the_challenge_is_refused(agent: AgentEndpoint) -> None:
+async def test_url_verification_answered_without_the_challenge_is_refused(
+    seeded: tuple[SlackProvider, SqliteStore, RunClock], agent: AgentEndpoint
+) -> None:
+    _, store, _ = seeded
     with pytest.raises(DeliveryRefused, match="challenge"):
-        await inbound.verify_url(agent.target(), SECRET, "abc")
+        await inbound.verify_url(store, agent.target(), SECRET, "abc", at=int(START.timestamp()))
 
 
 async def test_a_person_inviting_the_bot_to_a_channel_is_told_as_its_own_join_naming_the_inviter(

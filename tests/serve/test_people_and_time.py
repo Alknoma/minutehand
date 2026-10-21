@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import json
 import ssl
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import httpx
+from slack_sdk.signature import Clock as VerifierClock
 from slack_sdk.signature import SignatureVerifier
 
 from minutehand.adapters.control.wire import Claims, CreateWorld
@@ -25,9 +26,12 @@ def test_a_person_speaking_reaches_the_services_inbound_endpoint_signed(served: 
             assert said.actor is Actor.PERSON and isinstance(said.after, MessageSnapshot)
             assert receiver.texts() == ["The venue is booked."]
             pushed = receiver.pushed[0]
-            verifier = SignatureVerifier(SECRET)
+            sent_at = _AtTheWorld(world.view.now)  # the service's own clock is its sandbox's: the world's
+            verifier = SignatureVerifier(SECRET, clock=sent_at)
             assert verifier.is_valid(pushed.body, pushed.timestamp, pushed.signature)
-            assert not SignatureVerifier("another-secret").is_valid(pushed.body, pushed.timestamp, pushed.signature)
+            assert not SignatureVerifier("another-secret", clock=sent_at).is_valid(
+                pushed.body, pushed.timestamp, pushed.signature
+            )
             event = json.loads(pushed.body)["event"]
             assert event["channel"] == said.after.channel and event["channel_type"] == "im"
         finally:
@@ -212,3 +216,11 @@ def test_a_task_booked_on_a_scheduler_is_recorded_and_never_fires_however_far_th
         assert [(e.actor, e.operation) for e in written_for] == [(Actor.AGENT, Operation.CREATE)]
     finally:
         served.client.close_world(world.world_id)
+
+
+class _AtTheWorld(VerifierClock):
+    def __init__(self, at: datetime) -> None:
+        self._at = at
+
+    def now(self) -> float:
+        return self._at.timestamp()

@@ -72,7 +72,7 @@ def measure(view: RunView, findings: list[Finding], met: int, ended_at: datetime
         burden=burden,
         messages_per_outcome=sent / met if met else None,
         wakes=len(view.wakes),
-        idle_wakes=sum(1 for w in view.wakes if w.world_changes == 0 and not w.commitments_changed),
+        idle_wakes=sum(1 for w in view.wakes if w.world_changes == 0),
         failed_checks=sum(1 for f in findings if f.kind is FindingKind.FAIL),
     )
 

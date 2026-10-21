@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from tests.model.fake_completions import Answer
-from tests.orchestrator.world import serving
+from tests.support.serving import serving
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 # Minutehand
 
-Reconciled with the code on `integration-main` (`9d86c6c`), 2026-10-04. Every code block below is quoted from `src/minutehand/` as it stands. Each part says whether it is built and tested, built with a known limit, or designed and not built. Results of one-off spike scripts, which are not in this repo, are kept only in "Evidence".
+Reconciled with the code on `refactor/observed-wakes`, 2026-10-21. Every code block below is quoted from `src/minutehand/` as it stands. Each part says whether it is built and tested, built with a known limit, or designed and not built. Results of one-off spike scripts, which are not in this repo, are kept only in "Evidence".
 
 ## Abstract
 
@@ -9,9 +9,9 @@ Minutehand is how a team builds its own proactive agent and finds out whether it
 Two pillars, in this order:
 
 1. **Evaluating proactive effectiveness.** What the agent did and when, against what the world did and when, judged by the rules the team writes for its own agent. Minutehand states the facts; whether a follow-up was late, a reminder one too many, or an answer acknowledged too slowly is the team's policy, written in YAML (`docs/assessments.md`). A rule may name the design that fixes what it finds.
-2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again. Minutehand owns the agent's time and its memory: the agent keeps what it remembers through one import (`minutehand.agent.store`), and a fork starts from that memory as it stood at the moment, with nothing else asked of the agent.
+2. **Rewind.** Any run can be restarted from any moment with the prompt, the model, the people or the world changed, and played forward again. The record holds everything the agent ever received, so a fork plays the agent's recorded inputs into a fresh sandbox up to the checkpoint and the agent stands where it stood; its memory, kept through one import (`minutehand.agent.store`), is the run's log as of that moment. Nothing is asked of the agent.
 
-It is one process: it intercepts the agent's outbound API calls, owns the clock, plays the people and records every change. A coding agent reaches it over MCP, so "simulate it and fix what it finds" is a loop that needs no person in it.
+Every agent runs unchanged in a sandbox whose clock and network Minutehand owns ("A sandbox whose clock Minutehand owns"). Minutehand is one process beside it: it intercepts the agent's outbound API calls, owns the clock, plays the people and records every change. A coding agent reaches it over MCP, so "simulate it and fix what it finds" is a loop that needs no person in it.
 
 ## What exists
 
@@ -36,16 +36,15 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | Google Cloud Tasks provider: `adapters/providers/google_cloud_tasks/` | Queues and HTTP tasks over the REST API and over gRPC, the client's default, from the same operations and world; a task's `scheduleTime` booked as a wake and delivered as an HTTP call to the agent's handler with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff until its attempts run out; a task's name taken for 24 hours after it ran or was deleted; every method of the v2 discovery document and of the gRPC service served or refused by name; queues seeded by `CloudTasksSeed`; see its `CLAIMS.md` | Built and tested | 40 (`tests/providers/google_cloud_tasks/` 36 through the real proxy with Google's own `google-cloud-tasks`, 11 on its REST transport and 5 on gRPC; `tests/e2e/test_cloud_tasks_run.py` 4 whole runs, one on gRPC) | gRPC needs `minutehand[grpc]` (grpcio and Google's messages); without it a gRPC call is answered UNIMPLEMENTED, saying so. Tasks asking for signed OIDC or OAuth tokens, App Engine tasks, `tasks:run` and batch calls answer 501. Only a task URL on this machine is called. |
 | reCAPTCHA Enterprise provider: `adapters/providers/recaptcha_enterprise/` | `projects.assessments.create` answered from the tokens `RecaptchaSeed` declares, as a browser's grecaptcha minted them (action, score, hostname, reasons, when minted), with Google's invalid reasons where the world decides them: an unseeded token MALFORMED, none MISSING, one assessed again DUPE, one minted more than two minutes before on the run's clock EXPIRED; `RecaptchaSeed.unseeded` the verdict for any other token, a fresh one each time; every assessment a RECORD entity under its token; every other method of the v1 discovery document refused 501 by name; see its `CLAIMS.md` | Built and tested | 15 (`tests/providers/recaptcha_enterprise/` through the real proxy with Google's discovery client and `google-auth`; `tests/serve/test_google_user_credentials.py` signed in with `authorized_user` ADC, shared with FCM) | REST only (Google's Python client speaks gRPC only, which is answered UNIMPLEMENTED). Site keys, firewall policies, account defender, fraud prevention and annotations answer 501; `UNEXPECTED_ACTION`, `KEY_MISMATCH`, `DOMAIN_MISMATCH` are never answered. |
 | Firebase Cloud Messaging provider: `adapters/providers/firebase_cloud_messaging/` | The FCM HTTP v1 `projects.messages.send` to a registration token `FcmSeed` declares `active` or `unregistered`: a delivered message answered with its name and kept as a RECORD entity under its registration (token, data, notification, webpush headers, the request verbatim); an unseeded token 400 INVALID_ARGUMENT and an unregistered one 404 UNREGISTERED, with the `FcmError` details `firebase-admin` raises `InvalidArgumentError` and `UnregisteredError` from; `validate_only` validates and sends nothing; exactly one target, string data values and the 4096-byte data limit enforced; see its `CLAIMS.md` | Built and tested | 14 (`tests/providers/firebase_cloud_messaging/` through the real proxy with `firebase-admin` and `google-auth`; `tests/serve/test_google_user_credentials.py`) | Topics, conditions and Firebase Installation IDs answer 501, as do topic subscriptions; platform overrides are kept, not validated. |
-| Run loop, fork, agent drivers, files: `application/`, `adapters/agent/` | Plays a scenario on the run's clock, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint, with its own seed and pinned reply times | Built and tested | `tests/orchestrator/` | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. `PromptPatch` and `ModelSwap` are tested through a whole run only on the reference agent's scratch measurements, not in the suite. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. |
+| Run loop, fork, playback, files: `application/`, `adapters/agent/delivery.py` | Plays a scenario on the run's clock, every agent in its sandbox, with people's acts on seeded tickets at their moments; forks a finished run from a checkpoint, with its own seed and pinned reply times, the agent's sandbox played back to the checkpoint from its recorded inputs (`application/playback.py`) | Built; not run against a real sandbox (the patched gVisor is outside this repository), so no whole run is in the suite | `tests/orchestrator/test_moments.py`, `test_signing.py`, `tests/test_scenario.py` | A fork starts only at a checkpoint after which the agent did not go on writing its memory in the same wake. A fork of a run that used WebSockets, gRPC or a tunnelled model host is refused: the record cannot answer those. An agent whose calls depend on real-time pacing (a long poll loop) parts from its record on playback. A `PersonChange` withdraws a reply decided before the fork that had not landed by it, and asks again under the new behaviour. |
 | People: `application/replier.py`, `application/moments.py`, `domain/people.py` | Every word a person says or decides, in a run and a standing world alike: a script of facts and intents whose words a model writes, conversing from their facts once the script is used, exact words where a step says `verbatim`; each moment drawn from the run's seed, the person and the ask, in a window of their available time; follow-ups, reminders, automatic replies while away; what each person can see of the world as their context; every model call kept with the world and replayed for the same context. See "People" | Built and tested | `tests/orchestrator/test_moments.py`, `test_conversing.py`, `test_reply_draws.py`, `tests/model/`, `tests/serve/test_written_people.py` | The fact a relay must carry is checked as a substring (`Relayed.holding`, `{ask.facts}`): a relay that paraphrases the value itself is not counted. A follow-up is told from a new ask by its conversation (channel and thread), never by its text. |
-| The agent's memory: `minutehand/agent/` (`store`, `wake`), `domain/memory.py`, `application/memory.py`, `application/restore.py`, the receiver's `/minutehand/agent` routes | What the agent remembers, as JSON under string keys, through one import inert in production; under Minutehand every write recorded in the run's log and every read answered from it, so each run and fork has its own memory and a fork starts from its parent's at the checkpoint with no hooks; the agent's next wake marked the same way; a fork's agent proven by its memory's digest and its report; a fresh empty SQLite file per run for each database of its own the agent file names | Built and tested | `tests/agent/` 21, `tests/e2e/test_memory_run.py` 4, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py` 8 | Only state written through the store is part of a run: anything the agent keeps elsewhere is not simulated, not kept apart between runs and not rewound, and is seen only when its report shows it or the agent file names the database ("The agent's memory"). The package ships inside `minutehand`, whose own dependencies are heavy; it imports none of them. |
+| The agent's memory: `minutehand/agent/` (`store`), `domain/memory.py`, `application/memory.py`, `application/restore.py`, the receiver's `/minutehand/agent/store` route | What the agent remembers, as JSON under string keys, through one import inert in production; under Minutehand every write recorded in the run's log and every read answered from it, so each run and fork has its own memory and a fork starts from its parent's at the checkpoint with no hooks; a fresh empty SQLite file per run for each database of its own the agent file names | Built and tested (the store); the fork's playback not run against a real sandbox | `tests/agent/` | What the agent keeps outside the store is in its sandbox, which a fork plays back from the record ("Playback"). The package ships inside `minutehand`, whose own dependencies are heavy; it imports none of them. |
 | Facts, assessments, ledger, scorecard, patterns: `checks/`, `domain/assessments.py`, `domain/items.py` | The facts of a run (`checks/facts.py`, the agent's calls among them); the assessment of every effect of the agent's by kind of item against the declared world (`checks/items.py`, deterministic, on every run; `checks/judged/review.py`, the shared reviewer, with `--judge`), each provider declaring its item types (`Manifest.item_types`); the team's YAML rules over the facts (`checks/assessments.py`); the checks that state the scenario's own words and the run's integrity (`expectations`, `near_miss_name`, `agent_contract_changed`, `around_proxy`, `unmatched_call`); the agent's own checks; the obligations ledger; `Effectiveness` (facts only); 10 patterns | Built and tested | `tests/checks/` (`test_item_checks.py` and `judged/test_review.py` over four runs of a model-driven agent in `tests/data/trial/`), `tests/providers/test_provider_item_types.py`, `tests/orchestrator/test_team_rules.py`, `tests/test_checks_on_reference_run.py`, `tests/e2e/test_around_proxy_run.py` | A deterministic check that leans on a threshold the declarations only imply is for review; whether an effect means what it should is the reviewer's reading, for review too. A dependency is read from the goal's words and a service's machine only: an order the goal does not tie to a decision is not held to one. |
 | Telemetry out: `adapters/telemetry/otel.py` | Spans, a log record per finding, metrics, over OTLP | Built and tested | 18 (`tests/telemetry/test_otel_telemetry.py`) | World-event spans are emitted when a wake ends, not as calls arrive. |
 | Telemetry in: `adapters/telemetry/receiver.py`, `otlp.py`, `forward.py`, `application/model_calls.py` | Receives the agent's own OTLP during a run, keeps its spans with the run, passes it on to where it went before, joins a world event to the model call that led to it | Built and tested | 17 (`tests/telemetry/test_receiver.py`, `tests/test_model_call_join.py`, `tests/e2e/test_agent_telemetry.py`) | OTLP over HTTP and, with `minutehand[grpc]`, gRPC on the same port. Metrics are dropped; a log record is kept only when it carries GenAI content. A span is placed in a wake by comparing its SDK's clock with this machine's. |
-| Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own; what the agent keeps outside the store is carried from one sample into the next. |
+| Session and CLI: `session.py`, `cli.py`, `doctor.py` | `minutehand run`, `findings`, `fork`, `replay`, `runs`, `env`, `doctor` (which client libraries would go around the proxy); `--model-host` names a model API besides the three public ones; starts the agent's command (its sandbox) | Built; no whole run in the suite | `tests/test_doctor.py`, `tests/test_run_placeholders.py` | No whole run of any agent is tested: every agent runs in the sandbox, and the patched gVisor is not in this repository. Each sample is a fresh sandbox with a memory of its own. |
 | Standing mode: `serve.py`, `application/standing.py`, `adapters/control/`, `adapters/proxy/worlds.py`, `adapters/proxy/credentials.py`, `minutehand.testing` | `minutehand serve`: one process holding many worlds at once for a test suite; each call routed to the world that claims its host, a world key its URL names (`Manifest.world_keys`), or a credential (including a JSON or form token request's refresh token, code, client id and secret, and client assertion); a control API under `/v1` that also fires a happening, presses a control, declares a provider's own faults and switches, seeds more into an open world, changes people's accounts and permissions, deletes a ticket as a person, mints the credentials a pushed request carries, resets a world in place and shows its raw state; its people as complete as a run's, every word and decision written by the server's own model when the world's clock passes it, each owed answer and model call listed on the world; a pytest client and plugin; a composite action for another repository's CI; the image serves by default | Built and tested | 104 (`tests/serve/` 95, `tests/testing/` 3, `tests/e2e/test_cli.py` 2, `tests/test_scenario.py` 3, `tests/packaging/test_stack.py` 1) | Isolation is as fine as the credentials the services carry: one fixed token per stack means one world at a time. A base-URL call is routed as a proxied one. A call whose only claim is a `common` or `organizations` sign-in path, or a shared host with no credential, still reaches the default world only. A recorded call whose response body is binary is answered but not kept (see Known issues). Booked wakes are never fired. See `docs/serve.md`. |
-| Reference agent: `tests/agents/reference_agent/` | Two processes (an API on `requests`, a worker on `httpx`) over a job queue in its memory (`minutehand.agent.store`, SQLite in production), email by a captured channel with replies, a pass-through search, a model API on a local HTTPS server, OpenTelemetry over HTTP or gRPC, five behaviours; `docs/reference-agent.md` | Built and tested | 9 (`tests/architecture/`) | |
-| Session and CLI: `session.py`, `cli.py` | `minutehand run`, `findings`, `fork`, `runs`, `env`; starts the agent's own command, or reaches one already running through a proxy on a fixed address | Built and tested | 19 (`tests/e2e/`) | Whole runs are tested with the Slack provider only, and with the agent as a local process: an agent in containers was run by hand once, not in the suite (`docs/containers.md`). Each sample has a memory of its own. |
+| The sandbox: `domain/agent.py` (`Sandbox`), `application/sandbox.py` | Every agent runs in a gVisor sandbox whose clock Minutehand owns: two control calls read its tasks' deadlines and move its clock, each jump of the run's clock released to it, its earliest deadline the agent's own next wake | Built against the control calls' contract; the patched gVisor itself (a 191-line patch, "Evidence") is not in this repository, and no test starts one | 0 | Not built: the patched gVisor in this repository and a CI job that builds it; the sandbox's network locked to the proxy (a `PREROUTING` rule on its link, "Transparent capture"); x86-64. |
 | Lints: `lints/` | `wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` | Built and tested | 27 (`tests/lints/`) | The enum-comparison lint judges a field by its name, not its type. |
 | Inboxes in the agent's own product: `domain/inboxes.py`, `application/inboxes.py`, `adapters/agent/inboxes.py`, `adapters/agent/openapi.py` | What waits on a person in the agent's own product (an approval, a question on its page), read and decided as that person; an item is an ask, a decision its answer; what a person does in it unprompted (`uses`: a website's visitor opening a page, writing to the agent), played as a happening at its moment, fixed (`after`) or drawn per seed after the person's previous use (`gap`); templates or OpenAPI operations; `docs/inboxes.md` | Built and tested | 54 (`tests/inboxes/` 47, `tests/architecture/test_approvals.py` 7), and 2 driven in `tests/architecture/test_driven_approvals.py` | HTTP only; MCP is a designed second `kind`. An item raised and withdrawn between two readings is missed. A use's inputs are given word for word: no model writes them, and no person chooses a use of their own accord. |
 | Scenario library: `src/minutehand/library/`, `domain/library.py`, `application/library.py` | Eleven ready-made scenarios with the team's goal, owner, person asked and answer as `{team.*}` placeholders; `minutehand scenarios`, `scenarios show`, `scenarios new`; see `docs/scenarios.md` | Built and tested | 22 functions, 113 cases (`tests/test_library.py` 18 functions, 51 cases; `tests/architecture/test_library.py` 4 functions, 62 cases, 60 of them one run each of a scenario against an example agent's behaviour) | Not graded and no pass mark. Conflicting answers are not in it. Three scenarios' main check never fires against either example agent. |
@@ -53,7 +52,7 @@ Tests are `def test_` functions counted per directory; `uv run pytest -q -n auto
 | MCP tools: `adapters/mcp/`, `minutehand mcp` | The command line over stdio: every command a tool of the same name, its flags the parameters, generated from the parser; see "What a coding agent calls" | Built and tested | 4 (`tests/mcp/`; one speaks to the installed command over stdio with the SDK's own client) | Each call is a process of its own, as the command typed is. |
 | Read model: `adapters/query/`, `minutehand query`, `trace`, `explain` | A run's (or a fork's) record as documented, versioned views over one SQLite database built on demand from the store's own readers, every body decoded: `actions`, `messages` with what the ledger knows of each, `recipients` in their working hours, `calls` with their bodies, `wakes` with their reasons, `dispatch`, `memory` over time, `stored`, `replies`, `model_calls` with tokens and declared prices, `findings`, `evidence`, `spans`; read-only SQL, a trace of the agent's acts and an explanation of one event, on the command line and over MCP; see `docs/querying.md` | Built and tested | 49 functions, 74 cases (`tests/query/`), on a run written by hand and its fork; 12 functions, 43 cases on real runs of the follow-up example and the reference agent through the installed command (`tests/architecture/test_read_model_on_real_runs.py`) | Built per process on first read and kept while the run's files are unchanged; a run with very many events is built in full before the first row. A message's sender among people is known only when a reply of theirs landed as it. |
 | Run viewer: `adapters/web/`, `minutehand view` | One page for inspecting a run of any length: the verdict and headline numbers, the run over time it opens on (one axis at a picked scale, its rows the agent's wakes, its outputs in their results' colours and replies, and a list under it that follows it: a row a day, or at a day a row for each wake, output and reply), each output opening with what it was and what every check said of it, a canvas swimlane timeline on a page of its own that bins dense lanes by calendar unit, one view per measure, an inspector that opens for whatever is selected; a typed read-only JSON API over a state directory, its tables read from the run's read model (`adapters/query`); plain ES modules with d3 and Observable Plot vendored under `static/`, no build. See "The viewer" | Built and tested | 37 (`tests/web/`), of which 4 drive the page in Chromium (`-m browser`, the `browser` CI job) | Serves 127.0.0.1 only. Reads, never writes: a fork is taken from the command line or MCP, not the page. The timeline does not draw the parent's record after a fork's split; the forks view gives the fork's account instead. |
-| Container image, generated providers, a faked system clock, hosted | See their sections | Designed, not built | 0 | |
+| Container image, generated providers, hosted | See their sections | Designed, not built | 0 | |
 
 No fake's wire details have been verified against the real service. The providers are tested against the services' own client libraries (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`) and not against the services.
 
@@ -101,11 +100,11 @@ One process with five parts:
 
 1. **Proxy.** The agent's process gets `HTTPS_PROXY`. Calls to hosts a provider claims are answered by that provider's fake. Calls to model APIs are decrypted and recorded as spans, or edited when a fork changes the prompt or model, or tunnelled without being decrypted under `--tunnel-model-calls`. Anything else is refused with 502 and recorded. Beside it, an OTLP/HTTP receiver keeps the agent's own telemetry with the run (see "Telemetry").
 2. **Providers.** One package per service. Its manifest loads at start; its code loads on its first call. Each answers the real API's routes, reads and writes only through `ports.store.Store`, and records every call as `Change`s, which the store turns into `WorldEvent`s.
-3. **Clock.** `RunClock` is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent is told the time in `WakeRequest.now`.
+3. **Clock.** `RunClock` is the only clock in a run. `next_jump()` moves it to the next moment something is due, every provider stamps from it, and the agent's own clock, its sandbox's, is moved with it.
 4. **People.** A scenario's `Person` answers at a moment drawn in their available time, through the provider as a real inbound event. What they say is a model's words from what the scenario says they know and do (a script of facts, then conversing), exact words only where a step says so, or silence where the author says so.
 5. **Facts and assessments.** The facts of a run read from `RunView` (`checks/facts.py`), and the team's own rules over them (`checks/assessments.py`); a few checks in the core state the scenario's own words and the run's integrity. Deterministic first; anything that needs judgement answers `FindingKind.REVIEW`.
 
-The agent under test declares how it is reached (`AgentUnderTest`): where it takes its goal (`GoalByWake` or `GoalByMessage`), how it comes back to work (`wakes`), and where pushed events reach it (`inbound`). At most it answers `WakeRequest` with `AgentReport`. An agent that takes its goal as a Slack message and books its own wake-ups answers nothing.
+The agent under test declares the sandbox it runs in (`AgentUnderTest.sandbox`) and where pushed events reach it (`inbound`); an older scenario's goal reaches it as a message from its owner (`goal`). Nothing is asked of it: it wakes when the world sends it something, when a scheduler it booked with delivers, and when a timer of its own fires in the sandbox.
 
 ## Examples
 
@@ -133,24 +132,16 @@ expect:
 
 ```yaml
 name: forgetful_agent
-wakes:
-  - {kind: reported, wake_url: "http://127.0.0.1:8765/wake", report_url: "http://127.0.0.1:8765/report"}
+sandbox:
+  deadlines: [runsc, debug, --deadlines, forgetful_agent]
+  advance: [runsc, debug, "--advance-clock={nanoseconds}ns", forgetful_agent]
+  settle_limit: PT30S           # real time one wake may take to fall idle (default 30 s)
 inbound:
-  - {provider: slack, url: "http://127.0.0.1:8765/slack/events",
+  - {provider: slack, url: "http://192.168.10.2:8765/slack/events",
      secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}}
 ```
 
-An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `push_timeout` (default `PT5M`) is how long one push to it may take before it is sent again, as the vendor retries (`docs/agent-contract.md`). `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, for an agent already running, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set). A `Reported` source may also say how long a wake may take:
-
-```yaml
-  - kind: reported
-    wake_url: http://platform:8025/minutehand/wake
-    report_url: http://platform:8025/minutehand/report
-    wake_timeout: PT10M           # one call to wake_url or report_url (default 10 minutes: room for a model's turn)
-    report_first_after: PT0.1S    # the first ask for the report; each wait doubles from here
-    report_at_most_every: PT10S   # up to this
-    working_limit: PT30M          # a wake still WORKING after this stops the run AGENT_FAILED, saying so
-```
+`sandbox` names the two control calls that reach the agent's sandbox ("A sandbox whose clock Minutehand owns"): `deadlines` prints whether every task in it is blocked, its clock and the earliest deadline any task waits for; `advance` moves its clock by `{nanoseconds}`, a signed step. An agent on Slack's Socket Mode names no URL: `{provider: slack, delivery: socket_mode}` takes its events on the WebSocket it opens itself ("gRPC and WebSockets"), and needs no `secret`. `push_timeout` (default `PT5M`) is how long one push to it may take before it is sent again, as the vendor retries (`docs/agent-contract.md`). `secret` says where the secret that signs pushed events comes from: `generated` is made per run and handed to the command Minutehand starts in the variable `env`; `from_env` is the agent's own, and Minutehand reads the same value from its own variable `env` (a run is refused when it is not set).
 
 A scenario file may leave `starts_at` out: the run then starts at the moment it is started, taken once to the second and recorded in the run's `scenario.json` and `RunRecord.started_at`, so every sample and fork of it plays the same instant. The file is read as a `WrittenScenario`; what a run plays and every reader sees is a `Scenario`, whose `starts_at` is always an instant.
 
@@ -175,8 +166,8 @@ Abbreviated:
 ```
 $ minutehand run scenario.yaml --agent agent.yaml --state state -- python slack_agent.py serve --port 8765 --state agent.json
 run d799b57b7ad2: partner_pricing
-  Failed: 2 checks failed; the run stopped because nothing more was due and the agent asked for no wake.
-  stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent asked for no wake
+  Failed: 2 checks failed; the run stopped because nothing more was due and the agent planned no wake.
+  stopped at 2026-09-07 10:00 UTC (simulated) because nothing more was due and the agent planned no wake
 
 fail (2)
   follows_up_when_due: sofia's answer was due and no follow-up came within the hour
@@ -202,7 +193,7 @@ checkpoints
 exit 1
 ```
 
-The agent stopped after one wake; the clock ran on to the deadline (seq 19 is that checkpoint), so the moment Sofia's answer fell due was reached and the rule read. Without `assess:` and `expect:` the same run is still assessed against what its scenario declares, and finds nothing wrong in what the agent did: that a follow-up was owed and not sent is the team's rule, not the world's, and the scorecard still shows one wait open and no follow-up made.
+The agent went idle after one wake with no timer armed and no booking; the clock ran on to the deadline (seq 19 is that checkpoint), so the moment Sofia's answer fell due was reached and the rule read. Without `assess:` and `expect:` the same run is still assessed against what its scenario declares, and finds nothing wrong in what the agent did: that a follow-up was owed and not sent is the team's rule, not the world's, and the scorecard still shows one wait open and no follow-up made.
 
 ### The checks on a captured run
 
@@ -226,7 +217,8 @@ minutehand run-all <folder> --agent agent.yaml [--samples N --seed S] -- <comman
                                                                -> every scenario in parallel, N times under seeds S..; exit 1 when a
                                                                   scenario misses its expect_outcome (a verdict, or a rate of them)
 minutehand fork <run_id> --at <seq> --changes fork.yaml [--seed S] -- <command>
-minutehand replay <run_id> --at <seq> [--frozen] -- <command>     -> the same run from a checkpoint with the agent as it is now;
+                                                               -> the agent's sandbox played back to the checkpoint, then the changes
+minutehand replay <run_id> --at <seq> [--frozen] -- <command>     -> the same from a checkpoint with nothing changed;
                                                                   frozen, exit 7 at the first model call the record does not hold
 minutehand replay-all cases.yaml --frozen -- <command>            -> every recorded case the change touched, and at which call
 minutehand runs
@@ -240,8 +232,8 @@ The same loop is served as MCP tools by `minutehand mcp` (see "What a coding age
 
 ```
 src/minutehand/
-  agent/              what an agent imports, standard library only: store.py (its memory), wake.py (its next wake),
-                      _store.py (the adapters and the run's backend), _wire.py (HTTP to the run's receiver)
+  agent/              what an agent may import, standard library only: store.py (its memory), _store.py (the adapters
+                      and the run's backend), _wire.py (HTTP to the run's receiver)
   domain/             pure: no I/O, no clock reads
     scenario.py       Model, Scenario, Person, Account, Speaks, Answers, Scripted, ScriptedReply, Intent, AfterScript,
                       ScriptedDecision, Window, Reminded, FactChange, ScriptedPress, FormInput, OutcomeRate, Rate,
@@ -255,8 +247,8 @@ src/minutehand/
     world.py          WorldEvent, Change, Stored, Exchange (CallOutcome, CallFailure), Captured, Body, RecordedCall, EntityRef,
                       TicketSnapshot, MessageSnapshot (with MessageAction), DocumentSnapshot, GrantSnapshot,
                       RecordSnapshot, InteractionSnapshot
-    agent.py          WakeRequest, AgentReport, Commitment, AgentUnderTest, Reported, Booked, Polled, Command,
-                      GoalByWake, GoalByMessage, HumanAction, Inbox, Marked, OwnDatabase
+    agent.py          AgentUnderTest, Sandbox, GoalByMessage, OwnDatabase, BaseUrl, Instructions; AgentReport and
+                      Commitment, what a standing world's harness relays of the agent it drives (a run holds none)
     outbound.py       Acknowledge, PassThrough, Replay, Forward, HostHeader, Answer, Route, MessageReading, InForks, OnMiss
     emulator.py       ExternalEmulator, Upstream, ReadyHttp, ReadyTcp, ReadyLog, Health, ErrorMarker, EmulatorHealth,
                       EmulatorChange, ADDED_HEADERS
@@ -272,15 +264,16 @@ src/minutehand/
     clock.py          Due, Jump, next_jump()
     run.py            RunRecord, StopReason, Verdict, VerdictKind, EmulatorUse, WakeLimit, wake_limit()
     errors.py         ServiceRefusal, Rendered, Asked: what leaves a provider's app
-    memory.py         SeededMemory, StoreCall (MemoryGet, MemoryList, MemoryWrite), WakeMark: the agent's memory on the wire
+    memory.py         SeededMemory, StoreCall (MemoryGet, MemoryList, MemoryWrite): the agent's memory on the wire
     telemetry.py      ReceivedSpan, StoredSpan, Attribute and its value kinds, SpanSource, Signal, ForwardFailure
   ports/              Store, Clock, Provider, ProvidesTransitions, SteersPeople, TalksToAgent, HoldsSeeded,
                       PushesEvents, ChangesDocuments, NotifiesChanges, DeclaresFaults,
                       ChangesPeople, GrantsPermissions, MintsInboundCredentials, OwnsSeed, BooksWakes, Wakes,
-                      AgentDriver, Reports, Replier, Telemetry
-  application/        orchestrator.py (the run loop), checkpoint.py, rewind.py, restore.py (a fork's agent proven),
-                      memory.py (the agent's memory in the log), replier.py and moments.py (people), run_clock.py,
-                      files.py, refusals.py,
+                      TakesReplies, DeliversPushes, Replier, Telemetry
+  application/        orchestrator.py (the run loop), sandbox.py (the agent's sandbox: its deadlines, its clock),
+                      checkpoint.py, rewind.py, restore.py (a fork's agent brought back), playback.py and trace.py
+                      (the agent's recorded inputs played into its sandbox), memory.py (the agent's memory in the
+                      log), replier.py and moments.py (people), run_clock.py, files.py, refusals.py,
                       model_calls.py (the join), standing.py and further_seed.py (`minutehand serve`)
   checks/             facts.py (the facts, public), assessments.py (the team's rules read over them), ledger.py,
                       runner.py, effectiveness.py, patterns.py, and the checks of the scenario's words and the
@@ -293,7 +286,7 @@ src/minutehand/
                       capture.py (outbound hosts: answering, keeping, reading a send, replay), worlds.py
     providers/<key>/  manifest.py, provider.py, app.py, wire.py, state.py, seed.py
     store/            sqlite.py
-    agent/            reported.py, polled.py, command.py, reach.py
+    agent/            delivery.py (the one door everything sent the agent goes through), inboxes.py, replies.py
     telemetry/        otel.py (what Minutehand sends), receiver.py (also the agent's memory and next wake), otlp.py,
                       forward.py (what the agent sends)
   session.py          the composition root: play(), fork(), load(), runs(), fork_points()
@@ -307,42 +300,28 @@ lints/                discovered by directory, no registration
 
 Every model extends `Model` (`frozen=True, extra="forbid"`). Kinds are `StrEnum` members and unions are discriminated on a `kind` literal, so nothing is decided by matching on a string.
 
-The contract with the agent:
+The agent file:
 
 ```python
-class WakeRequest(Model):
-    """ "It is now `now`; go." Sent each time the clock reaches a due moment."""
-
-    run_id: str
-    now: AwareDatetime
-    reason: WakeReason
-    goal: str | None = Field(default=None, description="Set on the START wake only")
-    direction: str | None = Field(default=None, description="What the owner said; set on a DIRECTION wake only")
-
-
-class AgentReport(Model):
-    """The answer to "are you still working?" and "when do you next need to wake?"."""
-
-    status: AgentStatus
-    next_wake: AwareDatetime | None = None
-    commitments: list[Commitment] | None = None
-
-
-WakeSource = Annotated[Reported | Booked | Polled | Command, Field(discriminator="kind")]
-
-GoalSource = Annotated[GoalByWake | GoalByMessage, Field(discriminator="kind")]
+class Sandbox(Model):
+    deadlines: list[str] = Field(min_length=1)
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the signed step goes")
+    quiet: timedelta = Field(default=timedelta(milliseconds=50), gt=timedelta(0))
+    settle_limit: timedelta = Field(default=timedelta(seconds=30), gt=timedelta(0))
 
 
 class AgentUnderTest(Model):
     name: str
-    goal: GoalSource = GoalByWake()
-    wakes: list[WakeSource] = []
+    sandbox: Sandbox
+    goal: GoalByMessage | None = None
+    take_limit: timedelta = timedelta(seconds=30)
+    tick: timedelta | None = None
     inbound: list[InboundTarget] = []
     inboxes: list[HttpInbox] = []
     own_databases: list[OwnDatabase] = []
 ```
 
-`WakeReason` is `START | DUE | PERSON_REPLIED | DIRECTION | TICK`; `AgentStatus` is `WORKING | IDLE | DONE`. `AgentUnderTest` refuses a goal sent by message on a provider it declares no inbound target for, and a goal handed over in a wake when it declares no way to be woken. `wakes` may be empty when the goal comes by message.
+`WakeReason` (`START | DUE | PERSON_REPLIED | DIRECTION`) labels each wake in the record with what reached the agent. `AgentUnderTest` refuses a goal sent by message on a provider it declares no inbound target for, and an agent file written for the wake kinds that are gone (`wakes:`), by name. Nothing crosses from Minutehand to the agent but the world's own events, and nothing from the agent to Minutehand but its calls and, when it opts in, its memory.
 
 What every provider records:
 
@@ -501,7 +480,7 @@ Every provider but GitHub is `Tier.FINISHED`. Whatever a person does to an item 
 | Family | Members (`kind`) | Names its target | Lands through | Wakes the agent |
 |---|---|---|---|---|
 | Ticket | `TicketHappening` (`ticket`): `action` is `Moves(to)`, `Reassigns(to: person or None)`, `Comments(text)` or `Deletes()` | the seeded ticket's `title`, exactly one | a person transition of the seeded item (`HoldsSeeded.seeded`, then `apply`: Asana, YouTrack, Jira) | never: it is found on the next read |
-| Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)`, `Trashed()`, `Commented(text)` or `FieldSet(field, value)`, as far as the provider's `Manifest.document_changes` allows | the seeded document's `title`, exactly one (a Notion seed's page or row is one by its `document`) | `ChangesDocuments.change` (Drive, Notion, Microsoft) | only when the agent watches (`NotifiesChanges`: Drive's `changes.watch`, a Graph subscription on the drive, a seeded Notion webhook); that wake carries no `WakeRequest`, and inside it `notify` sends what the service sends |
+| Document | `DocumentHappening` (`document`): `action` is `Edited(append)`, `Renamed(to)`, `Moved(folder)`, `Shared(access)`, `Trashed()`, `Commented(text)` or `FieldSet(field, value)`, as far as the provider's `Manifest.document_changes` allows | the seeded document's `title`, exactly one (a Notion seed's page or row is one by its `document`) | `ChangesDocuments.change` (Drive, Notion, Microsoft) | only when the agent watches (`NotifiesChanges`: Drive's `changes.watch`, a Graph subscription on the drive, a seeded Notion webhook); and inside that wake `notify` sends what the service sends |
 | Messaging | `MessagingHappening`: `PersonPosts` (`posts`), `PersonEdits` (`edits`), `PersonDeletes` (`deletes`), `PersonReacts` (`reacts`), `PersonJoins` (`joins`), `PersonAddsAgent` (`adds_agent`: Slack invites the bot to a channel; Teams installs the app in a channel or, with none, the person's own chat), `PersonOpensAgent` (`opens_agent`), `PersonCommands` (`commands`) | its own `provider`, channel and post keys | `PushesEvents.happen` (Slack, Microsoft) | yes, `PERSON_REPLIED`, as a pushed reply does |
 | The agent's own product | `PersonUses` (`uses`): one of the `uses` an inbox of the agent file declares, with its `inputs` word for word (a website's visitor opening a page, picking an option, writing to the agent) | the inbox's `name` and the use's `name` | the inbox's declared request, made as the person (`ReachesInbox.use`, `docs/inboxes.md`) | yes, `PERSON_REPLIED`, as a decision does |
 
@@ -638,43 +617,47 @@ Where the parent repository's emulator answered differently from Slack, the fake
 
 ```
 Orchestrator.run():
-  every provider seeds the world (actor SCENARIO); happenings, directions and the first Polled tick
-  enter `pending`
+  the sandbox's clock set to the scenario's start (SandboxClock.sync)
+  every provider seeds the world (actor SCENARIO); happenings and directions enter `pending`
   checkpoint (wake 0)
-  START wake: by message, the owner says the goal (PushesEvents.say); otherwise WakeRequest(START, goal)
+  START wake: the agent, started in its sandbox, does whatever it does on starting; an older scenario's owner
+              says the goal first, as a message (PushesEvents.say); the wake ends when the sandbox is idle
   loop:
+    the sandbox's deadlines read once it is idle (SandboxClock.settle): the earliest a task waits for enters
+                     `pending` as the agent's own timer (PendingTimer, DueSource.TIMER), in place of the one read before
     jump = next_jump(now, pending)
       None                  -> clock runs on to the deadline, checkpoint, stop NOTHING_PENDING
       jump.now > deadline   -> clock runs on to the deadline, checkpoint, stop DEADLINE_PASSED
-    clock.jump(jump.now)
+    clock.jump(jump.now); the step is owed to the sandbox and released once the wake it may start has begun
     only people's moves the service tells the agent of by no push, ticket or document happenings fired
                      -> People.act (ProvidesTransitions.apply), ChangesDocuments.change; no wake, unless the agent
                      watches a changed provider's documents (NotifiesChanges.watched), then a DUE wake in which
                      NotifiesChanges.notify tells it
+    only the agent's timer fired -> the sandbox released to it and settled; a timer that wrote nothing and called
+                     nothing is a runtime's housekeeping, withdrawn as a wake and learned for that task
     otherwise, one wake:
+      the sandbox released to the moment
       fire in order: people's moves (People.act -> ProvidesTransitions.apply: a reply, a control, a decision, a
                      ticket moved), happenings (a transition for a ticket, ChangesDocuments.change for a document,
                      PushesEvents.happen for a message), directions by message (say),
-                     bookings (BooksWakes.deliver_booking, .advance_booking), the next Polled tick
-      WakeRequest to each driver that must hear of it; AgentDriver.settled() waits until not WORKING
+                     bookings (BooksWakes.deliver_booking, .advance_booking); a booking's delivery waited for
+                     until the agent took it (ConfirmsDelivery), up to `take_limit`
+      SandboxClock.settle: the wake is over when every task in the sandbox is blocked and no call is in flight
       People.look: what now waits on each person in each provider (items_for), as it reads when the wake ends
                            -> a conversation: Replier.plan (when, and how) -> Replier.write (the words)
                            -> anything else: a take, or the model's pick at its moment
                            -> a PendingSnapshot in the log, due as PERSON_REPLY or TRANSITION
-      AgentReport.next_wake replaces the agent's previous DUE wake
-      the last next wake the agent marked in the wake (`minutehand.agent.wake`) replaces its next wake
-      checkpoint: a Checkpoint row in the log, carrying the agent's report and its memory's digest
-      stop on DONE (AGENT_DONE), the wake limit (WAKE_LIMIT), AgentFailed (AGENT_FAILED)
+      checkpoint: a Checkpoint row in the log, carrying the table and the agent's memory's digest
+      stop on the wake limit (WAKE_LIMIT), a sandbox that never falls idle or a refused push (AGENT_FAILED)
   RunRecord -> Scorer (the team's rules and checks, the core's checks) -> Telemetry.found, Telemetry.run_ended
 ```
 
-- A person answers a message as it reads when the people engine looks at it, at the end of the wake (`application/people.py`). A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. Their answer is planned and its words written then, and kept on the engine's record of the ask (`PendingSnapshot.plan`, `PendingSnapshot.answer`) until its moment, when it lands and is kept as said. An edit in a later wake that changes what the ask says or offers is put to the person again unless they have already answered it: the answer on its way is planned and written afresh from the new text, and an ask that, so read, needs no answer passes (`PendingStatus.PASSED`) and opens no wait (`test_an_ask_edited_into_one_that_needs_no_answer_opens_no_wait`). Only what landed is in the `replies` table; the ledger reads an answer planned and not yet landed from the engine's record.
-- A `Reported` wake is asked for its report after `report_first_after`, then at doubling intervals up to `report_at_most_every`; one still WORKING after `working_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says which limit it hit.
-- When one jump fires several things, the wake carries the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, `DUE`, `TICK`.
-- A wake made only of bookings sends no `WakeRequest`: the scheduler's delivery is the wake. The loop still polls the agent's main driver (if it has one) until it is not `WORKING`, adopts its report and counts what it wrote in that wake. It cannot see whether the agent's own poll of its queue has picked the delivery up yet: an agent that answers `IDLE` before it has is moved on past it.
-- A wake whose only news is a pushed event, to an agent with no wake endpoint, sends nothing either: the push is the wake.
-- Every `Polled` tick is a wake and counts toward the wake limit (`domain/run.wake_limit`). The scenario's `max_wakes` sets it. Without one, a scenario with a deadline and an agent with a rhythm of its own (a polled wake's `every`, or the agent file's `tick` for an agent that reports or books its next wake) gets every tick up to the deadline and 20 more, for the wakes replies and happenings bring; anything else gets 20. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it. What it gets wrong: an agent that reports hourly wakes and declares no `tick` is held to 20 wakes, less than a day; the message says to declare it.
-- An agent that refuses a pushed event fails the wake as one that refuses the wake does.
+- A person answers a message as it reads when the people engine looks at it, at the end of the wake (`application/people.py`). A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. Their answer is planned and its words written then, and kept on the engine's record of the ask (`PendingSnapshot.plan`, `PendingSnapshot.answer`) until its moment, when it lands and is kept as said. An edit in a later wake that changes what the ask says or offers is put to the person again unless they have already answered it: the answer on its way is planned and written afresh from the new text, and an ask that, so read, needs no answer passes (`PendingStatus.PASSED`) and opens no wait. Only what landed is in the `replies` table; the ledger reads an answer planned and not yet landed from the engine's record.
+- Nothing is asked of the agent. A wake ends when its sandbox is idle on two reads `quiet` apart with no call in flight; one still busy after `settle_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says so. There is no `done`: whether the work is finished is read from the world ("The verdict").
+- When one jump fires several things, the wake is recorded under the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, then `DUE`.
+- A wake made only of bookings is the scheduler's delivery: the loop waits for the agent to take it when the scheduler can tell (`ConfirmsDelivery`), up to `take_limit`, then for the sandbox to fall idle.
+- The wake limit (`domain/run.wake_limit`): the scenario's `max_wakes`; else, with a window or a deadline and a rhythm the agent file declares (`tick`), every tick across it and 20 more, for the wakes replies and happenings bring; a window with no rhythm gets one wake a simulated minute across it, a guard against an agent waking itself without end; anything else gets 20. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it.
+- An agent that refuses a pushed event fails the wake.
 
 ## Implementation
 
@@ -710,7 +693,7 @@ What a run leaves behind (`session.py`):
                                      record, and where the two parted
 <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
                                      `own_databases`, outside forks
-<state>/runs/<run_id>/restore.json   for a fork: how its agent was found at its start (its memory, its report)
+<state>/runs/<run_id>/restore.json   for a fork: how its agent was brought back (its memory, its playback)
 ```
 
 `world.db` holds ten tables: `run` (each run and the seq, call count and wake it was forked at), `event`, `entity_version`, `exchange`, `reply`, `span` (the agent's spans, see "Telemetry"), `wake_edge` (the real moment each wake began and ended), `forward_failure`, and two that keep bytes once: `content` (stored bodies) and `span_body` (which span attribute values are stored bodies). The agent's memory is entity versions like any other.
@@ -836,8 +819,8 @@ what the client sends until the TLS ClientHello's server name (port 443) or the 
 `minutehand env --format redirect` prints the `iptables` DNAT rules the agent's container runs as root; the Compose
 override mounts them and adds `NET_ADMIN`. mitmproxy's own transparent mode reads the original destination from the
 kernel (`SO_ORIGINAL_DST`), which knows it only in the namespace that rewrote the connection, so it cannot serve a rule
-in the agent's container. Not built: the same for the `Contained` sandbox (a `PREROUTING` rule on the sandbox's link),
-IPv6, ports other than 80 and 443.
+in the agent's container. Not built: the same for the agent's sandbox (a `PREROUTING` rule on the sandbox's link),
+which is what makes the proxy the sandbox's only route out; IPv6, ports other than 80 and 443.
 
 When nothing captures such a client, the run says so (`application/around_proxy.py`, `checks/around_proxy.py`;
 `tests/checks/test_around_proxy.py`, `tests/e2e/test_around_proxy_run.py`). An HTTP client span the agent exported for
@@ -1234,7 +1217,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 | `ENVIRONMENT_FAILED` | The run stopped `ENVIRONMENT_FAILED`: an external emulator it forwarded to was unavailable (`docs/external-emulators.md`). Not the agent's failure; the checks still run and are listed | 2 |
 | `FAILED` | Any finding is `FindingKind.FAIL` | 1 |
 | `NOT_JUDGED` | No finding failed, and a check that reads wakes had none (a standing world nobody stepped). `Verdict.unjudged` lists each reason; it is never `PASSED`. A run whose files declare no rule is still judged: the assessment of its effects (`items`) reads every run | 5 |
-| `PASSED` | No finding failed, and the agent reported `DONE`, or nothing was left open: no wait the world had not settled and no commitment its last report held `OPEN` | 0 |
+| `PASSED` | No finding failed, and nothing was left open: no wait the world had not settled (in a standing world, also no commitment the harness's relayed report held `OPEN`, or the harness relayed that the agent was done) | 0 |
 | `UNFINISHED` | No finding failed, the run stopped any other way (`WAKE_LIMIT`, `DEADLINE_PASSED`, `NOTHING_PENDING`, `AGENT_FAILED`, or a captured run that does not say), and a wait or a commitment was still open | 3 |
 | `TOOL_FAILED` | Minutehand failed answering any call (`CallOutcome.INTERNAL_ERROR`, below): the run says nothing about the agent, whatever the checks found, and the verdict names the first such call | 4 |
 | `SIMULATION_INCOMPLETE` | Neither of the two above, and the simulated world did not play as its files declare: an incomplete kind of the run's health ("The simulation's health", below). The agent is still judged on what did happen: that verdict's kind is kept in `Verdict.on_what_happened` and its sentence follows "on what did happen:" in the words, so a failure is never hidden by it | 6 |
@@ -1242,7 +1225,7 @@ Built and tested (`checks/runner.verdict`, `tests/checks/test_verdict.py`, `test
 
 ```
 run 5c1e0a9f2b77: partner_pricing
-  Not finished: no check failed, but the agent never reported it was done; the run stopped at its wake limit, with 1 wait still open.
+  Not finished: no check failed, but work was left open; the run stopped at its wake limit, with 1 wait still open.
   the wake limit was 20: the default: the scenario sets no max_wakes and has no deadline to size one from; set `max_wakes` in the scenario, or declare the agent's rhythm (`tick` in the agent file) so the deadline sizes it
 ```
 
@@ -1250,10 +1233,9 @@ Exit 3 is not a failure: a scenario whose point is that nobody answers ends at i
 
 What the rule gets wrong:
 
-- **It takes `DONE` at the agent's word.** An agent that reports done with a question it asked unanswered passes, unless a rule says otherwise. The verdict once held two rules of its own here (done with an ask never followed up was `UNFINISHED`, and a "follow-up" in the same wake as the ask did not count); both were opinions, and both are now rules a team may write: `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0`, and `each: ask`, `count: {follow_ups: {}, until: ask+PT1H}`, `at_most: 0`.
-- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question, the owner's included: a message telling a silent owner the result keeps the run `UNFINISHED` unless the agent reports `DONE` (or the scenario declares `expect_outcome: unfinished`). The verdict once read such a message as "the result being reported" once every expectation was met; that was Minutehand's reading, not the user's, and is gone.
-- **Nothing open is read as finished.** An agent stopped at a limit that reports no commitments and has no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
-- **A commitment counts only as the agent reported it.** An agent that reports none is judged on waits alone.
+- **In a standing world it takes `done` at the harness's word.** A harness that relays done with a question the agent asked unanswered passes, unless a rule says otherwise: `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0`. A run holds no such word: the agent is asked nothing.
+- **A wait on a `Silent` person is never settled,** since every message to them is an unanswered question, the owner's included: a message telling a silent owner the result keeps the run `UNFINISHED` (or the scenario declares `expect_outcome: unfinished`). The verdict once read such a message as "the result being reported" once every expectation was met; that was Minutehand's reading, not the user's, and is gone.
+- **Nothing open is read as finished.** An agent stopped at a limit with no wait open passes, though its goal may be untouched; only the expectations can say the goal was not met.
 
 
 #### The simulation's health
@@ -1316,7 +1298,7 @@ CREATE TABLE IF NOT EXISTS entity_version(
 - **The world as of any moment is a query:** the latest version of each entity at or below a sequence number. Rewinding does not restore anything; it moves the point the fakes read from.
 - **A fork is a child run that shares its parent's log up to a sequence number** and writes its own rows after it (`SqliteStore.fork`). No copy is made. It also sees the calls its parent had recorded by then, and none after.
 - **Providers do not know.** They read and write through the store, which applies "as of" for them.
-- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, commitments, everything pending, and the agent's last report and its memory's digest) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand run` and `findings` list the ones that exist and say which are restorable.
+- **A fork starts only at a checkpoint.** At the end of every wake, and at setup and at the deadline the clock runs on to, the run loop appends a `Checkpoint` (the clock, the decided reply count, scheduled fates, everything pending, and the agent's memory's digest) as an entity in the same log (`application/checkpoint.py`). `fork_run` refuses any other `at_seq`; `minutehand run` and `findings` list the ones that exist and say which are restorable.
 
 What a rewind needs beyond the world:
 
@@ -1325,49 +1307,48 @@ What a rewind needs beyond the world:
 | The clock and everything pending | The `Checkpoint` row at the fork's seq | Built |
 | People's replies already given | The `reply` table; copied up to the fork with every moment drawn, decided and drawn fresh after it under the fork's seed; the model's words for the same context replayed from `person_call` | Built |
 | The agent's memory | It is the same log: a fork reads its parent's up to the checkpoint, and proves it by its digest (below) | Built and tested |
-| What the agent keeps outside its memory | Not at all: a database it names is handed fresh and empty; anything else is the agent's. A fork whose agent's report differs from the checkpoint's is refused, naming it (below) | Refused when the report shows it; silently wrong when it does not |
+| The agent's sandbox: its processes, files, timers, whatever it holds in memory | Played back from the record: a fresh sandbox started at the run's start, the agent's recorded inputs played into it wake by wake up to the checkpoint ("Playback") | Built; not run against a real sandbox |
+| A database the agent file names | Not at all: handed fresh and empty, and the run says so | Said, never rewound |
 | AWS's own queues and schedules | Not at all: moto keeps them in process memory, outside the log, and the fork's app takes a fresh account. The manifest says so (`Manifest.state_outside_log`), and a fork at any checkpoint after the parent first called AWS, or wrote an AWS record, is refused, naming the provider, its first call and what it keeps (`application/rewind.py`; `tests/e2e/test_booked_on_aws.py`). A fork before the first call runs. | Refused, never silently wrong |
 
 #### The agent's memory
 
-Built and tested (`src/minutehand/agent/`, `domain/memory.py`, `application/memory.py`, the receiver's `/minutehand/agent` routes; `tests/agent/test_store.py`, `tests/e2e/test_memory_run.py`, `tests/orchestrator/test_rewind.py`, `tests/orchestrator/test_fork_start.py`). Minutehand owns the agent's time and its memory; recording and rewinding follow from that. An agent's whole contact with Minutehand is one import, inert in production:
+Built and tested (`src/minutehand/agent/`, `domain/memory.py`, `application/memory.py`, the receiver's `/minutehand/agent/store` route; `tests/agent/test_store.py`). Minutehand owns the agent's time; its memory is the one thing an agent may hand it, through one import, inert in production:
 
 ```python
-from minutehand.agent import store, wake
+from minutehand.agent import store
 
 store.configure(store.SqliteBackend("agent.db"))  # production: where the memory lives; ignored under Minutehand
 
 
-def on_wake(now: datetime) -> None:
+def check_asks(now: datetime) -> None:  # the agent's own scheduler calls this; its timer is its next wake
     for key, ask in store.query("asks/", where={"status": "asked"}):
         if datetime.fromisoformat(ask["expected_by"]) <= now:
             follow_up(key)
             store.put(key, {**ask, "status": "chased", "expected_by": (now + timedelta(days=2)).isoformat()})
-    wake.at(earliest_expected_by())  # the next wake; does nothing in production
 ```
 
 | | Production (MINUTEHAND_ON unset) | Under Minutehand (`minutehand run` sets MINUTEHAND_ON and MINUTEHAND_AGENT_URL) |
 |---|---|---|
 | `store` | A pass-through to the backend `configure` named: a three-method adapter (`Backend`: `get`, `scan`, `write` over JSON text). `SqliteBackend`, shared by every process opening the same file, and `MemoryBackend` ship; any other database is an adapter of its own (`docs/agent-contract.md`, "Writing an adapter"). Nothing is recorded. | The run's memory, over HTTP to the receiver (`POST /minutehand/agent/store`, the receiver's host being in the agent's `NO_PROXY`). The backend `configure` named is never called, so the agent's real database is not opened (`SqliteBackend` opens its file at its first call). |
-| `wake` | Does nothing; the agent's own scheduler does the work. | `wake.at(moment)` is recorded as the agent's next wake (`EntityKind.NEXT_WAKE`, actor AGENT): the last said in a wake replaces any it marked or reported before; `wake.clear()` says none. |
 
-- **The API.** `get(key, default)`, `put(key, value)`, `delete(key)`, `list(prefix)` (ordered by key), `query(prefix, where={field: value})` (a field may be a dotted path), `batch()` (all or none, `with` or `async with`), `collection(name)` (a namespace of its own keys), and `aget`, `aput`, `adelete`, `alist`, `aquery`. Values are JSON; anything else is refused when written. The package imports the standard library only (`test_the_agent_package_imports_nothing_but_the_standard_library`).
+- **The API.** `get(key, default)`, `put(key, value)`, `delete(key)`, `list(prefix)` (ordered by key), `query(prefix, where={field: value})` (a field may be a dotted path), `batch()` (all or none, `with` or `async with`), `collection(name)` (a namespace of its own keys), and `aget`, `aput`, `adelete`, `alist`, `aquery`. Values are JSON; anything else is refused when written. The package imports the standard library only (`test_the_agent_package_imports_nothing_but_the_standard_library`). Nothing in it says when the agent next wakes: that is its own scheduler's, observed from the sandbox.
 - **What a run records.** Each write is an entity version in the world's log: `EntityKind.MEMORY`, provider `memory`, external id `<collection>/<key>`, actor AGENT, the wake and simulated moment it was made at, the value as canonical JSON in its `MemorySnapshot`. A batch is one transaction (`Store.apply_all`). Each read is counted in its wake (`WakeRecord.memory_reads`, from `application/memory.Reads`), and kept as an event with no version (`READ` for a get, `SEARCH` for a listing) only when it is the first of its key or prefix in the wake or finds something other than the last one kept did; `memory_writes` counts the writes. A read not kept found what the log already says was found: the reference agent's worker lists its queue every 50 ms, and a run of it kept 71 to 125 reads (more the slower the machine ran, 136 to 190 events in all) and keeps 53 to 57 (118 to 122), loaded or not, while `memory_reads` still counts every one (`test_a_poll_of_memory_that_has_not_changed_is_counted_every_time_and_kept_in_the_log_once`). Neither counts as a change to the world (`world_changes`, `writes`), the viewer's events or a fork's first difference: they are the agent's own memory, not something a person could see.
 - **Where a run's memory starts.** From the scenario's `memory:` (`SeededMemory`: a key, its JSON value, an optional collection), written as actor SCENARIO before the first wake, and nothing else. Each sample is a run of its own, so samples are independent in their memory.
 - **Robustness.** A call that never reached Minutehand, or one answered 502, 503 or 504, is tried again, six times over about three seconds; then `MinutehandUnreachable`, naming the URL. With MINUTEHAND_ON set the store never falls back to the agent's own database. Any other refusal is `MinutehandRefused` with what the receiver said. `minutehand env` hands MINUTEHAND_ON always, and MINUTEHAND_AGENT_URL when the receiver's port is fixed (`--telemetry-port`; the receiver runs whether or not telemetry is received); an agent handed the first without the second refuses to use its store. Under `minutehand serve` neither is handed: a standing world holds no agent's memory, and the store stays the team's own.
 - **What program the agent is.** When Minutehand starts the agent's command, it keeps beside the run what program that was (`application/program.py`, `program.json`): the command, the folder, the git commit there, and a digest of the code (the commit, the changes not yet committed, the files not yet added and not ignored, and every file the command names outside the repository; never the state directory or bytecode). A fork whose agent's command or code differs from its parent's names it among what it changed (`its program's code: <commit> -> <commit> with uncommitted changes`), so a fork made to try a fix to the agent's code does not read as a rerun. An agent Minutehand does not start, or one with no repository and no file on its command line, has no code to compare, and nothing is said.
-- **A fork** reads its parent's log up to the checkpoint, so its memory is exactly the parent's there, with nothing copied, replayed or restarted. Every checkpoint keeps the memory's digest (`Remembered.memory`) and the agent's last report. A fork (`application/restore.start_fork`) proves the memory it sees digests the same, starts the agent's program once the fork exists when Minutehand runs it (so whatever it reads as it starts is the fork's: the receiver holds the agent's calls until then), and asks for the agent's report, which must equal the one recorded at the checkpoint (`differences`). A report that differs is refused, naming the likely cause: state outside the store, or, when the agent's program is not the one that made the checkpoint (`program_changes`), the new code reading the memory in another shape or planning otherwise from it, with the two ways out (replay from the start, or `memory_edit` to the shape it writes). An agent with no report endpoint is forked with its memory proven and its report unverified, and `restore.json` says so.
-- **A fork that changes the agent's memory** (`MemoryEdit`: keys `put` and `delete`d, written as actor SCENARIO once the fork's memory is proven the checkpoint's) leaves the agent's plan at the checkpoint, made from the old memory, possibly wrong: a follow-up planned for a person the edit marks as answered. So such a fork asks the agent for its report again, and its own planned wakes in the table (its reported or marked next wake, its sandbox timer, a booking) are replaced by the next wake it now names, each closed `REPLACED` in the log; what the scenario owes (replies, happenings, directions, fates, machine commands, late or second deliveries) and a `Polled` agent's declared rhythm stay as the checkpoint holds them. Its report is then not compared, and `restore.json` keeps it as `replanned`. An agent with no report endpoint cannot be asked, and a fork that edits its memory is refused. A fork without memory changes needs no re-ask: its memory and its plan match by construction, and its report is compared as above (`test_a_fork_that_marks_the_person_answered_in_memory_drops_the_follow_up_the_agent_had_planned`).
-- **A checkpoint a fork cannot start from.** One after which the agent went on writing its memory in the same wake (it reported IDLE while a process of its own still wrote) holds memory it had not finished writing: `minutehand checkpoints` and `findings` list it as not restorable, naming the first late write, and a fork from it is refused.
+- **A fork** reads its parent's log up to the checkpoint, so its memory is exactly the parent's there, with nothing copied. Every checkpoint keeps the memory's digest (`Remembered.memory`). A fork (`application/restore.start_fork`) proves the memory it sees digests the same, starts the agent's program (its sandbox) once the fork exists, so whatever it reads and calls as it starts is the fork's, and plays the agent's recorded inputs into the sandbox up to the checkpoint ("Playback"). A playback that parts is refused, naming the call and the likely cause: when the agent's program is not the one that made the checkpoint (`program_changes`), the new code calling something else or in another order, with the way out (`minutehand replay`, which goes live where the two part); otherwise something the agent draws from outside the record.
+- **A fork that changes the agent's memory** (`MemoryEdit`: keys `put` and `delete`d, written as actor SCENARIO once the fork's agent stands at the checkpoint) asks the agent nothing: its timers and bookings planned from the old memory stand, and it finds the changed memory on its next read, as it would find a database changed under it.
+- **A checkpoint a fork cannot start from.** One after which the agent went on writing its memory in the same wake (its sandbox fell idle before the agent had finished) holds memory it had not finished writing: `minutehand checkpoints` and `findings` list it as not restorable, naming the first late write, and a fork from it is refused.
 
-**What is not part of a run.** Only state written through the store is. Whatever the agent writes anywhere else, its own database, files, a cache, a variable in a process that outlives a wake, is not simulated, not kept apart between runs, and not rewound by a fork, so the agent's later calls can depend on state from another moment or another run. What Minutehand can see of it, it reports:
+**What is part of a run.** Everything the agent is lives in its sandbox, and the sandbox is brought back from the record ("Playback"), so a fork rewinds the agent's files, its processes and whatever it holds in memory as well as the world. Two things are outside that:
 
-| Detected | How |
+| Outside the record | What is done |
 |---|---|
-| What the agent read and wrote through the store, per wake | `WakeRecord.memory_reads`, `memory_writes`; the `memory` count of the assessment language reads the keys at any moment (`docs/assessments.md`) |
-| A database of the agent's own | The agent file names the variable it reads the location from (`own_databases: [{env: AGENT_DB, form: file \| sqlite_url}]`); every run and every fork is handed a fresh empty SQLite file in it (`<state>/runs/<run_id>/own/<VARIABLE>.sqlite`), so no run reads another's or production's. The run's notes say it is outside forks, and each checkpoint at which the file holds anything says so (`Remembered.outside`), which `checkpoints`, `findings` and the fork's account repeat. A PostgreSQL or other server is the team's to provide per run. |
-| State outside the store that the agent's report reflects | The fork's report comparison, above |
-| State outside the store that its report does not reflect | Nothing. A fork from it plays on silently wrong. |
+| A database of the agent's own, outside the sandbox | The agent file names the variable it reads the location from (`own_databases: [{env: AGENT_DB, form: file \| sqlite_url}]`); every run and every fork is handed a fresh empty SQLite file in it (`<state>/runs/<run_id>/own/<VARIABLE>.sqlite`), so no run reads another's or production's. The run's notes say it is outside forks, and each checkpoint at which the file holds anything says so (`Remembered.outside`), which `checkpoints`, `findings` and the fork's account repeat. A PostgreSQL or other server is the team's to provide per run. |
+| Something the agent draws from outside the record: a random number, a thread's timing, a clock it reads around the sandbox's | A playback parts where it first changes what the agent calls, and the fork is refused there, naming the call. What never changes a call is not seen. |
+
+What the store still adds: the agent's memory is readable in the record (`memory_reads`, `memory_writes`, the `memory` count of the assessment language, the viewer's memory view), and a `MemoryEdit` can change it at a fork.
 
 What no fork can rewind, beside that, said in the refusals: what a real third-party service the run reached keeps (the proxy refuses unclaimed hosts, but a tunnelled host, a model API, is reached for real); what a model provider keeps on its side (a stored conversation or response, a cache, a batch, an uploaded file); the AWS provider's queues and schedules, in moto's memory.
 
@@ -1407,7 +1388,7 @@ class Fork(Model):
 
 #### The agent as it is now, from a checkpoint
 
-Built and tested (`session.replay(at_seq=, frozen=)`, `adapters/proxy/replay.py`, `replay_all.py`; `tests/e2e/test_replay.py`, `tests/proxy/test_replay_model_calls.py`, `tests/checks/test_verdict.py`). Most of what a team changes is its agent's code and prompts, and nothing in the scenario; a fork's changes file is setup for nothing then. `minutehand replay <run> --at <seq> -- <command>` plays a finished run on from one of its checkpoints with the agent as it is now: the world, the clock, everything pending and the agent's memory as they stood there (a fork with no overrides, by `session.fork`), its model calls answered from the record until it asks something the record does not hold, and live from that call on. Which call that is tells where the change took effect; `program.json` says the code changed; `replayed.json` says how many calls the record answered and where the two parted.
+Built (`session.replay(at_seq=, frozen=)`, `adapters/proxy/replay.py`, `replay_all.py`; `tests/proxy/test_replay_model_calls.py`, `tests/checks/test_verdict.py`; no whole run in the suite). Most of what a team changes is its agent's code and prompts, and nothing in the scenario; a fork's changes file is setup for nothing then. `minutehand replay <run> -- <command>` plays a finished run again from its start with the agent as it is now, in a fresh sandbox: its model calls answered from the record until it asks something the record does not hold, and live from that call on. `--at <seq>` is a fork with no overrides: the agent's sandbox played back to the checkpoint from its recorded inputs, then live. Which call parts tells where the change took effect; `program.json` says the code changed; `replayed.json` says how many calls the record answered and where the two parted.
 
 `--frozen` sends nothing to a model. The first call the record does not hold is refused to the agent (422, `minutehand_frozen_replay`, a status no model client retries), every call after it the same, and the run stops `REPLAY_PARTED`: the verdict `REPLAY_PARTED`, exit 7, says the agent is not judged on it, and `replayed.json` keeps the call the agent sent beside the call the record held next (`ReplayRecord.parted_at`), so a changed prompt is read off its first changed request. A frozen replay the record answers whole ends as its parent did: the same world, the same words, the same verdict. The run loop asks the record after every wake and at the end (`Orchestrator`'s `Replay`), so whatever the agent did after the refusal, the run is the parting. `fork --frozen` does the same for a fork with changes.
 
@@ -1418,7 +1399,7 @@ What the record cannot do: it answers a request only when the body matches byte 
 A fork is told the same way on every surface (`application/forks.py`, `ForkAccount`; `minutehand findings` and
 `runs`, the viewer's `GET /api/runs/{run_id}` as `fork` and its run list as `changed`, and so over MCP): the checkpoint it split from, after which wake and at what simulated moment; each override
 in words, from what to what (the `Fork` is kept as `fork.json` beside `restore.json`); whether its agent was
-verified and by what (`Restored.verified_by`: its memory, its report) or why not; and, once both runs have
+verified and by what (`Restored.verified_by`: its memory, its playback) or why not; and, once both runs have
 finished, the two verdicts, each scorecard line that differs, findings gained, lost and changed, and the first
 change in the world after the split at which the two records part (`tests/web/test_fork_account.py`). The viewer
 marks the split on the timeline and gives this account in its forks view, under the tree of the run and its forks.
@@ -1442,21 +1423,17 @@ It is the reason the hosted service is more than the open-source tool run for yo
 
 ### How the clock knows what is next
 
-The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`, `TICKET_FATE`). Four sources produce one, and a run may use several at once (`adapters/agent/reach.py` assembles them into `Reach`).
+The clock jumps to the earliest `Due` (`AGENT_WAKE`, `PERSON_REPLY`, `DIRECTION`, `TICKET_FATE`). Three sources produce one, all observed, and nothing is asked of the agent:
 
 | Source | What the agent must do | Exact? | Cost of a quiet fortnight | State |
 |---|---|---|---|---|
 | **Replies and pushed events** | Nothing. The monitor plays the people and delivers through the provider: pushed (Slack, Teams), or landed where the agent reads them and found on its next poll (a Gmail reply, a Calendar guest's answer, through `ProvidesTransitions.apply`, which wakes nobody unless the service tells the agent) | Yes | None | Built (Slack, Microsoft, Google Workspace) |
-| **`Booked`**: the agent books wake-ups with a scheduler | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. | Yes | None | Built and tested through a whole run on AWS (`tests/e2e/test_booked_on_aws.py`) |
-| **`Reported`**: the agent answers `next_wake` at `report_url` | An endpoint, or an adapter beside its tests | Yes | None | Built and tested |
-| **`Marked`**: the agent marks its next wake with `minutehand.agent.wake`, and is woken at `wake_url` | One import, and a wake endpoint whose call returns when the wake is done | Yes | None | Built and tested (`tests/orchestrator/test_wake_marks.py`); a mark is also the next wake of any other source, replacing what it reported in that wake |
-| **`Command`**: one process per wake, `WakeRequest` on stdin, `AgentReport` on stdout | A command | Yes | None | Built and tested |
-| **`Polled`**: the agent is invoked every `every` (default 5 minutes) and decides for itself | Declare the rhythm | Yes, at that rhythm | One call per tick: 4,032 calls for 14 days at 5 minutes, each a wake counted against the wake limit, which a deadline and this rhythm size | Built and tested |
+| **A booking**: the agent books wake-ups with a scheduler it calls (Cloud Tasks, EventBridge Scheduler) | Nothing. The booking is an outbound call the proxy already intercepts; a scheduler provider (`Manifest.books_wakes`) records the time and delivers when the clock reaches it. Every installed scheduler provider is in every run, bound to its table. | Yes | None | Built at the providers (`tests/providers/aws/`, `tests/providers/google_cloud_tasks/`); no whole run in the suite |
+| **Its own timer**: a sleep, a scheduler loop's next check, a backoff, read from the sandbox's kernel as the earliest deadline a task waits for, and released by moving the sandbox's clock | Nothing | Yes | None | Built against the control calls' contract; not run against a real sandbox |
 
-- `Polled` never skips a tick, never names a next wake and never reports `DONE`. Skipping is only safe when the agent says when it next matters, which is `Reported`.
-- An agent may declare one `Reported` or `Command` source and one `Polled` source; `reach_for` refuses two of either. An agent with only `Booked` wakes must take its goal by message.
-- An agent whose scheduler is an in-process loop over its own database is `Reported` through an adapter: nothing can intercept that loop.
-- `Booked` is the source that makes a stranger's agent work with no adapter. `tests/providers/aws/test_aws_provider.py` shows it at the provider: a stock `boto3` client with no endpoint override creates an EventBridge Scheduler schedule targeting an SQS queue; `ReceiveMessage` finds nothing before the booking fires and the schedule's input after.
+- A timer that fires and does nothing the run can see (an HTTP server's poll, a garbage collector's tick) is a runtime's housekeeping: withdrawn as a wake, and the period it fired at learned for that task, so a run is not stopped at every poll (`Orchestrator._timer_did_something`, `SandboxDeadlines.earliest`).
+- A booking is the source that lets a scenario's dispatch rules deliver a wake late, twice or never; a timer is nobody's to deliver, so no rule is about it.
+- `tests/providers/aws/test_aws_provider.py` shows a booking at the provider: a stock `boto3` client with no endpoint override creates an EventBridge Scheduler schedule targeting an SQS queue; `ReceiveMessage` finds nothing before the booking fires and the schedule's input after.
 
 Every scheduler is translated into one internal shape (`Due`, booked through `Wakes`), so the clock knows nothing about any vendor:
 
@@ -1465,7 +1442,7 @@ Every scheduler is translated into one internal shape (`Due`, booked through `Wa
 | AWS EventBridge Scheduler | `CreateSchedule`, `UpdateSchedule`, `DeleteSchedule` with `at(...)`, `rate(...)` or `cron(...)` (no `L`, `W`, `#`), a timezone, start and end dates, state, `ActionAfterCompletion` | Into the target SQS queue (with `MessageGroupId` for FIFO), where the agent's own poll finds it; taken (`ConfirmsDelivery`) when the agent deletes the message (`DeleteMessage`, `DeleteMessageBatch`, JSON or query protocol), and the run waits for that | Built and tested at the provider and through a whole run. Any other target is refused when the schedule is created. Each booking, delivery and the agent's delete of a delivery is in the log; the queues themselves are in moto's memory. |
 | SQS delay | `DelaySeconds` | moto's own, on the run's clock (`aws/clock.py`) | The agent finds it on its first poll after the delay; nothing wakes it |
 | Google Cloud Tasks | `CreateTask` with an HTTP request and a `scheduleTime`, on the client's default gRPC transport or its REST one (`transport="rest"`, Node's `fallback: true`) | An HTTP call to the task's URL with Cloud Tasks' headers; a non-2xx answer retried with the queue's backoff; taken once the handler answers (`ConfirmsDelivery`) | Built and tested through whole runs on both transports (`google_cloud_tasks`). gRPC is answered from a gRPC server of Minutehand's ("gRPC and WebSockets") and needs `minutehand[grpc]`. |
-| A fixed schedule set at deploy time (Cloud Scheduler, a Kubernetes CronJob, Vercel cron) | Not booked at run time at all | `Polled`, with the schedule written in the agent file | Designed |
+| A fixed schedule set at deploy time (Cloud Scheduler, a Kubernetes CronJob, Vercel cron) | Not booked at run time at all | Not yet: a provider for the scheduler the agent is deployed on, seeded with its schedule, delivering as it does | Designed |
 | A workflow engine's timers (Temporal, Inngest) | Inside the engine | The engine's own time-skipping test server would have to be driven | Not designed |
 
 #### A call that waits on the world
@@ -1487,30 +1464,31 @@ Built and tested (`application/dues.py`, `tests/orchestrator/test_dues.py`, `tes
 
 | Rule | Why |
 |---|---|
-| A next wake the agent names again, the same moment, is the entry already there | An agent asked for its report after every wake would otherwise read as rescheduling every wake |
+| The agent's timer read again, the same moment, is the entry already there | The sandbox's deadlines are read before every jump; an unchanged timer is not a new plan |
 | A next wake of none cancels the one before; a booking deleted is cancelled; a reply planned again is cancelled and booked anew | Each is the plan changing, and a check can see when |
 | A fork takes up its checkpoint's table against the log it shares: an entry the checkpoint dropped (a reply a `PersonChange` withdrew) is cancelled at the fork, and one it added is entered | The fork's table and its log agree from its first event |
 | The rows are left out of the viewer's event list, as checkpoints are, and no check counts them as the agent's | They are the run loop's own record, not the world |
 
-`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/facts.planned_wakes` reads the agent's own plan from it: each wake the agent asked for itself (reported, booked, its rhythm, its timer) at the moment it was due, a late or second delivery left out, since that is the scenario's. What it cannot see: a plan the agent holds and never reports or books (an in-process scheduler), which reads as no plan. 
+`RunView.dues` carries every entry as it last stood; None for a run that kept none (a captured run, a standing world, whose clock is driven from outside). `checks/facts.planned_wakes` reads the agent's own plan from it: each wake the agent asked for itself (a booking, its own timer) at the moment it was due, a late or second delivery left out, since that is the scenario's. An in-process scheduler's next check is a timer, read from the sandbox: every plan the agent holds is seen.
+
 #### Deciding what to dispatch
 
 Built and tested (`DispatchRule`, `Dues.dispatch`, `tests/orchestrator/test_dispatch.py`). Real schedulers deliver late, twice (an at-least-once queue) and not at all, and a scenario can say so of the agent's own wakes:
 
 ```yaml
 dispatch:
-  - {wakes: reported, nth: 2, fault: late, by: PT3H}   # the agent's second reported wake comes 3 hours late
-  - {wakes: polled, fault: twice, by: PT1M}             # every tick is delivered again a minute after
-  - {wakes: reported, nth: 4, fault: dropped}           # the fourth never comes
+  - {wakes: booked, nth: 2, fault: late, by: PT3H}     # the agent's second booked wake is delivered 3 hours late
+  - {wakes: booked, fault: twice, by: PT1M}            # every booking is delivered again a minute after
+  - {wakes: booked, nth: 4, fault: dropped}            # the fourth never comes
 ```
 
 The decision is made when the wake's moment comes, and recorded on its entry (`DueEntry.fault`, closed `DELAYED` or `DROPPED`, or `FIRED` for the first of two). A late or second delivery is an entry of its own carrying the moment the agent asked for (`asked_for`): it is on its way, so a new report from the agent does not take it back, and a tick of it books no next tick. A late or dropped tick leaves the rhythm going from the moment it was due. A rule for the nth wake of a kind wins over one for each; a fork counts the wakes that fell due before it from the log it shares.
 
 | Wakes | late | twice | dropped |
 |---|---|---|---|
-| `reported` | ✓ | ✓ | ✓ |
-| `polled` | ✓ | ✓ | ✓ |
 | `booked` | ✓ | ✓ | ✓ |
+
+The agent's own timer is not among them: it fires inside the sandbox when the clock passes it, and no scheduler stands between.
 
 A scheduler provider delivers and finishes an occurrence in two steps (`BooksWakes.deliver_booking`, `advance_booking`), so a booking can go wrong as a real scheduler's does: delivered twice (`deliver_booking` now and again, `advance_booking` once, after the second), or dropped (`advance_booking` only, so a recurring schedule still books its next occurrence). `advance_booking` books the first occurrence after now, as a real scheduler skips what it missed. A seed refuses `dispatch` (a standing world's clock is driven from outside). Only the agent's own wakes are covered: a person's pace is their `reply`, a ticket's its fate.
 
@@ -1554,27 +1532,47 @@ A message is the same ask as an earlier one, and so a follow-up on that wait rat
 
 A touch is any later agent event on the ask's entity or channel, or an agent message to the person or their delegate. The facts a rule counts on an ask (`follow_ups`, `touches`) and the scorecard read the ledger; `messages` with `to_away` reads the absences directly.
 
-`AgentReport.commitments` stays optional. The cross-check it allows (the agent believes it is waiting on something the world shows as answered, or the reverse) is a rule over `commitments`: `each: ask`, `count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}`, `at_most: 0`.
+What the agent believes it is waiting on is in its memory, when it keeps one through the store (`count: {memory: ...}`, `docs/assessments.md`); a run asks it for no report.
 
 ### Time, for the agent
 
-From least to most invasive; the fakes are on Minutehand's clock in every case.
+The agent's clock is its sandbox's, and the sandbox's is Minutehand's: a gVisor sandbox whose realtime and monotonic clocks carry an offset Minutehand moves ("A sandbox whose clock Minutehand owns", "Evidence"). Every way of reading the time inside it (a system call, the VDSO, a library's clock) reads simulated time, and every timer armed on it (a sleep, a futex, an epoll timeout) fires when the offset passes it. No code change in the agent, any in-process scheduler, and the machine's clock untouched.
 
-1. `WakeRequest.now`. The agent uses it as its "now" for the wake. Built.
-2. `GET :8081/clock`. For agents that read the time more than once per wake. Not built.
-3. The system clock, faked from outside with `libfaketime`. No code change in the agent. Not built; see "Evidence" for the spike that tried it.
-4. The agent in a gVisor sandbox whose clock Minutehand owns: every timer the agent's own scheduler arms is read from the sandbox's kernel, and time inside the sandbox is released to the earliest. No code change in the agent, any in-process scheduler, and the machine's clock untouched. Spiked, not built; see "Evidence".
+Three other ways were weighed and are not built: telling the agent the time in each wake (which an agent reading the clock twice ignores), an endpoint it could ask (code written for Minutehand), and `libfaketime` preloaded into its process (a program asleep on its own timer did not wake across a jump; "Evidence").
 
-What follows from that spike:
+What the sandbox asks of a run:
 
-- **A run under option 3 must start at the real date and stay inside the real certificates' lifetime,** about two months ahead, unless model-API traffic is terminated at the proxy and re-sent from the real clock. Terminating it means the proxy decrypts prompts it otherwise only tunnels.
-- **A scenario with a fixed past `starts_at` cannot use option 3.** A scenario file that leaves `starts_at` out starts at the moment its run does, which is what an agent reading the real clock needs.
-- **An agent that polls on a short real-time loop works under option 3:** after a jump its next poll reads the new time. The cost is one real poll interval per jump.
-- **An agent that sleeps until a far-off moment does not wake.** It needs `Booked` or `Reported`.
-- **The monitor still cannot see when an in-process scheduler next wants to run.** Jumping straight to the next reply would skip a follow-up the agent meant to send in between, and the run would blame the agent for lateness the jump caused. Such an agent is `Polled` at a declared rhythm, or `Reported`.
-- Untested: a JVM under a faked clock (the Firestore emulator), Node, and a faked clock across several containers at once.
+- **The sandbox starts at the real date.** Minutehand sets its clock to the scenario's `starts_at` when it starts (`SandboxClock.sync`: back, for a scenario that began before now), and a fork or replay sets a fresh sandbox back to the run's start the same way. A certificate the proxy mints is checked against the sandbox's clock: a run far from the real date needs certificates valid then, which is unproven ("Known issues").
+- **Real time still enters a run in one place:** `WorldEvent.wall_time`. A pushed request's timestamp (`X-Slack-Request-Timestamp`) is the simulated moment it is sent at, since the agent's verifier checks it against its own clock, the sandbox's, and a fork sends the request again with the same signature. moto's SQS and Scheduler read the run's clock (`adapters/providers/aws/clock.py`); an SQS long poll that would wait is held and answered on that clock ("A call that waits on the world").
+- Untested: a JVM in the sandbox (the Firestore emulator), Node beyond the spike, several sandboxes at once, x86-64.
 
-Real time still enters a run in two places: `WorldEvent.wall_time`; and the Slack provider's `X-Slack-Request-Timestamp`, which the agent's signature verifier checks against its own clock. moto's SQS and Scheduler read the run's clock (`adapters/providers/aws/clock.py`); an SQS long poll that would wait is held and answered on that clock ("A call that waits on the world").
+#### A sandbox whose clock Minutehand owns
+
+Every agent runs in it (`AgentUnderTest.sandbox`, `domain/agent.py`; `application/sandbox.py`). It is a gVisor sandbox with a 191-line patch ("Evidence"): an offset on its realtime and monotonic clocks, applied on the syscall path and in the VDSO parameters, whose timekeeper tells its timers when it moves, and two control calls, `runsc debug --advance-clock=<d>` and `runsc debug --deadlines`, which the agent file names as `advance` and `deadlines`. Minutehand never starts `runsc` itself: the agent's command (`-- <command>`) does, as the team runs it.
+
+| Minutehand does | Through | When |
+|---|---|---|
+| Sets the sandbox's clock to the run's | `advance`, by the signed difference between the run's clock and the `now_ns` that `deadlines` prints | When the sandbox starts, for a run, a fork or a replay |
+| Moves it forward with every jump of the run's clock | `advance` | Released once the wake the jump may start has begun, so what the agent's timers do belongs to that wake |
+| Waits until the agent is idle | `deadlines`, idle on two reads `quiet` apart with no call of the agent's in flight (`Traffic.waiting`) | At the end of every wake; a sandbox still busy after `settle_limit` stops the run `AGENT_FAILED` |
+| Reads the agent's next wake | `deadlines`: the earliest deadline any blocked task waits for, less each task's learned housekeeping period | Before every jump; enters the table as the agent's timer |
+
+What is not built: the patched gVisor in this repository, built and run by a CI job on Linux; the sandbox's network locked to the proxy (today the sandbox is handed `HTTPS_PROXY` and the CA, and a client that ignores them reaches the real network; the `PREROUTING` rule on the sandbox's link, "Transparent capture", is what closes it); x86-64. Until the first is built, no whole run of any agent is in the test suite, and every part of the run loop, the forks and the playback that needs an agent is built against the control calls' contract alone.
+
+#### Playback
+
+Built (`application/playback.py`, `application/trace.py`, `adapters/agent/delivery.py`, the proxy's `play_back` and the receiver's `playing_back`); not run against a real sandbox. A fork needs the agent as it stood at the checkpoint, and the agent is asked nothing, so it is brought back the way the world is: from the record. The record holds everything the agent ever received, since every input came through Minutehand:
+
+| Input | Recorded as |
+|---|---|
+| The clock | Each wake's moment, in its checkpoint |
+| What every call it made was answered | `Exchange`: status, body and, since this change, the answer's headers (`response_headers`) |
+| Its memory read back | The log (`EntityKind.MEMORY`) |
+| Everything the world sent it: a pushed event, a scheduler's delivery, a person's answer on a captured channel, a decision made in its product | `PushSnapshot`: method, URL, every header and the body, written by the one door every send goes through (`adapters/agent/delivery.py`) |
+
+A playback starts the agent's sandbox at the run's start, and then, wake by wake up to the checkpoint: moves the sandbox's clock to the wake's moment, sends the agent what the world sent it then, byte for byte, answers every call it makes from the record (`TraceReplay`: the next recorded call alike, by method, host, path and body as the record keeps them), answers its memory reads as the log stood at that point and records nothing it writes, and waits for the sandbox to fall idle. At the checkpoint the agent stands where it stood: the same processes, the same timers armed, the same files and memory. The fork then applies its changes and plays on; the parent's log is shared up to the checkpoint and nothing of the playback is written to it.
+
+A playback parts where the agent sends a call the record does not hold next, or makes fewer calls than the record holds: it did not do what it did before. The fork is refused there, naming the call, with the likely cause: a changed program (`program.json`), or something the agent draws from outside the record (a random number, a thread's timing). What the record cannot play back, and refuses by name: a run that tunnelled its model calls (`--tunnel-model-calls`), a call over gRPC or a WebSocket (Socket Mode), a record kept before answers' headers were. An agent whose calls depend on real-time pacing (a long poll it repeats while it waits) makes more of them when every answer is immediate, and parts.
 
 ### Telemetry
 
@@ -1757,7 +1755,7 @@ minutehand scenarios [show <name> | new <name>...|--all --goal TEXT --owner 'Nam
 
 ### Distribution: a tool beside the codebase, never a dependency of it
 
-The target is one import in the project under test, inert in production (`minutehand.agent`: what the agent remembers and when it next wakes), and nothing else changed. Minutehand itself is installed and run the way a linter is, outside the project's own dependencies.
+The target is nothing in the project under test: the agent runs unchanged in its sandbox. One import is on offer, inert in production (`minutehand.agent.store`: what the agent remembers, readable in the record and editable at a fork). Minutehand itself is installed and run the way a linter is, outside the project's own dependencies.
 
 | Channel | For | Touches the project | State |
 |---|---|---|---|
@@ -1778,11 +1776,11 @@ minutehand run scenario.yaml --agent agent.yaml -- python -m my_agent
 | Outbound calls reach the fakes | The wrapped command gets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY=127.0.0.1` (each in lower case too; "What the agent reaches directly"), and the CA bundle in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `HTTPLIB2_CA_CERTS`, `AWS_CA_BUNDLE`. An agent Minutehand does not start gets the same from `minutehand env` | Built. A client that pins certificates is out of reach. `httplib2`, which `googleapiclient` uses, reads `HTTPS_PROXY` only when PySocks is importable and otherwise connects to Google directly, in silence: an agent on `googleapiclient` needs `pysocks` installed (`tests/providers/google_workspace/test_drive_through_proxy.py` runs with it; its `offline/` guard is what turns the silent bypass into a failure). Node's built-in `fetch` reads the proxy with `NODE_USE_ENV_PROXY=1`, which every agent is handed (`tests/providers/slack/test_slack_node_fetch.py`, a real Node 24+ process; without the variable it reached the real slack.com). The Compose override is tested as text, and was run by hand once with the follow-up agent in a container (`docs/containers.md`). The Docker CLI replaces a container's `NO_PROXY` with the client config's `proxies.noProxy` (Docker Desktop writes `*`) unless it is passed with `-e` or Compose; `minutehand env` and `doctor` warn of it. |
 | The agent is up before the run starts | Minutehand waits up to 30 seconds for its wake URL, or else its first inbound URL, to accept connections, and fails the run if the command exits first; its output goes to `agent.log` | Built |
 | Pushed events reach the agent | The agent's event URL and where its signing secret comes from are in the agent file: generated per run and handed to the command, or the agent's own, read from a variable of Minutehand's | Built |
-| The agent wakes at the right moments | Replies, pushed events and `Booked` wake-ups need nothing. `Polled` needs a URL in the agent file. | Built. `Reported` needs an endpoint or an adapter, which is code, though it can live outside the project. |
-| The agent agrees on what time it is | `WakeRequest.now`; `libfaketime` preloaded through the same wrapper | `WakeRequest.now` built; `libfaketime` not built |
+| The agent wakes at the right moments | Replies, pushed events and bookings need nothing; its own timers are read from its sandbox | Built against the sandbox's control calls; not run against a real sandbox |
+| The agent agrees on what time it is | Its clock is the sandbox's, which Minutehand moves | The same |
 | Scenarios and the agent file | Plain YAML or JSON files, in the project or anywhere else | Built |
 
-- An agent's whole contact with Minutehand is one import, `minutehand.agent` (`store`, what it remembers; `wake`, when it next wants to be woken), inert in production unless MINUTEHAND_ON is set ("The agent's memory"). An agent that keeps no state across wakes and reports its next wake needs none. The package imports the standard library only, but ships inside `minutehand`, whose dependencies (mitmproxy among them) an agent installing it pulls in; a distribution of its own is not built. A suite that uses `minutehand serve` imports `minutehand.testing` (a client and a pytest plugin), which is test tooling, never a dependency of the code under test.
+- An agent's whole contact with Minutehand, when it wants one, is one import, `minutehand.agent.store` (what it remembers), inert in production unless MINUTEHAND_ON is set ("The agent's memory"). An agent that keeps its state in its sandbox needs none: a fork brings the sandbox back. The package imports the standard library only, but ships inside `minutehand`, whose dependencies (mitmproxy among them) an agent installing it pulls in; a distribution of its own is not built. A suite that uses `minutehand serve` imports `minutehand.testing` (a client and a pytest plugin), which is test tooling, never a dependency of the code under test.
 - mitmproxy requires Python 3.12 and pins many dependencies, which is one more reason the tool never enters a project's environment.
 - Providers register under the entry-point group `minutehand.providers`. Five ship inside `minutehand`; anything else is `minutehand-provider-<name>`, installed into the tool's environment with `uvx --with`.
 
@@ -1868,14 +1866,14 @@ The contracts came first, alone; the parallel tracks were written against them.
 | **Contracts**: the models in `domain/`, the protocols in `ports/` | Built |
 | **Proxy runtime**: host routing, lazy load, CA, tunnel, edit and refusal policy, base-URL mode | Built. |
 | **Store**: schema, events, checkpoints, bodies kept once, the agent's memory | Built. Checkpoints and the agent's memory are rows in the log; bodies of 512 bytes or more are content-addressed. |
-| **Clock and orchestrator**: `next_jump`, wake sources, the run loop, forks | Built. The fork is `minutehand fork --at <seq>`. |
+| **Clock and orchestrator**: `next_jump`, the sandbox, the run loop, forks and their playback | Built against the sandbox's control calls; not run against a real sandbox. The fork is `minutehand fork --at <seq>`. |
 | **Providers**: Slack, YouTrack, Asana, Drive | Built, each written new over the store and the clock rather than mounting the parent repository's fakes |
-| **Scheduler provider** (`Booked`) | Built for AWS |
+| **Scheduler providers** (bookings) | Built for AWS and Google Cloud Tasks |
 | **Checks and the obligations ledger** | Built |
 | **Telemetry export** | Built |
 | **Telemetry received from the agent**: receiver, storage, forwarding, the join, `--record-model-calls` | Built |
 | **Surfaces**: CLI, MCP, viewer | Built: `minutehand mcp` serves the tools over stdio, `minutehand view` the read-only viewer. |
-| **Composition and end-to-end**: `session.py`, files, agent drivers, a real agent process on stock `slack_sdk` | Built |
+| **Composition and end-to-end**: `session.py`, files, an agent in its sandbox | `session.py` built; no end-to-end run until the sandbox is in the repository |
 | **Adoption in the parent repository**: one container in compose and CI, the adapter, the deletions | Not built here; see the adoption guide in `docs/` |
 | **People written by a model** | Not built |
 | **Generated providers** (the `GENERATED` engine) | Not built |
@@ -1903,7 +1901,7 @@ Releases up to and including 0.2.0 are FSL-1.1-ALv2, each becoming Apache-2.0 tw
 - `uv run pytest -q -n auto`: every test, hermetic. Sockets are refused except to `127.0.0.1`, `::1` and `localhost`, each test fails at 60 seconds, the order is random every run, and a warning raised against our own code is an error (`pyproject.toml`). `.github/workflows/nightly.yml` repeats the suite five times and runs it against the newest release of every client library.
 - A check is tested on a hand-built world whose obligations come from the real ledger (`tests/checks/world.py`). The checks written for the captured run are tested on it, including that `near_miss_name` goes clean when the defect is removed from the run (`tests/test_checks_on_reference_run.py`).
 - A provider is tested over its ASGI app, against the store as its only state, through its refusals (`test_*_refusals.py`; AWS's are in `test_aws_provider.py`), and through the service's own client library over a real socket (`slack_sdk`, `asana`, `google-api-python-client`, `boto3`; YouTrack, which has no client library, with `httpx` through the run's proxy over TLS, one test per call a production YouTrack client makes and per query shape it builds). Response validation against a provider's OpenAPI document is not built.
-- Whole runs start a real agent process (`tests/e2e/agents/slack_agent.py`) through `session.play`, `session.fork` and the `minutehand` command.
+- No whole run of an agent is in the suite: every agent runs in the sandbox, and the patched gVisor is not in this repository. The parts that need an agent (the run loop's wakes, forks, playback, replay) are built against the sandbox's control calls and not run; the parts that need none (the proxy, the fakes against their vendors' client libraries, the store, the people, the checks over hand-written records, the read model, the viewer) are.
 - `uv run python -m lints` runs every lint in `lints/`. See `docs/lints.md`.
 - Conformance against the real APIs needs real accounts and is a scheduled job, not a lint. Not built.
 
@@ -1963,7 +1961,7 @@ The patch adds an offset to the sandbox's realtime and monotonic clocks, applied
 | Does the whole loop run unattended? | Python's three: one jump each, 0.2 s of real time for up to two simulated hours. Node: two start-up jumps and one to its timer, 0.5 to 0.9 s, six runs in six. Go (`time.AfterFunc` for two hours): fired every time, but in 120 jumps of about 60 s, the runtime's own periodic wake, 21 s of real time; a fortnight would take about an hour unless jumps that wake only the runtime are merged. |
 | Does a real model API still answer after a jump? | `api.anthropic.com` over HTTPS from inside the sandbox: answered 401 (no key was sent) with the box's clock 0, 7 and 30 days ahead; 400 days ahead, "certificate has expired". Terminating the model API's TLS at the proxy, as `EDIT` and `RECORD` already do, removes that horizon. |
 
-What it took beyond the patch: the release's own sidecar binaries do not match a build of the `go` branch (the sentry and its prewarmer are separate binaries now), so the patched sentry (`runsc/cmd/sentry/sentry_main.go`, absent from the `go` branch) and the prewarmer (`runsc/prewarmer/prewarmer.c`) were built from the same source; `runsc do` needs `--ignore-cgroups` nested in a container, and `iptables` and `sysctl` to reach the network. Then through Minutehand itself (`Contained`, 2026-10-07): a stock Python agent under `runsc do`, asking Rosa in Slack on its first wake and following up only from an in-process `threading.Timer` of 36 hours, with Minutehand's proxy on the sandbox's gateway (192.168.10.3) and the two `Contained` commands wrapping `runsc debug`. Three simulated days took 3 seconds; the follow-up landed 36 hours less 0.42 s after the ask (real time spent inside the first wake), in a wake of its own, with no wake endpoint for it. Two things only the real run showed: `http.server`'s 0.5 s poll is a deadline like any other (a timer that fires and does nothing is withdrawn as a wake, and the period it fired at is learned as that task's housekeeping, so the run is not stopped at every poll; `--deadlines` reports each task's deadline for it), and the sandbox prints fields `Contained` does not read. Not tried: a pending real call holding time still, checkpoint and restore as a fork, and x86-64.
+What it took beyond the patch: the release's own sidecar binaries do not match a build of the `go` branch (the sentry and its prewarmer are separate binaries now), so the patched sentry (`runsc/cmd/sentry/sentry_main.go`, absent from the `go` branch) and the prewarmer (`runsc/prewarmer/prewarmer.c`) were built from the same source; `runsc do` needs `--ignore-cgroups` nested in a container, and `iptables` and `sysctl` to reach the network. Then through Minutehand itself (the sandbox, then one `wakes:` kind among several, 2026-10-07): a stock Python agent under `runsc do`, asking Rosa in Slack on its first wake and following up only from an in-process `threading.Timer` of 36 hours, with Minutehand's proxy on the sandbox's gateway (192.168.10.3) and the two `Contained` commands wrapping `runsc debug`. Three simulated days took 3 seconds; the follow-up landed 36 hours less 0.42 s after the ask (real time spent inside the first wake), in a wake of its own, with no wake endpoint for it. Two things only the real run showed: `http.server`'s 0.5 s poll is a deadline like any other (a timer that fires and does nothing is withdrawn as a wake, and the period it fired at is learned as that task's housekeeping, so the run is not stopped at every poll; `--deadlines` reports each task's deadline for it), and the sandbox prints fields `Contained` does not read. Not tried: a pending real call holding time still, checkpoint and restore as a fork, and x86-64.
 
 ## Authentication is out of scope
 
@@ -1994,12 +1992,15 @@ does not test.
 
 ## Known issues / limitations
 
-- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample is a run of its own with a memory of its own; what the agent keeps outside the store is carried from one sample into the next.
+- **The agent under test is a model, and its variance is reported, not hidden.** One run fails on any failed check. `--samples N` runs the scenario N times and reports `Stability(samples, passed)`: "passes 3 of 5" is the finding. Each sample is a run of its own in a fresh sandbox with a memory of its own.
 - **One proxy per process.** mitmproxy keeps its master in a module global; `Proxy` refuses a second and is moved from run to run with `mount`, or, under `minutehand serve`, routes each call to its world (`route`).
 - **A standing world isolates only by what the call carries.** Services that hold one fixed credential per provider put every test's calls in one world (`docs/serve.md`).
-- **Only state written through `minutehand.agent.store` is part of a run.** Whatever the agent writes elsewhere (its own database, files, a cache, a process that outlives a wake) is not simulated, not kept apart between runs, and not rewound by a fork, so its later calls can depend on state from another moment or run. A fork whose agent's report differs from the checkpoint's is refused naming it, and a database the agent file names is handed fresh and empty and said to be outside forks; state its report does not reflect is not seen at all.
-- **An agent that keeps its state in its own process cannot be forked, only replayed.** A fork puts back the agent's memory (`minutehand.agent.store`), not a process; such an agent's report differs from the checkpoint's and the fork is refused, naming it. `replay --live-from` rebuilds that state by playing the run again from its start, its model calls answered from the record, and goes live from a moment, but with none of a fork's changes: a fork that replays its parent's prefix and then applies its changes is not built. `replay --at` starts the agent at the checkpoint as a fork does, so it needs the same: an agent whose state is in its memory.
-- **A fork starts only at a checkpoint the agent did not go on writing its memory after, in the same wake.** An agent that reports IDLE while a process of its own still writes makes that wake's checkpoints not restorable.
+- **The patched gVisor is not in this repository.** Every agent runs in it, and nothing here builds it or runs one: the run loop, forks, playback and replay are built against its control calls and have not been run against a real sandbox since the spike ("Evidence"). No whole run of any agent is in the test suite until it is.
+- **The sandbox's network is not locked to the proxy.** It is handed `HTTPS_PROXY` and the CA; a client inside it that ignores them reaches the real network, and only `around_proxy` says so afterwards. The `PREROUTING` rule on the sandbox's link is not built.
+- **A sandbox far from the real date needs certificates valid then.** The proxy mints a certificate from the machine's clock; an agent whose sandbox clock is months away may refuse it as not yet valid or expired. Unproven either way.
+- **A fork plays the agent back from its record, and parts where the agent does not do what it did before.** A random number, a thread's timing or a clock read around the sandbox's that changes a call parts the playback; one that changes no call is not seen. A run that tunnelled its model calls, used gRPC or a WebSocket cannot be played back, and a long-poll loop makes more calls when every answer is immediate.
+- **A database the agent file names is outside forks:** handed fresh and empty to every run and fork, and said so.
+- **A fork starts only at a checkpoint the agent did not go on writing its memory after, in the same wake.** A sandbox that fell idle while a process of the agent's still wrote makes that wake's checkpoints not restorable.
 - **AWS cannot be rewound.** moto holds queues, messages and its copy of each schedule in process memory, and every run's app takes a fresh AWS account, so a fork from any checkpoint after the agent first used AWS is refused, naming what it cannot rewind. Re-creating moto's state from the log is not built: queue creation, sends and receives are calls, not log entries.
 - **Slack's signature timestamp is real time** while message `ts` and `event_time` are simulated.
 - **A Slack token only picks a workspace.** A world whose `SlackSeed.workspaces` declares none has one workspace, `T0WORKSPACE`; in a world that declares several, a token answers in the workspace that declares or minted it, else the first that declares none, else the first. No token is refused.
@@ -2011,14 +2012,14 @@ does not test.
 - **The enum-comparison lint judges a field by its name, not its type** (`docs/lints.md`).
 - **The store's file carries a schema version and refuses other versions;** there is no migration.
 - **Bytes are kept once per world file, not across files.** A root run and its forks share every body; two root runs (two samples, two `minutehand run`s) each keep their own copy.
-- **A span is placed by comparing two clocks.** Its start comes from the agent's SDK, a wake's window from this machine's clock. On one machine they agree; an agent in a container or on another host whose clock is off by more than the gap between wakes has spans placed in the wrong wake, or by arrival when its start falls outside every window. A span started between two wakes (the agent working after it reported it was idle) is placed by arrival.
+- **A span is placed by comparing two clocks.** Its start comes from the agent's SDK, which in the sandbox reads simulated time, while a wake's window is this machine's clock: a span's own start falls outside every window, and it is placed by the wake it arrived in. Placing spans by the sandbox's clock is not built.
 - **Replay matches a body by its hash.** A timestamp, nonce, request id or signature in the query or body that is not listed in `ignore_query` or `ignore_body` makes every replay miss; a multipart or compressed body cannot have fields ignored; a body kept only in part can be matched only whole, and an answer kept only in part cannot be replayed.
 - **`--capture-unknown` sends for real.** An undeclared email API is passed through in discovery mode, and the email goes out. `--capture-unknown reads` passes only GET, HEAD and OPTIONS and refuses the rest, at the cost of refusing a read sent as a POST.
 - **A fork's lookups replay its parent's by default** (`in_forks: replay`): a pass-through host is answered from the parent's recording of the same call, falling back to the real host on a miss.
-- **A fork is proven by its memory's digest and its agent's report.** The report carries status, next wake and commitments; state outside the store it does not reflect, and a process left running with another moment in memory whose report reads the same, are not seen.
+- **A fork is proven by its memory's digest and its playback.** A playback that answers every recorded call and sees every one made again is taken as the agent at the checkpoint; what the agent holds that never changes a call is not compared.
 - **A tunnelled call is a burst of bytes, not a request.** Within one wake, two requests on one connection less than `BURST_QUIET` apart are one record (the agent sending in a later wake always starts a new one, so wakes never share a record), and requests multiplexed at once on HTTP/2 are one; an answer streamed with a pause longer than `BURST_QUIET` is two records, the second opened by the server. A burst still unanswered at the end of a run is written as far as it had gone.
 - **A read of the agent's memory is kept in the log only when it finds something new.** Every read is counted in its wake (`memory_reads`); one made between two wakes is counted in the wake before it after that wake's record was written, so no `WakeRecord` holds it. The log keeps the first read of each key or prefix in a wake and each later one that finds another value: a key that changes and changes back between two polls reads as unchanged. Whether a poll falls between two writes still decides whether a read is kept, so the ids a provider derives from the log's seq can still move by one from run to run.
-- **A checkpoint is taken when the agent's driver says the wake is over.** Work the agent goes on doing after it reported IDLE belongs to the next moment; only its late writes to its memory are seen (the checkpoint is then not restorable). On a tunnel, server bytes are read as an answer by their TLS record headers alone, record by record: after a TLS 1.3 client's `Finished`, the server's ticket flight is its leading run of `application_data` records of one length (35 to 2048 bytes, at most four), and the first record that breaks it answers, in the same read or a later one. A server that sends no tickets and answers the first request on a new connection with one record that alone fits the flight looks like one that sends one ticket alone (as AWS does): the request is held as awaiting until the client sends again or closes the connection, so a checkpoint in that wake is not restorable and the burst is written then, or at the run's end, rather than when it falls quiet. An HTTP/2 server's preface and its acknowledgement of the client's still read as answering the first request on a new connection (`adapters/proxy/tunnel.py`); a sandbox whose clock Minutehand owns waits on that before it is released.
+- **A checkpoint is taken when the agent's sandbox is idle.** Work a task of the agent's goes on doing after the sandbox read as idle (a thread woken by a later timer) belongs to the next moment; only its late writes to its memory are seen (the checkpoint is then not restorable). On a tunnel, server bytes are read as an answer by their TLS record headers alone, record by record: after a TLS 1.3 client's `Finished`, the server's ticket flight is its leading run of `application_data` records of one length (35 to 2048 bytes, at most four), and the first record that breaks it answers, in the same read or a later one. A server that sends no tickets and answers the first request on a new connection with one record that alone fits the flight looks like one that sends one ticket alone (as AWS does): the request is held as awaiting until the client sends again or closes the connection, so a checkpoint in that wake is not restorable and the burst is written then, or at the run's end, rather than when it falls quiet. An HTTP/2 server's preface and its acknowledgement of the client's still read as answering the first request on a new connection (`adapters/proxy/tunnel.py`); a sandbox whose clock Minutehand owns waits on that before it is released.
 - **A booked delivery is taken only when everything its schedule delivered is deleted.** A recurring schedule whose earlier delivery the agent never deleted holds each later wake until `Booked.take_limit`.
 - **`minutehand doctor` probes the agent's interpreter, not its running program.** A client built with its own proxy settings, or a non-Python agent, is not seen; curl and Node are checked by their documented `NO_PROXY` rules, not run.
 - **An agent elsewhere (a container) is handed `localhost` by name,** since the proxy cannot forward to its loopback: `requests`, `urllib`, `aiohttp` and `curl` send every `*.localhost` host it declares direct. `minutehand doctor --agent-host` names each. A name given with `--no-proxy` is read the same way.

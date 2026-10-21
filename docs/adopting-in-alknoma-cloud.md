@@ -44,7 +44,7 @@ Stays regardless: the Firebase Auth-emulator sign-in pages (a browser flow), `no
 ### 3. One clock
 
 - Providers stamp from Minutehand's clock. The 72 machine-clock reads go.
-- The harness stops writing `OpenIssue.simulatedNow` itself; the adapter in stage 4 does it from `WakeRequest.now`.
+- The harness stops writing `OpenIssue.simulatedNow` itself: the agent runs in a sandbox whose clock Minutehand owns, so its own clock reads the simulated time.
 
 ### 4. The harness becomes an adapter
 
@@ -58,7 +58,7 @@ Stays regardless: the Firebase Auth-emulator sign-in pages (a browser flow), `no
 | 21 `FieldMissionCase` dataclasses in `mission.py` | 21 scenario files |
 | Everything that reads or writes `OpenIssues/*`, calls `/api/v1/internal/execute` or `update-state` | `tests/…/minutehand_adapter.py` (size unknown until written) |
 
-The adapter is the only code that knows Ayven. On `WakeRequest` it sets `simulatedNow`, dispatches the due action or the stale wait, and returns `AgentReport(next_wake=min(nextCheck, nextStaleCheck), commitments=[one per active Blocker])`. It lives under `tests/`; nothing is added to `services/`.
+The adapter is the only code that knows Ayven. Its own clock is the sandbox's, so `simulatedNow` is the time it reads; it dispatches the due action or the stale wait, and its own scheduler's timer for `min(nextCheck, nextStaleCheck)` is read from the sandbox as its next wake. It lives under `tests/`; nothing is added to `services/`.
 
 Two things change in behaviour and need a decision when this stage is planned:
 - Replies arrive as Slack events, through `InboundMessageHandler`, where today they are posted to `/bridge`. That exercises a path field observation has never driven.

@@ -14,14 +14,12 @@ from pydantic import ValidationError
 
 from minutehand.checks.assessments import Assessments
 from minutehand.checks.runner import evaluate
-from minutehand.domain.agent import Commitment, CommitmentStatus, WaitingOn
 from minutehand.domain.assessments import StoppedBy, merged, refuse_unknown_people
-from minutehand.domain.checks import CommitmentsReported, Finding, FindingKind, RunView, Severity, WakeRecord
+from minutehand.domain.checks import Finding, FindingKind, RunView, Severity, WakeRecord
 from minutehand.domain.clock import Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.scenario import Absence, AbsenceTrigger, DispatchFault, Scenario, Silent
 from minutehand.domain.world import Actor, Operation, TicketState
 from tests.checks.world import Log, at, person, reply, rules, scenario, view
-from tests.support.people import email
 
 OWNER, SOFIA, MARCUS = person("owner"), person("sofia"), person("marcus")
 DANIA = person("dania", reply=Silent())
@@ -400,7 +398,7 @@ def test_each_rule_is_tallied_by_the_times_it_applied_and_the_times_it_could_not
     )
 
 
-def _planned(due_hours: float, *, entered: float = 0, source: DueSource = DueSource.REPORTED) -> DueEntry:
+def _planned(due_hours: float, *, entered: float = 0, source: DueSource = DueSource.TIMER) -> DueEntry:
     kind = DueKind.AGENT_WAKE if source is not DueSource.REPLY else DueKind.PERSON_REPLY
     return DueEntry(
         due=Due(at=at(due_hours), kind=kind, ref="next_wake" if kind is DueKind.AGENT_WAKE else "reply:0"),
@@ -425,8 +423,8 @@ def test_writes_in_a_wake_delivered_twice_are_counted_and_others_are_not() -> No
     log.message([OWNER], 2, text="Weekly digest", wake=1)
     again = log.message([OWNER], 2.02, text="Weekly digest", wake=2)
     wakes = [
-        WakeRecord(index=1, sim_time=at(2), world_changes=1, commitments_changed=False),
-        WakeRecord(index=2, sim_time=at(2.02), world_changes=1, commitments_changed=False),
+        WakeRecord(index=1, sim_time=at(2), world_changes=1),
+        WakeRecord(index=2, sim_time=at(2.02), world_changes=1),
     ]
     first = _fired(_planned(2))
     second = _fired(
@@ -472,78 +470,23 @@ def test_a_wake_the_scenario_dropped_still_counts_as_planned_and_a_late_delivery
     assert len(found(_sofia_planned(_fired(late)), PLANNED)) == 1
 
 
-# -- what the agent reported: what reported_against_world judged ------------------------------------------------
-
-REPORTED_MET = """
-- id: never_reports_met_before_the_answer
-  each: ask
-  count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}
-  at_most: 0
-"""
-
-
-def _said(status: CommitmentStatus, email: str) -> Commitment:
-    return Commitment(
-        key="contract",
-        description="the contract",
-        waiting_on=WaitingOn.PERSON,
-        person_email=email,
-        opened_at=at(0),
-        status=status,
-    )
-
-
-def _reported(world: RunView, *said: tuple[float, CommitmentStatus, str]) -> RunView:
-    reports = [
-        CommitmentsReported(wake=n + 1, at=at(h), commitments=[_said(status, email)])
-        for n, (h, status, email) in enumerate(said)
-    ]
-    return world.model_copy(update={"reported": reports})
-
-
-def test_a_commitment_reported_met_while_the_person_had_not_answered_breaks_the_rule() -> None:
-    log = Log()
-    log.message([DANIA], 0)
-    log.message([OWNER], 100, text="status")
-    world = view(scenario(OWNER, DANIA), log)
-    met = CommitmentStatus.MET
-    [finding] = found(_reported(world, (5, met, email(DANIA)), (9, met, email(DANIA))), REPORTED_MET)
-    assert "2 commitments" in finding.message and finding.at == at(100) - timedelta(seconds=1)
-    assert found(_reported(world, (5, CommitmentStatus.OPEN, email(DANIA))), REPORTED_MET) == []
-
-
-def test_a_commitment_reported_met_after_the_answer_keeps_the_rule() -> None:
-    log = Log()
-    ask = log.message([SOFIA], 0)
-    log.message([OWNER], 20, text="status")
-    world = view(scenario(OWNER, SOFIA), log, [reply(SOFIA, ask, 1)])
-    assert found(_reported(world, (5, CommitmentStatus.MET, email(SOFIA))), REPORTED_MET) == []
-
-
-def test_an_agent_that_reports_no_commitments_is_held_to_none() -> None:
-    log = Log()
-    log.message([DANIA], 0)
-    log.message([OWNER], 100, text="status")
-    assert found(view(scenario(OWNER, DANIA), log), REPORTED_MET) == []
-
-
 # -- wakes: what idle_wake judged -------------------------------------------------------------------------------
 
 
 def test_wakes_that_changed_nothing_are_counted() -> None:
     written = """
     - id: no_idle_wakes
-      count: {wakes: {changed_world: false, changed_commitments: false}}
+      count: {wakes: {changed_world: false}}
       at_most: 0
       severity: review
     """
     wakes = [
-        WakeRecord(index=1, sim_time=at(1), world_changes=2, commitments_changed=False),
-        WakeRecord(index=2, sim_time=at(2), world_changes=0, commitments_changed=False),
-        WakeRecord(index=3, sim_time=at(3), world_changes=0, commitments_changed=True),
+        WakeRecord(index=1, sim_time=at(1), world_changes=2),
+        WakeRecord(index=2, sim_time=at(2), world_changes=0),
+        WakeRecord(index=3, sim_time=at(3), world_changes=0),
     ]
     [finding] = found(view(scenario(OWNER), Log(), wakes=wakes), written)
-    assert finding.message.startswith("the run: 1 wakes") and finding.kind is FindingKind.REVIEW
+    assert finding.message.startswith("the run: 2 wakes") and finding.kind is FindingKind.REVIEW
     assert found(view(scenario(OWNER), Log(), wakes=wakes[:1]), written) == []
 
 

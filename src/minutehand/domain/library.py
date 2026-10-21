@@ -14,7 +14,7 @@ What it leaves to the team is who its people are:
     {team.knows}                                   a fact the person holds, which their answer carries
     {team.credential_env}                          the variable the agent reads an approver's sign-in from
     {team.provider}                                the messaging provider a person writes in on, unprompted
-    {team.wakes}                                   how the agent asks for its own wakes: reported, booked or polled
+    {team.wakes}                                   how the agent asks for its own wakes a scheduler delivers: booked
 
 How the agent reaches people (Slack, email, its own product) is the agent file's, never the scenario's, so it is not
 a value here. Placeholders are filled inside strings only (`domain.templates.fill`): a fact holding YAML or braces
@@ -82,7 +82,7 @@ class TeamValues(Model):
     knows: str = Field(default=DEFAULT_KNOWS, min_length=1, description="A fact the person holds")
     credential_env: VariableName = "APPROVER_TOKEN"
     provider: ProviderKey = "slack"
-    wakes: PlannedBy = PlannedBy.REPORTED
+    wakes: PlannedBy = PlannedBy.BOOKED
 
     @model_validator(mode="after")
     def _distinct(self) -> Self:

@@ -20,8 +20,8 @@ from starlette.routing import Route
 
 from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.domain.world import EntityKind, EntityRef
-from tests.orchestrator.world import serving as handler_at
 from tests.providers.google_cloud_tasks.test_cloud_tasks import GRPC, QUEUE, START, Tasks, opened, refusal, seeded
+from tests.support.serving import serving as handler_at
 
 pytestmark = pytest.mark.timeout(120)
 

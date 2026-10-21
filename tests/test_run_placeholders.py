@@ -11,13 +11,13 @@ import pytest
 from minutehand import run_all
 from minutehand.application.files import FileRefused, load_agent, problems
 from minutehand.cli import _parser, _passed_on
-from minutehand.domain.agent import Reported
 
 AGENT = """\
 version: 1
 name: placeholder_agent
-wakes:
-  - {kind: reported, wake_url: "http://127.0.0.1:{run.port}/wake", report_url: "http://127.0.0.1:{run.port}/report"}
+sandbox: {deadlines: [runsc, debug, --deadlines, a], advance: [runsc, debug, "--advance-clock={nanoseconds}ns", a]}
+inbound:
+  - {provider: slack, url: "http://127.0.0.1:{run.port}/slack/events"}
 """
 
 
@@ -31,9 +31,9 @@ def test_run_fills_the_port_and_folder_in_the_agent_file_and_the_command(tmp_pat
     filled = run_all.filled_for_run(
         _agent(tmp_path), ["python", "agent.py", "--port", "{run.port}", "--dir", "{run.dir}"], state=tmp_path
     )
-    wake = filled.agent.wakes[0]
-    assert isinstance(wake, Reported)
-    port = urlsplit(wake.wake_url).port  # the trial's crash: "Port could not be cast to integer value"
+    [target] = filled.agent.inbound
+    assert target.url is not None
+    port = urlsplit(target.url).port  # the trial's crash: "Port could not be cast to integer value"
     assert port is not None
     assert filled.command == [
         "python",
@@ -107,14 +107,11 @@ def test_run_all_hands_each_run_the_flags_that_tunnel_model_calls_and_capture(tm
     assert "--tunnel-model-calls" not in recorded and "--record-model-calls" not in recorded, "recording is the default"
 
 
-def test_the_wake_and_push_waits_default_to_room_for_a_models_turn() -> None:
+def test_the_push_wait_defaults_to_room_for_a_models_turn() -> None:
     from datetime import timedelta
 
-    from minutehand.domain.agent import Marked
     from minutehand.domain.people import InboundTarget
 
-    assert Reported(wake_url="http://a/w", report_url="http://a/r").wake_timeout == timedelta(minutes=10)
-    assert Marked(wake_url="http://a/w").wake_timeout == timedelta(minutes=10)
     assert InboundTarget(provider="slack", url="http://a/e").push_timeout == timedelta(minutes=5)
 
 
@@ -126,7 +123,7 @@ def test_an_agent_files_instructions_are_read_when_it_is_and_name_their_file_fro
     (tmp_path / "work.json").write_text('["ask sam"]', encoding="utf-8")
     (tmp_path / "team.json").write_text('["ask priya"]', encoding="utf-8")
     agent = tmp_path / "agent.yaml"
-    wakes = "wakes: [{kind: reported, wake_url: 'http://a.test/w', report_url: 'http://a.test/r'}]\n"
+    wakes = "sandbox: {deadlines: [runsc, debug, --deadlines, a], advance: [runsc, debug, '--advance-clock={nanoseconds}ns', a]}\n"
     agent.write_text("name: a\n" + wakes + 'instructions: [{file: "${AGENT_WORK:-work.json}"}]\n', encoding="utf-8")
     monkeypatch.delenv("AGENT_WORK", raising=False)
     assert [i.text for i in load_agent(agent).instructions] == ['["ask sam"]']

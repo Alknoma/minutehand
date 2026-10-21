@@ -203,122 +203,102 @@
   {
    "index": 1,
    "sim_time": "2026-08-24T10:51:00Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 2,
    "sim_time": "2026-08-24T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 3,
    "sim_time": "2026-08-24T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 4,
    "sim_time": "2026-08-27T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 5,
    "sim_time": "2026-08-27T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 6,
    "sim_time": "2026-08-27T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 7,
    "sim_time": "2026-08-27T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 8,
    "sim_time": "2026-08-27T10:51:11.228036Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 9,
    "sim_time": "2026-08-28T05:24:25.600039Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 10,
    "sim_time": "2026-08-28T05:24:25.600039Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 11,
    "sim_time": "2026-08-28T05:24:25.600039Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 12,
    "sim_time": "2026-08-28T05:24:25.600039Z",
-   "world_changes": 0,
-   "commitments_changed": false
+   "world_changes": 0
   },
   {
    "index": 13,
    "sim_time": "2026-08-29T05:24:25.600039Z",
-   "world_changes": 0,
-   "commitments_changed": false
+   "world_changes": 0
   },
   {
    "index": 14,
    "sim_time": "2026-08-30T04:37:12.120210Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 15,
    "sim_time": "2026-08-30T04:37:12.120210Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 16,
    "sim_time": "2026-08-30T04:37:12.120210Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 17,
    "sim_time": "2026-08-30T04:37:12.120210Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 18,
    "sim_time": "2026-08-30T10:51:11.228036Z",
-   "world_changes": 0,
-   "commitments_changed": false
+   "world_changes": 0
   },
   {
    "index": 19,
    "sim_time": "2026-09-01T14:08:23.171027Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   },
   {
    "index": 20,
    "sim_time": "2026-09-01T14:08:23.171027Z",
-   "world_changes": 1,
-   "commitments_changed": false
+   "world_changes": 1
   }
  ],
  "obligations": [
@@ -474,6 +454,5 @@
    "agent_touches": [],
    "first_touch_after_settled": null
   }
- ],
- "commitments": null
+ ]
 }

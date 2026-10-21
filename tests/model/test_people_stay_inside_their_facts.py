@@ -11,7 +11,6 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-from examples.recipes import fake_model
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.replier import FACT_CHECK_PROMPT_VERSION, STEP_PROMPT_VERSION, PeopleReplier
@@ -32,8 +31,9 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.model.fake_completions import FakeCompletions, Received, Rule, fake_completions
-from tests.orchestrator.rig import T0, person, scenario
+from tests.support import fake_model
 from tests.support.people import email
+from tests.support.scenarios import T0, person, scenario
 
 SAID_IN_THE_TRIAL = (
     "Hi,\n\nFor new-starter equipment like this, use cost centre **CC-4410** for the PO-7731 order. That covers the 40 "

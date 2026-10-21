@@ -32,26 +32,41 @@ def test_ticket_deleted_defaults_to_must_not_happen() -> None:
     assert (scenario.expect[0].at_least, scenario.expect[0].at_most) == (0, 0)
 
 
-def test_an_agent_needs_at_least_one_way_to_come_back_to_work() -> None:
-    with pytest.raises(ValidationError):
-        AgentUnderTest.model_validate({"name": "a", "wakes": []})
-    agent = AgentUnderTest.model_validate(
-        {"name": "a", "wakes": [{"kind": "booked"}, {"kind": "polled", "wake_url": "http://a/tick"}]}
-    )
-    assert [w.kind for w in agent.wakes] == ["booked", "polled"]
+SANDBOX = {
+    "deadlines": ["runsc", "debug", "--deadlines", "a"],
+    "advance": ["runsc", "debug", "--advance-clock={nanoseconds}ns", "a"],
+}
 
 
-def test_an_agent_given_its_goal_by_message_needs_no_wake_source_but_an_inbound_target() -> None:
+def test_an_agent_file_names_the_sandbox_the_agent_runs_in_and_nothing_asked_of_the_agent() -> None:
+    with pytest.raises(ValidationError, match="sandbox"):
+        AgentUnderTest.model_validate({"name": "a"})
+    agent = AgentUnderTest.model_validate({"name": "a", "sandbox": SANDBOX})
+    assert agent.goal is None and agent.sandbox.advance[2] == "--advance-clock={nanoseconds}ns"
+
+
+def test_an_agent_file_with_the_wake_kinds_that_are_gone_is_refused_by_name() -> None:
+    with pytest.raises(ValidationError, match="`wakes:` is gone: every agent runs in a sandbox"):
+        AgentUnderTest.model_validate({"name": "a", "sandbox": SANDBOX, "wakes": [{"kind": "reported"}]})
+
+
+def test_a_sandbox_advance_command_must_hold_the_step_is_refused_without_it() -> None:
+    with pytest.raises(ValidationError, match=r"must hold \{nanoseconds\}"):
+        AgentUnderTest.model_validate({"name": "a", "sandbox": {**SANDBOX, "advance": ["runsc", "advance"]}})
+
+
+def test_an_agent_given_its_goal_by_message_needs_an_inbound_target_there() -> None:
     agent = AgentUnderTest.model_validate(
         {
             "name": "a",
-            "goal": {"kind": "by_message", "provider": "slack"},
+            "sandbox": SANDBOX,
+            "goal": {"provider": "slack"},
             "inbound": [{"provider": "slack", "url": "http://a/slack/events"}],
         }
     )
-    assert agent.wakes == []
+    assert agent.goal is not None and agent.goal.provider == "slack"
     with pytest.raises(ValidationError, match="no inbound target there"):
-        AgentUnderTest.model_validate({"name": "a", "goal": {"kind": "by_message", "provider": "slack"}})
+        AgentUnderTest.model_validate({"name": "a", "sandbox": SANDBOX, "goal": {"provider": "slack"}})
 
 
 def test_a_fork_carries_typed_overrides() -> None:
@@ -328,7 +343,7 @@ def test_a_tell_a_person_edits_into_a_document_is_refused() -> None:
 @pytest.mark.parametrize("old", ["state", "databases"])
 def test_an_agent_file_with_state_hooks_or_fronted_databases_is_refused_naming_the_store(old: str) -> None:
     with pytest.raises(ValidationError, match=r"minutehand\.agent\.store"):
-        AgentUnderTest.model_validate({"name": "a", "wakes": [{"kind": "command", "argv": ["x"]}], old: {}})
+        AgentUnderTest.model_validate({"name": "a", "sandbox": SANDBOX, old: {}})
 
 
 def test_a_scenario_seeds_the_agents_memory_with_json_values_and_refuses_a_key_twice() -> None:
@@ -348,7 +363,7 @@ def test_an_own_database_is_handed_out_in_one_variable_once() -> None:
         AgentUnderTest.model_validate(
             {
                 "name": "a",
-                "wakes": [{"kind": "command", "argv": ["x"]}],
+                "sandbox": SANDBOX,
                 "own_databases": [{"env": "DB"}, {"env": "DB"}],
             }
         )
@@ -403,8 +418,8 @@ def _with_dispatch(*rules: dict[str, object]) -> dict[str, object]:
 def test_dispatch_rules_load_with_their_durations() -> None:
     scn = Scenario.model_validate(
         _with_dispatch(
-            {"wakes": "reported", "fault": "late", "by": "PT2H"},
-            {"wakes": "polled", "nth": 3, "fault": "dropped"},
+            {"wakes": "booked", "fault": "late", "by": "PT2H"},
+            {"wakes": "booked", "nth": 3, "fault": "dropped"},
             {"wakes": "booked", "nth": 1, "fault": "late", "by": "PT10M"},
         )
     )
@@ -414,9 +429,9 @@ def test_dispatch_rules_load_with_their_durations() -> None:
 @pytest.mark.parametrize(
     ("rule", "says"),
     [
-        ({"wakes": "reported", "fault": "late"}, "a late wake needs `by`"),
-        ({"wakes": "reported", "fault": "twice", "by": "PT0S"}, "a twice wake needs `by`"),
-        ({"wakes": "polled", "fault": "dropped", "by": "PT1H"}, "a dropped wake is never delivered"),
+        ({"wakes": "booked", "fault": "late"}, "a late wake needs `by`"),
+        ({"wakes": "booked", "fault": "twice", "by": "PT0S"}, "a twice wake needs `by`"),
+        ({"wakes": "booked", "fault": "dropped", "by": "PT1H"}, "a dropped wake is never delivered"),
     ],
 )
 def test_a_dispatch_rule_that_cannot_be_delivered_is_refused(rule: dict[str, object], says: str) -> None:
@@ -425,13 +440,13 @@ def test_a_dispatch_rule_that_cannot_be_delivered_is_refused(rule: dict[str, obj
 
 
 def test_two_dispatch_rules_for_the_same_wake_are_refused() -> None:
-    rule = {"wakes": "reported", "nth": 2, "fault": "dropped"}
+    rule = {"wakes": "booked", "nth": 2, "fault": "dropped"}
     with pytest.raises(ValidationError, match="two dispatch rules name the same wake"):
         Scenario.model_validate(_with_dispatch(rule, rule))
 
 
 def test_a_seed_with_dispatch_rules_is_refused() -> None:
-    written = _with_dispatch({"wakes": "reported", "fault": "dropped"})
+    written = _with_dispatch({"wakes": "booked", "fault": "dropped"})
     with pytest.raises(ValidationError, match="dispatch rules need the run loop's clock"):
         Seed.model_validate(written)
 

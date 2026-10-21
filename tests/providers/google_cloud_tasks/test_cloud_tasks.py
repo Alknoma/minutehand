@@ -33,8 +33,8 @@ from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.scenario import AfterScript, Person, ProviderSeed, Scenario, Scripted, SignIn
 from minutehand.domain.world import Actor, RecordSnapshot
 from minutehand.ports.provider import BooksWakes, ConfirmsDelivery
-from tests.orchestrator.world import serving as handler_at
 from tests.providers.google_workspace.proxied import Client, client_environment
+from tests.support.serving import serving as handler_at
 
 pytestmark = pytest.mark.timeout(120)
 

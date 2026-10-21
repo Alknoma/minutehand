@@ -1,5 +1,0 @@
-agent.db*
-*.memory
-worker.pid
-.outside/
-__pycache__/

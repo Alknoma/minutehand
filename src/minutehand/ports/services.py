@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from minutehand.domain.scenario import ProviderKey
 from minutehand.domain.services import Service
 from minutehand.domain.world import AnsweredBy
 from minutehand.ports.clock import Clock
@@ -64,6 +65,9 @@ class Delivered:
 
 
 class DeliversPushes(Protocol):
-    async def push(self, url: str, body: str) -> Delivered:
-        """POST `body` (JSON) to `url`; never raises for the address's failure, which it returns."""
+    async def push(
+        self, store: Store, *, service: ProviderKey, item: str, url: str, body: str, parent: str | None = None
+    ) -> Delivered:
+        """POST `body` (JSON) to `url`, recorded in `store` as the service's push of `item`; never raises for the
+        address's failure, which it returns."""
         ...

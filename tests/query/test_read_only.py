@@ -65,7 +65,7 @@ def test_a_page_says_whether_more_rows_follow(run: Fixture) -> None:
     finally:
         db.close()
     assert (first.rows[-1], first.more) == ([10], True)
-    assert (last.rows, last.more) == ([[21], [22], [23], [24]], False)
+    assert (last.rows, last.more) == ([[21], [22], [23]], False)
 
 
 def test_a_limit_beyond_the_cap_is_refused(run: Fixture) -> None:

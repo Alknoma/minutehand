@@ -126,7 +126,7 @@ def test_a_library_entry_that_hands_the_agent_work_or_judges_it_is_refused(hande
 
 def test_the_dispatch_rule_takes_the_team_wake_kind() -> None:
     [rule] = entry("planned_wake_twice").written(DEFAULTS).dispatch
-    assert rule == DispatchRule(wakes=PlannedBy.REPORTED, fault=rule.fault, by=rule.by)
+    assert rule == DispatchRule(wakes=PlannedBy.BOOKED, fault=rule.fault, by=rule.by)
 
 
 # -- the command -----------------------------------------------------------------------------------------------------

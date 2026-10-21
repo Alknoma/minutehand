@@ -56,7 +56,6 @@ from minutehand.domain.world import (
     InteractionSnapshot,
     MemorySnapshot,
     MessageSnapshot,
-    NextWakeSnapshot,
     Operation,
     PendingSnapshot,
     PendingStatus,
@@ -942,9 +941,6 @@ def _actions(
         elif isinstance(after, StoredSnapshot):
             kind, view, target = "stored", "stored", f"{after.host}{after.path}/{after.id}"
             summary = after.item
-        elif isinstance(after, NextWakeSnapshot):
-            kind = "next_wake"
-            summary = f"next wake {at(after.at)}" if after.at is not None else "no next wake"
         elif e.operation in READS:
             kind = "read"
             summary = f"{e.operation.value} {e.entity.kind.value} {e.entity.external_id}"
@@ -1048,7 +1044,6 @@ def _wakes(
     for w in wakes:
         fired = [d.source.value for d in dues if d.closed is DueClosed.FIRED and d.closed_at == w.sim_time]
         point = ended[w.index] if w.index in ended else None
-        report = point[1].agent.report if point is not None else None
         rows.append(
             {
                 "wake": w.index,
@@ -1058,10 +1053,7 @@ def _wakes(
                 "world_changes": w.world_changes,
                 "memory_reads": w.memory_reads,
                 "memory_writes": w.memory_writes,
-                "commitments_changed": int(w.commitments_changed),
                 "checkpoint_seq": point[0] if point is not None else None,
-                "reported_status": report.status.value if report is not None else None,
-                "reported_next_wake": at(report.next_wake) if report is not None else None,
                 "actions": sum(1 for a in actions if a["wake"] == w.index),
                 "model_calls": sum(1 for s in agent_calls if s.wake == w.index),
             }
