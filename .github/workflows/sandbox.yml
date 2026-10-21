@@ -1,0 +1,40 @@
+name: sandbox
+
+# Builds the gVisor sandbox whose clock Minutehand owns (sandbox/build.sh) and runs the example agent through
+# Minutehand inside it, in the lab container (sandbox/lab): the one whole run of an agent, against a real sandbox.
+# A privileged container is what `runsc do` needs for its network namespace; GitHub's Ubuntu runners allow it.
+on:
+  pull_request:
+  push:
+    branches: [main, integration-main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  example-in-the-sandbox:
+    name: The example agent, in the sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sandbox/build.sh
+      - run: docker build -t minutehand-lab sandbox/lab
+      - name: Run the quiet world
+        run: |
+          docker run --rm --privileged -v "$PWD:/work" -v "$PWD/sandbox/dist:/opt/gv:ro" minutehand-lab \
+            sandbox/lab/run-example.sh examples/proactive_agent/worlds/quiet.yaml | tee quiet.log
+          grep -q "follow-ups made: 2" quiet.log
+          grep -q "wakes: 4, of which changed nothing: 0" quiet.log
+      - name: Run the answers world
+        run: |
+          docker run --rm --privileged -v "$PWD:/work" -v "$PWD/sandbox/dist:/opt/gv:ro" minutehand-lab \
+            sandbox/lab/run-example.sh examples/proactive_agent/worlds/answers.yaml | tee answers.log
+          grep -q "still open at the end: 0" answers.log
+          grep -q "person_replied" answers.log

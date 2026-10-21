@@ -2310,10 +2310,10 @@
     },
     "Sandbox": {
       "additionalProperties": false,
-      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"). The agent's own in-process timers are its next wakes, with no code of\nMinutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"earliest_ns\": int}`\n(whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and\n`advance` moves the sandbox's clock by `{nanoseconds}`, a signed step: forward with every jump of the run's\nclock, so the two agree, and back to the run's start when a sandbox is started for a run, a fork or a replay of\none that began before now. When the sandbox is idle and no call of the agent's is in flight, its earliest\ndeadline is a wake the agent asked for.",
+      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"). The agent's own in-process timers are its next wakes, with no code of\nMinutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"now_ns\": int,\n\"earliest_ns\": int, \"waits\": [{\"task\": int, \"ns\": int}]}` (whether every task is blocked, its realtime clock,\nthe time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the\nsandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is\nborn at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a\ntimer the agent armed before a backward step would fire early. When the sandbox is idle and no call of the\nagent's is in flight, its earliest deadline longer than `housekeeping` is a wake the agent asked for.",
       "properties": {
         "advance": {
-          "description": "Holds {nanoseconds} where the signed step goes",
+          "description": "Holds {nanoseconds} where the step forward goes",
           "items": {
             "type": "string"
           },
@@ -2328,6 +2328,13 @@
           "minItems": 1,
           "title": "Deadlines",
           "type": "array"
+        },
+        "housekeeping": {
+          "default": "PT1S",
+          "description": "A deadline no longer than this is a runtime's own timer (an HTTP server's poll), never a wake",
+          "format": "duration",
+          "title": "Housekeeping",
+          "type": "string"
         },
         "quiet": {
           "default": "PT0.05S",

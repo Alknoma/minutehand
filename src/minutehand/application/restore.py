@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from typing import Protocol
 
@@ -84,9 +84,10 @@ class PlaybackParted(RunRefused):
 class Playback(Protocol):
     """The agent's recorded inputs up to a checkpoint, played into its fresh sandbox (`application.playback`)."""
 
-    async def play(self, progress: Callable[[str], None]) -> Played:
-        """Raises `PlaybackParted` where the agent's calls part from the record, `RunRefused` for anything the
-        record cannot play back."""
+    async def play(self, progress: Callable[[str], None], *, start: Callable[[], Awaitable[None]]) -> Played:
+        """`start` starts the agent's program, and is called once the record answers: whatever the agent does on
+        starting is its first wake's, answered from the record like the rest. Raises `PlaybackParted` where the
+        agent's calls part from the record, `RunRefused` for anything the record cannot play back."""
         ...
 
 
@@ -175,26 +176,15 @@ async def start_fork(
             "prove is the checkpoint's",
             steps,
         )
-    say(f"{RestoreStep.START.value}: starting the agent's command, {shlex.join(own.command)}")
+    await own.stop()
+    steps.append(StepResult(step=RestoreStep.START, command=list(own.command), seconds=0.0))
+    say(
+        f"{RestoreStep.PLAYBACK.value}: starting the agent's command, {shlex.join(own.command)}, and playing its "
+        "recorded inputs into its sandbox"
+    )
     began = time.monotonic()
     try:
-        await own.stop()
-        await own.start()
-    except RunRefused as e:
-        steps.append(
-            StepResult(
-                step=RestoreStep.START,
-                command=list(own.command),
-                output=str(e)[-OUTPUT_KEPT:],
-                seconds=time.monotonic() - began,
-            )
-        )
-        raise RestoreFailed(f"the fork's agent did not start: {e}", steps) from e
-    steps.append(StepResult(step=RestoreStep.START, command=list(own.command), seconds=time.monotonic() - began))
-    say(f"{RestoreStep.PLAYBACK.value}: playing the agent's recorded inputs into its sandbox")
-    began = time.monotonic()
-    try:
-        played = await playback.play(say)
+        played = await playback.play(say, start=own.start)
     except PlaybackParted as e:
         steps.append(
             StepResult(step=RestoreStep.PLAYBACK, output=str(e)[-OUTPUT_KEPT:], seconds=time.monotonic() - began)

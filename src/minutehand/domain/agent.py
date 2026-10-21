@@ -74,20 +74,26 @@ class Sandbox(Model):
     whose clock Minutehand owns"). The agent's own in-process timers are its next wakes, with no code of
     Minutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.
 
-    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "earliest_ns": int}`
-    (whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and
-    `advance` moves the sandbox's clock by `{nanoseconds}`, a signed step: forward with every jump of the run's
-    clock, so the two agree, and back to the run's start when a sandbox is started for a run, a fork or a replay of
-    one that began before now. When the sandbox is idle and no call of the agent's is in flight, its earliest
-    deadline is a wake the agent asked for."""
+    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "now_ns": int,
+    "earliest_ns": int, "waits": [{"task": int, "ns": int}]}` (whether every task is blocked, its realtime clock,
+    the time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the
+    sandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is
+    born at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a
+    timer the agent armed before a backward step would fire early. When the sandbox is idle and no call of the
+    agent's is in flight, its earliest deadline longer than `housekeeping` is a wake the agent asked for."""
 
     deadlines: list[str] = Field(min_length=1)
-    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the signed step goes")
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step forward goes")
     quiet: timedelta = Field(
         default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
     )
     settle_limit: timedelta = Field(
         default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
+    )
+    housekeeping: timedelta = Field(
+        default=timedelta(seconds=1),
+        gt=timedelta(0),
+        description="A deadline no longer than this is a runtime's own timer (an HTTP server's poll), never a wake",
     )
 
     @model_validator(mode="after")

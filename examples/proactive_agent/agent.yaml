@@ -6,8 +6,8 @@ version: 1
 name: proactive_agent
 
 sandbox:
-  deadlines: [runsc, debug, --deadlines, proactive_agent]
-  advance: [runsc, debug, "--advance-clock={nanoseconds}ns", proactive_agent]
+  deadlines: [runsc, --root, /tmp/minutehand-sandbox, debug, --deadlines, agent]
+  advance: [runsc, --root, /tmp/minutehand-sandbox, debug, "--advance-clock={nanoseconds}ns", agent]
 
 inbound:
   - provider: slack

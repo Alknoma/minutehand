@@ -141,7 +141,7 @@ from minutehand.domain.provider import AgentSends, Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
-from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE
+from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE, STARTS_AT_VARIABLE
 from minutehand.domain.world import Actor, Operation, RecordedCall, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
@@ -160,6 +160,7 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 RUNS = "runs"
+
 TELEMETRY = "telemetry"
 """The check name a notice about the agent's telemetry is reported under."""
 WORLD = "world.db"
@@ -353,12 +354,14 @@ async def play(
                 )
                 | base_url_environment(agent, listen.proxy_url(proxy.port))
                 | own_files.environment()
+                | {STARTS_AT_VARIABLE: str(int(scenario.starts_at.timestamp() * 1_000_000_000))}
             )
-            async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state):
+            async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state, started=False) as own:
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
                     sandbox=SandboxClock(agent.sandbox),
+                    start=own.start if own is not None else None,
                     store=store,
                     clock=clock,
                     services=services,
@@ -580,6 +583,7 @@ async def fork(
             )
             | base_url_environment(agent, listen.proxy_url(proxy.port))
             | own_files.environment()
+            | {STARTS_AT_VARIABLE: str(int(scenario.starts_at.timestamp() * 1_000_000_000))}
         )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)

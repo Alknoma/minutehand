@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
@@ -92,12 +93,14 @@ class Agent:
         self._changed = threading.Condition()
 
     def say(self, email: str, text: str) -> None:
+        print(f"[agent] {datetime.now(UTC).isoformat()} to {email}: {text}", file=sys.stderr, flush=True)
         user = str(self.slack.users_lookupByEmail(email=email).get("user", {}).get("id"))
         channel = str(self.slack.conversations_open(users=[user]).get("channel", {}).get("id"))
         self.slack.chat_postMessage(channel=channel, text=text)
 
     def act(self, now: datetime) -> datetime | None:
         """Do what is due at `now`; answer the earliest moment anything is due next, or None when nothing is open."""
+        print(f"[agent] {now.isoformat()} acting", file=sys.stderr, flush=True)
         due_next: list[datetime] = []
         for n, ask in enumerate(self.work):
             done = self.memory.progress(n)
@@ -127,6 +130,7 @@ class Agent:
         return min(due_next) if due_next else None
 
     def heard(self, sender: str, text: str) -> None:
+        print(f"[agent] {datetime.now(UTC).isoformat()} heard from {sender}: {text}", file=sys.stderr, flush=True)
         self.memory.heard(sender, text)
         with self._changed:
             self._changed.notify()
@@ -136,6 +140,7 @@ class Agent:
         act again. The sleep is a wait on a deadline, which is what the sandbox reports as its next wake."""
         while True:
             next_due = self.act(datetime.now(UTC))
+            print(f"[agent] next due {next_due.isoformat() if next_due else None}", file=sys.stderr, flush=True)
             if next_due is None:
                 with self._changed:
                     self._changed.wait()

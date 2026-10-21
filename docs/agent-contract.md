@@ -37,7 +37,7 @@ checkpoint.
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
-| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced) | `deadlines` → `{"idle", "now_ns", "earliest_ns"}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at | `deadlines` → `{"idle", "now_ns", "earliest_ns", "waits": [{"task", "ns"}]}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
@@ -77,6 +77,7 @@ verdict"), never from the agent.
 |---|---|---|
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
+| `sandbox.housekeeping` | `PT1S` | A deadline no longer than this is the runtime's own timer (`http.server`'s half-second poll), never a wake |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 
@@ -89,13 +90,16 @@ envelope is always held to Slack's three seconds. A pushed request is signed wit
 
 ## The sandbox's clock
 
-The agent's clock is the sandbox's, and Minutehand moves it: set to the scenario's `starts_at` when the sandbox
-starts (back, when the scenario began before now), then forward with every jump of the run's clock, so a sleep,
-a backoff, a scheduler loop's next check and a date the agent reads all follow simulated time with no change to the
-agent. Between wakes Minutehand reads the sandbox's deadlines: the earliest a task waits for is the agent's own next
-wake, entered in the run's table as its timer (`planned_wakes`, `dispatch.source = timer`). A timer that fires and
-does nothing the run can see (an HTTP server's poll, a garbage collector's tick) is a runtime's housekeeping, learned
-and not counted as a wake.
+The agent's clock is the sandbox's, and Minutehand moves it. The sandbox is born at the scenario's `starts_at`: the
+agent's command is handed `MINUTEHAND_STARTS_AT_NS` and gives it to `runsc --sim-clock-at`, so the agent's first
+instruction reads simulated time; from there the clock moves forward with every jump of the run's, and never back,
+so a sleep, a backoff, a scheduler loop's next check and a date the agent reads all follow simulated time with no
+change to the agent. The real time the agent spends in a wake passes on its clock, and the run's clock catches up to
+it when the wake ends. Between wakes Minutehand reads the sandbox's deadlines: the earliest a task waits for that is
+longer than `sandbox.housekeeping` is the agent's own next wake, entered in the run's table as its timer
+(`planned_wakes`, `dispatch.source = timer`); a shorter one is the runtime's own (an HTTP server's poll) and fires in
+real time while the sandbox is read as idle. The agent checks the proxy's certificates against its own clock, so the
+proxy's CA and host certificates are valid at every instant (`sandbox/README.md` for the sandbox itself).
 
 ## The agent's memory
 

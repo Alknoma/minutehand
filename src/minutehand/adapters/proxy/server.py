@@ -23,6 +23,7 @@ from types import TracebackType
 from mitmproxy import options
 from mitmproxy.addons import default_addons
 from mitmproxy.addons.proxyserver import Proxyserver
+from mitmproxy.addons.tlsconfig import TlsConfig
 from mitmproxy.master import Master
 from mitmproxy.proxy import mode_specs
 
@@ -31,7 +32,7 @@ from minutehand.adapters.proxy.base_url import BaseUrls
 from minutehand.adapters.proxy.capture import Capturing
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.redirected import RedirectedMode
-from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, write_bundle
+from minutehand.adapters.proxy.trust import BUNDLE, CA_CERT, EverValidCertStore, write_bundle
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.outbound import UnknownHosts
 from minutehand.domain.scenario import ProviderKey, Scenario
@@ -165,6 +166,10 @@ class Proxy:
                 await server.servers.update([])
                 raise OSError(f"the proxy could not listen on {self._listen[0]}:{self.redirect_port} for redirects")
         await master.running()
+        # after `running`: mitmproxy's TLS addon builds its own store then (its `running` runs `configure` again)
+        tls = master.addons.get("tlsconfig")
+        assert isinstance(tls, TlsConfig)
+        tls.certstore = EverValidCertStore.open(self._confdir)  # the agent's clock is the run's: dated for any year
         bound = {type(instance.mode): instance.listen_addrs for instance in server.servers}
         regular, redirected = bound.get(mode_specs.RegularMode), bound.get(RedirectedMode)
         if not regular or (self.redirect_port is not None and not redirected):

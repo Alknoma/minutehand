@@ -59,9 +59,9 @@ minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 192.168.10.3 --
 ```
 
 Two simulated weeks pass in seconds: Sam never answers; the agent follows up a working day apart, twice, tells Owen,
-and stops. Runs are kept in `.minutehand/` in the folder you ran them from. The sandbox is a patched gVisor
-(`docs/design.md`, "A sandbox whose clock Minutehand owns"), which this repository does not ship yet: until it does,
-the example has not been run through Minutehand.
+and stops. Runs are kept in `.minutehand/` in the folder you ran them from. The sandbox is a patched gVisor that
+`sandbox/build.sh` builds (`sandbox/README.md`); it needs Linux and a privileged container, and `sandbox/lab` is one
+that runs the example in it. Both worlds, and a fork, have run that way (`docs/design.md`, "Evidence").
 
 ```bash
 minutehand runs                  # every run, one line each
@@ -165,11 +165,12 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 
 - **Built and tested, with no agent in the loop:** the proxy, the fakes against their vendors' client libraries,
   the store, the people, the checks over hand-written records, the read model, the viewer, `validate`, `schema`.
-- **Built, not run against a real sandbox:** the run loop, the agent's memory, forks and their playback, dispatch
-  rules (a booked wake delivered late, twice or never), `run-all`, `replay`. Every agent runs in a sandbox whose
-  clock Minutehand owns, and the patched gVisor that is that sandbox is not in this repository yet: no whole run of
-  any agent is in the test suite until it is (`docs/design.md`, "A sandbox whose clock Minutehand owns").
-- **Not built:** the sandbox's network locked to the proxy, generated providers, the hosted service.
+- **Run in the sandbox, by hand in the lab container, not in the test suite:** the run loop on the agent's own
+  timers, pushed events into the sandbox, a fork's playback (`docs/design.md`, "Evidence", 2026-10-22, arm64). Built
+  against the sandbox's control calls and not yet run against one: the agent's memory under a fork, dispatch rules
+  (a booked wake delivered late, twice or never), `run-all`, `replay`.
+- **Not built:** a CI job that proves the sandbox on x86-64 (written, unproven), the sandbox's network locked to the
+  proxy, generated providers, the hosted service.
 
 ## Docs
 

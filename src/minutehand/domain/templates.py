@@ -36,6 +36,9 @@ agent file (`env`, `doctor`, `run` with no command) refuses a file that still ho
 
 RUN_PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 RUN_DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
+STARTS_AT_VARIABLE = "MINUTEHAND_STARTS_AT_NS"
+"""The run's start, nanoseconds since the epoch, as the agent's command is told: the moment its sandbox is born at,
+so its first instruction already reads the run's clock (`runsc --sim-clock-at`)."""
 """What `{run.port}` and `{run.dir}` were filled with, as the agent's command is told: kept with each run, so a fork
 or a replay starts the agent listening, and keeping its files, where the run's agent file says it does."""
 

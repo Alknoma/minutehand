@@ -38,7 +38,7 @@ from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.application.sandbox import SandboxClock
+from minutehand.application.sandbox import SandboxClock, SandboxFailed
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
@@ -275,6 +275,7 @@ class Orchestrator:
         desk: ServiceDesk | None = None,
         pins: Sequence[ReplyAt] = (),
         replay: Replay | None = None,
+        start: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
@@ -312,6 +313,7 @@ class Orchestrator:
         self._channels = dict(channels or {})
         self._environment = environment
         self._replay = replay
+        self._start_agent = start
         self._inboxes = inboxes
         self._outside = outside
         self._desk = desk
@@ -330,10 +332,6 @@ class Orchestrator:
         self._holding = _Holding(self._dues, clock)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
-        self._quiet_tasks: dict[int, int] = {}
-        """A task's housekeeping period: its timer fired at this distance and did nothing."""
-        self._timer_tasks: set[int] = set()
-        self._timer_ns = -1
         self._watcher = Watcher(agent.watches)
         self._failure: str | None = None
         self._seen = 0
@@ -496,16 +494,20 @@ class Orchestrator:
         return goal.provider if goal is not None else None
 
     async def _start(self) -> StopReason | None:
-        """The START wake: the agent, started in its sandbox, does whatever it does on starting; an older scenario's
-        owner sends it the goal first, as a message."""
+        """The START wake: the agent's sandbox is started once the world is seeded, so whatever the agent does on
+        starting finds it and is this wake's; its clock is set to the run's before the agent's first instruction; an
+        older scenario's owner then sends the goal, as a message."""
         wake = self._clock.begin_wake()
         provider = self._by_message
 
-        async def say_goal() -> None:
+        async def begin() -> None:
+            if self._start_agent is not None:
+                await self._start_agent()
+            await self._sandbox.sync(self._scenario.starts_at)  # born there; brought up to it when behind
             if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
-        return await self._wake(wake, WakeReason.START, say_goal)
+        return await self._wake(wake, WakeReason.START, begin)
 
     async def _loop(self) -> StopReason:
         deadline = self._scenario.window_end
@@ -554,8 +556,6 @@ class Orchestrator:
                     return stop
                 continue
             wake = self._clock.begin_wake()
-            if all(isinstance(p, PendingTimer) for p in fired) and not await self._timer_did_something(wake):
-                continue
 
             async def fire(due: list[Pending] = fired) -> None:
                 await self._release()
@@ -581,33 +581,25 @@ class Orchestrator:
             owed, self._sandbox_owed = self._sandbox_owed, 0
             await self._sandbox.advance(owed)
 
-    async def _timer_did_something(self, wake: int) -> bool:
-        """Release the sandbox's clock to a timer and let it settle. A timer that wrote nothing and called nothing
-        (a runtime's own housekeeping: an HTTP server's poll, a garbage collector's tick) is no wake of the agent's,
-        and `wake` is withdrawn; one that did something is a wake, played on as one."""
-        head, calls = self._store.head(), len(self._store.calls())
-        await self._release()
-        await self._sandbox.settle(self._traffic)
-        if self._store.head() == head and len(self._store.calls()) == calls:
-            self._clock.withdraw(wake)
-            # a task whose timer fired and did nothing is a runtime's own (an HTTP server's poll): planned no more,
-            # it fires once and re-arms whenever the clock is released past it
-            for task in self._timer_tasks:
-                self._quiet_tasks[task] = max(self._quiet_tasks.get(task, 0), self._timer_ns)
-            return False
-        return True
-
     async def _plan_timer(self) -> bool:
         """The agent's earliest timer, read from the sandbox once it is idle and nothing of its is in flight, is the
         wake it asked for, in place of the one read before. False when it never fell idle."""
-        await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
-        found = await self._sandbox.settle(self._traffic)
+        try:
+            await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
+            found = await self._sandbox.settle(self._traffic)
+        except SandboxFailed as e:
+            self._failure = str(e)
+            return False
         if found is None:
             self._failure = "the agent's sandbox did not fall idle within its settle limit"
             return False
-        earliest = found.earliest(self._quiet_tasks)
-        self._timer_tasks = found.tasks_at(earliest)
-        self._timer_ns = earliest
+        # Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
+        # catches up, so a deadline read from the sandbox lands at the moment the agent set it for, not a little
+        # before it: the agent's own clock is the run's.
+        at = found.now()
+        if at > self._clock.now():
+            self._clock.jump(at)
+        earliest = found.earliest(self._agent.sandbox.housekeeping)
         if earliest < 0:
             self._dues.cancel(_timer)
             return True
@@ -1086,8 +1078,10 @@ async def run_scenario(
     model: LanguageModel | None = None,
     desk: ServiceDesk | None = None,
     replay: Replay | None = None,
+    start: Callable[[], Awaitable[None]] | None = None,
 ) -> RunRecord:
-    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
+    """Run one scenario from its start. `start` starts the agent's program (its sandbox), once the world is seeded.
+    `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which the sandbox needs to fall idle;
     `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
     beside its memory at each checkpoint; `replay` is the record answering the agent's model calls, when this is a
@@ -1114,4 +1108,5 @@ async def run_scenario(
         model=model,
         desk=desk,
         replay=replay,
+        start=start,
     ).run()

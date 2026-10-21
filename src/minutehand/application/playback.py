@@ -15,7 +15,7 @@ mean the agent did not do what it did before, and the fork is refused there (`ap
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -73,7 +73,7 @@ class TracePlayback:
     unrecorded_channels: frozenset[str] = frozenset()
     """Captured channels people answer through (`outbound[].replies`), whose deliveries the door does not yet carry."""
 
-    async def play(self, progress: Callable[[str], None]) -> Played:
+    async def play(self, progress: Callable[[str], None], *, start: Callable[[], Awaitable[None]]) -> Played:
         missing = sends_not_recorded(
             self.parent, self.at_seq, senders=self.unrecorded_senders, channels=self.unrecorded_channels
         )
@@ -92,16 +92,21 @@ class TracePlayback:
         sends = self._sends()
         floor = 0
         resent = 0
-        await self.sandbox.sync(self.starts_at)
         jumps = 1
         was = self.starts_at
         self.proxy.play_back(trace)
         self.memory.playing_back(self.parent, lambda: max(trace.reached_seq, floor))
         try:
+            # the agent is started once the record answers, as the parent's START wake started it once the world was
+            # seeded: its calls on starting are wake 1's, and its sandbox is born at the run's start
+            await start()
+            await self.sandbox.sync(self.starts_at)
             for wake in range(1, self.checkpoint.wake + 1):
                 at = moments.get(wake, was)
                 if at > was:
-                    await self.sandbox.advance(int((at - was).total_seconds() * 1_000_000_000))
+                    # set, not stepped: the sandbox's clock ran on by the real time the agent spent in the wake
+                    # before, as it did in the parent, and the parent's record holds the moments that followed
+                    await self.sandbox.sync(at)
                     jumps += 1
                     was = at
                 for push in sends.get(wake, []):
