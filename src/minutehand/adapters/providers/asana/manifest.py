@@ -23,7 +23,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="asana",
-    sends=AgentSends.UNRECORDED,
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["app.asana.com"],
     path_prefix="/api/1.0",

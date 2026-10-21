@@ -44,7 +44,10 @@ say("resolve example.com", resolve("example.com"))
 say("direct https://slack.com/api/api.test (no proxy)", fetch("https://slack.com/api/api.test"))
 say("direct https://example.com (undeclared host)", fetch("https://example.com/"))
 say("direct http://1.1.1.1/ (by address)", fetch("http://1.1.1.1/"))
-say("direct https://api.anthropic.com/v1/models (a model host: tunnelled out)", fetch("https://api.anthropic.com/v1/models"))
+say(
+    "direct https://api.anthropic.com/v1/models (a model host: tunnelled out)",
+    fetch("https://api.anthropic.com/v1/models"),
+)
 try:
     s = socket.create_connection(("8.8.8.8", 9999), timeout=4)
     say("tcp 8.8.8.8:9999", "connected (then the proxy reads the first bytes)")

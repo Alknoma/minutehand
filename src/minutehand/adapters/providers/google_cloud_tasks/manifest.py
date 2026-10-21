@@ -14,7 +14,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="google_cloud_tasks",
-    sends=AgentSends.UNRECORDED,
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["cloudtasks.googleapis.com"],
     kinds=[EntityKind.RECORD],

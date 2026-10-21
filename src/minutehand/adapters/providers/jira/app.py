@@ -263,7 +263,7 @@ class JiraApi:
             self._desk.outbox.clear()
             status, tree = served.handler(call)
             for outgoing in self.dispatch():
-                task = asyncio.create_task(webhooks.send(outgoing))
+                task = asyncio.create_task(webhooks.send(self._world.store, outgoing))
                 self._sending.add(task)
                 task.add_done_callback(self._sending.discard)
             if isinstance(tree, Raw):
@@ -2149,7 +2149,7 @@ class JiraApi:
     async def flush(self) -> None:
         """Send, and wait for, what the webhooks are owed (a person's move made outside a request)."""
         for outgoing in self.dispatch():
-            await webhooks.send(outgoing)
+            await webhooks.send(self._world.store, outgoing)
 
     # ------------------------------------------------------------------ agile
 

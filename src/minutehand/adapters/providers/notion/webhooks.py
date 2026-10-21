@@ -29,13 +29,15 @@ import hashlib
 import hmac
 import json
 
-import httpx
 from pydantic import JsonValue
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.notion import wire
+from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.state import NotionWorld
 from minutehand.domain.world import Operation
 from minutehand.ports.clock import Clock
+from minutehand.ports.store import Store
 
 TIMEOUT = 30.0
 
@@ -60,7 +62,7 @@ async def deliver(world: NotionWorld, clock: Clock) -> None:
     """Verify every unverified subscription, then send each verified one what it is owed, oldest first."""
     for hook in world.webhooks():
         if not hook.verified:
-            if not await _verify(hook):
+            if not await _verify(world.store, hook):
                 for owed in world.owed(hook.id):
                     world.sent(owed)
                 continue
@@ -73,22 +75,32 @@ async def deliver(world: NotionWorld, clock: Clock) -> None:
                 "Content-Type": "application/json",
                 "X-Notion-Signature": signature(hook.verification_token, body),
             }
-            try:
-                async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-                    await client.post(hook.url, content=body, headers=headers)
-            except httpx.HTTPError:
-                pass
+            # through the one door everything sent the agent goes through: recorded whole, sent again by a fork;
+            # how the address answered is in the record, and Notion's retries are not this fake's
+            await Door().send(
+                world.store,
+                service=MANIFEST.key,
+                item=f"{hook.id}/{owed.id}",
+                url=hook.url,
+                body=body,
+                headers=headers,
+                timeout=TIMEOUT,
+            )
             world.sent(owed)
 
 
-async def _verify(hook: wire.StoredWebhook) -> bool:
+async def _verify(store: Store, hook: wire.StoredWebhook) -> bool:
     body = json.dumps({"verification_token": hook.verification_token}).encode()
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-            answered = await client.post(hook.url, content=body, headers={"Content-Type": "application/json"})
-    except httpx.HTTPError:
-        return False
-    return answered.is_success
+    sent = await Door().send(
+        store,
+        service=MANIFEST.key,
+        item=f"{hook.id}/verification",
+        url=hook.url,
+        body=body,
+        headers={"Content-Type": "application/json"},
+        timeout=TIMEOUT,
+    )
+    return sent.snapshot.status is not None and sent.snapshot.status < 300
 
 
 def _event(hook: wire.StoredWebhook, owed: wire.StoredOwedEvent, workspace_name: str) -> JsonValue:

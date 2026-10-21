@@ -237,6 +237,10 @@ class AsanaWorld:
     def __init__(self, store: Store) -> None:
         self._store = store
 
+    @property
+    def store(self) -> Store:
+        return self._store
+
     # ------------------------------------------------------------------ reads
 
     def _pages(self, kind: EntityKind, parent: str) -> Iterator[Stored]:

@@ -32,7 +32,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
-import httpx
 from google.protobuf import json_format
 from google.protobuf.message import Message as ProtoMessage
 from pydantic import Field, ValidationError
@@ -40,6 +39,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, Router
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.adapters.providers.google_cloud_tasks.manifest import MANIFEST
 from minutehand.domain.clock import Due, DueKind
@@ -392,18 +392,26 @@ class CloudTasksProvider:
         if host not in LOOPBACK:
             failed = f"the task's URL is not this machine ({host}): point the agent's task URLs at its local address"
         else:
-            body = base64.b64decode(task.body) if task.body is not None else None
+            body = base64.b64decode(task.body) if task.body is not None else b""
             timeout = self._deadline(task.dispatch_deadline)
-            try:
-                async with httpx.AsyncClient(timeout=timeout, trust_env=False, verify=False) as client:
-                    answer = await client.request(task.method, task.url, headers=headers, content=body)
-                status = answer.status_code
-            except httpx.TimeoutException:
+            # through the one door everything sent the agent goes through: recorded whole, sent again by a fork
+            sent = await Door().send(
+                world,
+                service=MANIFEST.key,
+                item=f"{task.name}/{task.dispatch_count}",
+                url=task.url,
+                body=body,
+                headers=headers,
+                method=task.method,
+                timeout=timeout,
+            )
+            status = sent.snapshot.status
+            if sent.timed_out:
                 # "If the worker does not respond by this deadline then the request is cancelled and the attempt is
                 # marked as a DEADLINE_EXCEEDED failure" (Task.dispatchDeadline).
                 failed = f"DEADLINE_EXCEEDED: no answer within the task's dispatchDeadline of {task.dispatch_deadline}"
-            except httpx.HTTPError as e:
-                failed = f"{type(e).__name__}: {e}"
+            elif status is None:
+                failed = sent.snapshot.failure
         attempt = Attempt(schedule_time=task.schedule_time, dispatch_time=now, response_status=status, failed=failed)
         done = task.model_copy(
             update={

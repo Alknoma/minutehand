@@ -13,7 +13,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="google_workspace",
-    sends=AgentSends.UNRECORDED,
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=[
         "www.googleapis.com",

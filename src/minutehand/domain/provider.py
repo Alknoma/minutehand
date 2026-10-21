@@ -87,13 +87,12 @@ class WorldKey(Model):
 
 
 class AgentSends(StrEnum):
-    """Whether the provider makes requests to the agent (a pushed event, a webhook, a delivery), and whether each is
-    recorded whole, headers and body, through the one door (`adapters/agent/delivery.py`): a fork plays the agent
-    back from that record, and refuses to where a send went unrecorded."""
+    """Whether the provider makes requests to the agent (a pushed event, a webhook, a delivery). Every request made
+    goes through the one door (`adapters/agent/delivery.py`) and is recorded whole, headers and body: a fork plays
+    the agent back from that record."""
 
     NONE = "none"  # it answers the agent and sends it nothing (the agent polls what it holds)
     RECORDED = "recorded"  # every request it makes to the agent goes through the door
-    UNRECORDED = "unrecorded"  # it makes requests to the agent that the door does not yet carry
 
 
 class Manifest(Model):

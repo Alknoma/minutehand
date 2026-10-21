@@ -32,9 +32,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 
-import httpx
-
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.google_workspace import wire
+from minutehand.adapters.providers.google_workspace.manifest import MANIFEST
 from minutehand.adapters.providers.google_workspace.state import DriveWorld
 from minutehand.domain.scenario import Model
 from minutehand.domain.world import Operation
@@ -216,11 +216,18 @@ class Channels:
         if channel.token is not None:
             headers["X-Goog-Channel-Token"] = channel.token
         delivery = wire.Delivery(channel=channel.id, number=number, state=state, address=channel.address)
-        try:
-            async with httpx.AsyncClient(trust_env=False, timeout=DELIVERY_TIMEOUT_SECONDS, verify=False) as client:
-                answered = await client.post(channel.address, headers=headers)
-        except httpx.HTTPError as error:
-            delivery = delivery.model_copy(update={"failure": f"{type(error).__name__}: {error}".rstrip(": ")})
+        # through the one door everything sent the agent goes through: recorded whole, sent again by a fork
+        sent = await Door().send(
+            self._world.store,
+            service=MANIFEST.key,
+            item=f"{channel.id}/{number}",
+            url=channel.address,
+            body=b"",
+            headers=headers,
+            timeout=DELIVERY_TIMEOUT_SECONDS,
+        )
+        if sent.snapshot.status is None:
+            delivery = delivery.model_copy(update={"failure": sent.snapshot.failure})
         else:
-            delivery = delivery.model_copy(update={"status": answered.status_code})
+            delivery = delivery.model_copy(update={"status": sent.snapshot.status})
         self._world.delivered(delivery)

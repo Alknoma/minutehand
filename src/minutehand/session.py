@@ -138,7 +138,7 @@ from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.items import ItemKind, TypedItem
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
-from minutehand.domain.provider import AgentSends, Manifest
+from minutehand.domain.provider import Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
@@ -600,8 +600,6 @@ async def fork(
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
             sandbox = SandboxClock(agent.sandbox)
-            unrecorded = frozenset(m.key for m in registry.manifests if m.sends is AgentSends.UNRECORDED)
-            channels_declared = frozenset(replies_for(agent, changed, signing))
 
             def playback_for(parent_store: Store, checkpoint: Checkpoint) -> TracePlayback:
                 return TracePlayback(
@@ -614,8 +612,6 @@ async def fork(
                     memory=proxy.receiver,
                     door=Door(),
                     traffic=proxy,
-                    unrecorded_senders=unrecorded,
-                    unrecorded_channels=channels_declared,
                 )
 
             async with _agent_process(command, env, agent, log, state=state, started=False) as own:

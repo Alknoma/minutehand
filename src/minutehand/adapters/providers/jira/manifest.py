@@ -14,7 +14,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="jira",
-    sends=AgentSends.UNRECORDED,
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["*.atlassian.net", "api.atlassian.com", "auth.atlassian.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],

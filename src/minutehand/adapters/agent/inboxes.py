@@ -19,9 +19,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-import httpx
 from pydantic import JsonValue
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.agent.openapi import Operation, OperationUnresolved, resolve
 from minutehand.adapters.proxy import redact
 from minutehand.adapters.proxy.capture import structured
@@ -256,21 +256,28 @@ class HttpInboxReach:
         return _Built(operation.method, url, {**headers, **in_headers}, raw, operation, what)
 
     async def _send(self, built: _Built, person: Person, act: InboxAct, world: Store) -> _Answered | None:
-        answer: httpx.Response | None = None
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-            try:
-                answer = await client.request(built.method, built.url, content=built.body, headers=built.headers)
-            except httpx.HTTPError:
-                answer = None
+        # through the one door everything sent the agent goes through: recorded whole (`PushSnapshot`), so a fork
+        # sends it again; what the inbox answered, against its contract, is kept beside it as the `InboxCall`
+        sent = await Door().send(
+            world,
+            service=self.declared.name,
+            item=f"{person.key}/{act.value}/{world.head() + 1}",
+            url=built.url,
+            body=built.body or b"",
+            headers=built.headers,
+            method=built.method,
+            timeout=TIMEOUT,
+        )
         answered: _Answered | None = None
-        if answer is not None:
-            parsed = structured(answer.text, answer.headers.get("content-type")) if answer.text else None
+        if sent.snapshot.status is not None:
+            text = sent.body.decode("utf-8", errors="replace")
+            parsed = structured(text, sent.answer_headers.get("content-type")) if text else None
             contract = (
-                built.operation.mismatch(answer.status_code, _json(parsed))
-                if built.operation is not None and (parsed is not None or not answer.text)
+                built.operation.mismatch(sent.snapshot.status, _json(parsed))
+                if built.operation is not None and (parsed is not None or not text)
                 else None
             )
-            answered = _Answered(answer.status_code, answer.text, parsed, contract)
+            answered = _Answered(sent.snapshot.status, text, parsed, contract)
         secret = self._credentials[person.key] if person.key in self._credentials else None
         parts = urlsplit(built.url)
         path = parts.path + (f"?{parts.query}" if parts.query else "")

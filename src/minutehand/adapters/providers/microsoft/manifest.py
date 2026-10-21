@@ -8,7 +8,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="microsoft",
-    sends=AgentSends.UNRECORDED,
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=[
         "login.microsoftonline.com",

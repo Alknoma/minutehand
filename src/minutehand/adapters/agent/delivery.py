@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -31,6 +31,8 @@ class Sent:
     snapshot: PushSnapshot
     body: bytes
     timed_out: bool = False
+    answer_headers: Mapping[str, str] = field(default_factory=dict)
+    """The answer's headers, names lower-cased: what a handshake reads back (Asana echoes its secret in one)."""
 
 
 class Door:
@@ -54,7 +56,7 @@ class Door:
         """One send to the agent, recorded as it ended under `EntityKind.PUSH`, actor SCENARIO, so no check counts
         it as anyone's work."""
         began = time.monotonic()
-        delivered, answer, timed_out = await self._make(method, url, headers, body, timeout)
+        delivered, answer, timed_out, answer_headers = await self._make(method, url, headers, body, timeout)
         snapshot = PushSnapshot(
             service=service,
             item=item,
@@ -78,7 +80,7 @@ class Door:
                 after=snapshot,
             )
         )
-        return Sent(snapshot=snapshot, body=answer, timed_out=timed_out)
+        return Sent(snapshot=snapshot, body=answer, timed_out=timed_out, answer_headers=answer_headers)
 
     async def push(
         self, store: Store, *, service: ProviderKey, item: str, url: str, body: str, parent: str | None = None
@@ -99,20 +101,21 @@ class Door:
         """A recorded send made again, byte for byte: the agent's sandbox being played back receives what it
         received before. Nothing is recorded."""
         headers = {h.name: h.value for h in snapshot.headers}
-        delivered, _, _ = await self._make(
+        delivered, _, _, _ = await self._make(
             snapshot.method, snapshot.url, headers, snapshot.body.encode("utf-8"), timeout
         )
         return delivered
 
     async def _make(
         self, method: str, url: str, headers: Mapping[str, str], body: bytes, timeout: float
-    ) -> tuple[Delivered, bytes, bool]:
+    ) -> tuple[Delivered, bytes, bool, Mapping[str, str]]:
         try:
             async with httpx.AsyncClient(trust_env=False, timeout=timeout, verify=False) as client:
                 answered = await client.request(method, url, content=body, headers=dict(headers))
         except httpx.TimeoutException as e:
-            return Delivered(status=None, failure=f"no answer within {timeout:g}s ({e!r})"), b"", True
+            return Delivered(status=None, failure=f"no answer within {timeout:g}s ({e!r})"), b"", True, {}
         except httpx.HTTPError as e:
-            return Delivered(status=None, failure=f"{type(e).__name__}: {e}"), b"", False
+            return Delivered(status=None, failure=f"{type(e).__name__}: {e}"), b"", False, {}
         failure = None if answered.status_code < 400 else f"the address answered {answered.status_code}"
-        return Delivered(status=answered.status_code, failure=failure), answered.content, False
+        answer_headers = {name.lower(): value for name, value in answered.headers.items()}
+        return Delivered(status=answered.status_code, failure=failure), answered.content, False, answer_headers
