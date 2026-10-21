@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 
-from minutehand.domain.agent import AgentUnderTest, Polled
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.items import BUILT_IN, CHAT_MESSAGE, EMAIL, ItemKind, ProvidedTypes, TypedItem, read_as
 from minutehand.domain.provider import Manifest
 from minutehand.domain.scenario import ProviderKey, Scenario
@@ -101,8 +101,5 @@ def provided_types(
 
 
 def rhythm(agent: AgentUnderTest) -> timedelta | None:
-    """The agent's declared rhythm: its `tick`, else its shortest polled `every`; None when it declares neither."""
-    if agent.tick is not None:
-        return agent.tick
-    every = [w.every for w in agent.wakes if isinstance(w, Polled)]
-    return min(every) if every else None
+    """The agent's declared rhythm: its `tick`; None when it declares none."""
+    return agent.tick

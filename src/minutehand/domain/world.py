@@ -24,7 +24,6 @@ class EntityKind(StrEnum):
     FILE = "file"  # a file in a folder of the agent's own machine the agent file says to watch
     TOOL_CALL = "tool_call"  # a tool the agent called on an MCP server
     MEMORY = "memory"  # a key of the agent's own memory, written or read through `minutehand.agent.store`
-    NEXT_WAKE = "next_wake"  # the moment the agent asked to be woken next through `minutehand.agent.wake`
     STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
     TRANSITION = "transition"  # one move of an item's state, by anyone (`domain.transitions.Transition`)
     PENDING = "pending"  # an item pending on a person, as the people engine holds it (`application.people`)
@@ -261,12 +260,21 @@ class InboxCall(Model):
     )
 
 
+class Header(Model):
+    """One HTTP header as it crossed the wire, its value redacted when its name is a credential's."""
+
+    name: str
+    value: str
+
+
 class Exchange(Model):
     """One HTTP call as it crossed the wire. Bodies are the provider's own format.
 
     A body that is valid UTF-8 is `*_body`, text, with credentials redacted. Any other (a .docx, an image, JSON in
     another encoding or with bytes that are no text at all) is `*_bytes`, exactly the bytes that crossed, and its
-    `*_body` is None: every call is recorded whatever its bodies hold. In JSON, bytes are base64."""
+    `*_body` is None: every call is recorded whatever its bodies hold. In JSON, bytes are base64. The answer's
+    headers are kept too: with the status and the body they are everything the agent received, which a fork plays
+    back into the agent's sandbox (`application.playback`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", ser_json_bytes="base64", val_json_bytes="base64")
 
@@ -278,6 +286,11 @@ class Exchange(Model):
     response_body: str | None = None
     request_bytes: bytes | None = Field(default=None, description="The request body when it is not UTF-8 text")
     response_bytes: bytes | None = Field(default=None, description="The answer's body when it is not UTF-8 text")
+    response_headers: list[Header] | None = Field(
+        default=None,
+        description="The answer's headers, in order, credentials redacted; None for a call recorded before they "
+        "were kept, which no fork can play back",
+    )
     traceparent: str | None = Field(default=None, description="W3C trace context the caller sent, if any")
     captured: Captured | None = Field(default=None, description="Set for a call to a host no provider claims")
     tunnelled: Tunnelled | None = Field(
@@ -638,20 +651,19 @@ class PushSnapshot(Model):
     kind: Literal["push"] = "push"
     service: ProviderKey = Field(description="The declared service or provider that pushed it")
     item: str = Field(description="What it was about: a declared service's item id, a Slack event's `event_id`")
+    method: str = "POST"
     url: str
+    headers: list[Header] = Field(
+        default=[],
+        description="Every header sent, verbatim: with the method, the URL and the body, everything the agent "
+        "received, which a fork sends again (`application.playback`)",
+    )
     body: str = Field(description="What was sent, as JSON")
     status: int | None = Field(default=None, description="The answer's status; None when none came")
     failure: str | None = Field(default=None, description="Why it was not delivered")
     attempt: int = Field(default=0, ge=0, description="0 for the first send, then each retry's number")
     retry_reason: str | None = Field(default=None, description="Why it was sent again, in the service's own words")
     seconds: float | None = Field(default=None, ge=0, description="How long the address took to answer, real time")
-
-
-class NextWakeSnapshot(Model):
-    """The moment the agent asked to be woken next (`minutehand.agent.wake`), or none."""
-
-    kind: Literal["next_wake"] = "next_wake"
-    at: AwareDatetime | None
 
 
 Snapshot = Annotated[
@@ -663,7 +675,6 @@ Snapshot = Annotated[
     | PushSnapshot
     | MemorySnapshot
     | StoredSnapshot
-    | NextWakeSnapshot
     | ToolCallSnapshot
     | FileSnapshot
     | TicketSnapshot

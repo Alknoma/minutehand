@@ -175,7 +175,7 @@ Every act of the agent under test, in the order it acted: messages, other writes
 | `span_id` | TEXT | The model call it is (model_calls.span_id); NULL otherwise |
 | `at` | TEXT | Simulated time; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `wake` | INTEGER | The wake it happened in |
-| `kind` | TEXT | message, write, read, memory, stored, next_wake, call (an HTTP call that wrote and read no event) or model_call |
+| `kind` | TEXT | message, write, read, memory, stored, call (an HTTP call that wrote and read no event) or model_call |
 | `operation` | TEXT | create, update, delete, read or search; for a call its HTTP method; for a model call chat |
 | `provider` | TEXT | The provider, memory, a declared host, or the model's system for a model call |
 | `target` | TEXT | What it acted on: a channel, an entity id, a memory key, host and path, or the model |
@@ -265,21 +265,18 @@ Every HTTP, gRPC and WebSocket exchange the proxy saw, bodies decoded: the provi
 
 ### `wakes`
 
-Every wake of the agent, with why it began, what the agent reported as it ended, and what it did. Kept in the order `wake`.
+Every wake of the agent, with why it began and what it did. Kept in the order `wake`.
 
 | Column | Type | What it holds |
 |---|---|---|
 | `wake` | INTEGER | The wake, from 1 |
 | `at` | TEXT | Simulated time it ran at; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
-| `reason` | TEXT | start, due, person_replied, direction or tick; NULL for a run recorded before reasons were kept |
+| `reason` | TEXT | start, due, person_replied or direction; NULL for a run recorded before reasons were kept |
 | `woken_by` | TEXT | Comma-separated sources of what fell due and fired at that moment (dispatch.source) |
 | `world_changes` | INTEGER | The agent's changes to the world in it |
 | `memory_reads` | INTEGER | Gets and listings of its memory |
 | `memory_writes` | INTEGER | Keys of its memory written or deleted |
-| `commitments_changed` | INTEGER | 1 when its reported commitments changed |
 | `checkpoint_seq` | INTEGER | The seq of the checkpoint written as it ended; NULL when none |
-| `reported_status` | TEXT | working, idle or done, as the agent reported at that checkpoint; NULL when it reported nothing |
-| `reported_next_wake` | TEXT | The next wake it reported then |
 | `actions` | INTEGER | The agent's acts in it (actions rows) |
 | `model_calls` | INTEGER | The agent's model calls placed in it |
 
@@ -292,7 +289,7 @@ The run loop's table of what is due next, every entry as it last stood: what ent
 | `due_id` | INTEGER | The entry, numbered in the order it entered |
 | `kind` | TEXT | agent_wake, person_reply, direction, happening, machine, transition or service |
 | `ref` | TEXT | What it refers to, in the run loop's words |
-| `source` | TEXT | reported, booked, polled, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it) |
+| `source` | TEXT | booked, reply, happening, direction, machine, timer, transition, service, or call (a call of the agent's held until the world could answer it) |
 | `due_at` | TEXT | When it was due; UTC, ISO 8601 with milliseconds and a Z (`2026-08-24T10:00:00.000Z`): compares as text, and julianday() reads it |
 | `entered_at` | TEXT | When it entered the table |
 | `entered_wake` | INTEGER | The wake in progress then; 0 is setup |
@@ -654,16 +651,6 @@ WHERE host = 'slack.com' AND path LIKE '/api/chat.postMessage%'
 ORDER BY call_id;
 ```
 
-### Actions after the agent reported it was done
-
-```sql
-SELECT a.position, a.wake, a.seq, a.kind, a.target, a.summary
-FROM actions a
-WHERE a.seq > (SELECT MIN(checkpoint_seq) FROM wakes WHERE reported_status = 'done')
-   OR a.wake > (SELECT MIN(wake) FROM wakes WHERE reported_status = 'done')
-ORDER BY a.position;
-```
-
 ### Messages sent outside a person's working hours
 
 ```sql
@@ -676,7 +663,7 @@ ORDER BY m.seq;
 ### Why each wake began, and what it did
 
 ```sql
-SELECT wake, at, reason, woken_by, reported_status, world_changes, actions, model_calls
+SELECT wake, at, reason, woken_by, world_changes, actions, model_calls
 FROM wakes
 ORDER BY wake;
 ```

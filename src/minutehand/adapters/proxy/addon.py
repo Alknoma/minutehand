@@ -57,6 +57,8 @@ from minutehand.adapters.proxy.replay import ModelReplay, Parted
 from minutehand.adapters.proxy.tunnel import Tunnel
 from minutehand.adapters.proxy.worlds import Mounted, One, Worlds, one_run
 from minutehand.adapters.telemetry.receiver import grpc_installed
+from minutehand.application.trace import Parted as PlaybackParted
+from minutehand.application.trace import TraceReplay
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.common import ProviderKey
 from minutehand.domain.emulator import TIME_HEADER, WAKE_HEADER, WORLD_HEADER, ExternalEmulator
@@ -91,6 +93,7 @@ from minutehand.domain.world import (
     FrameSender,
     GrpcCode,
     GrpcStatus,
+    Header,
     MessageSnapshot,
     Operation,
     Recipient,
@@ -147,6 +150,20 @@ def _answered_as_service(calls: list[RecordedCall], host: str) -> bool:
 def _first_header(message: http.Message, name: str) -> str | None:
     values = message.headers.get_all(name)
     return values[0] if values else None
+
+
+def _headers_of(response: http.Response) -> list[Header]:
+    """The answer's headers as the record keeps them: in order, credentials redacted."""
+    return redact.headers(
+        [
+            (k.decode("utf-8", "surrogateescape"), v.decode("utf-8", "surrogateescape"))
+            for k, v in response.headers.fields
+        ]
+    )
+
+
+_HOP_BY_HOP = frozenset({"content-length", "transfer-encoding", "connection", "content-encoding", "keep-alive"})
+"""Headers of the connection, not of the answer: a played-back answer carries its own."""
 
 
 TEE_LIMIT = 64 * 1024 * 1024
@@ -297,6 +314,9 @@ class ProxyAddon:
         self.record_model_calls = record_model_calls
         # The run whose recording answers the agent's model calls (`replay.ModelReplay`): `minutehand replay` only.
         self.model_replay: ModelReplay | None = None
+        # The record answering every other call of the agent's while a fork's agent is played back to its checkpoint
+        # (`application.playback`): set by `play_back`, cleared by `live`. Nothing is recorded meanwhile.
+        self.trace_replay: TraceReplay | None = None
         # Each captured call on its way to the real host, by flow id, until its answer has passed.
         self._passing: dict[str, _Passing] = {}
         # The streamed answer of each recorded call, chunk by chunk as it passed through, by flow id.
@@ -599,6 +619,9 @@ class ProxyAddon:
             return
         self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.policy(host)
+        if self.trace_replay is not None and policy not in (HostPolicy.TUNNEL, HostPolicy.EDIT, HostPolicy.RECORD):
+            self._played_back(flow, host)
+            return
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._records(host):
             self._recorded.add(flow.id)
         if policy is HostPolicy.EDIT:
@@ -820,6 +843,33 @@ class ProxyAddon:
     def websocket_end(self, flow: http.HTTPFlow) -> None:
         self._sockets.pop(flow.id, None)
 
+    def play_back(self, trace: TraceReplay) -> None:
+        """`application.playback.PlaysBack`: answer the agent's calls from `trace` until `live`."""
+        self.trace_replay = trace
+
+    def live(self) -> None:
+        self.trace_replay = None
+
+    def _played_back(self, flow: http.HTTPFlow, host: str) -> None:
+        """A call answered from the record a fork's agent is being played back from: what it was answered then, status,
+        headers and body, with nothing recorded and no fake asked. A call the record does not hold next is refused
+        with the playback's parting (`trace.Parted`)."""
+        assert self.trace_replay is not None
+        request = flow.request
+        manifest = self.routing.claimant(host)
+        data = frozenset(k.lower() for k in manifest.data_keys) if manifest is not None else frozenset()
+        text, raw = redact.kept(
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or "", data=data
+        )
+        body = text.encode("utf-8") if text is not None else raw or b""
+        answered = self.trace_replay.answer((request.method, host, redact.path(request.path, also=data), body))
+        if isinstance(answered, PlaybackParted):
+            self._seen(f"{request.method} {host}{redact.path(request.path)} refused: the playback parted")
+            flow.response = http.Response.make(answered.status, answered.body, {"content-type": "text/plain"})
+            return
+        kept = [(h.name.encode(), h.value.encode()) for h in answered.headers if h.name.lower() not in _HOP_BY_HOP]
+        flow.response = http.Response.make(answered.status, answered.body, http.Headers(kept))
+
     def _replayed(self, flow: http.HTTPFlow, host: str) -> bool:
         """A model call answered from the replayed run's recording, and kept as a span saying so; False when there
         is no replay, or the runs have parted, and the call goes to the model. A frozen replay that has parted
@@ -836,6 +886,8 @@ class ProxyAddon:
             self._seen(f"a model call to {host}{request.path.split('?', 1)[0]} refused: the frozen replay parted")
         self._recorded.discard(flow.id)
         flow.response = http.Response.make(recorded.status, recorded.body, {"content-type": recorded.content_type})
+        if self.trace_replay is not None:
+            return True  # a fork's agent being played back: the parent's record of the call is the fork's already
         now = datetime.fromtimestamp(request.timestamp_start, UTC)  # real time, as a recorded call's span has it
         exchanged = Exchanged(
             host=host,
@@ -1073,6 +1125,7 @@ class ProxyAddon:
             response_body=answered,
             request_bytes=asked_bytes,
             response_bytes=answered_bytes,
+            response_headers=_headers_of(response),
             traceparent=_first_header(request, TRACEPARENT),
             late_for=late_for,
             outcome=kind_of(answered_by, response.status_code) if answered_by is not None else None,
@@ -1590,6 +1643,7 @@ class ProxyAddon:
             response_body=answered.text,
             request_bytes=asked.raw,
             response_bytes=answered.raw,
+            response_headers=_headers_of(response),
             traceparent=_first_header(request, TRACEPARENT),
             outcome=outcome,
             captured=Captured(

@@ -9,11 +9,12 @@ paths differ by host, so the manifest strips nothing and the app reads both shap
 from __future__ import annotations
 
 from minutehand.domain.items import COMMENT, TICKET
-from minutehand.domain.provider import Manifest, PersonChange, TicketField, Tier, WorldKey
+from minutehand.domain.provider import AgentSends, Manifest, PersonChange, TicketField, Tier, WorldKey
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="jira",
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["*.atlassian.net", "api.atlassian.com", "auth.atlassian.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],

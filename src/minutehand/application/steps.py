@@ -89,7 +89,6 @@ def steps(store: Store) -> list[WakeRecord]:
             index=wake,
             sim_time=mark.at,
             world_changes=changes.get(wake, 0),
-            commitments_changed=False,
             inferred=mark.inferred,
             reason=mark.reason,
         )

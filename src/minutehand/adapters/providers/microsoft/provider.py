@@ -267,8 +267,10 @@ class MicrosoftProvider:
         if app is not None and asked.foreign_audience:
             raise ValueError(f"{asked.audience} is a bot of this world, not a foreign audience")
         lifetime = ACTIVITY_TOKEN_LIFETIME_SECONDS if asked.expires_in is None else asked.expires_in
-        token = activity_token(asked.audience, service_url=asked.service_url, lifetime=lifetime)
-        del secret, clock
+        token = activity_token(
+            asked.audience, at=int(clock.now().timestamp()), service_url=asked.service_url, lifetime=lifetime
+        )
+        del secret
         return InboundCredential(headers=[Header(name="Authorization", value=f"Bearer {token}")])
 
     # ------------------------------------------------------------------ NotifiesChanges

@@ -13,7 +13,7 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
     <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
                                          `own_databases`: the agent's state beside its memory, outside forks
-    <state>/runs/<run_id>/restore.json   for a fork: how its agent was found at its start (its memory, its report)
+    <state>/runs/<run_id>/restore.json   for a fork: how its agent was brought back (its memory, its playback)
 
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
@@ -43,9 +43,9 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import Field, JsonValue
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
-from minutehand.adapters.agent.reach import reach_for
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
@@ -53,12 +53,12 @@ from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
+from minutehand.adapters.proxy.names import NameAnswerer
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
-from minutehand.adapters.pushing import HttpPushes
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
@@ -66,7 +66,7 @@ from minutehand.agent._wire import ON as AGENT_ON
 from minutehand.agent._wire import URL as AGENT_URL
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
-from minutehand.application.checkpoint import CHECKPOINT, AgentState, checkpoints, read_checkpoint
+from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint, checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -87,6 +87,7 @@ from minutehand.application.kept import KeptModel
 from minutehand.application.model_calls import agent_instructions, is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.people import needs_model
+from minutehand.application.playback import TracePlayback
 from minutehand.application.program import PROGRAM_RECORD, AgentProgram, program_changes, program_of
 from minutehand.application.refusals import RunRefused, refuse_unheld
 from minutehand.application.replier import PeopleReplier, unspoken
@@ -100,6 +101,7 @@ from minutehand.application.rewind import (
     refused_by,
 )
 from minutehand.application.run_clock import RunClock
+from minutehand.application.sandbox import SandboxClock
 from minutehand.application.services import ServiceDesk, unvoiced
 from minutehand.application.steps import steps
 from minutehand.application.traffic import SeenCall
@@ -117,18 +119,11 @@ from minutehand.checks.runner import (
 )
 from minutehand.domain.agent import (
     AgentUnderTest,
-    Booked,
-    Contained,
-    GoalByMessage,
-    Marked,
     OwnDatabaseForm,
-    Polled,
-    Reported,
 )
 from minutehand.domain.assessments import IntegrityCheck, Rule, integrity_fails, merged, refuse_unknown_people
 from minutehand.domain.checks import (
     Check,
-    CommitmentsReported,
     DeclaredCollection,
     Finding,
     FindingKind,
@@ -147,7 +142,13 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
-from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE
+from minutehand.domain.templates import (
+    DNS_PORT_VARIABLE,
+    RUN_DIR_VARIABLE,
+    RUN_PORT_VARIABLE,
+    STARTS_AT_VARIABLE,
+    TRANSPARENT_PORT_VARIABLE,
+)
 from minutehand.domain.world import Actor, Operation, RecordedCall, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
@@ -166,6 +167,7 @@ from minutehand.ports.store import Store
 from minutehand.ports.telemetry import Telemetry
 
 RUNS = "runs"
+
 TELEMETRY = "telemetry"
 """The check name a notice about the agent's telemetry is reported under."""
 WORLD = "world.db"
@@ -298,11 +300,6 @@ async def play(
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
-    if _contained(agent) and written.starts_at is not None:
-        raise RunRefused(
-            "a contained agent's sandbox clock starts at the real present and only moves forward: leave starts_at out "
-            "of the scenario, so the run starts now"
-        )
     scenario = written.starting(_now()).seeded(seed)
     _refuse_unwritten(scenario, agent, model)
     own_checks = _own_checks(agent)
@@ -361,16 +358,19 @@ async def play(
                     signing.for_agent,
                     telemetry_port=proxy.telemetry_port,
                     agent_url=proxy.agent_url(listen),
+                    transparent_port=proxy.transparent_port,
+                    dns_port=proxy.dns_port,
                 )
                 | base_url_environment(agent, listen.proxy_url(proxy.port))
                 | own_files.environment()
+                | {STARTS_AT_VARIABLE: str(int(scenario.starts_at.timestamp() * 1_000_000_000))}
             )
-            reach = reach_for(agent, env=env)
-            async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state):
+            async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state, started=False) as own:
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
-                    reach=reach,
+                    sandbox=SandboxClock(agent.sandbox),
+                    start=own.start if own is not None else None,
                     store=store,
                     clock=clock,
                     services=services,
@@ -515,7 +515,8 @@ async def fork(
     The people, tickets and deadline change in the world; a `PromptPatch` or `ModelSwap` is applied on the
     wire, to the agent's own calls to its model, through the proxy's EDIT policy. The agent's memory is its
     parent's at the checkpoint, with nothing restored; its program, when `command` is given, is started once the
-    fork exists, and its report compared with the checkpoint's (`application.restore`); `progress` hears each step.
+    fork exists, and the agent's recorded inputs played into it up to the checkpoint (`application.restore`);
+    `progress` hears each step.
     The agent's model calls after the checkpoint are answered from the parent's record until the agent asks
     something the parent did not; `frozen` refuses that call instead of sending it to the model and stops the child
     there, `REPLAY_PARTED`.
@@ -524,10 +525,6 @@ async def fork(
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
-    if _contained(stored_agent(run_dir(state, parent_run) / AGENT)):
-        raise RunRefused(
-            "a contained agent's sandbox clock cannot go back to a checkpoint, so its run cannot be forked"
-        )
     parent = load(state, parent_run)
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
@@ -592,13 +589,31 @@ async def fork(
                 signing.for_agent,
                 telemetry_port=proxy.telemetry_port,
                 agent_url=proxy.agent_url(listen),
+                transparent_port=proxy.transparent_port,
+                dns_port=proxy.dns_port,
             )
             | base_url_environment(agent, listen.proxy_url(proxy.port))
             | own_files.environment()
+            | {STARTS_AT_VARIABLE: str(int(scenario.starts_at.timestamp() * 1_000_000_000))}
         )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         try:
+            sandbox = SandboxClock(agent.sandbox)
+
+            def playback_for(parent_store: Store, checkpoint: Checkpoint) -> TracePlayback:
+                return TracePlayback(
+                    parent=parent_store,
+                    checkpoint=checkpoint,
+                    at_seq=changes.at_seq,
+                    starts_at=scenario.starts_at,
+                    sandbox=sandbox,
+                    proxy=proxy.proxy.addon,
+                    memory=proxy.receiver,
+                    door=Door(),
+                    traffic=proxy,
+                )
+
             async with _agent_process(command, env, agent, log, state=state, started=False) as own:
                 records = await fork_run(
                     fork=changes,
@@ -607,7 +622,8 @@ async def fork(
                     run_id=child_id,
                     scenario=scenario,
                     agent=agent,
-                    reach=reach_for(agent, env=env),
+                    sandbox=sandbox,
+                    playback_for=playback_for,
                     services=services,
                     replier_for=lambda s, pins: PeopleReplier(s, model, agent.inboxes, pins=pins),
                     model=model,
@@ -1081,7 +1097,6 @@ def wakes_of(state: Path, run_id: str, world: Store) -> list[WakeRecord]:
                 index=event.wake,
                 sim_time=event.sim_time,
                 world_changes=changes.get(event.wake, 0),
-                commitments_changed=False,
             )
     return list(wakes.values())
 
@@ -1118,20 +1133,6 @@ def _read_only(path: Path) -> sqlite3.Connection:
 
 
 # -- the parts of a run ---------------------------------------------------------------------------------------
-
-
-def reported_of(world: Store) -> list[CommitmentsReported] | None:
-    """The agent's commitments as each wake ended, read from the checkpoints; None when it never reported any."""
-    said = [
-        CommitmentsReported(wake=c.wake, at=c.now, commitments=c.commitments)
-        for c in checkpoints(world).values()
-        if c.commitments is not None
-    ]
-    return said or None
-
-
-def _contained(agent: AgentUnderTest) -> bool:
-    return any(isinstance(w, Contained) for w in agent.wakes)
 
 
 def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
@@ -1261,7 +1262,6 @@ class _Judge:
 
     def view(self, record: RunRecord, world: Store) -> RunView:
         """What every check reads of the finished run."""
-        last = read_checkpoint(world)
         calls = world.calls()
         spans = world.spans()
         claims = self._claims
@@ -1270,7 +1270,6 @@ class _Judge:
             world.events(),
             record.wakes,
             world.replies(),
-            commitments=last.commitments if last is not None else None,
             unmatched_calls=[call.exchange for call in calls if call.refused],
             model_calls=per_wake(spans, [w.index for w in record.wakes]),
             agent_instructions=agent_instructions(spans),
@@ -1278,7 +1277,6 @@ class _Judge:
             broken_calls=broken(calls),
             contract_breaks=contract_breaks(calls),
             dues=due_entries(world),
-            reported=reported_of(world),
             around_proxy=around_proxy(spans, calls, claims.provider) if claims is not None else None,
             uncalled_providers=(
                 uncalled_providers(claims.named, calls, woken=bool(record.wakes)) if claims is not None else []
@@ -1400,7 +1398,7 @@ def desk_for(
                 documents[service.key] = load_document(service.openapi)
         except (httpx.HTTPError, FileRefused) as e:
             raise RunRefused(f"service {service.key}: its OpenAPI document {service.openapi}: {e}") from e
-    return ServiceDesk(scenario, model, documents=documents, pushes=HttpPushes(), undeclared=undeclared)
+    return ServiceDesk(scenario, model, documents=documents, pushes=Door(), undeclared=undeclared)
 
 
 def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: LanguageModel | None) -> None:
@@ -1474,10 +1472,10 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     named |= {c.provider for c in scenario.channels}
     named |= set(scenario.transitions_on)
     named |= {t.provider for t in agent.inbound}
-    if isinstance(agent.goal, GoalByMessage):
+    if agent.goal is not None:
         named.add(agent.goal.provider)
-    if any(isinstance(w, Booked) for w in agent.wakes):
-        named |= {m.key for m in registry.manifests if m.books_wakes}
+    # every agent may book its wakes with a scheduler it calls: each installed one is in the run, bound to its table
+    named |= {m.key for m in registry.manifests if m.books_wakes}
     manifests = {m.key: m for m in registry.manifests}
     unknown = sorted(named - set(manifests))
     if unknown:
@@ -1613,6 +1611,14 @@ class Listen(Model):
         "without asking for one (`adapters.proxy.redirected`): a client that ignores HTTPS_PROXY is captured all the "
         "same. None serves none; 0 lets the system pick one",
     )
+    dns_port: int | None = Field(
+        default=None,
+        ge=0,
+        le=65535,
+        description="A UDP listener, on `host`, answering every DNS lookup a sealed sandbox makes with the proxy's "
+        "address (`adapters.proxy.names`), so a client that ignores HTTPS_PROXY connects to the proxy by any name. "
+        "None serves none; 0 lets the system pick one",
+    )
     model_hosts: list[str] = Field(
         default=list(DEFAULT_MODEL_HOSTS),
         description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
@@ -1664,6 +1670,8 @@ def agent_environment(
     *,
     telemetry_port: int | None,
     agent_url: str | None = None,
+    transparent_port: int | None = None,
+    dns_port: int | None = None,
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
@@ -1689,6 +1697,9 @@ def agent_environment(
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
         **({AGENT_ON: "1", AGENT_URL: agent_url} if agent_url is not None else {}),
+        # what `sandbox/seal.sh` sends every connection and every lookup the sandbox makes to
+        **({TRANSPARENT_PORT_VARIABLE: str(transparent_port)} if transparent_port is not None else {}),
+        **({DNS_PORT_VARIABLE: str(dns_port)} if dns_port is not None else {}),
         **secrets,
     }
 
@@ -1738,6 +1749,8 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
         {},
         telemetry_port=telemetry_port,
         agent_url=listen.telemetry_url(listen.telemetry_port) + AGENT_PATH if listen.telemetry_port else None,
+        transparent_port=listen.transparent_port,
+        dns_port=listen.dns_port,
     )
     if listen.telemetry_port == 0:
         # No receiver port to name: the agent is still told it is played, so its store refuses rather than writing
@@ -1762,6 +1775,8 @@ class Intercepting:
     telemetry: bool = True
     """Whether the agent's telemetry is received: its exporter pointed at the receiver. The receiver runs either way,
     since it holds the agent's memory."""
+    names: NameAnswerer | None = None
+    """The name answerer beside the proxy, for a sealed sandbox (`--dns-port`)."""
 
     @property
     def port(self) -> int:
@@ -1775,6 +1790,16 @@ class Intercepting:
     def telemetry_port(self) -> int | None:
         """The receiver's port for the agent's telemetry; None when receiving it is off."""
         return self.receiver.port if self.telemetry else None
+
+    @property
+    def transparent_port(self) -> int | None:
+        """The proxy's listener for connections a sealed sandbox's link redirects to it; None when it serves none."""
+        return self.proxy.redirect_port
+
+    @property
+    def dns_port(self) -> int | None:
+        """Minutehand's name answerer for a sealed sandbox; None when it serves none."""
+        return self.names.port if self.names is not None else None
 
     def agent_url(self, listen: Listen) -> str:
         """Where `minutehand.agent` reaches the run, as the agent reaches this machine."""
@@ -1847,7 +1872,11 @@ async def intercepting(
             agent_host=listen.agent_host,
         )
         async with receiver:
-            yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry)
+            if listen.dns_port is None:
+                yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry)
+                return
+            async with NameAnswerer(listen.host, listen.dns_port, address=listen.reached_at()) as names:
+                yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry, names=names)
 
 
 @asynccontextmanager
@@ -1880,10 +1909,8 @@ async def emulating(
 
 
 def _listens_on(agent: AgentUnderTest) -> str | None:
-    """The URL whose port tells that the agent is up: its wake endpoint, or else where it takes events."""
-    for source in agent.wakes:
-        if isinstance(source, Reported | Marked | Polled):
-            return source.wake_url
+    """The URL whose port tells that the agent is up: where it takes events, if anywhere; an agent that takes none
+    is up when its sandbox falls idle."""
     return next((t.url for t in agent.inbound if t.url is not None), None)
 
 

@@ -172,4 +172,4 @@ assess:
 
 `service-machine/1` (propose the machine), `service-route/1` (a route's meaning), `service-answer/1` (render an
 answer, a refusal or a push), and the engine's `person-transition/1` for a person's response. The recipes' fake
-model (`examples/recipes/fake_model.py`) answers all of them deterministically, so CI makes no real model call.
+model (`tests/support/fake_model.py`) answers all of them deterministically, so CI makes no real model call.

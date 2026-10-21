@@ -14,7 +14,23 @@ DEFAULT_MODEL_HOSTS: tuple[str, ...] = (
     "api.openai.com",
     "api.anthropic.com",
     "generativelanguage.googleapis.com",
+    "aiplatform.googleapis.com",
+    "*.openai.azure.com",
+    "api.mistral.ai",
+    "api.cohere.com",
+    "api.groq.com",
+    "api.x.ai",
+    "api.deepseek.com",
+    "api.together.xyz",
+    "api.fireworks.ai",
+    "api.perplexity.ai",
+    "openrouter.ai",
 )
+"""The endpoints a run reaches for real with nothing said: the model providers' APIs, tunnelled through the proxy
+(or opened to edit and record their calls). Every other host is answered by a fake or refused, so a run is fast and
+never waits on a real service; this list is what lets the agent's own model calls out, not a security boundary. A
+provider not here, or one reached at a regional host (Bedrock: `bedrock-runtime.<region>.amazonaws.com`, whose
+domain also carries the AWS services the fakes answer), is named with `--model-host`."""
 
 MODEL_INFRASTRUCTURE_HOSTS: tuple[str, ...] = (
     "mcp-proxy.anthropic.com",

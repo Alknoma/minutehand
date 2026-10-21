@@ -1,20 +1,20 @@
 {
  "version": 1,
  "name": "kept_agent",
- "goal": {
-  "kind": "by_wake"
+ "sandbox": {
+  "deadlines": [
+   "runsc",
+   "debug",
+   "--deadlines",
+   "agent"
+  ],
+  "advance": [
+   "runsc",
+   "debug",
+   "--advance-clock={nanoseconds}ns",
+   "agent"
+  ]
  },
- "wakes": [
-  {
-   "kind": "reported",
-   "wake_url": "http://127.0.0.1:8000/wake",
-   "report_url": "http://127.0.0.1:8000/report",
-   "wake_timeout": "PT6M",
-   "report_first_after": "PT0.1S",
-   "report_at_most_every": "PT10S",
-   "working_limit": "PT30M"
-  }
- ],
  "tick": "PT1H",
  "inbound": [
   {
@@ -61,7 +61,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": {
@@ -111,7 +110,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": {
@@ -159,7 +157,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": null,
@@ -212,7 +209,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": null,
@@ -270,7 +266,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": null,
@@ -330,7 +325,6 @@
     "writes": null,
     "wakes": null,
     "planned_wakes": null,
-    "commitments": null,
     "asks": null,
     "memory": null,
     "stored": null,

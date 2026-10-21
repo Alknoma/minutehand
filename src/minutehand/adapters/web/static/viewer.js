@@ -23,7 +23,7 @@ import { markHtml, RESULT_WORD } from "./outputs.js";
 const LIST_REFRESH = 5000, RUNNING_REFRESH = 3000;
 const KIND_ORDER = { fail: 0, review: 1, informational: 2 };
 const STOP_WORD = {
-  agent_done: "the agent reported done", wake_limit: "wake limit reached", deadline_passed: "deadline passed", nothing_pending: "nothing was due",
+  agent_done: "the harness relayed that the agent was done", wake_limit: "wake limit reached", deadline_passed: "deadline passed", nothing_pending: "nothing was due",
   agent_failed: "the agent failed", closed: "closed by its driver", environment_failed: "an emulator was unavailable"
 };
 

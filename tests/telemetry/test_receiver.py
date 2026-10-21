@@ -36,7 +36,7 @@ from minutehand.domain.telemetry import (
     SpanStatus,
     StringValue,
 )
-from tests.e2e.support import free_port
+from tests.ports import free_port
 from tests.telemetry.collector import collector
 
 START = datetime(2026, 8, 24, 10, 50, tzinfo=UTC)

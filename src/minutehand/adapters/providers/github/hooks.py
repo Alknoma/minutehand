@@ -29,14 +29,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import httpx
 from pydantic import JsonValue
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.github import wire
 from minutehand.adapters.providers.github.answers import Caller
+from minutehand.adapters.providers.github.manifest import MANIFEST
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import Delivery, InboundTarget
 from minutehand.domain.world import Actor
+from minutehand.ports.store import Store
 
 if TYPE_CHECKING:
     from minutehand.adapters.providers.github.app import GitHubApi
@@ -78,7 +80,9 @@ class Pusher:
         if self.target.delivery is not Delivery.REQUEST_URL:
             raise ValueError("GitHub pushes a webhook to a URL; the target is taken in another way")
 
-    async def send(self, event: str, body: wire.WebhookBody, delivery: str) -> None:
+    async def send(self, store: Store, event: str, body: wire.WebhookBody, delivery: str) -> None:
+        """One webhook to the target, through the one door everything sent the agent goes through
+        (`adapters.agent.delivery`): recorded whole, so a fork sends it again."""
         encoded = body.encode()
         headers = {
             "Content-Type": "application/json",
@@ -90,13 +94,13 @@ class Pusher:
             headers["X-Hub-Signature"] = signature("sha1", self.secret, encoded)
             headers["X-Hub-Signature-256"] = signature("sha256", self.secret, encoded)
         url = self.target.request_url()
-        try:
-            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-                answered = await client.post(url, content=encoded, headers=headers)
-        except httpx.HTTPError as error:
-            raise DeliveryRefused(url, None, repr(error), event) from error
-        if not answered.is_success:
-            raise DeliveryRefused(url, answered.status_code, answered.text, event)
+        sent = await Door().send(
+            store, service=MANIFEST.key, item=delivery, url=url, body=encoded, headers=headers, timeout=TIMEOUT
+        )
+        if sent.snapshot.status is None:
+            raise DeliveryRefused(url, None, sent.snapshot.failure or "no answer", event)
+        if sent.snapshot.status >= 300:
+            raise DeliveryRefused(url, sent.snapshot.status, sent.body.decode("utf-8", errors="replace"), event)
 
 
 class Background:
@@ -114,19 +118,25 @@ class Background:
     def pusher(self) -> Pusher | None:
         return self._listening()
 
-    def send(self, pusher: Pusher, event: str, body: wire.WebhookBody, delivery: str) -> None:
-        task = asyncio.create_task(self._send(self._last, pusher, event, body, delivery))
+    def send(self, store: Store, pusher: Pusher, event: str, body: wire.WebhookBody, delivery: str) -> None:
+        task = asyncio.create_task(self._send(self._last, store, pusher, event, body, delivery))
         self._last = task
         self._sending.add(task)
         task.add_done_callback(self._sending.discard)
 
     async def _send(
-        self, before: asyncio.Task[None] | None, pusher: Pusher, event: str, body: wire.WebhookBody, delivery: str
+        self,
+        before: asyncio.Task[None] | None,
+        store: Store,
+        pusher: Pusher,
+        event: str,
+        body: wire.WebhookBody,
+        delivery: str,
     ) -> None:
         if before is not None:
             await before
         try:
-            await pusher.send(event, body, delivery)
+            await pusher.send(store, event, body, delivery)
         except DeliveryRefused as refused:
             logger.error("the agent did not take the GitHub %s webhook %s: %s", event, delivery, refused)
             self.refused.append(f"{event} {delivery}: {refused}")
@@ -161,13 +171,14 @@ class Hooks:
 
     async def _push(self, event: str, parts: dict[str, JsonValue]) -> None:
         body = wire.WebhookBody(keys=parts)
+        store = self._api.world.store
         if self._pusher is not None:
-            await self._pusher.send(event, body, self._delivery())
+            await self._pusher.send(store, event, body, self._delivery())
             return
         assert self._background is not None
         pusher = self._background.pusher()
         assert pusher is not None
-        self._background.send(pusher, event, body, self._delivery())
+        self._background.send(store, pusher, event, body, self._delivery())
 
     def _common(self, repository: wire.StoredRepository, sender: wire.StoredAccount) -> tuple[JsonValue, JsonValue]:
         shown = self._api.repository_out(Caller(account=sender, token=None), repository)

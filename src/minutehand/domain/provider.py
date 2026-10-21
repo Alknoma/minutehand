@@ -86,12 +86,25 @@ class WorldKey(Model):
         return matched.group(1) if matched else None
 
 
+class AgentSends(StrEnum):
+    """Whether the provider makes requests to the agent (a pushed event, a webhook, a delivery). Every request made
+    goes through the one door (`adapters/agent/delivery.py`) and is recorded whole, headers and body: a fork plays
+    the agent back from that record."""
+
+    NONE = "none"  # it answers the agent and sends it nothing (the agent polls what it holds)
+    RECORDED = "recorded"  # every request it makes to the agent goes through the door
+
+
 class Manifest(Model):
     key: ProviderKey
     tier: Tier
     hosts: list[str] = Field(min_length=1, description="Exact hosts or '*.' wildcards this provider answers for")
     path_prefix: str = Field(default="", description="Prefix the real API serves under, e.g. '/api/1.0'")
     kinds: list[EntityKind] = Field(default=[], description="Entity kinds it maps; empty means records only")
+    sends: AgentSends = Field(
+        default=AgentSends.NONE,
+        description="Whether it makes requests to the agent, and whether each is recorded whole",
+    )
     pushes_events: bool = False
     books_wakes: bool = Field(
         default=False, description="True for a scheduler: what the agent books here becomes a wake"

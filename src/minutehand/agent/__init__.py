@@ -1,16 +1,15 @@
-"""What an agent imports: the whole of its contact with Minutehand.
+"""What an agent imports: the whole of its contact with Minutehand, and only for what it remembers.
 
-    from minutehand.agent import store, wake
+    from minutehand.agent import store
 
     store.put("asks/sam", {"status": "asked", "expected_by": "2026-09-03T09:00:00+00:00"})
-    wake.at(expected_by)
 
-`store` is what the agent remembers; `wake` is when it next wants to be woken. Both are inert in production: unless
-MINUTEHAND_ON is set, `store` passes every call to the agent's own database through the adapter the agent configured
-(`store.configure`), and `wake` does nothing. Under Minutehand (`minutehand run` sets MINUTEHAND_ON and
-MINUTEHAND_AGENT_URL) both go to the run instead: every write is recorded in the run's log and every read answered
-from the run's state, so each run and each fork has a memory of its own and the agent's own database is never
-opened.
+`store` is what the agent remembers. It is inert in production: unless MINUTEHAND_ON is set, every call passes to
+the agent's own database through the adapter the agent configured (`store.configure`). Under Minutehand
+(`minutehand run` sets MINUTEHAND_ON and MINUTEHAND_AGENT_URL) every write is recorded in the run's log and every
+read answered from the run's state, so each run and each fork has a memory of its own and the agent's own database
+is never opened. Nothing else is asked of the agent, and nothing else of Minutehand's runs in it: when it next
+wakes is its own timers' and its scheduler's business, observed from the sandbox it runs in.
 
 This package imports nothing but the standard library and nothing else of Minutehand's, so an agent pays nothing for
 it in production; `tests/agent/test_agent_package.py` holds it to that.

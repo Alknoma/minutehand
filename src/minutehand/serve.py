@@ -706,7 +706,7 @@ class Standing:
     def report(self, world_id: str, reported: AgentReport) -> None:
         """What the agent says of its own work, relayed by whoever drives it, who can read what the world cannot:
         whether it is done and what it still holds open. The latest report stands; a case's world reports for its
-        case. It is what `minutehand run` asks the agent itself at the end of every wake."""
+        case. A run asks the agent nothing and holds no report: this is the harness's word alone."""
         world = self.get(world_id)
         if world.case is not None:
             world.case.reported = reported

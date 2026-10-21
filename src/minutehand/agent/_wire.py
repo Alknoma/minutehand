@@ -1,8 +1,8 @@
 """How the agent reaches Minutehand while a run plays it: JSON over HTTP to the run's receiver.
 
-    MINUTEHAND_ON          set (to anything but empty) by Minutehand for the agent it plays: the store and the wake
-                           marker talk to the run. Unset in production, where both are inert
-    MINUTEHAND_AGENT_URL   where they talk to: the receiver's `/minutehand/agent`, on the host and port Minutehand
+    MINUTEHAND_ON          set (to anything but empty) by Minutehand for the agent it plays: the store talks to the
+                           run. Unset in production, where it is inert
+    MINUTEHAND_AGENT_URL   where it talks to: the receiver's `/minutehand/agent`, on the host and port Minutehand
                            hands the agent beside its proxy (the host is in the agent's NO_PROXY)
 
 A call is retried when it never reached Minutehand (the connection refused or reset) and when Minutehand answers 502,

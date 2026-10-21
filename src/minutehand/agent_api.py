@@ -1,11 +1,11 @@
-"""The endpoints an agent MAY implement for Minutehand, as one OpenAPI 3.1 document generated from the models that
-cross them, so an agent's team can generate types in any language (`schemas/agent-api.openapi.json`).
+"""The shapes Minutehand sends an agent's own product where the agent file names no vendor's, as one OpenAPI 3.1
+document generated from the models that cross them, so an agent's team can generate types in any language
+(`schemas/agent-api.openapi.json`).
 
-Every endpoint is optional; an agent implements the ones its agent file points at, under whatever paths it likes
-(the agent file names each URL). The paths here are suggestions, the shapes are the contract:
+Every endpoint is optional and none exists for Minutehand: each is a place the agent's own product already has (an
+inbox of its own, a channel people answer on), which the agent file points at under whatever path it likes. The
+paths here are suggestions, the shapes are the contract:
 
-    wake          POST  /wake                                     WakeRequest       (`Reported.wake_url`)
-    report        GET   /report                                   AgentReport       (`Reported.report_url`)
     deliverReply  POST  /replies                                  DeliveredReply    (`ReplyDelivery`, no `body`)
     listPending   GET   /inboxes/{inbox}/pending?person=&cursor=  PendingPage       (an inbox, `document: minutehand`)
     decide        POST  /inboxes/{inbox}/items/{item}/decision    DecisionMade      (an inbox, `document: minutehand`)
@@ -21,7 +21,6 @@ from typing import cast
 from pydantic import BaseModel, JsonValue
 from pydantic.json_schema import models_json_schema
 
-from minutehand.domain.agent import AgentReport, WakeRequest
 from minutehand.domain.inboxes import DecisionMade, PendingPage
 from minutehand.domain.outbound import DeliveredReply
 
@@ -55,25 +54,10 @@ def _parameter(name: str, where: str, what: str, *, required: bool = True) -> Js
 
 def document() -> dict[str, JsonValue]:
     """The OpenAPI document, as JSON-ready structure."""
-    models: list[type[BaseModel]] = [WakeRequest, AgentReport, DeliveredReply, PendingPage, DecisionMade]
+    models: list[type[BaseModel]] = [DeliveredReply, PendingPage, DecisionMade]
     _, schemas = models_json_schema([(m, "serialization") for m in models], ref_template=REF, by_alias=True)
     components = cast(dict[str, JsonValue], schemas["$defs"]) if "$defs" in schemas else {}
     paths: dict[str, JsonValue] = {
-        "/wake": {
-            "post": {
-                "operationId": "wake",
-                "summary": "It is now `now`; go. Answered at once; the work may go on after",
-                "requestBody": _body(WakeRequest),
-                "responses": _answer(None, "The wake was taken"),
-            }
-        },
-        "/report": {
-            "get": {
-                "operationId": "report",
-                "summary": "Whether the agent is still working, and when it next needs to wake",
-                "responses": _answer(AgentReport, "The agent's report now"),
-            }
-        },
         "/replies": {
             "post": {
                 "operationId": "deliverReply",

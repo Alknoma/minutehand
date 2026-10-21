@@ -45,6 +45,7 @@ Each norm is one sentence. `docs/design.md` is the design; read it in full befor
 
 - Branch from the latest `integration-main` with a `feat/`, `fix/`, `refactor/` or `chore/` prefix; never push to `main` or `integration-main`, never squash-merge, never rewrite a pushed branch.
 - A lint is proposed and agreed before it is written (`docs/lints.md`).
+- A release's version number is the maintainer's: it is the next patch unless they name another, and it is asked for and confirmed, number and all, before the version commit; "release" approves releasing, never a number (`docs/releasing.md`).
 
 ## Reporting
 

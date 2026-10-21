@@ -198,25 +198,11 @@ class Wakes(Model):
     """The agent's wakes."""
 
     changed_world: bool | None = Field(default=None, description="False: the wake wrote nothing a person could see")
-    changed_commitments: bool | None = None
 
 
 class PlannedWakes(Model):
-    """Wakes the agent asked for itself (reported, booked, its rhythm, its own timer), counted at the moment each
+    """Wakes the agent asked for itself (a booking, its own timer), counted at the moment each
     was due, from the run loop's table. Only a run Minutehand played keeps that table."""
-
-
-class CommitmentState(StrEnum):
-    OPEN = "open"
-    MET = "met"
-    DROPPED = "dropped"
-
-
-class Commitments(Model):
-    """What the agent reported it was waiting on, as each wake ended, counted at that wake's end."""
-
-    status: list[CommitmentState] = Field(default=[], description="In any of these states; empty: any")
-    waiting_on: list[Who] = Field(default=[], description="Waiting on any of these people; empty: on anyone or nothing")
 
 
 class Written(StrEnum):
@@ -353,7 +339,6 @@ class Count(Model):
     writes: Writes | None = None
     wakes: Wakes | None = None
     planned_wakes: PlannedWakes | None = None
-    commitments: Commitments | None = None
     asks: Asks | None = None
     memory: Memory | None = None
     stored: StoredItems | None = None
@@ -378,7 +363,6 @@ class Count(Model):
             ("writes", self.writes),
             ("wakes", self.wakes),
             ("planned_wakes", self.planned_wakes),
-            ("commitments", self.commitments),
             ("asks", self.asks),
             ("memory", self.memory),
             ("stored", self.stored),
@@ -400,7 +384,6 @@ _COUNTED = (
     "writes",
     "wakes",
     "planned_wakes",
-    "commitments",
     "asks",
     "memory",
     "stored",
@@ -596,8 +579,6 @@ class Rule(Model):
         named = [*self.where.person, *self.where.person_not]
         if self.count.messages is not None:
             named += [*self.count.messages.to, *self.count.messages.to_not]
-        if self.count.commitments is not None:
-            named += self.count.commitments.waiting_on
         if self.count.asks is not None:
             named += self.count.asks.of
         if self.count.transitions is not None:

@@ -6,7 +6,7 @@ its checkpoint, starts from exactly the memory the parent had there. Each read i
 event with no version when it finds something new (`application.memory.Reads`). A run
 starts from the scenario's `memory:` (`SeededMemory`), written as actor SCENARIO before the first wake.
 
-The receiver takes the agent's calls (`StoreCall`, `WakeMark`) as JSON on `/minutehand/agent/store` and
+The receiver takes the agent's calls (`StoreCall`) as JSON on `/minutehand/agent/store` and
 `/minutehand/agent/wake`; `docs/agent-contract.md` is the wire, for an agent not written in Python.
 """
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, Field, JsonValue
+from pydantic import Field, JsonValue
 
 from minutehand.domain.model import Model
 
@@ -111,9 +111,3 @@ class Written(Model):
     """The answer to a write: the seq of its last entry in the run's log."""
 
     seq: int
-
-
-class WakeMark(Model):
-    """`minutehand.agent.wake`: the moment the agent asks to be woken next, or none."""
-
-    at: AwareDatetime | None

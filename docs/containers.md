@@ -132,9 +132,10 @@ What it does not cover:
 - A TLS client that sends no server name (one that connects to an IP address): the connection is closed.
 - An agent on the host rather than in a container. There, the run tells you instead (below).
 
-An agent in the `Contained` sandbox reaches the network through the outer container's link to the sandbox
-(`vp-runsc` in the spike, "Evidence" in `docs/design.md`); the same DNAT rules in that container's `nat PREROUTING`
-chain, on that interface, would send its connections to the listener. Not tried.
+An agent in its sandbox reaches the network through its gateway's link to the sandbox (`vp-<name>`, made by
+`runsc do`), and `sandbox/seal.sh` puts the rules there: every TCP connection from the link to the transparent
+listener, every DNS query to Minutehand's name answerer (`--dns-port`), nothing forwarded (`sandbox/README.md`;
+`docs/design.md`, "Transparent capture").
 
 Tested with a real container (`tests/providers/slack/test_slack_redirected_container.py`, marked `docker`, CI job
 `transparent`): `curl --noproxy '*'` with `NO_PROXY=*` set, in `alpine` with `iptables`, is answered by the Slack fake
@@ -163,7 +164,7 @@ Go binaries and needs root on macOS; and polling the agent's sockets misses a ca
 
 ## Checked by hand
 
-The follow-up example (`tests/agents/follow_up`) was run this way on 2026-10-07: the agent in a `python:3.13-slim`
+The follow-up example (since removed with the wake kinds it was written for) was run this way on 2026-10-07: the agent in a `python:3.13-slim`
 container with `slack_sdk`, listening on `0.0.0.0:8700` and published on the same port, its agent file's secret
 changed to `from_env`, started with Compose and the override above. The run passed exactly as it does with the
 agent on the host. Started again with `docker run --env-file` holding the same variables, the container had

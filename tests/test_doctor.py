@@ -26,9 +26,10 @@ def _agent(directory: Path) -> Path:
         yaml.safe_dump(
             {
                 "name": "a",
-                "wakes": [
-                    {"kind": "reported", "wake_url": "http://127.0.0.1:1/w", "report_url": "http://127.0.0.1:1/r"}
-                ],
+                "sandbox": {
+                    "deadlines": ["runsc", "debug", "--deadlines", "a"],
+                    "advance": ["runsc", "debug", "--advance-clock={nanoseconds}ns", "a"],
+                },
                 "outbound": [
                     {"host": "api.mail.example", "kind": "acknowledge"},
                     {"host": "search.localhost", "kind": "pass_through"},

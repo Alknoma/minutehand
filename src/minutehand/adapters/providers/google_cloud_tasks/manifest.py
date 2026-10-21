@@ -9,11 +9,12 @@ gRPC server Minutehand runs for the provider (`adapters.proxy.local`) and needs 
 
 from __future__ import annotations
 
-from minutehand.domain.provider import Manifest, Tier
+from minutehand.domain.provider import AgentSends, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="google_cloud_tasks",
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["cloudtasks.googleapis.com"],
     kinds=[EntityKind.RECORD],

@@ -233,3 +233,7 @@ __marimo__/
 
 # The Node recipe's packages, installed by npm ci in its folder
 node_modules/
+
+# The patched gVisor built by sandbox/build.sh, and its source checkout
+sandbox/dist/
+sandbox/.gvisor-go/

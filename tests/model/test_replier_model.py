@@ -45,8 +45,8 @@ from minutehand.domain.world import (
     WorldEvent,
 )
 from tests.model.fake_completions import FakeCompletions, Received, fake_completions
-from tests.orchestrator.rig import T0, person, scenario
 from tests.support.people import email
+from tests.support.scenarios import T0, person, scenario
 
 KEY = "sk-replier-test-key"
 FACTS = ["The partner price is 40k a year.", "The contract renews in March."]

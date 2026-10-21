@@ -8,7 +8,6 @@ Every surface that shows a fork (`minutehand findings` and `runs`, the viewer, t
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -89,14 +88,12 @@ class DivergenceKind(StrEnum):
 
     CHANGE = "change"  # a change in the world: who did what to which entity, and what it then said
     CALL = "call"  # a call the agent made, captured and tunnelled ones too: where to, what it sent and was answered
-    REPORT = "report"  # what the agent reported at the end of a wake: its status, next wake and commitments
     MODEL_CALL = "model_call"  # a model call the run received or recorded: what the model was asked and answered
 
 
 KIND_WORDS = {
     DivergenceKind.CHANGE: ("change in the world", "changes in the world"),
     DivergenceKind.CALL: ("call", "calls"),
-    DivergenceKind.REPORT: ("report of the agent's", "reports of the agent's"),
     DivergenceKind.MODEL_CALL: ("model call", "model calls"),
 }
 
@@ -308,7 +305,7 @@ def change_words(
 
 
 def rule_words(rule: DispatchRule) -> str:
-    """One dispatch rule as a reader says it: "the 2nd reported wake 3 hours late"."""
+    """One dispatch rule as a reader says it: "the 2nd booked wake 3 hours late"."""
     which = rule.which
     if rule.fault is DispatchFault.DROPPED:
         return f"{which} dropped"
@@ -354,12 +351,15 @@ def summary(fork: Fork, scenario: Scenario) -> str:
 
 
 def restore_account(restored: Restored) -> RestoreAccount:
-    """How the fork's agent was found at its start, in words: its memory is always the checkpoint's; its report is
-    compared when it can be asked for one."""
+    """How the fork's agent was brought back at its start, in words: its memory is the checkpoint's, and its sandbox
+    was played back to the checkpoint from the agent's recorded inputs."""
     if restored.verified:
-        words = "verified: its memory and its report (status, next wake, commitments) equal the checkpoint's"
+        words = (
+            "verified: its memory equals the checkpoint's, and its sandbox was played back to the checkpoint from "
+            f"the agent's recorded inputs ({restored.replayed_calls} calls answered from the record)"
+        )
     else:
-        words = f"its memory equals the checkpoint's; its report was not verified: {restored.unverified}"
+        words = f"its memory equals the checkpoint's; not verified: {restored.unverified}"
     if restored.outside:
         words += f"; outside its memory, which the fork did not get: {'; '.join(restored.outside)}"
     return RestoreAccount(
@@ -531,24 +531,11 @@ def _items(record: Record, at_seq: int, after_wake: int, scenario: Scenario) -> 
             EntityKind.DUE,
             EntityKind.PENDING,
             EntityKind.MEMORY,
-            EntityKind.NEXT_WAKE,
         ):
-            continue  # the run's own rows: the agent's plan is compared through its report, below
+            continue  # the run's own rows, and the agent's own memory: not the world
         after = e.after.model_copy(update={"seconds": None}) if isinstance(e.after, PushSnapshot) else e.after
         key = (e.actor, e.operation, e.entity, after, e.sim_time)  # how long a push took is real time, not the world
         found.append(_Item(DivergenceKind.CHANGE, e.wake, e.seq, 1, e.sim_time, key, event_words(e, scenario)))
-    for seq, checkpoint in ((q, c) for q, c in record.checkpoints.items() if q > at_seq):
-        report = checkpoint.agent.report
-        key = (checkpoint.wake, json.dumps([c.model_dump(mode="json") for c in checkpoint.commitments or []]),
-               report.model_dump_json() if report is not None else None)  # fmt: skip
-        status = f"{report.status.value}" if report is not None else "nothing of its status"
-        held = len(checkpoint.commitments or [])
-        words = (
-            f"wake {checkpoint.wake}, {_moment(checkpoint.now)}: the agent reported {status}, "
-            f"with {held} commitment{'s' if held != 1 else ''} open"
-            + (f", next wake {_moment(report.next_wake)}" if report is not None and report.next_wake else "")
-        )
-        found.append(_Item(DivergenceKind.REPORT, checkpoint.wake, seq, 2, checkpoint.now, key, words))
     for call in record.calls:
         if call.first_seq <= at_seq:
             continue
@@ -609,8 +596,6 @@ def _differs(ours: _Item | None, theirs: _Item | None) -> str:
         return "the same call was answered differently"
     if ours.kind is DivergenceKind.MODEL_CALL:
         return "the model was asked or answered differently"
-    if ours.kind is DivergenceKind.REPORT:
-        return "the agent reported differently"
     return "a different change was made, or the same one at another moment"
 
 

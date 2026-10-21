@@ -24,10 +24,11 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 
-import httpx
-
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.jira import jql, wire
+from minutehand.adapters.providers.jira.manifest import MANIFEST
 from minutehand.adapters.providers.jira.moves import Event
+from minutehand.ports.store import Store
 
 TIMEOUT = 30.0
 _CLAUSES = frozenset({"issuekey", "key", "project", "issuetype", "status", "priority", "assignee", "reporter"})
@@ -80,13 +81,19 @@ def signature(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
-async def send(outgoing: Outgoing) -> None:
-    """POST the delivery. Jira counts only a 200 a success and retries the rest; here a failure is the end of it."""
+async def send(store: Store, outgoing: Outgoing) -> None:
+    """POST the delivery, through the one door everything sent the agent goes through (`adapters.agent.delivery`):
+    recorded whole, so a fork sends it again. Jira counts only a 200 a success and retries the rest; here a failure
+    is the end of it, in the record."""
     headers = {"Content-Type": "application/json", "X-Atlassian-Webhook-Identifier": outgoing.identifier}
     if outgoing.hook.secret is not None:
         headers["X-Hub-Signature"] = signature(outgoing.hook.secret, outgoing.body)
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-            await client.post(outgoing.hook.url, content=outgoing.body, headers=headers)
-    except httpx.HTTPError:
-        pass
+    await Door().send(
+        store,
+        service=MANIFEST.key,
+        item=outgoing.identifier,
+        url=outgoing.hook.url,
+        body=outgoing.body,
+        headers=headers,
+        timeout=TIMEOUT,
+    )

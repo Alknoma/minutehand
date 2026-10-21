@@ -8,8 +8,8 @@ change to the agent and none to Minutehand. Built and tested: `domain/emulator.p
 
 ## The declaration
 
-The worked example, `tests/agents/external_emulator/`, forwards the payments API to
-[stripe-mock](https://github.com/stripe/stripe-mock), downloaded as it is:
+A declaration forwarding the payments API to [stripe-mock](https://github.com/stripe/stripe-mock), downloaded as
+it is (`tests/emulators/test_downloaded.py` runs one):
 
 ```yaml
 outbound:
@@ -33,11 +33,6 @@ emulators:
 Minutehand attaches to it. In `minutehand serve`, `CreateWorld.emulators` takes the same entries: one emulator per
 server, started with the first world that declares it and shared by every world declaring it the same; a world
 declaring a running name otherwise is refused 409.
-
-```bash
-cd tests/agents/external_emulator
-minutehand run scenario.yaml --agent agent.yaml      # agent.py is a ten-line stand-in for an agent
-```
 
 ## What you get
 

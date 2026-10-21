@@ -47,7 +47,7 @@ def test_the_run_row_names_the_run_its_verdict_and_the_read_models_version(run: 
         "ended_at": "2026-08-25T16:00:00.000Z",
         "stop": "agent_done",
         "verdict": "failed",
-        "verdict_words": "Failed: 1 check failed; the agent reported it was done.",
+        "verdict_words": "Failed: 1 check failed; whoever drove the agent relayed that it was done.",
         "finished": 1,
         "read_model_version": VERSION,
     }
@@ -338,27 +338,21 @@ def test_stored_items_read_as_stored(run: Fixture) -> None:
     ]
 
 
-def test_wakes_say_why_each_began_and_what_the_agent_reported(run: Fixture) -> None:
-    assert rows(
-        run, "SELECT wake, at, reason, woken_by, reported_status, reported_next_wake, actions, model_calls FROM wakes"
-    ) == [
+def test_wakes_say_why_each_began_and_what_the_agent_did(run: Fixture) -> None:
+    assert rows(run, "SELECT wake, at, reason, woken_by, actions, model_calls FROM wakes") == [
         {
             "wake": 1,
             "at": "2026-08-24T10:00:00.000Z",
             "reason": "start",
             "woken_by": None,
-            "reported_status": "working",
-            "reported_next_wake": "2026-08-25T12:00:00.000Z",
-            "actions": 10,
+            "actions": 9,
             "model_calls": 1,
         },
         {
             "wake": 2,
             "at": "2026-08-25T12:00:00.000Z",
             "reason": "due",
-            "woken_by": "reported",
-            "reported_status": "working",
-            "reported_next_wake": None,
+            "woken_by": "timer",
             "actions": 4,
             "model_calls": 1,
         },
@@ -367,8 +361,6 @@ def test_wakes_say_why_each_began_and_what_the_agent_reported(run: Fixture) -> N
             "at": "2026-08-25T16:00:00.000Z",
             "reason": "person_replied",
             "woken_by": "reply",
-            "reported_status": "done",
-            "reported_next_wake": None,
             "actions": 4,
             "model_calls": 0,
         },
@@ -383,7 +375,7 @@ def test_dispatch_holds_each_entry_as_it_last_stood(run: Fixture) -> None:
         {
             "due_id": 1,
             "kind": "agent_wake",
-            "source": "reported",
+            "source": "timer",
             "due_at": "2026-08-25T12:00:00.000Z",
             "entered_wake": 1,
             "closed": "fired",
@@ -579,17 +571,16 @@ def test_actions_are_the_agents_acts_in_the_order_it_made_them(run: Fixture) -> 
         ("stored", 8, None),
         ("call", 4, None),
         ("call", 5, None),
-        ("next_wake", 9, None),
-        ("memory", 14, None),
+        ("memory", 13, None),
         ("model_call", "b2b2b2b2b2b2b2b2", None),
         ("message", run.follow_up, "sofia"),
-        ("memory", 16, None),
-        ("memory", 20, None),
+        ("memory", 15, None),
+        ("memory", 19, None),
         ("message", run.told, "owner"),
-        ("memory", 22, None),
+        ("memory", 21, None),
         ("memory", run.late_write, None),
     ]
-    assert column(run, "SELECT position FROM actions") == list(range(1, 19))
+    assert column(run, "SELECT position FROM actions") == list(range(1, 18))
     [hook] = rows(run, "SELECT target, summary, view FROM actions WHERE call_id = 4")
     assert hook == {
         "target": "hooks.example.com/notify",

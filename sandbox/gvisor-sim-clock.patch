@@ -1,0 +1,558 @@
+diff --git a/pkg/sentry/kernel/deadlines.go b/pkg/sentry/kernel/deadlines.go
+new file mode 100644
+index 0000000..134c677
+--- /dev/null
++++ b/pkg/sentry/kernel/deadlines.go
+@@ -0,0 +1,78 @@
++// Copyright 2026 The gVisor Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package kernel
++
++import (
++	sentrytime "gvisor.dev/gvisor/pkg/sentry/time"
++)
++
++// TaskWait is one blocked task's deadline, as the time until it, on the clock
++// it blocked on.
++type TaskWait struct {
++	Task int32
++	Ns   int64
++}
++
++// Deadlines is what an outside controller reads to know when the sandbox
++// next wants to run by itself: whether every task is blocked, the sandbox's
++// realtime clock, and how long until each blocked task's deadline.
++type Deadlines struct {
++	// Idle is true when no task goroutine is running or runnable.
++	Idle bool
++	// NowNs is the sandbox's CLOCK_REALTIME, nanoseconds since the epoch.
++	NowNs int64
++	// Tasks is how many tasks there are.
++	Tasks int
++	// Timed is how many of them are blocked with a deadline.
++	Timed int
++	// EarliestNs is the time until the earliest deadline any blocked task
++	// waits for; -1 when none does.
++	EarliestNs int64
++	// Waits is every blocked task's deadline.
++	Waits []TaskWait
++}
++
++// Deadlines reports every task's blocking deadline and whether the sandbox is
++// idle. It takes no lock that stops the tasks: a task that wakes while it is
++// read shows in Idle on the next read.
++func (k *Kernel) Deadlines() (Deadlines, error) {
++	now, err := k.timekeeper.GetTime(sentrytime.Realtime)
++	if err != nil {
++		return Deadlines{}, err
++	}
++	report := Deadlines{Idle: k.runningTasks.Load() == 0, NowNs: now, EarliestNs: -1}
++	for _, t := range k.tasks.Root.Tasks() {
++		report.Tasks++
++		deadline, clock, ok := t.BlockDeadline()
++		if !ok {
++			continue
++		}
++		until := deadline.Sub(clock.Now()).Nanoseconds()
++		if until < 0 {
++			until = 0
++		}
++		report.Timed++
++		report.Waits = append(report.Waits, TaskWait{Task: int32(k.tasks.Root.IDOfTask(t)), Ns: until})
++		if report.EarliestNs < 0 || until < report.EarliestNs {
++			report.EarliestNs = until
++		}
++	}
++	return report, nil
++}
++
++// AdvanceClock moves the sandbox's clocks by ns (Timekeeper.AdvanceClock).
++func (k *Kernel) AdvanceClock(ns int64) {
++	k.timekeeper.AdvanceClock(ns)
++}
+diff --git a/pkg/sentry/kernel/task.go b/pkg/sentry/kernel/task.go
+index 5245e78..0189602 100644
+--- a/pkg/sentry/kernel/task.go
++++ b/pkg/sentry/kernel/task.go
+@@ -668,6 +668,13 @@ type Task struct {
+ 	blockingTimerListener ktime.Listener      `state:"nosave"`
+ 	blockingTimerChan     <-chan struct{}     `state:"nosave"`
+ 
++	// blockDeadline is the deadline the task is blocked until, on
++	// blockDeadlineClock, while it is blocked with one (BlockWithDeadlineFrom);
++	// blockDeadlineClock is nil otherwise. Read by Kernel.Deadlines.
++	blockDeadlineMu    sync.Mutex  `state:"nosave"`
++	blockDeadline      ktime.Time  `state:"nosave"`
++	blockDeadlineClock ktime.Clock `state:"nosave"`
++
+ 	// futexWaiter is used for futex(FUTEX_WAIT) syscalls.
+ 	//
+ 	// futexWaiter is exclusive to the task goroutine.
+diff --git a/pkg/sentry/kernel/task_block.go b/pkg/sentry/kernel/task_block.go
+index e6fea83..da84440 100644
+--- a/pkg/sentry/kernel/task_block.go
++++ b/pkg/sentry/kernel/task_block.go
+@@ -95,6 +95,8 @@ func (t *Task) BlockWithDeadlineFrom(C <-chan struct{}, clock ktime.Clock, haveD
+ 	if c, ok := clock.(ktime.SampledClock); ok {
+ 		return t.blockWithDeadlineFromSampledClock(C, c, deadline)
+ 	}
++	t.setBlockDeadline(clock, deadline)
++	defer t.clearBlockDeadline()
+ 
+ 	// Start the timeout timer.
+ 	timer := clock.NewTimer(t.blockingTimerListener)
+@@ -119,6 +121,8 @@ func (t *Task) BlockWithDeadlineFrom(C <-chan struct{}, clock ktime.Clock, haveD
+ }
+ 
+ func (t *Task) blockWithDeadlineFromSampledClock(C <-chan struct{}, clock ktime.SampledClock, deadline ktime.Time) error {
++	t.setBlockDeadline(clock, deadline)
++	defer t.clearBlockDeadline()
+ 	// Start the timeout timer.
+ 	t.blockingTimer.SetClock(clock, ktime.Setting{
+ 		Enabled: true,
+@@ -139,6 +143,27 @@ func (t *Task) blockWithDeadlineFromSampledClock(C <-chan struct{}, clock ktime.
+ 	return err
+ }
+ 
++func (t *Task) setBlockDeadline(clock ktime.Clock, deadline ktime.Time) {
++	t.blockDeadlineMu.Lock()
++	t.blockDeadline, t.blockDeadlineClock = deadline, clock
++	t.blockDeadlineMu.Unlock()
++}
++
++func (t *Task) clearBlockDeadline() {
++	t.blockDeadlineMu.Lock()
++	t.blockDeadlineClock = nil
++	t.blockDeadlineMu.Unlock()
++}
++
++// BlockDeadline returns the deadline the task is blocked until and true,
++// while it is blocked with one; false otherwise. The deadline is on the clock
++// the task blocked on, so the wait is deadline minus that clock's Now.
++func (t *Task) BlockDeadline() (ktime.Time, ktime.Clock, bool) {
++	t.blockDeadlineMu.Lock()
++	defer t.blockDeadlineMu.Unlock()
++	return t.blockDeadline, t.blockDeadlineClock, t.blockDeadlineClock != nil
++}
++
+ // Block implements context.Context.Block
+ //
+ // Preconditions: The caller must be running on the task goroutine.
+diff --git a/pkg/sentry/kernel/timekeeper.go b/pkg/sentry/kernel/timekeeper.go
+index 0a22882..7488428 100644
+--- a/pkg/sentry/kernel/timekeeper.go
++++ b/pkg/sentry/kernel/timekeeper.go
+@@ -79,6 +79,15 @@ type Timekeeper struct {
+ 	// monotonicLowerBound is the lowerBound for monotonic time.
+ 	monotonicLowerBound atomicbitops.Int64 `state:"nosave"`
+ 
++	// simRealtime and simMonotonic are the offsets an outside controller has
++	// moved the sandbox's realtime and monotonic clocks by (AdvanceClock):
++	// added to every read of each, and to the VDSO parameters, so the
++	// application and its timers see one clock that only the controller
++	// moves. A step back (a sandbox born before now) moves realtime alone:
++	// monotonic never goes backwards.
++	simRealtime  atomicbitops.Int64 `state:"nosave"`
++	simMonotonic atomicbitops.Int64 `state:"nosave"`
++
+ 	// restored, if non-nil, indicates that this Timekeeper was restored
+ 	// from a state file. The clocks are not set until restored is closed.
+ 	restored chan struct{} `state:"nosave"`
+@@ -280,13 +289,13 @@ func (t *Timekeeper) update(parked bool) {
+ 		if res.MonotonicOk {
+ 			p.monotonicReady = 1
+ 			p.monotonicBaseCycles = int64(res.Monotonic.BaseCycles)
+-			p.monotonicBaseRef = int64(res.Monotonic.BaseRef) + t.monotonicOffset
++			p.monotonicBaseRef = int64(res.Monotonic.BaseRef) + t.monotonicOffset + t.simMonotonic.Load()
+ 			p.monotonicFrequency = res.Monotonic.Frequency
+ 		}
+ 		if res.RealtimeOk {
+ 			p.realtimeReady = 1
+ 			p.realtimeBaseCycles = int64(res.Realtime.BaseCycles)
+-			p.realtimeBaseRef = int64(res.Realtime.BaseRef)
++			p.realtimeBaseRef = int64(res.Realtime.BaseRef) + t.simRealtime.Load()
+ 			p.realtimeFrequency = res.Realtime.Frequency
+ 		}
+ 		if t.monotonicRawClock == nil {
+@@ -504,7 +513,11 @@ func (t *Timekeeper) GetTime(c sentrytime.ClockID) (int64, error) {
+ 	defer t.release()
+ 
+ 	now, err := t.clocks.GetTime(c)
++	if err == nil && c == sentrytime.Realtime {
++		now += t.simRealtime.Load()
++	}
+ 	if err == nil && c == sentrytime.Monotonic {
++		now += t.simMonotonic.Load()
+ 		now += t.monotonicOffset
+ 		for {
+ 			// It's possible that the clock is shaky. This may be due to
+@@ -530,6 +543,39 @@ func (t *Timekeeper) BootTime() ktime.Time {
+ 	return t.bootTime
+ }
+ 
++// AdvanceClock moves the sandbox's realtime clock by ns, and its monotonic
++// clock too when ns is positive (monotonic never goes backwards: a step back
++// is a sandbox born before now), publishes the new parameters to the VDSO,
++// and tells every timer on either clock that the clock was set, so an armed
++// sleep, futex, poll or epoll timeout re-checks its deadline at once.
++func (t *Timekeeper) AdvanceClock(ns int64) {
++	t.simRealtime.Add(ns)
++	if ns > 0 {
++		t.simMonotonic.Add(ns)
++	}
++	t.updateMu.Lock()
++	if t.clocks != nil && t.params != nil {
++		t.update(false)
++	}
++	t.updateMu.Unlock()
++	t.realtimeClock.Notify(ktime.ClockEventSet)
++	t.monotonicClock.Notify(ktime.ClockEventSet)
++	if t.monotonicRawClock != nil {
++		t.monotonicRawClock.Notify(ktime.ClockEventSet)
++	}
++	if t.afterFuncSchedulerWakeCh != nil {
++		select {
++		case t.afterFuncSchedulerWakeCh <- struct{}{}:
++		default:
++		}
++	}
++}
++
++// SimOffset is how far AdvanceClock has moved the sandbox's realtime clock in all.
++func (t *Timekeeper) SimOffset() int64 {
++	return t.simRealtime.Load()
++}
++
+ // timekeeperClock is a ktime.SampledClock that reads time from a
+ // kernel.Timekeeper-managed clock.
+ //
+@@ -541,9 +587,9 @@ type timekeeperClock struct {
+ 	// Implements ktime.SampledClock.WallTimeUntil.
+ 	ktime.WallRateClock `state:"nosave"`
+ 
+-	// Implements waiter.Waitable. (We have no ability to detect
+-	// discontinuities from external changes to CLOCK_REALTIME).
+-	ktime.NoClockEvents `state:"nosave"`
++	// Implements waiter.Waitable: AdvanceClock notifies ClockEventSet on
++	// every move of the sandbox's clocks.
++	ktime.ClockEventsQueue `state:"nosave"`
+ }
+ 
+ // Now implements ktime.Clock.Now.
+diff --git a/runsc/boot/controller.go b/runsc/boot/controller.go
+index e90a6e8..021b1ab 100644
+--- a/runsc/boot/controller.go
++++ b/runsc/boot/controller.go
+@@ -99,7 +99,7 @@ func (c *controller) registerHandlers() {
+ 	c.srv.Register(&control.State{Kernel: l.k})
+ 	c.srv.Register(&control.Usage{Kernel: l.k})
+ 	c.srv.Register(&control.Metrics{})
+-	c.srv.Register(&debug{})
++	c.srv.Register(&debug{k: l.k})
+ 
+ 	if eps, ok := l.k.RootNetworkNamespace().Stack().(*netstack.Stack); ok {
+ 		c.srv.Register(&Network{
+diff --git a/runsc/boot/debug.go b/runsc/boot/debug.go
+index 1fb32c5..0947d1b 100644
+--- a/runsc/boot/debug.go
++++ b/runsc/boot/debug.go
+@@ -16,9 +16,12 @@ package boot
+ 
+ import (
+ 	"gvisor.dev/gvisor/pkg/log"
++	"gvisor.dev/gvisor/pkg/sentry/kernel"
++	"gvisor.dev/gvisor/runsc/boot/sentryapi"
+ )
+ 
+ type debug struct {
++	k *kernel.Kernel
+ }
+ 
+ // Stacks collects all sandbox stacks and copies them to 'stacks'.
+@@ -27,3 +30,30 @@ func (*debug) Stacks(_ *struct{}, stacks *string) error {
+ 	*stacks = string(buf)
+ 	return nil
+ }
++
++// Deadlines reports every task's blocking deadline and whether the sandbox is idle.
++func (d *debug) Deadlines(_ *struct{}, out *sentryapi.Deadlines) error {
++	found, err := d.k.Deadlines()
++	if err != nil {
++		return err
++	}
++	waits := make([]sentryapi.TaskWait, 0, len(found.Waits))
++	for _, w := range found.Waits {
++		waits = append(waits, sentryapi.TaskWait{Task: w.Task, Ns: w.Ns})
++	}
++	*out = sentryapi.Deadlines{
++		Idle:       found.Idle,
++		NowNs:      found.NowNs,
++		Tasks:      found.Tasks,
++		Timed:      found.Timed,
++		EarliestNs: found.EarliestNs,
++		Waits:      waits,
++	}
++	return nil
++}
++
++// AdvanceClock moves the sandbox's clocks by the signed step given.
++func (d *debug) AdvanceClock(args *sentryapi.AdvanceClockArgs, _ *struct{}) error {
++	d.k.AdvanceClock(args.Nanoseconds)
++	return nil
++}
+diff --git a/runsc/boot/loader.go b/runsc/boot/loader.go
+index e8c6d4b..7c495e8 100644
+--- a/runsc/boot/loader.go
++++ b/runsc/boot/loader.go
+@@ -836,6 +836,14 @@ func New(args Args) (*Loader, error) {
+ 	tk := kernel.NewTimekeeper()
+ 	params := kernel.NewVDSOParamPage(l.k.MemoryFile(), vdso.ParamPage.FileRange())
+ 	tk.SetClocks(time.NewCalibratedClocks(shouldEnableClockMonotonicRaw(args.Spec, args.Conf)), params)
++	if at := args.Conf.SimClockAt; at != 0 {
++		// Born at the moment the controller names: no application instruction reads the host's time.
++		now, err := tk.GetTime(time.Realtime)
++		if err != nil {
++			return nil, fmt.Errorf("reading realtime to set the sandbox's clock: %w", err)
++		}
++		tk.AdvanceClock(at - now)
++	}
+ 	args.StartupTimer.Reached("timekeeper configured")
+ 
+ 	if err := enableStrace(args.Conf); err != nil {
+diff --git a/runsc/boot/sentryapi/debug.go b/runsc/boot/sentryapi/debug.go
+index 326953d..ffc21c6 100644
+--- a/runsc/boot/sentryapi/debug.go
++++ b/runsc/boot/sentryapi/debug.go
+@@ -16,3 +16,33 @@ package sentryapi
+ 
+ // DebugStacks collects sandbox stacks for debugging.
+ const DebugStacks = "debug.Stacks"
++
++// DebugDeadlines reads every task's blocking deadline and whether the sandbox
++// is idle: what an outside controller that owns the sandbox's clock reads to
++// know when the sandbox next wants to run by itself.
++const DebugDeadlines = "debug.Deadlines"
++
++// DebugAdvanceClock moves the sandbox's realtime and monotonic clocks by a
++// signed number of nanoseconds.
++const DebugAdvanceClock = "debug.AdvanceClock"
++
++// TaskWait is one blocked task's deadline, as the time until it.
++type TaskWait struct {
++	Task int32 `json:"task"`
++	Ns   int64 `json:"ns"`
++}
++
++// Deadlines is the answer to DebugDeadlines.
++type Deadlines struct {
++	Idle       bool       `json:"idle"`
++	NowNs      int64      `json:"now_ns"`
++	Tasks      int        `json:"tasks"`
++	Timed      int        `json:"timed"`
++	EarliestNs int64      `json:"earliest_ns"`
++	Waits      []TaskWait `json:"waits"`
++}
++
++// AdvanceClockArgs is the argument to DebugAdvanceClock.
++type AdvanceClockArgs struct {
++	Nanoseconds int64 `json:"nanoseconds"`
++}
+diff --git a/runsc/cmd/debug.go b/runsc/cmd/debug.go
+index e85954e..71b1206 100644
+--- a/runsc/cmd/debug.go
++++ b/runsc/cmd/debug.go
+@@ -16,6 +16,7 @@ package cmd
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"fmt"
+ 	"os"
+ 	"os/signal"
+@@ -53,6 +54,8 @@ type Debug struct {
+ 	duration     time.Duration
+ 	ps           bool
+ 	mount        string
++	deadlines    bool
++	advanceClock time.Duration
+ }
+ 
+ // Name implements subcommands.Command.
+@@ -87,6 +90,8 @@ func (d *Debug) SetFlags(f *flag.FlagSet) {
+ 	f.StringVar(&d.logPackets, "log-packets", "", "A boolean value to enable or disable packet logging: true or false.")
+ 	f.BoolVar(&d.ps, "ps", false, "lists processes")
+ 	f.StringVar(&d.mount, "mount", "", "Mount a filesystem (-mount fstype:source:destination).")
++	f.BoolVar(&d.deadlines, "deadlines", false, "prints, as one JSON line, whether every task is blocked, the sandbox's clock, and the time until each blocked task's deadline.")
++	f.DurationVar(&d.advanceClock, "advance-clock", 0, "moves the sandbox's realtime and monotonic clocks by this signed duration, and wakes every timer it passes.")
+ }
+ 
+ // FetchSpec implements util.SubCommand.FetchSpec.
+@@ -163,6 +168,22 @@ func (d *Debug) Execute(_ context.Context, f *flag.FlagSet, args ...any) subcomm
+ 			return util.Errorf("failed to send signal %d to process %d", d.signal, pid)
+ 		}
+ 	}
++	if d.advanceClock != 0 {
++		if err := c.Sandbox.AdvanceClock(d.advanceClock.Nanoseconds()); err != nil {
++			return util.Errorf("advancing clock: %v", err)
++		}
++	}
++	if d.deadlines {
++		found, err := c.Sandbox.Deadlines()
++		if err != nil {
++			return util.Errorf("reading deadlines: %v", err)
++		}
++		line, err := json.Marshal(found)
++		if err != nil {
++			return util.Errorf("encoding deadlines: %v", err)
++		}
++		fmt.Fprintln(os.Stdout, string(line))
++	}
+ 	if d.stacks {
+ 		util.Infof("Retrieving sandbox stacks")
+ 		stacks, err := c.Sandbox.Stacks()
+diff --git a/runsc/cmd/do.go b/runsc/cmd/do.go
+index 1e7187e..622571f 100644
+--- a/runsc/cmd/do.go
++++ b/runsc/cmd/do.go
+@@ -57,6 +57,12 @@ type Do struct {
+ 	// cached values for FetchSpec().
+ 	spec *specs.Spec
+ 	cid  string
++	// name is the container id to use in place of a random one, and stateDir
++	// the root directory to keep its state in, in place of a temporary one
++	// removed when it exits: together they let another runsc find the
++	// sandbox while it runs (`runsc --root <stateDir> debug <name>`).
++	name     string
++	stateDir string
+ }
+ 
+ // Name implements subcommands.Command.Name.
+@@ -149,6 +155,8 @@ func (c *Do) SetFlags(f *flag.FlagSet) {
+ 	f.StringVar(&c.cwd, "cwd", ".", "path to the current directory, defaults to the current directory")
+ 	f.StringVar(&c.erofs, "erofs", "", "path to the erofs root image")
+ 	f.StringVar(&c.ip, "ip", "192.168.10.2", "IPv4 address for the sandbox")
++	f.StringVar(&c.name, "name", "", "container id to use, so another runsc can address the sandbox while it runs; random by default")
++	f.StringVar(&c.stateDir, "state-dir", "", "directory to keep the container's state in, kept after it exits; a temporary one removed at exit by default")
+ 	f.BoolVar(&c.quiet, "quiet", false, "suppress runsc messages to stdout. Application output is still sent to stdout and stderr")
+ 	f.BoolVar(&c.overlay, "force-overlay", true, "use an overlay. WARNING: disabling gives the command write access to the host")
+ 	f.Var(&c.uidMap, "uid-map", "Add a user id mapping [ContainerID, HostID, Size]")
+@@ -184,6 +192,9 @@ func (c *Do) FetchSpec(conf *config.Config, f *flag.FlagSet) (string, *specs.Spe
+ 	}
+ 
+ 	c.cid = fmt.Sprintf("runsc-%06d", rand.Int31n(1000000))
++	if c.name != "" {
++		c.cid = c.name
++	}
+ 	c.spec = &specs.Spec{
+ 		Root: &specs.Root{
+ 			Path: absRoot,
+@@ -272,7 +283,7 @@ func (c *Do) Execute(_ context.Context, f *flag.FlagSet, args ...any) subcommand
+ 		}
+ 	}
+ 
+-	return startContainerAndWait(spec, conf, cid, waitStatus)
++	return startContainerAndWait(spec, conf, cid, waitStatus, c.stateDir)
+ }
+ 
+ func addNamespace(spec *specs.Spec, ns specs.LinuxNamespace) {
+@@ -483,7 +494,7 @@ func calculatePeerIP(ip string) (string, error) {
+ 	return fmt.Sprintf("%s.%s.%s.%d", parts[0], parts[1], parts[2], n), nil
+ }
+ 
+-func startContainerAndWait(spec *specs.Spec, conf *config.Config, cid string, waitStatus *unix.WaitStatus) subcommands.ExitStatus {
++func startContainerAndWait(spec *specs.Spec, conf *config.Config, cid string, waitStatus *unix.WaitStatus, stateDir string) subcommands.ExitStatus {
+ 	specutils.LogSpecDebug(spec, conf.OCISeccomp)
+ 
+ 	out, err := json.Marshal(spec)
+@@ -494,9 +505,19 @@ func startContainerAndWait(spec *specs.Spec, conf *config.Config, cid string, wa
+ 	if err != nil {
+ 		return util.Errorf("Error to create tmp dir: %v", err)
+ 	}
++	if stateDir != "" {
++		// Kept, under a name the caller knows, so another runsc can find the sandbox while it runs.
++		os.RemoveAll(tmpDir)
++		if err := os.MkdirAll(stateDir, 0755); err != nil {
++			return util.Errorf("Error to create state dir: %v", err)
++		}
++		tmpDir = stateDir
++	}
+ 	defer func() {
+ 		specutils.UnmountNullNetNS(tmpDir)
+-		os.RemoveAll(tmpDir)
++		if stateDir == "" {
++			os.RemoveAll(tmpDir)
++		}
+ 	}()
+ 
+ 	log.Infof("Changing configuration RootDir to %q", tmpDir)
+diff --git a/runsc/config/config.go b/runsc/config/config.go
+index 918da87..80be6bd 100644
+--- a/runsc/config/config.go
++++ b/runsc/config/config.go
+@@ -298,6 +298,13 @@ type Config struct {
+ 	// scale for high throughput use cases.
+ 	NumNetworkChannels int `flag:"num-network-channels"`
+ 
++	// SimClockAt, when not zero, is the CLOCK_REALTIME the sandbox is born at,
++	// in nanoseconds since the epoch: the sentry's realtime and monotonic
++	// clocks are offset to it before the first application instruction, so a
++	// controller that owns the sandbox's clock (`runsc debug --advance-clock`)
++	// never races the application's first read of the time.
++	SimClockAt int64 `flag:"sim-clock-at"`
++
+ 	// NetworkProcessorsPerChannel controls the number of goroutines used to
+ 	// handle packets on a single network channel. A higher number can help handle
+ 	// many simultaneous connections. If this is 0, runsc will divide GOMAXPROCS
+diff --git a/runsc/config/flags.go b/runsc/config/flags.go
+index ad2c804..155f024 100644
+--- a/runsc/config/flags.go
++++ b/runsc/config/flags.go
+@@ -173,6 +173,7 @@ func RegisterFlags(flagSet *flag.FlagSet) {
+ 	flagSet.Uint64(flagQDiscTBFRate, defaultQDiscTBFRate, "egress rate limit in bytes/sec when --qdisc=tbf.")
+ 	flagSet.Uint64(flagQDiscTBFBurst, defaultQDiscTBFBurst, "bucket depth in bytes when --qdisc=tbf.")
+ 	flagSet.Int("num-network-channels", 1, "number of underlying channels(FDs) to use for network link endpoints.")
++	flagSet.Int64("sim-clock-at", 0, "CLOCK_REALTIME the sandbox is born at, nanoseconds since the epoch; 0 for the host's own time. Its clocks are then moved only by `runsc debug --advance-clock`.")
+ 	flagSet.Int("network-processors-per-channel", 0, "number of goroutines in each channel for processng inbound packets. If 0, the link endpoint will divide GOMAXPROCS evenly among the number of channels specified by num-network-channels.")
+ 	flagSet.Var(&XDP{}, "EXPERIMENTAL-xdp", `whether and how to use XDP. Can be one of: "off" (default), "ns", "redirect:<device name>", or "tunnel:<device name>"`)
+ 	flagSet.Bool("EXPERIMENTAL-xdp-need-wakeup", true, "EXPERIMENTAL. Use XDP_USE_NEED_WAKEUP with XDP sockets.") // TODO(b/240191988): Figure out whether this helps and remove it as a flag.
+diff --git a/runsc/sandbox/sandbox.go b/runsc/sandbox/sandbox.go
+index e8ed83e..5e72ca8 100644
+--- a/runsc/sandbox/sandbox.go
++++ b/runsc/sandbox/sandbox.go
+@@ -2706,6 +2706,24 @@ func (s *Sandbox) Stacks() (string, error) {
+ 	return stacks, nil
+ }
+ 
++// Deadlines reads every task's blocking deadline and whether the sandbox is idle.
++func (s *Sandbox) Deadlines() (sentryapi.Deadlines, error) {
++	var found sentryapi.Deadlines
++	if err := s.call(sentryapi.DebugDeadlines, nil, &found); err != nil {
++		return found, fmt.Errorf("reading sandbox %q deadlines: %w", s.ID, err)
++	}
++	return found, nil
++}
++
++// AdvanceClock moves the sandbox's clocks by the signed step given.
++func (s *Sandbox) AdvanceClock(ns int64) error {
++	args := sentryapi.AdvanceClockArgs{Nanoseconds: ns}
++	if err := s.call(sentryapi.DebugAdvanceClock, &args, nil); err != nil {
++		return fmt.Errorf("advancing sandbox %q clock: %w", s.ID, err)
++	}
++	return nil
++}
++
+ // HeapProfile writes a heap profile to the given file.
+ func (s *Sandbox) HeapProfile(f *os.File, delay time.Duration) error {
+ 	if delay > 0 {

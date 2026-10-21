@@ -157,10 +157,7 @@ def record(wakes: int) -> RunRecord:
         ended_at=START + timedelta(days=3),
         wall_seconds=42.5,
         stop=StopReason.AGENT_DONE,
-        wakes=[
-            WakeRecord(index=i, sim_time=START + timedelta(days=i), world_changes=0, commitments_changed=False)
-            for i in range(1, wakes + 1)
-        ],
+        wakes=[WakeRecord(index=i, sim_time=START + timedelta(days=i), world_changes=0) for i in range(1, wakes + 1)],
     )
 
 

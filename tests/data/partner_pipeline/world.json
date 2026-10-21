@@ -170,7 +170,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi \u2014 could you approve, decline, or reply to the pending ranking of Aiven integration candidates for commercial and partnership potential? Your response will let \u201cSecure Three Ayven Integration Partnerships\u201d move forward on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "text": "Hi — could you approve, decline, or reply to the pending ranking of Aiven integration candidates for commercial and partnership potential? Your response will let “Secure Three Ayven Integration Partnerships” move forward on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
     "channel": "dm-owner-1",
     "recipient_emails": [
      "owner@example.com"
@@ -194,7 +194,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi Test, could you let me know who can approve Ayven\u2019s standard partnership terms now that Dania Kovac can\u2019t be assigned through the tracker? Your answer will let me file the follow-on actions.",
+    "text": "Hi Test, could you let me know who can approve Ayven’s standard partnership terms now that Dania Kovac can’t be assigned through the tracker? Your answer will let me file the follow-on actions.",
     "channel": "dm-owner-2",
     "recipient_emails": [
      "owner@example.com"
@@ -218,7 +218,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi \u2014 could you identify an alternative legal approver or routing path for Ayven\u2019s standard partnership terms? The legal-review ticket was rejected because Dania Kovac can\u2019t be assigned through the tracker, and your answer will let the agreement move toward approval.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "text": "Hi — could you identify an alternative legal approver or routing path for Ayven’s standard partnership terms? The legal-review ticket was rejected because Dania Kovac can’t be assigned through the tracker, and your answer will let the agreement move toward approval.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
     "channel": "dm-owner-2",
     "recipient_emails": [
      "owner@example.com"
@@ -242,7 +242,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi Test User, you\u2014could you let me know where \u201cStandard Partnership Terms \u2014 DRAFT\u201d can be accessed? Your reply will let us route it to Dania Kovac for external legal review.",
+    "text": "Hi Test User, you—could you let me know where “Standard Partnership Terms — DRAFT” can be accessed? Your reply will let us route it to Dania Kovac for external legal review.",
     "channel": "dm-owner-2",
     "recipient_emails": [
      "owner@example.com"
@@ -266,7 +266,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi \u2014 \u201cStandard Partnership Terms \u2014 DRAFT\u201d is now in the shared drive, and the planned note to Dania Kovac will link to it, so no attachment or pasted terms are needed. The routing is still awaiting your approval and hasn\u2019t been sent to Dania; could you confirm whether to approve it? Her approval is also needed before the draft can be used for signing.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "text": "Hi — “Standard Partnership Terms — DRAFT” is now in the shared drive, and the planned note to Dania Kovac will link to it, so no attachment or pasted terms are needed. The routing is still awaiting your approval and hasn’t been sent to Dania; could you confirm whether to approve it? Her approval is also needed before the draft can be used for signing.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
     "channel": "dm-owner-2",
     "recipient_emails": [
      "owner@example.com"
@@ -290,7 +290,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi \u2014 could you approve, decline, or reply to the pending assessment of Aiven candidates for the signed integration partnership pursuit? Your response will determine whether work on \u201cSecure Three Ayven Integration Partnerships\u201d can proceed on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "text": "Hi — could you approve, decline, or reply to the pending assessment of Aiven candidates for the signed integration partnership pursuit? Your response will determine whether work on “Secure Three Ayven Integration Partnerships” can proceed on this branch.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
     "channel": "dm-owner-1",
     "recipient_emails": [
      "owner@example.com"
@@ -315,7 +315,7 @@
    "after": {
     "kind": "ticket",
     "title": "Assess Aiven candidates for signed integration partnership pursuit",
-    "body": "Assess Sofia Romano\u2019s completed shortlist of Aiven integration candidates for technical viability, integration scope, and implementation effort, then recommend exactly three candidates for commercially pursuing fully signed integration partnership agreements.\n\nCandidate shortlist: AWS, Microsoft Azure, Google Cloud, Oracle Cloud, DigitalOcean, OVHcloud, Hasura, Lenses, Conduktor, Ververica, Humanitech, Navisite, NucleusTeq, Data Sleek, and IBT.\n\nDeliverables:\n- Evaluate each candidate\u2019s technical and product fit with Aiven, including relevant integration or deployment evidence.\n- Define the likely integration scope, dependencies, architecture considerations, and implementation effort for viable candidates.\n- Assess commercial partnership potential, procurement/channel motion, customer reach, and agreement readiness.\n- Rank or score the candidates using explicit criteria and identify exactly three recommendations.\n- For each recommendation, state the proposed integration scope, estimated implementation effort, commercial rationale, key risks, and next steps toward a fully signed integration partnership agreement.\n- Clearly distinguish a signed integration partnership agreement from a letter of intent or verbal commitment; do not count an LOI or verbal commitment as completion.\n- Record evidence and assumptions, and identify any diligence required before commercial outreach.\n\nUse Sofia Romano\u2019s completed work item and the available research evidence as inputs; validate conclusions where needed.\n\n---\n### Alknoma Context",
+    "body": "Assess Sofia Romano’s completed shortlist of Aiven integration candidates for technical viability, integration scope, and implementation effort, then recommend exactly three candidates for commercially pursuing fully signed integration partnership agreements.\n\nCandidate shortlist: AWS, Microsoft Azure, Google Cloud, Oracle Cloud, DigitalOcean, OVHcloud, Hasura, Lenses, Conduktor, Ververica, Humanitech, Navisite, NucleusTeq, Data Sleek, and IBT.\n\nDeliverables:\n- Evaluate each candidate’s technical and product fit with Aiven, including relevant integration or deployment evidence.\n- Define the likely integration scope, dependencies, architecture considerations, and implementation effort for viable candidates.\n- Assess commercial partnership potential, procurement/channel motion, customer reach, and agreement readiness.\n- Rank or score the candidates using explicit criteria and identify exactly three recommendations.\n- For each recommendation, state the proposed integration scope, estimated implementation effort, commercial rationale, key risks, and next steps toward a fully signed integration partnership agreement.\n- Clearly distinguish a signed integration partnership agreement from a letter of intent or verbal commitment; do not count an LOI or verbal commitment as completion.\n- Record evidence and assumptions, and identify any diligence required before commercial outreach.\n\nUse Sofia Romano’s completed work item and the available research evidence as inputs; validate conclusions where needed.\n\n---\n### Alknoma Context",
     "project": "Backend Services",
     "assignee_email": "marcus@example.com",
     "state": "open"
@@ -337,7 +337,7 @@
    },
    "after": {
     "kind": "message",
-    "text": "Hi \u2014 could you approve, decline, or reply to the request to route the draft partnership terms for the Ayven integration agreement review? It\u2019s now a day overdue, and your response is needed before work on securing the three Ayven integration partnerships can continue.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
+    "text": "Hi — could you approve, decline, or reply to the request to route the draft partnership terms for the Ayven integration agreement review? It’s now a day overdue, and your response is needed before work on securing the three Ayven integration partnerships can continue.\n\n<http://localhost:5000/app/missions?id=6696c825e358193b|Secure Three Ayven Integration Partnerships>",
     "channel": "dm-owner-1",
     "recipient_emails": [
      "owner@example.com"
@@ -348,6 +348,5 @@
   }
  ],
  "wakes": [],
- "obligations": [],
- "commitments": null
+ "obligations": []
 }

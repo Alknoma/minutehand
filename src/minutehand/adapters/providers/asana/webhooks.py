@@ -26,11 +26,12 @@ import hashlib
 import hmac
 import json
 
-import httpx
-
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.asana import state, wire
+from minutehand.adapters.providers.asana.manifest import MANIFEST
 from minutehand.domain.world import Actor, Operation
 from minutehand.ports.clock import Clock
+from minutehand.ports.store import Store
 
 TIMEOUT = 30.0
 HANDSHAKE = "X-Hook-Secret"
@@ -66,14 +67,13 @@ def _matches(filter_: wire.AsanaFilter, event: wire.AsanaEvent) -> bool:
     return True
 
 
-async def handshake(target: str, secret: str) -> bool:
-    """Send the target its secret and whether it answered as Asana requires."""
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-            answered = await client.post(target, headers={HANDSHAKE: secret})
-    except httpx.HTTPError:
-        return False
-    return answered.status_code in (200, 204) and answered.headers.get(HANDSHAKE) == secret
+async def handshake(store: Store, target: str, secret: str) -> bool:
+    """Send the target its secret, through the one door everything sent the agent goes through
+    (`adapters.agent.delivery`), and whether it answered as Asana requires: 200 or 204, echoing the secret."""
+    sent = await Door().send(
+        store, service=MANIFEST.key, item=f"handshake/{secret}", url=target, body=b"", headers={HANDSHAKE: secret}
+    )
+    return sent.snapshot.status in (200, 204) and sent.answer_headers.get(HANDSHAKE.lower()) == secret
 
 
 def watching(world: state.AsanaWorld, task_scope: list[str] | None = None) -> bool:
@@ -94,14 +94,23 @@ async def deliver(world: state.AsanaWorld, clock: Clock) -> None:
         body = json.dumps({"events": [wire.event_json(e, names, named=False) for e in owed]}).encode()
         headers = {"Content-Type": "application/json", SIGNATURE: signature(hook.secret, body)}
         now = wire.stamp(clock.now())
-        try:
-            async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-                answered = await client.post(hook.target, content=body, headers=headers)
-            failure = (
-                None if answered.is_success else f"{answered.status_code} {answered.reason_phrase}\n\n{answered.text}"
-            )
-        except httpx.HTTPError as error:
-            failure = f"{type(error).__name__}: {error}"
+        # through the one door everything sent the agent goes through: recorded whole, sent again by a fork
+        sent = await Door().send(
+            world.store,
+            service=MANIFEST.key,
+            item=f"{hook.gid}/{hook.cursor}",
+            url=hook.target,
+            body=body,
+            headers=headers,
+            timeout=TIMEOUT,
+        )
+        status = sent.snapshot.status
+        if status is None:
+            failure = sent.snapshot.failure
+        elif status >= 300:
+            failure = f"{status} {sent.body.decode('utf-8', errors='replace')}"
+        else:
+            failure = None
         latest = world.webhook(hook.gid)
         if latest is None:  # deleted while the delivery was in flight
             continue

@@ -7,13 +7,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import cache
 
-from examples.recipes import fake_model
 from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
 from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier
 from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.ports.model import Model as LanguageModel
+from tests.support import fake_model
 
 MODEL = "people-fake"
 KEY = "sk-people-fake"

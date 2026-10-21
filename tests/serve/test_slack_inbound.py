@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 import pytest
+from slack_sdk.signature import Clock as VerifierClock
 from slack_sdk.signature import SignatureVerifier
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound
@@ -63,14 +64,15 @@ class Verified:
 
 @contextmanager
 def slack_app(secret: str, on_payload: Callable[[dict[str, object]], None] | None = None) -> Iterator[Verified]:
-    """A Slack app's request URL: each request verified as Bolt verifies it, 401 when the signature is not Slack's."""
-    verifier = SignatureVerifier(secret)
+    """A Slack app's request URL: each request verified as Bolt verifies it, 401 when the signature is not Slack's.
+    The app's clock is its sandbox's, which stands at the simulated moment of the send: the verifier reads that."""
     found = Verified(url="")
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers["Content-Length"]))
             stamp, signature = self.headers["X-Slack-Request-Timestamp"], self.headers["X-Slack-Signature"]
+            verifier = SignatureVerifier(secret, clock=_AtTheSend(stamp))
             if not verifier.is_valid(body=body, timestamp=stamp, signature=signature):
                 found.refused += 1
                 self.send_response(401)
@@ -243,3 +245,13 @@ def test_an_event_signed_with_another_secret_is_refused_by_the_apps_verifier(ser
         with pytest.raises(Refused) as refused:
             world.say("sofia", "hello")
         assert refused.value.status == 502 and app.refused >= 1 and not app.accepted
+
+
+class _AtTheSend(VerifierClock):
+    """The app's clock at the moment the request says it was sent: the sandbox's clock then."""
+
+    def __init__(self, stamp: str) -> None:
+        self._stamp = stamp
+
+    def now(self) -> float:
+        return float(self._stamp)

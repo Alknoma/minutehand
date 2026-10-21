@@ -275,7 +275,7 @@ async def run_c(directory: Path) -> Measured:
                 now=clock.now(),
                 replies=0,
                 pending=[],
-                agent=Remembered(report=None, memory=store_digest(store)),
+                agent=Remembered(memory=store_digest(store)),
             ),
         )
         if wake == 100:

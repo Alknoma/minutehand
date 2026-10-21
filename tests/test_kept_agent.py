@@ -1,4 +1,5 @@
-"""A run kept before `conveys:` was retired still opens: its agent file is read under today's model."""
+"""A run kept before `conveys:` was retired still opens: its agent file is read under today's model (its wake kinds, gone
+since, were rewritten to the sandbox every agent runs in; `conveys` is left as it was kept)."""
 
 from __future__ import annotations
 

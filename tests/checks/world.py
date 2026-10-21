@@ -226,7 +226,7 @@ def reply(who: Person, to: WorldEvent, hours: float) -> PersonReply:
     return PersonReply(person=who.key, in_reply_to=to.entity, text="Here it is.", at=at(hours))
 
 
-ONE_WAKE = WakeRecord(index=1, sim_time=START, world_changes=1, commitments_changed=True)
+ONE_WAKE = WakeRecord(index=1, sim_time=START, world_changes=1)
 """What a hand-built view stands in for is a played run, and a played run has its wakes: one that did something,
 so no check is blocked for want of one and none reads it as idle."""
 
