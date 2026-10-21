@@ -132,9 +132,10 @@ What it does not cover:
 - A TLS client that sends no server name (one that connects to an IP address): the connection is closed.
 - An agent on the host rather than in a container. There, the run tells you instead (below).
 
-An agent in its sandbox reaches the network through the outer container's link to the sandbox
-(`vp-runsc` in the spike, "Evidence" in `docs/design.md`); the same DNAT rules in that container's `nat PREROUTING`
-chain, on that interface, would send its connections to the listener. Not tried.
+An agent in its sandbox reaches the network through its gateway's link to the sandbox (`vp-<name>`, made by
+`runsc do`), and `sandbox/seal.sh` puts the rules there: every TCP connection from the link to the transparent
+listener, every DNS query to Minutehand's name answerer (`--dns-port`), nothing forwarded (`sandbox/README.md`;
+`docs/design.md`, "Transparent capture").
 
 Tested with a real container (`tests/providers/slack/test_slack_redirected_container.py`, marked `docker`, CI job
 `transparent`): `curl --noproxy '*'` with `NO_PROXY=*` set, in `alpine` with `iptables`, is answered by the Slack fake

@@ -4,9 +4,13 @@
 # whose gateway, 192.168.10.3, is the address the proxy is reached at from inside
 # (`minutehand run --proxy-host 0.0.0.0 --agent-proxy-host 192.168.10.3 ...`). The sandbox keeps its state under
 # /tmp/minutehand-sandbox, where the agent file's `deadlines` and `advance` calls find it by name, and is born at the
-# run's start (MINUTEHAND_STARTS_AT_NS), so its first instruction already reads simulated time.
+# run's start (MINUTEHAND_STARTS_AT_NS), so its first instruction already reads simulated time. Its link is sealed
+# (`sandbox/seal.sh`): every connection it opens lands on the proxy, every lookup on Minutehand's answerer, and nothing
+# is forwarded, so the proxy is its only way out, whatever its clients do with HTTPS_PROXY.
 set -eu
 cd "$(dirname "$0")"
+# seal the sandbox's link first: the rules name the link and take effect the moment `runsc do` creates it
+sh ../../sandbox/seal.sh agent
 exec runsc --root /tmp/minutehand-sandbox --network=sandbox --ignore-cgroups \
   --sim-clock-at "${MINUTEHAND_STARTS_AT_NS:-0}" do \
   --name agent --state-dir /tmp/minutehand-sandbox --ip 192.168.10.2 -- \

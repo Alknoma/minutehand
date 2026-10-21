@@ -101,7 +101,7 @@ class SandboxClock:
         where it is, and the run's clock catches up to it when its wake ends (`Orchestrator._plan_timer`): the
         real time an agent spends working passes on its clock. One ahead by more than `settle_limit` was not born at
         the run's start, and is refused: moved back, its timers would fire early."""
-        said = await self.deadlines()
+        said = await self._once_up()
         step = int(to.timestamp() * 1_000_000_000) - said.now_ns
         if step < 0 and -step > self._source.settle_limit.total_seconds() * 1_000_000_000:
             raise SandboxFailed(
@@ -111,6 +111,18 @@ class SandboxClock:
             )
         if step > 0:
             await self.advance(step)
+
+    async def _once_up(self) -> SandboxDeadlines:
+        """The sandbox's deadlines once it answers: the agent's command creates the sandbox, and the first read may
+        come before it exists. Read again, `quiet` apart, up to `settle_limit`; then the last refusal stands."""
+        give_up = time.monotonic() + self._source.settle_limit.total_seconds()  # clock-lint: exempt real-time limit
+        while True:
+            try:
+                return await self.deadlines()
+            except SandboxFailed:
+                if time.monotonic() >= give_up:  # clock-lint: exempt real-time limit
+                    raise
+                await asyncio.sleep(self._source.quiet.total_seconds())
 
     async def settle(self, traffic: Traffic | None) -> SandboxDeadlines | None:
         """Wait until the sandbox is idle on two reads `quiet` apart with no call of the agent's in flight, and

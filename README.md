@@ -169,8 +169,8 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
   timers, pushed events into the sandbox, a fork's playback (`docs/design.md`, "Evidence", 2026-10-22, arm64). Built
   against the sandbox's control calls and not yet run against one: the agent's memory under a fork, dispatch rules
   (a booked wake delivered late, twice or never), `run-all`, `replay`.
-- **Not built:** a CI job that proves the sandbox on x86-64 (written, unproven), the sandbox's network locked to the
-  proxy, generated providers, the hosted service.
+- **Not built:** a CI job that proves the sandbox on x86-64 (written, unproven), generated providers, the hosted
+  service.
 
 ## Docs
 

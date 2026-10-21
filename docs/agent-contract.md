@@ -37,7 +37,7 @@ checkpoint.
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
-| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at | `deadlines` → `{"idle", "now_ns", "earliest_ns", "waits": [{"task", "ns"}]}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", "earliest_ns", "waits": [{"task", "ns"}]}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
@@ -100,6 +100,14 @@ longer than `sandbox.housekeeping` is the agent's own next wake, entered in the 
 (`planned_wakes`, `dispatch.source = timer`); a shorter one is the runtime's own (an HTTP server's poll) and fires in
 real time while the sandbox is read as idle. The agent checks the proxy's certificates against its own clock, so the
 proxy's CA and host certificates are valid at every instant (`sandbox/README.md` for the sandbox itself).
+
+## The sandbox's network
+
+The proxy is the sandbox's only way out (`sandbox/seal.sh`): every connection it opens lands on the proxy's
+transparent listener and every name it looks up resolves to the proxy, whatever its clients do with `HTTPS_PROXY`;
+nothing is forwarded. What goes out for real is what the proxy tunnels: the model hosts (`--model-host`; the public
+providers by default), the designated endpoints a run reaches. Everything else is answered by a fake or refused, and
+recorded either way.
 
 ## The agent's memory
 

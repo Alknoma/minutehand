@@ -53,6 +53,7 @@ from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
+from minutehand.adapters.proxy.names import NameAnswerer
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.replay import ModelReplay
@@ -141,7 +142,13 @@ from minutehand.domain.provider import AgentSends, Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
-from minutehand.domain.templates import RUN_DIR_VARIABLE, RUN_PORT_VARIABLE, STARTS_AT_VARIABLE
+from minutehand.domain.templates import (
+    DNS_PORT_VARIABLE,
+    RUN_DIR_VARIABLE,
+    RUN_PORT_VARIABLE,
+    STARTS_AT_VARIABLE,
+    TRANSPARENT_PORT_VARIABLE,
+)
 from minutehand.domain.world import Actor, Operation, RecordedCall, TicketSnapshot
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
@@ -351,6 +358,8 @@ async def play(
                     signing.for_agent,
                     telemetry_port=proxy.telemetry_port,
                     agent_url=proxy.agent_url(listen),
+                    transparent_port=proxy.transparent_port,
+                    dns_port=proxy.dns_port,
                 )
                 | base_url_environment(agent, listen.proxy_url(proxy.port))
                 | own_files.environment()
@@ -580,6 +589,8 @@ async def fork(
                 signing.for_agent,
                 telemetry_port=proxy.telemetry_port,
                 agent_url=proxy.agent_url(listen),
+                transparent_port=proxy.transparent_port,
+                dns_port=proxy.dns_port,
             )
             | base_url_environment(agent, listen.proxy_url(proxy.port))
             | own_files.environment()
@@ -1604,6 +1615,14 @@ class Listen(Model):
         "without asking for one (`adapters.proxy.redirected`): a client that ignores HTTPS_PROXY is captured all the "
         "same. None serves none; 0 lets the system pick one",
     )
+    dns_port: int | None = Field(
+        default=None,
+        ge=0,
+        le=65535,
+        description="A UDP listener, on `host`, answering every DNS lookup a sealed sandbox makes with the proxy's "
+        "address (`adapters.proxy.names`), so a client that ignores HTTPS_PROXY connects to the proxy by any name. "
+        "None serves none; 0 lets the system pick one",
+    )
     model_hosts: list[str] = Field(
         default=list(DEFAULT_MODEL_HOSTS),
         description="Hosts that are model APIs: tunnelled, or opened to edit or record their calls. The three "
@@ -1655,6 +1674,8 @@ def agent_environment(
     *,
     telemetry_port: int | None,
     agent_url: str | None = None,
+    transparent_port: int | None = None,
+    dns_port: int | None = None,
 ) -> dict[str, str]:
     """What the agent's process needs to reach the fakes and trust them, and nothing else: the proxy in both
     spellings libraries read, the hosts it reaches directly (also as `no_grpc_proxy`: gRPC applies `http_proxy`
@@ -1680,6 +1701,9 @@ def agent_environment(
         **{name: str(ca_bundle) for name in CA_VARIABLES},
         **exporter,
         **({AGENT_ON: "1", AGENT_URL: agent_url} if agent_url is not None else {}),
+        # what `sandbox/seal.sh` sends every connection and every lookup the sandbox makes to
+        **({TRANSPARENT_PORT_VARIABLE: str(transparent_port)} if transparent_port is not None else {}),
+        **({DNS_PORT_VARIABLE: str(dns_port)} if dns_port is not None else {}),
         **secrets,
     }
 
@@ -1729,6 +1753,8 @@ def environment(agent: AgentUnderTest, *, state: Path, listen: Listen, ca_bundle
         {},
         telemetry_port=telemetry_port,
         agent_url=listen.telemetry_url(listen.telemetry_port) + AGENT_PATH if listen.telemetry_port else None,
+        transparent_port=listen.transparent_port,
+        dns_port=listen.dns_port,
     )
     if listen.telemetry_port == 0:
         # No receiver port to name: the agent is still told it is played, so its store refuses rather than writing
@@ -1753,6 +1779,8 @@ class Intercepting:
     telemetry: bool = True
     """Whether the agent's telemetry is received: its exporter pointed at the receiver. The receiver runs either way,
     since it holds the agent's memory."""
+    names: NameAnswerer | None = None
+    """The name answerer beside the proxy, for a sealed sandbox (`--dns-port`)."""
 
     @property
     def port(self) -> int:
@@ -1766,6 +1794,16 @@ class Intercepting:
     def telemetry_port(self) -> int | None:
         """The receiver's port for the agent's telemetry; None when receiving it is off."""
         return self.receiver.port if self.telemetry else None
+
+    @property
+    def transparent_port(self) -> int | None:
+        """The proxy's listener for connections a sealed sandbox's link redirects to it; None when it serves none."""
+        return self.proxy.redirect_port
+
+    @property
+    def dns_port(self) -> int | None:
+        """Minutehand's name answerer for a sealed sandbox; None when it serves none."""
+        return self.names.port if self.names is not None else None
 
     def agent_url(self, listen: Listen) -> str:
         """Where `minutehand.agent` reaches the run, as the agent reaches this machine."""
@@ -1838,7 +1876,11 @@ async def intercepting(
             agent_host=listen.agent_host,
         )
         async with receiver:
-            yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry)
+            if listen.dns_port is None:
+                yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry)
+                return
+            async with NameAnswerer(listen.host, listen.dns_port, address=listen.reached_at()) as names:
+                yield Intercepting(proxy, receiver, telemetry=listen.receive_telemetry, names=names)
 
 
 @asynccontextmanager

@@ -277,6 +277,14 @@ def _parser() -> _Parser:
             "client that ignores HTTPS_PROXY is captured too (docs/containers.md, `env --format redirect`)",
         )
         sub.add_argument(
+            "--dns-port",
+            type=int,
+            default=None,
+            metavar="PORT",
+            help="also answer every DNS lookup a sealed sandbox makes, here, with the proxy's address, so a client "
+            "that ignores HTTPS_PROXY lands on the transparent listener by any name (sandbox/seal.sh)",
+        )
+        sub.add_argument(
             "--no-receive-telemetry",
             action="store_true",
             help="receive none of the agent's telemetry and leave its OTLP exporter where it points (the receiver "
@@ -959,6 +967,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         telemetry_port=args.telemetry_port,
         receive_telemetry=not args.no_receive_telemetry,
         transparent_port=args.transparent_port,
+        dns_port=args.dns_port,
         record_model_calls=args.record_model_calls,
         capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,
