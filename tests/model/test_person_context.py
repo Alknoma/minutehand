@@ -13,8 +13,8 @@ from minutehand.application.run_clock import RunClock
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Answers, DelayRange, FactChange, Person, Scenario, Silent
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, WorldEvent
-from tests.orchestrator.rig import T0, person, scenario
 from tests.support.people import email, people_model, people_requests
+from tests.support.scenarios import T0, person, scenario
 
 ANA_DM = "dm-ana"
 

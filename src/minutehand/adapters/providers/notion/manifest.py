@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from minutehand.domain.items import COMMENT, DOCUMENT
-from minutehand.domain.provider import DocumentChange, Manifest, PersonChange, Tier
+from minutehand.domain.provider import AgentSends, DocumentChange, Manifest, PersonChange, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="notion",
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["api.notion.com", "prod-files-secure.s3.us-west-2.amazonaws.com"],
     kinds=[EntityKind.DOCUMENT, EntityKind.RECORD, EntityKind.COMMENT],

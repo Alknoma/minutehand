@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "views": {
     "minutehand_schema": [
       "version INTEGER",
@@ -138,10 +138,7 @@
       "world_changes INTEGER",
       "memory_reads INTEGER",
       "memory_writes INTEGER",
-      "commitments_changed INTEGER",
       "checkpoint_seq INTEGER",
-      "reported_status TEXT",
-      "reported_next_wake TEXT",
       "actions INTEGER",
       "model_calls INTEGER"
     ],

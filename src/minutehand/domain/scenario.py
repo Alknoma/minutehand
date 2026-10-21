@@ -892,11 +892,10 @@ class MachineCommand(Model):
 
 
 class PlannedBy(StrEnum):
-    """How the agent asked for one of its own wakes: which of them a dispatch rule is about."""
+    """How the agent asked for one of its own wakes that a scheduler delivers: which of them a dispatch rule is
+    about. Its own timers fire inside its sandbox and are nobody's to deliver."""
 
-    REPORTED = "reported"  # `AgentReport.next_wake`
     BOOKED = "booked"  # a booking with a scheduler provider
-    POLLED = "polled"  # the declared rhythm of a `Polled` agent
 
 
 class DispatchFault(StrEnum):
@@ -910,7 +909,8 @@ class DispatchFault(StrEnum):
 class DispatchRule(Model):
     """A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.
 
-    Only the agent's own wakes are covered: when a person answers is their `reply`, and a ticket's pace its fate."""
+    Only the agent's own booked wakes are covered: when a person answers is their `reply`, a ticket's pace its fate,
+    and a timer of the agent's own fires inside its sandbox, which no scheduler stands between."""
 
     wakes: PlannedBy
     nth: int | None = Field(default=None, ge=1, description="The nth wake of that kind to fall due, from 1; None: each")
@@ -921,7 +921,7 @@ class DispatchRule(Model):
 
     @property
     def which(self) -> str:
-        """The wakes it is about, as a reader says it: "the 2nd reported wake", "each polled wake"."""
+        """The wakes it is about, as a reader says it: "the 2nd booked wake", "each booked wake"."""
         if self.nth is None:
             return f"each {self.wakes.value} wake"
         n = self.nth
@@ -1037,7 +1037,7 @@ class _ScenarioBody(Model):
     goal: str | None = Field(
         default=None,
         description="Retired: the agent brings its own work (its prompt, the state and items it sets). Kept only so "
-        "an older scenario still loads; when given, it is handed to the agent on its first wake, verbatim",
+        "an older scenario still loads; when given, its owner sends it to the agent as a message, verbatim",
     )
     owner: str | None = Field(
         default=None,
@@ -1509,6 +1509,6 @@ class Scenario(_ScenarioBody):
 
     @property
     def is_task(self) -> bool:
-        """An older scenario that hands the agent a goal: its run may end when the agent reports done, and is
-        unfinished when work was left open. A scenario that is only a world has neither."""
+        """An older scenario that hands the agent a goal: its run is finished when nothing was left open, and
+        unfinished otherwise. A scenario that is only a world has neither."""
         return self.goal is not None

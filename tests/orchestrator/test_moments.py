@@ -24,8 +24,8 @@ from minutehand.domain.scenario import (
     WorkingHours,
 )
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation, WorldEvent
-from tests.orchestrator.rig import T0, person, scenario, scripted
 from tests.support.people import email
+from tests.support.scenarios import T0, person, scenario, scripted
 
 FRIDAY_1630 = datetime(2026, 8, 28, 16, 30, tzinfo=UTC)
 

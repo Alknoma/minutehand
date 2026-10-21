@@ -13,15 +13,15 @@ from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.application.files import load_agent
 from minutehand.application.outbound import described, outbound_uses, suggested
-from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.outbound import Acknowledge, Answer, HtmlAt, InForks, PassThrough, RecordedRun, Replay
 from minutehand.domain.run import OutboundUse
 from minutehand.domain.world import CaptureMode
+from tests.support.scenarios import SANDBOX
 
 AGENT_FILE = """
 name: mailer
-wakes:
-  - {kind: reported, wake_url: "http://127.0.0.1:9/wake", report_url: "http://127.0.0.1:9/report"}
+sandbox: {deadlines: [runsc, debug, --deadlines, a], advance: [runsc, debug, "--advance-clock={nanoseconds}ns", a]}
 outbound:
   - host: api.mail.example
     kind: acknowledge
@@ -48,8 +48,7 @@ outbound:
 def _agent(*outbound: Acknowledge | PassThrough | Replay) -> AgentUnderTest:
     return AgentUnderTest(
         name="mailer",
-        goal=GoalByWake(),
-        wakes=[Reported(wake_url="http://127.0.0.1:9/wake", report_url="http://127.0.0.1:9/report")],
+        sandbox=SANDBOX,
         outbound=list(outbound),
     )
 

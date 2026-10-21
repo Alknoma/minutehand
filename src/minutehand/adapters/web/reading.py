@@ -76,7 +76,7 @@ from minutehand.domain.world import AnsweredBy as AnsweredByWire
 from minutehand.ports.store import Store
 
 WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
-OWN = frozenset({EntityKind.DUE, EntityKind.PENDING, EntityKind.NEXT_WAKE})
+OWN = frozenset({EntityKind.DUE, EntityKind.PENDING})
 """Kinds the run loop writes for itself: drawn from the dispatch table, never as changes in the world."""
 LABEL = 80
 """The most characters of a mark's label: the inspector reads the rest."""
@@ -737,7 +737,7 @@ def _finding_marks(result: RunResult | None, events: list[WorldEvent], end: date
 
 def _wake_label(w: WakeRecord, driven: bool) -> str:
     word = "Step" if driven else "Wake"
-    changed = "changed nothing" if w.world_changes == 0 and not w.commitments_changed else f"{w.world_changes} changes"
+    changed = "changed nothing" if w.world_changes == 0 else f"{w.world_changes} changes"
     return f"{word} {w.index}: {changed}" + (f" ({w.reason})" if w.reason else "")
 
 

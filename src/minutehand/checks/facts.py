@@ -1,7 +1,7 @@
 """The facts of a run, read from its view: what assessments count, and what an agent's own Python check may read.
 
 Nothing here judges. Each function answers what happened and when: the asks and what followed them, the messages
-the agent sent, every change it made, its wakes, the wakes it planned, and what it reported. The YAML rules of
+the agent sent, every change it made, its wakes, and the wakes it planned. The YAML rules of
 `domain/assessments.py` count these, and a team's own check (`AgentUnderTest.checks`) may import them as they are.
 """
 
@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from pydantic import AwareDatetime, Field
 
 from minutehand.checks.ledger import Away, absences, recipients
-from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
 from minutehand.domain.people import PersonReply
@@ -23,7 +22,6 @@ from minutehand.domain.transitions import Transition, moves
 from minutehand.domain.world import (
     Actor,
     EntityKind,
-    EntityRef,
     MessageSnapshot,
     Operation,
     RecordedCall,
@@ -240,9 +238,7 @@ class Written(Model):
     in_repeated_wake: bool = Field(default=False, description="Written in the second delivery of one wake")
 
 
-_NOT_WRITES = frozenset(
-    {EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.NEXT_WAKE, EntityKind.TRANSITION}
-)
+_NOT_WRITES = frozenset({EntityKind.DUE, EntityKind.CHANNEL, EntityKind.MEMORY, EntityKind.TRANSITION})
 """Not counted as writes: the run loop's own table, the agent's own memory and plan, and a transition, which is
 recorded beside the write that made it (the ticket moved, the answer set) and counted as `transitions`."""
 _WORD = re.compile(r"\w+")
@@ -407,32 +403,11 @@ def body_content(body: str) -> str:
         return body.strip()
 
 
-class Reported(Model):
-    """One commitment as the agent reported it when a wake ended."""
-
-    at: AwareDatetime
-    wake: int
-    status: CommitmentStatus
-    person_email: str | None
-    entity: EntityRef | None
-
-
-def reported(view: RunView) -> list[Reported]:
-    """Every commitment the agent reported, once per wake it was reported in."""
-    return [
-        Reported(at=r.at, wake=r.wake, status=c.status, person_email=c.person_email, entity=c.entity)
-        for r in view.reported or []
-        for c in r.commitments
-    ]
-
-
 def blocked(view: RunView, needs: frozenset[Needs], check: str) -> list[str]:
     """What a check needs and the view does not carry. Non-empty means the check did not run."""
     missing: list[str] = []
     if Needs.OBLIGATIONS in needs and not view.obligations:
         missing.append(f"{check}: no obligations in the view; the ledger did not run or found nothing to wait on")
-    if Needs.COMMITMENTS in needs and view.commitments is None:
-        missing.append(f"{check}: the agent reported no commitments")
     if Needs.WAKES in needs and not view.wakes:
         missing.append(f"{check}: no wakes recorded")
     if Needs.CALLS in needs and view.unmatched_calls is None:

@@ -16,8 +16,7 @@ import hmac
 import json
 from urllib.parse import urlencode
 
-import httpx
-
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.proxy.capture import fill, structured, values_at
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.outbound import DEFAULT_REPLY_BODY, Acknowledge, ReplyDelivery
@@ -130,7 +129,7 @@ class CapturedReplies:
             "{sent_at}": clock.now().isoformat(),
         }
         body = self._delivery.body if self._delivery.body is not None else DEFAULT_REPLY_BODY
-        await self._send(fill(body, values), clock)
+        await self._send(world, reply_id, fill(body, values), clock)
 
     def _thread(self, message: str, before: int, world: Store) -> str:
         """The id the email API answered the send with, read at `thread` from its own answer; else the message's
@@ -145,7 +144,7 @@ class CapturedReplies:
         found = [v for v in values_at(parsed, path) if isinstance(v, str | int)]
         return str(found[0]) if found else message
 
-    async def _send(self, body: object, clock: Clock) -> None:
+    async def _send(self, world: Store, item: str, body: object, clock: Clock) -> None:
         delivery = self._delivery
         if delivery.form:
             assert isinstance(body, dict)
@@ -168,13 +167,21 @@ class CapturedReplies:
             )
             if signing.timestamp_header is not None:
                 headers[signing.timestamp_header] = stamp
-        async with httpx.AsyncClient(timeout=TIMEOUT, trust_env=False, verify=False) as client:
-            try:
-                answer = await client.request(delivery.method, delivery.url, content=raw, headers=headers)
-            except httpx.HTTPError as e:
-                raise ReplyRefused(f"{delivery.method} {delivery.url}: {e!r}") from e
-        if answer.is_error:
+        # through the one door everything sent the agent goes through: recorded whole, sent again by a fork
+        sent = await Door().send(
+            world,
+            service=self._declaration.key,
+            item=item,
+            url=delivery.url,
+            body=raw,
+            headers=headers,
+            method=delivery.method,
+            timeout=TIMEOUT,
+        )
+        if sent.snapshot.status is None:
+            raise ReplyRefused(f"{delivery.method} {delivery.url}: {sent.snapshot.failure}")
+        if sent.snapshot.status >= 400:
             raise ReplyRefused(
-                f"{delivery.method} {delivery.url} answered {answer.status_code} to a reply through "
-                f"{self._declaration.host}: {answer.text[:300]}"
+                f"{delivery.method} {delivery.url} answered {sent.snapshot.status} to a reply through "
+                f"{self._declaration.host}: {sent.body.decode('utf-8', errors='replace')[:300]}"
             )

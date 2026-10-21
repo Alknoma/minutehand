@@ -87,8 +87,12 @@ def issued(
     nonce: str | None = None,
     redirect_uri: str | None = None,
     identity: wire.GraphUser | None = None,
+    at: int | None = None,
 ) -> tuple[str, wire.Claims]:
-    now = now_seconds()
+    """`at`: the moment the token is issued at, seconds since the epoch, for a token the agent checks against its own
+    clock, which is the run's (an activity's bearer); None issues it at this machine's, for a token the fake itself
+    checks when the agent presents it."""
+    now = at if at is not None else now_seconds()
     claims = wire.Claims(
         iss=issuer,
         aud=audience,

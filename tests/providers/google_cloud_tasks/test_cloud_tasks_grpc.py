@@ -14,7 +14,6 @@ import pytest
 from minutehand.adapters.providers.google_cloud_tasks import wire
 from minutehand.domain.clock import Due, DueKind
 from minutehand.domain.world import Actor, CallOutcome, GrpcCode, RecordedCall, RecordSnapshot
-from tests.orchestrator.world import serving as handler_at
 from tests.providers.google_cloud_tasks.test_cloud_tasks import (
     GRPC,
     QUEUE,
@@ -25,6 +24,7 @@ from tests.providers.google_cloud_tasks.test_cloud_tasks import (
     refusal,
     seeded,
 )
+from tests.support.serving import serving as handler_at
 
 pytestmark = pytest.mark.timeout(120)
 

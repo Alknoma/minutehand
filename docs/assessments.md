@@ -249,9 +249,8 @@ from this ask on (`follow_ups` and `touches` are already the ask's own):
 | `touches` | any write of the agent's on the ask's person, thread or ticket, answered or not: after `answer`, the agent coming back to it (`ask` or `handoff` only) | none |
 | `messages` | a message the agent sent | `to`, `to_not` (person keys, `owner`, or `person`: the one the rule is read for), `in_thread` (under the ask's own message), `holding` (phrases, any case; `{ask.facts}`, a phrase of its own, is each fact the answer carried: what its script step or take gave a model to put in the person's words, or each input of a decision as given, so a relay is read by the fact and never the wording (else the answer itself); `{ask.answer}` is the answer as the person worded it, or a decision's inputs, `{person.key}` and `{person.name}` the person), `to_away` (to someone away then while a delegate covered; the message an absence starts with, which their automatic reply answers, is not) |
 | `writes` | any change the agent made to the world | `things`, `things_not` (`message`, `ticket`, `comment`, `document`, `record`, `inbox_item`, `file`, `tool_call`, `stored`), `operations` (`create`, `update`, `delete`), `repeats_open_ticket` (a ticket filed with the title of one still open in the project), `in_repeated_wake` (in the second delivery of one wake), `gated` (going ahead with an operation an item in the agent's product held back, while pending, turned down or taken back) |
-| `wakes` | a wake of the agent's | `changed_world`, `changed_commitments` |
-| `planned_wakes` | a wake the agent asked for itself (reported, booked, its rhythm, its timer), at the moment it was due | none |
-| `commitments` | a commitment the agent reported as a wake ended | `status` (`open`, `met`, `dropped`), `waiting_on` (people) |
+| `wakes` | a wake of the agent's | `changed_world` |
+| `planned_wakes` | a wake the agent asked for itself (a booking with a scheduler, its own timer in its sandbox), at the moment it was due | none |
 | `asks` | an ask of the run, at the moment it was made | `of` (people), `open_at` (a moment) |
 | `stored` | an item a host declared `store` holds at `until` (the run's end without it), counted at the moment its version there was written (`docs/capture.md`) | `host` (the declaration's host pattern), `collection` (its name), `values` (each field of the item, a dotted path, equal to the one given) |
 | `replies` | a person's reply or decision that landed, at the moment it landed | `by` (people), `written` (`script`: a model, from a step of their script; `verbatim`: the step's exact words or a control; `conversing`: a model, from their own facts, with no script or once it was used; `automatic`: their automatic reply while away; `by_hand`: a harness speaking for them) |
@@ -388,15 +387,15 @@ change or leave out. The library scenarios (`minutehand scenarios new`) are writ
 | `duplicate_ticket` | `count: {writes: {repeats_open_ticket: true}}`, `at_most: 0` |
 | `repeated_message` | `each: person`, `count: {messages: {to: [person]}}`, `gap_at_least: PT5M`, `severity: review` |
 | `planned_past_due` | `each: ask`, `when: {open_at: due}`, `count: {planned_wakes: {}, since: due-PT1H, until: due+PT1H}`, `at_least: 1`, `severity: review` |
-| `reported_against_world` | `each: ask`, `count: {commitments: {status: [met], waiting_on: [person]}, since: ask, until: closed-PT1S}`, `at_most: 0` |
 | done while an ask is open | `when: {stopped: [agent_done]}`, `count: {asks: {open_at: end}}`, `at_most: 0` |
 | acknowledged within an hour | `each: ask`, `when: {answered: true}`, `count: {messages: {to: [person]}, since: answer, until: answer+PT1H}`, `at_least: 1` |
 | a summary after every answer | `when: {stopped: [agent_done]}`, `count: {messages: {to: [owner]}, since: all_answered}`, `exactly: 1` |
 
 What a rule cannot say, it says less of than the check did: `repeated_message` also weighed the wording two messages
-shared, and a rule only their spacing; `reported_against_world` reviewed a commitment still reported open after the
-answer, which a rule writes as its own count. Whether a message meant something (a thank-you or a chase) is a
-judgement no count makes; a rule that might be wrong about it is `severity: review`.
+shared, and a rule only their spacing. `reported_against_world` is gone with the report it read: an agent is asked
+nothing, so what it believes it is waiting on is in its memory (`memory`), not in a report. Whether a message meant
+something (a thank-you or a chase) is a judgement no count makes; a rule that might be wrong about it is
+`severity: review`.
 
 ## Checking a file without running it
 

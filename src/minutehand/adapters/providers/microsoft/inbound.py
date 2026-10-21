@@ -19,9 +19,9 @@ the bot, so it reaches it.
 
 from __future__ import annotations
 
-import httpx
 from pydantic import JsonValue, ValidationError
 
+from minutehand.adapters.agent.delivery import Door, Sent
 from minutehand.adapters.providers.microsoft import cards, tokens, wire
 from minutehand.adapters.providers.microsoft.connector import snapshot
 from minutehand.adapters.providers.microsoft.graph_teams import message_resource
@@ -86,11 +86,17 @@ ACTIVITY_TOKEN_LIFETIME_SECONDS = 3600
 
 
 def activity_token(
-    app: AppRecord | str, *, service_url: str = SERVICE_URL, lifetime: int = ACTIVITY_TOKEN_LIFETIME_SECONDS
+    app: AppRecord | str,
+    *,
+    at: int,
+    service_url: str = SERVICE_URL,
+    lifetime: int = ACTIVITY_TOKEN_LIFETIME_SECONDS,
 ) -> str:
     """The Bot Framework's bearer token on an activity pushed to `app` (or to the app id given), naming the
-    `serviceUrl` it carries, valid for `lifetime` seconds from now (negative: already expired)."""
+    `serviceUrl` it carries, issued `at` (seconds since the epoch: the run's clock, which is the agent's) and valid
+    for `lifetime` seconds from then (negative: already expired)."""
     token, _ = tokens.issued(
+        at=at,
         use=TokenUse.ACTIVITY,
         issuer=tokens.BOT_FRAMEWORK_ISSUER,
         audience=app if isinstance(app, str) else app.app_id,
@@ -104,29 +110,38 @@ def activity_token(
 
 
 async def push(
-    target: InboundTarget, app: AppRecord, activity: wire.Activity, *, url: str | None = None
-) -> httpx.Response:
+    store: Store,
+    clock: Clock,
+    target: InboundTarget,
+    app: AppRecord,
+    activity: wire.Activity,
+    *,
+    url: str | None = None,
+) -> Sent:
+    """One activity from the Bot Framework to the agent, through the one door everything sent the agent goes
+    through (`adapters.agent.delivery`): recorded whole, so a fork sends it again, bearer token and all; the token is
+    issued at the run's clock, which the agent's verifier checks it against."""
     if target.provider != MANIFEST.key:
         raise ValueError(f"a {target.provider} target is not Microsoft's to deliver to")
     where = url or target.request_url()
-    try:
-        async with httpx.AsyncClient(
-            timeout=target.push_timeout.total_seconds(), trust_env=False, verify=False
-        ) as client:
-            answered = await client.post(
-                where,
-                content=wire.dump(activity),
-                headers={
-                    "Content-Type": "application/json; charset=utf-8",
-                    "Authorization": f"Bearer {activity_token(app)}",
-                    "User-Agent": "Microsoft-SkypeBotApi (Microsoft-BotFramework/3.0)",
-                },
-            )
-    except httpx.HTTPError as e:
-        raise DeliveryRefused(where, None, repr(e)) from e
-    if not answered.is_success:
-        raise DeliveryRefused(where, answered.status_code, answered.text)
-    return answered
+    sent = await Door().send(
+        store,
+        service=MANIFEST.key,
+        item=activity.id,
+        url=where,
+        body=wire.dump(activity).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {activity_token(app, at=int(clock.now().timestamp()))}",
+            "User-Agent": "Microsoft-SkypeBotApi (Microsoft-BotFramework/3.0)",
+        },
+        timeout=target.push_timeout.total_seconds(),
+    )
+    if sent.snapshot.status is None:
+        raise DeliveryRefused(where, None, sent.snapshot.failure or "no answer")
+    if sent.snapshot.status >= 300:
+        raise DeliveryRefused(where, sent.snapshot.status, sent.body.decode("utf-8", errors="replace"))
+    return sent
 
 
 class People:
@@ -288,7 +303,7 @@ class People:
         )
         reaches = conversation.type is wire.ConversationType.PERSONAL or mention
         if reaches and conversation.bot_installed:
-            await push(target, app, activity)
+            await push(self.world.store, self.clock, target, app, activity)
         return stored
 
     # ------------------------------------------------------------------ the ports' acts
@@ -411,7 +426,7 @@ class People:
         """Push an edit or a delete when the original reached the bot: in its chat, or because it named the bot."""
         named = any(m.mentioned.id == bot_mri(self.app().app_id) for m in wire.mentions(current))
         if conversation.bot_installed and (conversation.type is wire.ConversationType.PERSONAL or named):
-            await push(target, self.app(), activity)
+            await push(self.world.store, self.clock, target, self.app(), activity)
 
     async def react(self, user: UserRecord, activity_id: str, reaction: str, target: InboundTarget) -> None:
         conversation, current = self.located(activity_id)
@@ -432,7 +447,7 @@ class People:
             replyToId=activity_id,
         )
         if conversation.bot_installed and current.sender.id == bot_mri(self.app().app_id):
-            await push(target, self.app(), reacted)
+            await push(self.world.store, self.clock, target, self.app(), reacted)
 
     async def join(self, user: UserRecord, conversation: ConversationRecord, target: InboundTarget) -> None:
         if user.user.id in conversation.members:
@@ -448,7 +463,7 @@ class People:
             event_type="teamMemberAdded" if joined.type is wire.ConversationType.CHANNEL else None,
         )
         if joined.bot_installed:
-            await push(target, self.app(), added)
+            await push(self.world.store, self.clock, target, self.app(), added)
 
     async def install(self, user: UserRecord, conversation: ConversationRecord, target: InboundTarget) -> None:
         """`user` adds the bot to `conversation` (their 1:1 chat, a group chat, or a team): the bot learns the
@@ -459,11 +474,15 @@ class People:
         self.world.write_conversation(installed, operation=Operation.UPDATE, actor=Actor.PERSON)
         app = self.app()
         await push(
+            self.world.store,
+            self.clock,
             target,
             app,
             self._activity(wire.ActivityType.INSTALLATION_UPDATE, user, installed, thread=None, action="add"),
         )
         await push(
+            self.world.store,
+            self.clock,
             target,
             app,
             self._activity(
@@ -555,24 +574,30 @@ class People:
                 form=[f.value for f in pressed.form],
             ),
         )
-        answered = await push(target, app, sent, url=target.interactivity_url)
+        answered = await push(self.world.store, self.clock, target, app, sent, url=target.interactivity_url)
         self.world.write(
             action_ref(sent.id),
-            ActionRecord(activity=sent, status=answered.status_code, answer=answered.text),
+            ActionRecord(
+                activity=sent,
+                status=answered.snapshot.status or 0,
+                answer=answered.body.decode("utf-8", errors="replace"),
+            ),
             operation=Operation.UPDATE,
             actor=Actor.AGENT,
             parent=conversation.id,
         )
-        if action.kind is not cards.ActionKind.EXECUTE or not answered.content:
+        if action.kind is not cards.ActionKind.EXECUTE or not answered.body:
             return
         try:
-            answer = wire.parse(wire.InvokeAnswer, answered.content)
+            answer = wire.parse(wire.InvokeAnswer, answered.body)
         except ValidationError as e:
             raise DeliveryRefused(
-                target.request_url(), answered.status_code, f"an invoke answer that is not one: {e}"
+                target.request_url(), answered.snapshot.status, f"an invoke answer that is not one: {e}"
             ) from e
         if answer.statusCode != 200:
-            raise DeliveryRefused(target.request_url(), answer.statusCode, answered.text)
+            raise DeliveryRefused(
+                target.request_url(), answer.statusCode, answered.body.decode("utf-8", errors="replace")
+            )
         if answer.type == wire.ADAPTIVE_CARD:
             attachments = list(message.attachments or [])
             attachments[card.attachment] = attachments[card.attachment].model_copy(update={"content": answer.value})

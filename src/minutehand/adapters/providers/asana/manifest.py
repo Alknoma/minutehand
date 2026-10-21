@@ -18,11 +18,12 @@ resource not claimed (portfolios, goals), is Asana's 404 "No matching route for 
 from __future__ import annotations
 
 from minutehand.domain.items import COMMENT, TICKET
-from minutehand.domain.provider import Manifest, PersonChange, TicketField, Tier
+from minutehand.domain.provider import AgentSends, Manifest, PersonChange, TicketField, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="asana",
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["app.asana.com"],
     path_prefix="/api/1.0",

@@ -1697,7 +1697,7 @@ class AsanaApi:
         ):
             raise wire.undocumented("a second webhook on the same resource and target")
         secret = webhooks.secret_for(f"{sent.resource}/{sent.target}", self._world.head())
-        if not await webhooks.handshake(sent.target, secret):
+        if not await webhooks.handshake(self._world.store, sent.target, secret):
             raise wire.undocumented("a webhook whose target does not answer the X-Hook-Secret handshake")
         task = self._world.task(sent.resource)
         project = self._world.project(sent.resource)

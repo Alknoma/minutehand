@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
-import httpx
 from starlette.requests import Request
 from starlette.responses import Response
 
+from minutehand.adapters.agent.delivery import Door
 from minutehand.adapters.providers.microsoft import tokens, wire
 from minutehand.adapters.providers.microsoft.common import GRAPH_JSON, GraphRefusal, graph_caller
+from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.adapters.providers.microsoft.state import (
     GRAPH,
     SUBSCRIPTIONS,
@@ -36,6 +38,7 @@ from minutehand.adapters.providers.microsoft.state import (
 from minutehand.domain.errors import NotServed
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
 from minutehand.ports.clock import Clock
+from minutehand.ports.store import Store
 
 DRIVE_LIMIT = timedelta(minutes=42300)
 MESSAGES_LIMIT = timedelta(minutes=60)
@@ -75,14 +78,21 @@ def live(record: SubscriptionRecord, now: datetime) -> bool:
     return parse_time(record.subscription.expirationDateTime) > now
 
 
-async def _validate(url: str) -> bool:
+async def _validate(store: Store, url: str) -> bool:
+    """Graph's validation request to a new subscription's notification URL, through the door (`adapters.agent
+    .delivery`): the address must echo the token within the time, as plain text."""
     token = secrets.token_urlsafe(24)
-    try:
-        async with httpx.AsyncClient(timeout=VALIDATION_TIMEOUT_SECONDS, trust_env=False, verify=False) as client:
-            answered = await client.post(url, params={"validationToken": token}, headers={"Content-Type": "text/plain"})
-    except httpx.HTTPError:
-        return False
-    return answered.status_code == 200 and answered.text == token
+    joiner = "&" if "?" in url else "?"
+    sent = await Door().send(
+        store,
+        service=MANIFEST.key,
+        item=f"validation/{token}",
+        url=f"{url}{joiner}validationToken={quote(token, safe='')}",
+        body=b"",
+        headers={"Content-Type": "text/plain"},
+        timeout=VALIDATION_TIMEOUT_SECONDS,
+    )
+    return sent.snapshot.status == 200 and sent.body.decode("utf-8", errors="replace") == token
 
 
 async def notify(
@@ -109,13 +119,16 @@ async def notify(
                 )
             ]
         )
-        try:
-            async with httpx.AsyncClient(timeout=30, trust_env=False, verify=False) as client:
-                await client.post(
-                    sub.notificationUrl, content=wire.dump(body), headers={"Content-Type": "application/json"}
-                )
-        except httpx.HTTPError:
-            continue
+        # how the address answered is in the record; Graph retries a failed notification, this fake does not
+        await Door().send(
+            world.store,
+            service=MANIFEST.key,
+            item=f"{sub.id}/{item}",
+            url=sub.notificationUrl,
+            body=wire.dump(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
 
 
 class Subscriptions:
@@ -193,7 +206,7 @@ class Subscriptions:
             asked.notificationUrl,
             *([asked.lifecycleNotificationUrl] if asked.lifecycleNotificationUrl else []),
         ]:
-            if not await _validate(url):
+            if not await _validate(self._world.store, url):
                 raise GraphRefusal(
                     400,
                     None,

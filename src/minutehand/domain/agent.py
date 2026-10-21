@@ -1,14 +1,14 @@
-"""The contract between the monitor and the agent it is testing.
+"""The agent under test: the sandbox it runs in, and how the world reaches it.
 
-The agent answers three questions. Everything else the monitor learns from the
-traffic it intercepts.
+Minutehand asks the agent nothing. Everything it learns, it observes: the agent's calls through the proxy, and its
+timers in the sandbox whose clock Minutehand owns.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Literal, Self
+from typing import Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
@@ -26,7 +26,6 @@ class WakeReason(StrEnum):
     DUE = "due"
     PERSON_REPLIED = "person_replied"
     DIRECTION = "direction"
-    TICK = "tick"
 
 
 class AgentStatus(StrEnum):
@@ -61,126 +60,40 @@ class Commitment(Model):
     status: CommitmentStatus = CommitmentStatus.OPEN
 
 
-class WakeRequest(Model):
-    """ "It is now `now`; go." Sent each time the clock reaches a due moment."""
-
-    run_id: str
-    now: AwareDatetime
-    reason: WakeReason
-    goal: str | None = Field(default=None, description="Set on the START wake only")
-    direction: str | None = Field(default=None, description="What the owner said; set on a DIRECTION wake only")
-
-
 class AgentReport(Model):
-    """The answer to "are you still working?" and "when do you next need to wake?"."""
+    """What a harness that drives the agent itself says of the agent's work, in a standing world (`minutehand serve`,
+    `POST /v1/worlds/{id}/report`): whether it is done, and what it still holds open. A run asks the agent nothing
+    and holds no report."""
 
     status: AgentStatus
-    next_wake: AwareDatetime | None = None
     commitments: list[Commitment] | None = None
 
 
-WAKE_TIMEOUT = timedelta(minutes=10)
-"""How long one call to the agent's wake or report URL may take by default: room for an LLM agent that takes a model's
-turn, or several, before it answers. A scripted agent answers in milliseconds and never comes near it."""
+class Sandbox(Model):
+    """The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox
+    whose clock Minutehand owns"). The agent's own in-process timers are its next wakes, with no code of
+    Minutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.
 
+    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "now_ns": int,
+    "earliest_ns": int, "waits": [{"task": int, "ns": int}]}` (whether every task is blocked, its realtime clock,
+    the time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the
+    sandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is
+    born at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a
+    timer the agent armed before a backward step would fire early. When the sandbox is idle and no call of the
+    agent's is in flight, its earliest deadline longer than `housekeeping` is a wake the agent asked for."""
 
-class Reported(Model):
-    """The agent says when it next needs to wake. Exact, and needs an endpoint or adapter.
-
-    A wake is over when `report_url` answers anything but WORKING. The defaults suit an agent whose turn takes
-    minutes: the report is asked for quickly at first and then less often, the wait doubling from
-    `report_first_after` up to `report_at_most_every`, and a wake still WORKING after `working_limit` stops the
-    run as AGENT_FAILED.
-    """
-
-    kind: Literal["reported"] = "reported"
-    wake_url: str
-    report_url: str
-    wake_timeout: timedelta = Field(
-        default=WAKE_TIMEOUT,
-        gt=timedelta(0),
-        description="How long one call to wake_url or report_url may take; the default leaves room for a model's turn "
-        "taken inside the call",
-    )
-    report_first_after: timedelta = Field(
-        default=timedelta(milliseconds=100), gt=timedelta(0), description="The wait before the first ask for the report"
-    )
-    report_at_most_every: timedelta = Field(
-        default=timedelta(seconds=10), gt=timedelta(0), description="The longest wait between two asks for the report"
-    )
-    working_limit: timedelta = Field(
-        default=timedelta(minutes=30), gt=timedelta(0), description="How long one wake may stay WORKING"
-    )
-
-    @model_validator(mode="after")
-    def _backs_off(self) -> Reported:
-        if self.report_at_most_every < self.report_first_after:
-            raise ValueError("report_at_most_every is shorter than report_first_after")
-        return self
-
-
-class Marked(Model):
-    """The agent is woken at `wake_url`, and a wake is over when the call returns. Its next wake is the moment it
-    marked with `minutehand.agent.wake` in that wake, or none: nothing else is asked of it."""
-
-    kind: Literal["marked"] = "marked"
-    wake_url: str
-    wake_timeout: timedelta = Field(
-        default=WAKE_TIMEOUT,
-        gt=timedelta(0),
-        description="How long one call to wake_url may take: the whole wake, a model's turns and all",
-    )
-
-
-class Booked(Model):
-    """The agent books its own wake-ups with a scheduler the proxy intercepts.
-
-    Nothing is asked of the agent: the booking is an outbound call like any other,
-    and the scheduler provider calls the agent back when the clock reaches it.
-    """
-
-    kind: Literal["booked"] = "booked"
-    take_limit: timedelta = Field(
-        default=timedelta(seconds=30),
-        gt=timedelta(0),
-        description="How long, in real time, the run waits for the agent to take a booking's delivery from its own "
-        "queue before it moves on, when the scheduler can tell (`ConfirmsDelivery`)",
-    )
-
-
-class Polled(Model):
-    """The agent is invoked on a fixed rhythm and decides for itself whether anything is due."""
-
-    kind: Literal["polled"] = "polled"
-    wake_url: str
-    every: timedelta = timedelta(minutes=5)
-
-
-class Command(Model):
-    """A command run per wake; it reads a WakeRequest on stdin and prints an AgentReport."""
-
-    kind: Literal["command"] = "command"
-    argv: list[str]
-
-
-class Contained(Model):
-    """The agent runs in a sandbox whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox whose
-    clock Minutehand owns"), so its own in-process timers are its next wakes, with no code of Minutehand's in it.
-
-    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "earliest_ns": int}`
-    (whether every task is blocked, and the time until the earliest deadline any waits for, -1 for none), and
-    `advance` moves the sandbox's clock forward by `{nanoseconds}`. Minutehand moves it with every jump of the
-    run's clock, so the two agree, and when the sandbox is idle and no call of the agent's is in flight, its
-    earliest deadline is a wake the agent asked for."""
-
-    kind: Literal["contained"] = "contained"
     deadlines: list[str] = Field(min_length=1)
-    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step goes")
+    advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step forward goes")
     quiet: timedelta = Field(
         default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
     )
     settle_limit: timedelta = Field(
         default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
+    )
+    housekeeping: timedelta = Field(
+        default=timedelta(seconds=1),
+        gt=timedelta(0),
+        description="A deadline no longer than this is a runtime's own timer (an HTTP server's poll), never a wake",
     )
 
     @model_validator(mode="after")
@@ -188,12 +101,6 @@ class Contained(Model):
         if not any("{nanoseconds}" in part for part in self.advance):
             raise ValueError("`advance` must hold {nanoseconds}, where the step it moves the clock by goes")
         return self
-
-
-WakeSource = Annotated[Reported | Marked | Booked | Polled | Command | Contained, Field(discriminator="kind")]
-
-ANSWER_LIMIT = timedelta(seconds=120)
-"""How long the agent's report endpoint has to answer at the start of a fork."""
 
 
 class OwnDatabaseForm(StrEnum):
@@ -211,21 +118,11 @@ class OwnDatabase(Model):
     form: OwnDatabaseForm = OwnDatabaseForm.FILE
 
 
-class GoalByWake(Model):
-    """The goal arrives in the START wake's `WakeRequest.goal`, and directions in DIRECTION wakes."""
-
-    kind: Literal["by_wake"] = "by_wake"
-
-
 class GoalByMessage(Model):
     """The scenario's owner sends the goal as a message through this provider, as a person would, and every
-    scripted direction the same way. An agent reached like this may expose no wake endpoint at all."""
+    scripted direction the same way."""
 
-    kind: Literal["by_message"] = "by_message"
     provider: ProviderKey
-
-
-GoalSource = Annotated[GoalByWake | GoalByMessage, Field(discriminator="kind")]
 
 
 class BaseUrl(Model):
@@ -263,21 +160,31 @@ class Instructions(Model):
 
 
 class AgentUnderTest(Model):
-    """How the monitor reaches the agent. Replies and pushed events always wake it;
-    `wakes` lists every other way it comes back to work, and may be empty when the goal is sent as a message."""
+    """The agent under test: the sandbox it runs in, and how the world reaches it. Nothing is asked of it: it wakes
+    when a person's answer or a pushed event reaches it, when a scheduler it booked with delivers, and when one of
+    its own timers in the sandbox fires."""
 
     version: int | None = Field(
         default=None, ge=1, description="The agent file version it is written for; absent: the current one"
     )
     name: str
-    goal: GoalSource = GoalByWake()
-    wakes: list[WakeSource] = []
+    sandbox: Sandbox
+    goal: GoalByMessage | None = Field(
+        default=None,
+        description="Where an older scenario's owner sends its goal and directions, as a person would; none for a "
+        "scenario that is only a world",
+    )
+    take_limit: timedelta = Field(
+        default=timedelta(seconds=30),
+        gt=timedelta(0),
+        description="How long, in real time, the run waits for the agent to take a booking's delivery from its own "
+        "queue before it moves on, when the scheduler can tell (`ConfirmsDelivery`)",
+    )
     tick: timedelta | None = Field(
         default=None,
         gt=timedelta(0),
-        description="How often the agent comes back to work by itself at most, when that rhythm is its own (it "
-        "reports or books its next wake); a polled wake's `every` counts without it. Sizes the wake limit from the "
-        "scenario's deadline",
+        description="How often the agent comes back to work by itself at most, by its own timers or its bookings. "
+        "Sizes the wake limit from the scenario's deadline",
     )
     inbound: list[InboundTarget] = []
     inboxes: list[HttpInbox] = Field(
@@ -337,6 +244,12 @@ class AgentUnderTest(Model):
                 "`minutehand.agent.store`, which every run and fork holds for it (docs/agent-contract.md); a database "
                 "it keeps beside that is named under `own_databases`"
             )
+        if isinstance(written, dict) and "wakes" in written:
+            raise ValueError(
+                "`wakes:` is gone: every agent runs in a sandbox whose clock Minutehand owns (`sandbox`), and its "
+                "next wake is observed there, from its own timers or a scheduler it books with; nothing is asked of "
+                "it (docs/agent-contract.md)"
+            )
         return written
 
     @model_validator(mode="after")
@@ -361,12 +274,8 @@ class AgentUnderTest(Model):
             raise ValueError(
                 f"two base URLs are handed out in one variable: {sorted(n for n in set(named) if named.count(n) > 1)}"
             )
-        if isinstance(self.goal, GoalByMessage):
-            if not any(t.provider == self.goal.provider for t in self.inbound):
-                raise ValueError(
-                    f"the goal is sent as a message on {self.goal.provider}, "
-                    "and the agent declares no inbound target there"
-                )
-        elif not self.wakes:
-            raise ValueError("the goal is handed over in a wake, and the agent declares no way to be woken")
+        if self.goal is not None and not any(t.provider == self.goal.provider for t in self.inbound):
+            raise ValueError(
+                f"the goal is sent as a message on {self.goal.provider}, and the agent declares no inbound target there"
+            )
         return self

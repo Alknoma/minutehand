@@ -134,11 +134,17 @@ async def test_the_bots_validation_rejects_a_token_for_another_app_or_another_se
     other = AppRecord(
         app_id="someone-elses-app", secret="s", display_name="Other", tenant_id=tenant.directory.tenant_id
     )
-    refused = await validate(f"Bearer {activity_token(other)}", tenant.directory.bot_app_id, CONNECTOR, microsoft)
+    now = tenant.clock.now()
+    at = int(now.timestamp())
+    refused = await validate(
+        f"Bearer {activity_token(other, at=at)}", tenant.directory.bot_app_id, CONNECTOR, microsoft, now=now
+    )
     assert refused is not None and "audience" in refused.lower()
-    ours = activity_token(tenant.world.apps()[0])
-    assert await validate(f"Bearer {ours}", tenant.directory.bot_app_id, CONNECTOR, microsoft) is None
-    mismatched = await validate(f"Bearer {ours}", tenant.directory.bot_app_id, "https://evil.example.com/", microsoft)
+    ours = activity_token(tenant.world.apps()[0], at=at)
+    assert await validate(f"Bearer {ours}", tenant.directory.bot_app_id, CONNECTOR, microsoft, now=now) is None
+    mismatched = await validate(
+        f"Bearer {ours}", tenant.directory.bot_app_id, "https://evil.example.com/", microsoft, now=now
+    )
     assert mismatched == "serviceurl does not match the activity"
 
 

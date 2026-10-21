@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 
 from minutehand import session
-from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
+from minutehand.domain.agent import AgentUnderTest
+from minutehand.domain.people import InboundTarget
 from tests.ports import free_port
+from tests.support.scenarios import SANDBOX
 
 LAUNCHER = """
 import signal, subprocess, sys, time
@@ -48,7 +50,7 @@ async def test_stopping_the_agent_stops_a_child_its_launcher_was_still_waiting_o
     script.write_text(LAUNCHER.format(port=port, ready=ready))
     url = f"http://127.0.0.1:{port}"
     agent = AgentUnderTest(
-        name="launched", goal=GoalByWake(), wakes=[Reported(wake_url=f"{url}/wake", report_url=f"{url}/report")]
+        name="launched", sandbox=SANDBOX, inbound=[InboundTarget(provider="slack", url=f"{url}/slack/events")]
     )
     program = session._Program([sys.executable, str(script)], {}, agent, tmp_path / "agent.log")  # pyright: ignore[reportPrivateUsage]
 

@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from urllib.parse import parse_qsl, quote, unquote_plus, urlsplit, urlunsplit
+
+from minutehand.domain.world import Header
 
 REDACTED = "[redacted]"
 
@@ -54,6 +57,10 @@ no provider to read them, so a name that is data on a tracker (`?key=`) is a key
 is redacted. Compared with `-` read as `_`, in any case."""
 
 
+_HEADER_CREDENTIALS = frozenset({"set_cookie", "cookie", "proxy_authorization", "www_authenticate"})
+"""Header names, beside the credential keys, whose values are a credential: a session cookie, a challenge."""
+
+
 def _is_credential(name: str, also: frozenset[str] = frozenset()) -> bool:
     return name.lower() in CREDENTIAL_KEYS or name.lower().replace("-", "_") in also
 
@@ -65,6 +72,15 @@ def _pairs(text: str, also: frozenset[str] = frozenset()) -> str:
         name, equals, _ = pair.partition("=")
         kept.append(f"{name}={quote(REDACTED)}" if equals and _is_credential(unquote_plus(name), also) else pair)
     return "&".join(kept)
+
+
+def headers(pairs: Sequence[tuple[str, str]]) -> list[Header]:
+    """Headers as they crossed, in order, the value of each whose name is a credential's (`authorization`,
+    `set-cookie`, an API key) redacted."""
+    return [
+        Header(name=name, value=REDACTED if _is_credential(name, _HEADER_CREDENTIALS) else value)
+        for name, value in pairs
+    ]
 
 
 def path(raw: str, *, also: frozenset[str] = frozenset()) -> str:

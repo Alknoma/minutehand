@@ -23,16 +23,13 @@ from minutehand.checks.facts import (
     ended_at,
     messages,
     planned_wakes,
-    reported,
     transitions,
     writes,
 )
-from minutehand.domain.agent import CommitmentStatus
 from minutehand.domain.assessments import (
     OWNER,
     THIS_PERSON,
     Anchor,
-    CommitmentState,
     Each,
     Judged,
     Moment,
@@ -84,11 +81,6 @@ _MOVER = {
     Actor.TIMER: Mover.TIMER,
 }
 _OPERATION = {Write.CREATE: Operation.CREATE, Write.UPDATE: Operation.UPDATE, Write.DELETE: Operation.DELETE}
-_STATUS = {
-    CommitmentState.OPEN: CommitmentStatus.OPEN,
-    CommitmentState.MET: CommitmentStatus.MET,
-    CommitmentState.DROPPED: CommitmentStatus.DROPPED,
-}
 
 
 def _thing(kind: EntityKind) -> Thing | None:
@@ -161,7 +153,6 @@ class _Reader:
         self.sent = messages(view)
         self.written = writes(view)
         self.planned = planned_wakes(view, self.end)
-        self.said = reported(view)
         self.moves = transitions(view)
         self.called = calls(view)
         answered = [a.answered_at for a in self.asks]
@@ -396,24 +387,12 @@ class _Reader:
             return [
                 Fact(at=wake.sim_time)
                 for wake in self.view.wakes
-                if (k.changed_world is None or (wake.world_changes > 0) == k.changed_world)
-                and (k.changed_commitments is None or wake.commitments_changed == k.changed_commitments)
+                if k.changed_world is None or (wake.world_changes > 0) == k.changed_world
             ]
         if count.planned_wakes is not None:
             if self.view.dues is None:
                 raise _Unread  # a captured run or a standing world keeps no table of what the agent planned
             return self.planned
-        if count.commitments is not None:
-            c = count.commitments
-            emails = {
-                self.people[self._key(w, subject)].email for w in c.waiting_on if self._key(w, subject) in self.people
-            }
-            states = {_STATUS[s] for s in c.status}
-            return [
-                Fact(at=r.at)
-                for r in self.said
-                if (not states or r.status in states) and (not emails or r.person_email in emails)
-            ]
         if count.memory is not None:
             return self._memory(rule, subject, at)
         if count.stored is not None:

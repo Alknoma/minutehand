@@ -16,7 +16,6 @@ import json
 import time
 from datetime import timedelta
 
-import httpx
 from pydantic import ValidationError
 
 from minutehand.adapters.providers.slack import inbound, socket_mode, state, wire
@@ -111,7 +110,13 @@ def mint(
 
 
 async def _deliver(
-    slack: SlackWorld, target: InboundTarget, payload: wire.BlockActions | wire.ViewSubmission, secret: str, what: str
+    slack: SlackWorld,
+    target: InboundTarget,
+    payload: wire.BlockActions | wire.ViewSubmission,
+    secret: str,
+    what: str,
+    *,
+    at: int,
 ) -> bytes:
     """An interaction to the agent: a signed form post to its interactivity URL, or an `interactive` envelope on its
     Socket Mode connection. Answers what the agent answered with: the body of the response, or the payload of its
@@ -119,17 +124,29 @@ async def _deliver(
     if target.delivery is Delivery.SOCKET_MODE:
         answered = await socket_mode.hub(slack.store).interact(payload)
         return b"" if answered is None else json.dumps(answered).encode()
-    return (await _send(_url(target), wire.payload_form(payload), secret, what, target.push_timeout)).content
+    return await _send(
+        slack.store,
+        _url(target),
+        wire.payload_form(payload),
+        secret,
+        what,
+        target.push_timeout,
+        item=payload.trigger_id,
+        at=at,
+    )
 
 
-async def _send(url: str, body: bytes, secret: str, what: str, timeout: timedelta) -> httpx.Response:
-    try:
-        answered = await inbound.post_signed(url, body, "application/x-www-form-urlencoded", secret, timeout=timeout)
-    except httpx.HTTPError as e:
-        raise DeliveryRefused(url, None, repr(e), what=what) from e
-    if not answered.is_success:
-        raise DeliveryRefused(url, answered.status_code, answered.text, what=what)
-    return answered
+async def _send(
+    store: Store, url: str, body: bytes, secret: str, what: str, timeout: timedelta, *, item: str, at: int
+) -> bytes:
+    made = await inbound.post_signed(
+        store, url, body, "application/x-www-form-urlencoded", secret, item=item, at=at, timeout=timeout
+    )
+    if made.snapshot.status is None:
+        raise DeliveryRefused(url, None, made.snapshot.failure or "", what=what)
+    if made.snapshot.failure is not None:
+        raise DeliveryRefused(url, made.snapshot.status, made.body.decode("utf-8", errors="replace"), what=what)
+    return made.body
 
 
 # --------------------------------------------------------------------------- a press
@@ -211,7 +228,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
             )
         ],
     )
-    await _deliver(slack, target, payload, secret, "a block_actions payload")
+    await _deliver(slack, target, payload, secret, "a block_actions payload", at=int(clock.now().timestamp()))
     if pressed.form:
         await _fill(slack, world, pressed, reply.person, author, trigger.id, reply, target, clock, secret)
 
@@ -311,7 +328,9 @@ async def submit(
         team=_team(slack), user=_person(slack, author), api_app_id=slack.team.app_id, trigger_id=trigger.id, view=view
     )
     url = "Socket Mode" if target.delivery is Delivery.SOCKET_MODE else _url(target)
-    answered = await _deliver(slack, target, payload, secret, "a view_submission payload")
+    answered = await _deliver(
+        slack, target, payload, secret, "a view_submission payload", at=int(clock.now().timestamp())
+    )
     try:
         answer = wire.view_answer(answered)
     except (ValueError, ValidationError) as e:
@@ -415,14 +434,21 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         trigger_id=trigger.id,
     )
     answered = await _send(
-        target.request_url(), body, secret, f"the slash command {happening.command}", target.push_timeout
+        slack.store,
+        target.request_url(),
+        body,
+        secret,
+        f"the slash command {happening.command}",
+        target.push_timeout,
+        item=trigger.id,
+        at=int(clock.now().timestamp()),
     )
-    if not answered.content.strip():
+    if not answered.strip():
         return
     try:
-        answer = wire.CommandAnswer.model_validate_json(answered.content)
+        answer = wire.CommandAnswer.model_validate_json(answered)
     except ValidationError:
-        answer = wire.CommandAnswer(text=answered.text)
+        answer = wire.CommandAnswer(text=answered.decode("utf-8", errors="replace"))
     if not answer.text and not answer.blocks:
         return
     ts = slack.next_ts(clock)

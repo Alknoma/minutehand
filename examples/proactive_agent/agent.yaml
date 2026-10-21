@@ -1,14 +1,17 @@
-# How Minutehand reaches the agent: the endpoints any proactive agent already serves.
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
+# The agent runs in a gVisor sandbox whose clock Minutehand owns (docs/design.md, "A sandbox whose clock Minutehand
+# owns"): `run_in_sandbox.sh` starts it there, and these two control calls read the sandbox's deadlines and move its
+# clock. Nothing is asked of the agent: its own scheduler's next deadline is its next wake.
+version: 1
 name: proactive_agent
-wakes:
-  - kind: reported           # it names its next wake after every wake (the wake package's moment)
-    wake_url: "http://127.0.0.1:{run.port}/wake"
-    report_url: "http://127.0.0.1:{run.port}/report"
+
+sandbox:
+  deadlines: [runsc, --root, /tmp/minutehand-sandbox, debug, --deadlines, agent]
+  advance: [runsc, --root, /tmp/minutehand-sandbox, debug, "--advance-clock={nanoseconds}ns", agent]
+
 inbound:
   - provider: slack
-    url: "http://127.0.0.1:{run.port}/slack/events"
+    url: "http://192.168.10.2:8740/slack/events"    # the sandbox's address on its link; the proxy sits on its gateway
     secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}
-# Its work is its own file (AGENT_WORK, work.json when unset): the reviewers judge what it does against it, not
-# against the prompt of its wake decider, which is a model for one part of its work.
-instructions:
-  - file: "${AGENT_WORK:-work.json}"
+
+tick: PT24H     # it comes back by itself at most once a working day: sizes the wake limit from the world's window

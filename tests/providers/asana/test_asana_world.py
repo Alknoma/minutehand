@@ -19,7 +19,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.agent import AgentUnderTest, GoalByWake, Reported
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import SeededComment, SeededTicket, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
@@ -38,6 +38,7 @@ from tests.providers.asana.asana_workspace import (
     data,
     items,
 )
+from tests.support.scenarios import SANDBOX
 from tests.support.tickets import assignee_moves, edited
 
 
@@ -297,9 +298,7 @@ async def test_a_seeded_tickets_labels_are_its_tags_and_its_comments_are_stories
 def test_a_ticket_key_on_an_asana_ticket_is_refused_at_load_naming_the_ticket() -> None:
     keyed = SeededTicket(key="cake", provider="asana", project="Catering", title="Order the cake")
     scenario = SCENARIO.model_copy(update={"tickets": [keyed]})
-    agent = AgentUnderTest(
-        name="a", goal=GoalByWake(), wakes=[Reported(wake_url="http://w.test/w", report_url="http://w.test/r")]
-    )
+    agent = AgentUnderTest(name="a", sandbox=SANDBOX)
     with pytest.raises(
         RunRefused, match="the seeded ticket 'Order the cake' sets key, which asana tickets cannot hold"
     ):

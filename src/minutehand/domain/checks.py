@@ -36,7 +36,6 @@ class Needs(StrEnum):
     WORLD = "world"
     WAKES = "wakes"
     OBLIGATIONS = "obligations"
-    COMMITMENTS = "commitments"
     CALLS = "calls"
 
 
@@ -260,14 +259,6 @@ class Effectiveness(Model):
     failed_checks: int = Field(ge=0)
 
 
-class CommitmentsReported(Model):
-    """What the agent said it was committed to as one wake ended (`AgentReport.commitments`)."""
-
-    wake: int = Field(ge=0)
-    at: AwareDatetime = Field(description="Simulated time the wake ended")
-    commitments: list[Commitment]
-
-
 class WakeRecord(Model):
     """One wake of the agent; in a standing world, one step whoever drives the agent marked (or the server inferred
     from the clock): the stretch the checks read as one go of the agent's."""
@@ -275,7 +266,6 @@ class WakeRecord(Model):
     index: int = Field(ge=1)
     sim_time: AwareDatetime
     world_changes: int = Field(ge=0)
-    commitments_changed: bool
     inferred: bool = Field(
         default=False,
         description="A standing world's step nobody marked: the stretch between two forward moves of its clock",
@@ -341,11 +331,6 @@ class RunView(Model):
         default=[],
         description="Calls Minutehand made as a person to the agent's own product whose answer departed from the "
         "agent's own API description (`InboxCall.contract`): the agent's contract changed",
-    )
-    reported: list[CommitmentsReported] | None = Field(
-        default=None,
-        description="The agent's commitments as each wake ended, in order; None when the agent reported none, so "
-        "nothing it said can be held against the world",
     )
     dues: list[DueEntry] | None = Field(
         default=None,

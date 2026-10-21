@@ -34,7 +34,7 @@ A library scenario fixes the situation. It leaves to the team who its people are
 | `--knows TEXT` | `{team.knows}` | the fact the person holds, which their answer carries | `The reference is RF-4410.` |
 | `--credential-env VAR` | `{team.credential_env}` | the approval scenarios | `APPROVER_TOKEN` |
 | `--provider KEY` | `{team.provider}` | the scenarios where someone writes in unprompted | `slack` |
-| `--wakes reported\|booked\|polled` | `{team.wakes}` | the `planned_wake_*` scenarios | `reported` |
+| `--wakes booked` | `{team.wakes}` | the `planned_wake_*` scenarios: how the agent asks for the wakes a scheduler delivers | `booked` |
 
 - **People are described, then played.** Each person has a `profile` (who they are, how they work) and `facts` (what
   they know); a model writes every word they say from those, so two runs may word it differently. A person's script

@@ -31,7 +31,7 @@ class TwoMessagesAtMost:
 
 
 AGENT = """name: team_agent
-wakes: [{kind: reported, wake_url: "http://127.0.0.1:9/wake", report_url: "http://127.0.0.1:9/report"}]
+sandbox: {deadlines: [runsc, debug, --deadlines, a], advance: [runsc, debug, "--advance-clock={nanoseconds}ns", a]}
 checks: [team_checks.py]
 """
 

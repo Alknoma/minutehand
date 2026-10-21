@@ -1,9 +1,10 @@
 """The run loop: one scenario, one agent, a set of providers, played forward on the run's clock.
 
-Flow of one wake (docs/design.md): jump the clock to the earliest pending moment, fire what is due there,
-wake the agent if any of it reaches the agent, poll it until it is no longer working, then read what it did
-from the world and schedule what the world owes back: what people do about what waits on them
-(`application.people`), and tickets' fates.
+Flow of one wake (docs/design.md): jump the clock to the earliest pending moment, release the agent's sandbox to
+it, fire what is due there (what reaches the agent does so through the world: a pushed event, a scheduler's
+delivery, its own timer going off), wait until the sandbox is idle again, then read what the agent did from the
+world and schedule what the world owes back: what people do about what waits on them (`application.people`), and
+tickets' fates. Nothing is ever asked of the agent.
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from minutehand.application.checkpoint import (
     PendingService,
     PendingTimer,
     PendingTransition,
-    PendingWake,
     Remembered,
     write_checkpoint,
 )
@@ -38,21 +38,12 @@ from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.application.sandbox import SandboxClock
+from minutehand.application.sandbox import SandboxClock, SandboxFailed
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
 from minutehand.checks.runner import RunResult
-from minutehand.domain.agent import (
-    AgentReport,
-    AgentStatus,
-    AgentUnderTest,
-    Booked,
-    Commitment,
-    GoalByMessage,
-    WakeReason,
-    WakeRequest,
-)
+from minutehand.domain.agent import AgentUnderTest, WakeReason
 from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.experiment import ReplyAt
@@ -70,11 +61,10 @@ from minutehand.domain.world import (
     Actor,
     EntityKind,
     EntityRef,
-    NextWakeSnapshot,
     Operation,
     WorldEvent,
 )
-from minutehand.ports.agent import AgentDriver, TakesReplies
+from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
@@ -94,8 +84,8 @@ from minutehand.ports.telemetry import Telemetry
 from minutehand.ports.transitions import HoldsSeeded, TalksToAgent
 
 _NOT_CHANGES = frozenset({Operation.READ, Operation.SEARCH})
-_NOT_THE_WORLD = frozenset({EntityKind.MEMORY, EntityKind.NEXT_WAKE})
-"""The agent's own memory and plan: its writes, but not changes to the world a person could see."""
+_NOT_THE_WORLD = frozenset({EntityKind.MEMORY})
+"""The agent's own memory: its writes, but not changes to the world a person could see."""
 
 
 class OutsideState(Protocol):
@@ -109,8 +99,8 @@ class OutsideState(Protocol):
 TAKEN_EVERY = 0.05
 """Seconds between two asks whether the agent has taken a booking's delivery."""
 
-_PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE, WakeReason.TICK]
-"""When one jump fires several things, the wake carries the reason that matters most to the agent."""
+_PRIORITY = [WakeReason.PERSON_REPLIED, WakeReason.DIRECTION, WakeReason.DUE]
+"""When one jump fires several things, the wake is recorded under the reason that matters most to the agent."""
 
 
 class Mounts(Protocol):
@@ -209,33 +199,6 @@ class Services:
                 raise RunRefused(f"provider {key} books neither wakes nor work, and is given as BooksWakes")
 
 
-@dataclass(frozen=True)
-class Reach:
-    """How the loop reaches the agent: `main` answers every wake but ticks; `ticks` answers a `Polled` rhythm.
-
-    Built from `AgentUnderTest.wakes` by `adapters.agent.reach_for`. Neither is set for an agent reached only
-    through pushed events: its goal comes by message (`GoalByMessage`) and acknowledging a push ends its wake.
-    """
-
-    main: AgentDriver | None
-    ticks: AgentDriver | None = None
-    every: timedelta | None = None
-    sandbox: SandboxClock | None = None
-    """The sandbox whose clock Minutehand owns (`Contained`): moved with every jump, its timers read as wakes."""
-
-    def __post_init__(self) -> None:
-        if (self.ticks is None) != (self.every is None):
-            raise RunRefused("a polled driver needs its interval, and an interval needs a polled driver")
-        if self.every is not None and self.every <= timedelta(0):
-            raise RunRefused(f"a polled interval must be positive, not {self.every}")
-
-    def for_reason(self, reason: WakeReason) -> AgentDriver | None:
-        """The driver this wake goes to; None when the agent has no wake endpoint and hears only pushed events."""
-        if reason is WakeReason.TICK and self.ticks is not None:
-            return self.ticks
-        return self.main or self.ticks
-
-
 class _Holding:
     """`ports.provider.HeldCalls` for the run: each call held until the world can answer it is an entry of the run's
     table (`PendingCall`) at its moment, and how to look at it again."""
@@ -291,7 +254,7 @@ class Orchestrator:
         *,
         scenario: Scenario,
         agent: AgentUnderTest,
-        reach: Reach,
+        sandbox: SandboxClock,
         store: Store,
         clock: RunClock,
         services: Services,
@@ -312,6 +275,7 @@ class Orchestrator:
         desk: ServiceDesk | None = None,
         pins: Sequence[ReplyAt] = (),
         replay: Replay | None = None,
+        start: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
@@ -320,23 +284,21 @@ class Orchestrator:
             refuse_clashing(reaches, [*(p.manifest.key for p in services.providers), *(channels or {})])
             refuse_untakeable(scenario, reaches)
             refuse_unusable(scenario, reaches)
-        if any(isinstance(w, Booked) for w in agent.wakes) and not any(
-            p.manifest.books_wakes for p in services.providers
-        ):
-            raise RunRefused(f"agent {agent.name} declares Booked wakes but no provider in the run books wakes")
-        if isinstance(agent.goal, GoalByMessage):
-            if agent.goal.provider not in services.pushes:
-                raise RunRefused(
-                    f"agent {agent.name} takes its goal by message on {agent.goal.provider}, "
-                    "which is not a provider in the run that pushes events"
-                )
-        elif reach.for_reason(WakeReason.START) is None:
-            raise RunRefused(f"agent {agent.name} takes its goal in the START wake and has no driver to receive it")
+        if agent.goal is not None and agent.goal.provider not in services.pushes:
+            raise RunRefused(
+                f"agent {agent.name} takes its goal by message on {agent.goal.provider}, "
+                "which is not a provider in the run that pushes events"
+            )
+        if scenario.goal is not None and agent.goal is None:
+            raise RunRefused(
+                f"scenario {scenario.name} hands the agent a goal, and agent {agent.name} declares no `goal` provider "
+                "its owner sends it on; nothing is handed to an agent any other way"
+            )
         _refuse_unlanded_happenings(scenario, agent, services)
         self._scenario = scenario
         self._agent = agent
         self._limit = wake_limit(scenario, agent)
-        self._reach = reach
+        self._sandbox = sandbox
         self._store = store
         self._clock = clock
         self._services = services
@@ -351,6 +313,7 @@ class Orchestrator:
         self._channels = dict(channels or {})
         self._environment = environment
         self._replay = replay
+        self._start_agent = start
         self._inboxes = inboxes
         self._outside = outside
         self._desk = desk
@@ -364,18 +327,12 @@ class Orchestrator:
         self._untaken: list[EntityRef] = []
         self._retried: list[EntityRef] = []
         self._mounted = False
-        self._last_report: AgentReport | None = None
         self._wakes: list[WakeRecord] = list(prior_wakes)
         self._dues = Dues(store, clock, scenario.dispatch)
         self._holding = _Holding(self._dues, clock)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
-        self._quiet_tasks: dict[int, int] = {}
-        """A task's housekeeping period: its timer fired at this distance and did nothing."""
-        self._timer_tasks: set[int] = set()
-        self._timer_ns = -1
         self._watcher = Watcher(agent.watches)
-        self._commitments: list[Commitment] | None = None
         self._failure: str | None = None
         self._seen = 0
         self._calls_seen = 0
@@ -434,8 +391,6 @@ class Orchestrator:
                     happening=i,
                 )
             )
-        if self._reach.every is not None:
-            self._schedule_tick()
         self._watcher.look()
         self._record_new()
         self._checkpoint()
@@ -444,11 +399,10 @@ class Orchestrator:
             stop = await self._loop()
         return await self._end(stop, started)
 
-    async def resume(self, checkpoint: Checkpoint, *, replan: AgentReport | None = None) -> RunRecord:
-        """Carry on from a checkpoint in a store that already holds the world up to it (a fork). With `replan`, the
-        agent's report asked again after the fork changed its memory: its own planned wakes (reported, its timer,
-        bookings) are replaced by its next wake, recorded as REPLACED; what the scenario owes (replies, happenings,
-        directions, fates, machine commands) and its declared rhythm stay as the checkpoint holds them."""
+    async def resume(self, checkpoint: Checkpoint) -> RunRecord:
+        """Carry on from a checkpoint in a store that already holds the world up to it (a fork), with the agent's
+        sandbox already played back to that checkpoint (`application.restore`): its own timer there is read afresh
+        from the sandbox before the first jump, and everything else pending is as the checkpoint holds it."""
         started = time.monotonic()
         if self._clock.now() != checkpoint.now or self._clock.wake() != checkpoint.wake:
             raise RunRefused(
@@ -462,19 +416,6 @@ class Orchestrator:
         # a held call is a connection of the process that played the parent: the fork's agent makes its own calls
         self._dues.resume([p for p in checkpoint.pending if not isinstance(p, PendingCall)])
         self._untaken = list(checkpoint.untaken)
-        self._commitments = checkpoint.commitments
-        self._last_report = checkpoint.agent.report
-        if replan is not None:
-            new = (
-                PendingWake(
-                    due=Due(at=replan.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE
-                )
-                if replan.next_wake is not None
-                else None
-            )
-            self._dues.replace(_planned_by_agent, new)
-            self._commitments = replan.commitments
-            self._last_report = replan
         self._seen = self._store.head()
         self._watcher.look()
         stop = await self._start() if checkpoint.wake == 0 else None
@@ -550,26 +491,23 @@ class Orchestrator:
     @property
     def _by_message(self) -> ProviderKey | None:
         goal = self._agent.goal
-        return goal.provider if isinstance(goal, GoalByMessage) else None
+        return goal.provider if goal is not None else None
 
     async def _start(self) -> StopReason | None:
-        """The START wake. By message, the owner sends the goal first and a wake endpoint, if any, hears no goal."""
+        """The START wake: the agent's sandbox is started once the world is seeded, so whatever the agent does on
+        starting finds it and is this wake's; its clock is set to the run's before the agent's first instruction; an
+        older scenario's owner then sends the goal, as a message."""
         wake = self._clock.begin_wake()
         provider = self._by_message
-        request = WakeRequest(
-            run_id=self._store.run_id,
-            now=self._clock.now(),
-            reason=WakeReason.START,
-            goal=self._scenario.goal if provider is None else None,
-        )
-        driver = self._reach.for_reason(WakeReason.START)
 
-        async def say_goal() -> None:
+        async def begin() -> None:
+            if self._start_agent is not None:
+                await self._start_agent()
+            await self._sandbox.sync(self._scenario.starts_at)  # born there; brought up to it when behind
             if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
-        requests = [(driver, request)] if driver is not None else []
-        return await self._wake(wake, WakeReason.START, say_goal, requests, [d for d, _ in requests])
+        return await self._wake(wake, WakeReason.START, begin)
 
     async def _loop(self) -> StopReason:
         deadline = self._scenario.window_end
@@ -595,9 +533,6 @@ class Orchestrator:
                 return ended
             await self._jump(jump.now)
             dispatched = self._dues.dispatch(jump.firing)
-            for item in dispatched.withheld:
-                if isinstance(item, PendingWake) and item.reason is WakeReason.TICK:
-                    self._schedule_tick()  # the rhythm goes on from the tick the scheduler held back
             for item in dispatched.finished:
                 # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
                 await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
@@ -615,20 +550,12 @@ class Orchestrator:
                 if not watched:
                     continue
                 stop = await self._wake(
-                    self._clock.begin_wake(),
-                    WakeReason.DUE,
-                    lambda watched=watched: self._notify(watched),
-                    [],
-                    [self._reach.main] if self._reach.main is not None else [],
+                    self._clock.begin_wake(), WakeReason.DUE, lambda watched=watched: self._notify(watched)
                 )
                 if stop is not None:
                     return stop
                 continue
             wake = self._clock.begin_wake()
-            if all(isinstance(p, PendingTimer) for p in fired) and not await self._timer_did_something(wake):
-                continue
-            requests, reason = self._requests(fired)
-            settle = [d for d, _ in requests] or self._delivered_to(fired)
 
             async def fire(due: list[Pending] = fired) -> None:
                 await self._release()
@@ -636,56 +563,43 @@ class Orchestrator:
                 await self._notify(self._watched(due))
                 await self._taken(due)
 
-            stop = await self._wake(wake, reason, fire, requests, settle)
+            stop = await self._wake(wake, self._reason(fired), fire)
             if stop is not None:
                 return stop
 
     async def _jump(self, to: datetime) -> None:
-        """Move the run's clock. A contained agent's sandbox is owed the same step, released (`_release`) once the
-        wake it may start has begun, so what the agent's timers do is that wake's."""
+        """Move the run's clock. The agent's sandbox is owed the same step, released (`_release`) once the wake it
+        may start has begun, so what the agent's timers do is that wake's."""
         was = self._clock.now()
         self._clock.jump(to)
-        if self._reach.sandbox is not None and to > was:
+        if to > was:
             self._sandbox_owed += int((to - was).total_seconds() * 1e9)
 
     async def _release(self) -> None:
         """Move the sandbox's clock by what the run's has moved since, so the two agree again."""
-        if self._reach.sandbox is not None and self._sandbox_owed > 0:
+        if self._sandbox_owed > 0:
             owed, self._sandbox_owed = self._sandbox_owed, 0
-            await self._reach.sandbox.advance(owed)
-
-    async def _timer_did_something(self, wake: int) -> bool:
-        """Release the sandbox's clock to a timer and let it settle. A timer that wrote nothing and called nothing
-        (a runtime's own housekeeping: an HTTP server's poll, a garbage collector's tick) is no wake of the agent's,
-        and `wake` is withdrawn; one that did something is a wake, played on as one."""
-        head, calls = self._store.head(), len(self._store.calls())
-        await self._release()
-        sandbox = self._reach.sandbox
-        assert sandbox is not None
-        await sandbox.settle(self._traffic)
-        if self._store.head() == head and len(self._store.calls()) == calls:
-            self._clock.withdraw(wake)
-            # a task whose timer fired and did nothing is a runtime's own (an HTTP server's poll): planned no more,
-            # it fires once and re-arms whenever the clock is released past it
-            for task in self._timer_tasks:
-                self._quiet_tasks[task] = max(self._quiet_tasks.get(task, 0), self._timer_ns)
-            return False
-        return True
+            await self._sandbox.advance(owed)
 
     async def _plan_timer(self) -> bool:
-        """For a contained agent, its earliest timer, read from the sandbox once it is idle and nothing of its is in
-        flight, is the wake it asked for, in place of the one read before. False when it never fell idle."""
-        sandbox = self._reach.sandbox
-        if sandbox is None:
-            return True
-        await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
-        found = await sandbox.settle(self._traffic)
+        """The agent's earliest timer, read from the sandbox once it is idle and nothing of its is in flight, is the
+        wake it asked for, in place of the one read before. False when it never fell idle."""
+        try:
+            await self._release()  # a deadline is read from the sandbox's clock, which must be the run's
+            found = await self._sandbox.settle(self._traffic)
+        except SandboxFailed as e:
+            self._failure = str(e)
+            return False
         if found is None:
             self._failure = "the agent's sandbox did not fall idle within its settle limit"
             return False
-        earliest = found.earliest(self._quiet_tasks)
-        self._timer_tasks = found.tasks_at(earliest)
-        self._timer_ns = earliest
+        # Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
+        # catches up, so a deadline read from the sandbox lands at the moment the agent set it for, not a little
+        # before it: the agent's own clock is the run's.
+        at = found.now()
+        if at > self._clock.now():
+            self._clock.jump(at)
+        earliest = found.earliest(self._agent.sandbox.housekeeping)
         if earliest < 0:
             self._dues.cancel(_timer)
             return True
@@ -709,7 +623,6 @@ class Orchestrator:
                 now=self._clock.now(),
                 replies=len(self._store.replies()),
                 untaken=self._untaken,
-                commitments=self._commitments,
                 pending=self._dues.items,
                 agent=self._remembered(),
             ),
@@ -741,9 +654,6 @@ class Orchestrator:
                     await scheduler.deliver_booking(item.ref, self._store, self._clock)
                 if item.advance:
                     await scheduler.advance_booking(item.ref, self._store, self._clock)
-        for item in fired:
-            if isinstance(item, PendingWake) and item.reason is WakeReason.TICK and not item.repeat:
-                self._schedule_tick()
         # the world as it now stands may answer a call held on it: one whose moment came, or one what fired brought
         # what it waits for (a delivery to the queue it polls)
         await self._holding.look()
@@ -791,13 +701,12 @@ class Orchestrator:
 
     async def _taken(self, fired: list[Pending]) -> None:
         """Wait until the agent has taken each booking just delivered from its own queue, when the scheduler can
-        tell, or `Booked.take_limit` passes: an agent that reports IDLE before its poll has run would otherwise be
+        tell, or the agent file's `take_limit` passes: a sandbox idle before its poll has run would otherwise be
         moved past the wake its booking was for."""
         bookings = [p for p in fired if isinstance(p, PendingBooking)]
-        limit = next((w.take_limit for w in self._agent.wakes if isinstance(w, Booked)), None)
-        if not bookings or limit is None:
+        if not bookings:
             return
-        give_up = time.monotonic() + limit.total_seconds()
+        give_up = time.monotonic() + self._agent.take_limit.total_seconds()
         for booking in bookings:
             scheduler = self._services.schedulers[booking.provider]
             if not isinstance(scheduler, ConfirmsDelivery):
@@ -844,68 +753,24 @@ class Orchestrator:
             self._scenario.happenings[pending.happening], TicketHappening | DocumentHappening
         )
 
-    def _delivered_to(self, fired: list[Pending]) -> list[AgentDriver]:
-        """A wake made only of bookings sends no request, since the scheduler's delivery is the wake, but the agent
-        still acts on what was delivered: the loop waits on its main driver until it is no longer working."""
-        if self._reach.main is None:
-            return []
-        if not any(_delivers(p) for p in fired) and not self._watched(fired):
-            return []
-        return [self._reach.main]
-
-    def _requests(self, fired: list[Pending]) -> tuple[list[tuple[AgentDriver, WakeRequest]], WakeReason]:
-        """One request per driver that must hear of this wake, and the reason the wake carries. A wake made only
-        of bookings sends none: the scheduler's own delivery is the wake. Nor does one that reaches an agent
-        with no wake endpoint: the pushed event is the wake. A direction sent by message is not repeated in
-        the request."""
+    def _reason(self, fired: list[Pending]) -> WakeReason:
+        """The reason the wake is recorded under: what reached the agent, the one that matters most first."""
         reasons: set[WakeReason] = set()
-        directions: list[str] = []
         for item in fired:
             if isinstance(item, PendingHappening | PendingTransition | PendingService) and not self._unheard(item):
                 reasons.add(WakeReason.PERSON_REPLIED)
             elif isinstance(item, PendingDirection):
                 reasons.add(WakeReason.DIRECTION)
-                if self._by_message is None:
-                    directions.append(item.text)
-            elif isinstance(item, PendingWake):
-                reasons.add(item.reason)
-        if not reasons:
-            return [], WakeReason.DUE
-        reason = next(r for r in _PRIORITY if r in reasons)
-        now = self._clock.now()
-        run_id = self._store.run_id
-        requests: list[tuple[AgentDriver, WakeRequest]] = []
-        main = self._reach.for_reason(reason)
-        if main is not None:
-            requests.append(
-                (
-                    main,
-                    WakeRequest(
-                        run_id=run_id, now=now, reason=reason, direction="\n\n".join(directions) if directions else None
-                    ),
-                )
-            )
-        if WakeReason.TICK in reasons and reason is not WakeReason.TICK:
-            ticks = self._reach.for_reason(WakeReason.TICK)
-            if ticks is not None and ticks is not main:
-                requests.append((ticks, WakeRequest(run_id=run_id, now=now, reason=WakeReason.TICK)))
-        return requests, reason
+        return next((r for r in _PRIORITY if r in reasons), WakeReason.DUE)
 
-    async def _wake(
-        self,
-        wake: int,
-        reason: WakeReason,
-        fire: Callable[[], Awaitable[None]],
-        requests: list[tuple[AgentDriver, WakeRequest]],
-        settle: list[AgentDriver],
-    ) -> StopReason | None:
-        """Change the world for what is due, send the wake, wait until each driver in `settle` stops working, read
-        what the agent did, and checkpoint. An agent that refuses a pushed event fails the wake as one that refuses
-        the wake does. The store keeps the real moments the wake began and, after its checkpoint, ended: the
-        agent's spans are placed in the wake whose window holds their start, however late they arrive."""
+    async def _wake(self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]]) -> StopReason | None:
+        """Change the world for what is due, wait until the agent's sandbox is idle again, read what the agent did,
+        and checkpoint. An agent that refuses a pushed event fails the wake. The store keeps the real moments the
+        wake began and, after its checkpoint, ended: the agent's spans are placed in the wake whose window holds
+        their start, however late they arrive."""
         self._store.wake_began(wake)
         try:
-            stop = await self._played(wake, reason, fire, requests, settle)
+            stop = await self._played(wake, reason, fire)
         finally:
             self._store.wake_ended(wake)
         if self._environment is not None and self._environment.failure() is not None:
@@ -921,30 +786,14 @@ class Orchestrator:
             return None
         return self._replay.parted
 
-    async def _played(
-        self,
-        wake: int,
-        reason: WakeReason,
-        fire: Callable[[], Awaitable[None]],
-        requests: list[tuple[AgentDriver, WakeRequest]],
-        settle: list[AgentDriver],
-    ) -> StopReason | None:
+    async def _played(self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]]) -> StopReason | None:
         if self._telemetry is not None:
             self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
-        done = False
-        commitments_changed = False
         try:
             await fire()
-            for driver, request in requests:
-                await driver.wake(request)
-            if self._reach.sandbox is not None and await self._reach.sandbox.settle(self._traffic) is None:
+            if await self._sandbox.settle(self._traffic) is None:
                 raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
-            for driver in settle:
-                report = await driver.settled()
-                done = done or report.status is AgentStatus.DONE
-                if driver is self._reach.main:
-                    commitments_changed = self._adopt(report)
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
@@ -953,7 +802,6 @@ class Orchestrator:
             await self._look()
         new = self._record_new()
         if not failed:
-            self._marked(new, wake)
             await self._schedule(new, retry=True)
         mine = [e for e in new if e.wake == wake and e.actor is Actor.AGENT]
         self._wakes.append(
@@ -964,7 +812,6 @@ class Orchestrator:
                 world_changes=sum(
                     1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD
                 ),
-                commitments_changed=commitments_changed,
                 memory_reads=self._mounts.memory_reads(wake) if isinstance(self._mounts, HoldsMemory) else 0,
                 memory_writes=sum(
                     1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation not in _NOT_CHANGES
@@ -976,51 +823,9 @@ class Orchestrator:
         if failed:
             return StopReason.AGENT_FAILED
         self._checkpoint()
-        if done and self._scenario.is_task:
-            return StopReason.AGENT_DONE  # only an older scenario's task ends on done: a world runs its window
         if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
-
-    def _adopt(self, report: AgentReport) -> bool:
-        """Take the agent's next wake, replacing the one it named before. Answers whether its commitments changed."""
-        if report.next_wake is None:
-            self._dues.cancel(_reported_wake)
-        else:
-            self._dues.replace(
-                _reported_wake,
-                PendingWake(
-                    due=Due(at=report.next_wake, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE
-                ),
-            )
-        changed = report.commitments != self._commitments
-        self._commitments = report.commitments
-        self._last_report = report
-        return changed
-
-    def _marked(self, new: list[WorldEvent], wake: int) -> None:
-        """The last next wake the agent marked in this wake (`minutehand.agent.wake`), taken as its next wake: it
-        replaces the one it marked or reported before, and a mark of none cancels it."""
-        said = [e.after for e in new if e.wake == wake and isinstance(e.after, NextWakeSnapshot)]
-        if not said:
-            return
-        at = said[-1].at
-        if at is None:
-            self._dues.cancel(_reported_wake)
-        else:
-            self._dues.replace(
-                _reported_wake,
-                PendingWake(due=Due(at=at, kind=DueKind.AGENT_WAKE, ref="next_wake"), reason=WakeReason.DUE),
-            )
-
-    def _schedule_tick(self) -> None:
-        assert self._reach.every is not None
-        self._dues.enter(
-            PendingWake(
-                due=Due(at=self._clock.now() + self._reach.every, kind=DueKind.AGENT_WAKE, ref="tick"),
-                reason=WakeReason.TICK,
-            )
-        )
 
     def _record_new(self) -> list[WorldEvent]:
         new = self._store.events(since=self._seen)
@@ -1106,7 +911,6 @@ class Orchestrator:
                 now=self._clock.now(),
                 replies=len(self._store.replies()),
                 untaken=self._untaken,
-                commitments=self._commitments,
                 pending=self._dues.items,
                 agent=self._remembered(),
             ),
@@ -1114,10 +918,9 @@ class Orchestrator:
         self._record_new()
 
     def _remembered(self) -> Remembered:
-        """The agent's state at this moment as the run holds it: its memory, its last report, and what the run can
-        see of state it keeps elsewhere."""
+        """The agent's state at this moment as the run holds it: its memory, and what the run can see of state it
+        keeps elsewhere."""
         return Remembered(
-            report=self._last_report,
             memory=memory.store_digest(self._store),
             outside=self._outside.outside() if self._outside is not None else [],
         )
@@ -1249,34 +1052,16 @@ def _held(pending: Pending, ref: str) -> bool:
     return isinstance(pending, PendingCall) and pending.due.ref == ref
 
 
-def _delivers(pending: Pending) -> bool:
-    """Something due that hands the agent what it acts on without a wake request: a booking's delivery, or a held
-    call answered when what it waits for came."""
-    return isinstance(pending, PendingBooking) or (isinstance(pending, PendingCall) and not pending.ends)
-
-
 def _timer(pending: Pending) -> bool:
     """The agent's earliest timer as last read from its sandbox, which the next reading replaces."""
     return isinstance(pending, PendingTimer)
-
-
-def _planned_by_agent(pending: Pending) -> bool:
-    """A wake the agent planned from what it remembers: its reported or marked next wake, its own timer, a booking. A
-    late or second delivery is the scenario's dispatch, and a polled tick its declared rhythm."""
-    return _reported_wake(pending) or isinstance(pending, PendingTimer | PendingBooking)
-
-
-def _reported_wake(pending: Pending) -> bool:
-    """The wake the agent last named in its report, which the next one it names replaces. A late or second delivery
-    of one is already on its way, as a real scheduler's is, and a new report does not take it back."""
-    return isinstance(pending, PendingWake) and pending.reason is WakeReason.DUE and not pending.repeat
 
 
 async def run_scenario(
     *,
     scenario: Scenario,
     agent: AgentUnderTest,
-    reach: Reach,
+    sandbox: SandboxClock,
     store: Store,
     clock: RunClock,
     services: Services,
@@ -1293,9 +1078,11 @@ async def run_scenario(
     model: LanguageModel | None = None,
     desk: ServiceDesk | None = None,
     replay: Replay | None = None,
+    start: Callable[[], Awaitable[None]] | None = None,
 ) -> RunRecord:
-    """Run one scenario from its start. `signing` holds the secret each provider signs its pushed events with;
-    `traffic` sees the agent's outbound calls, which a sandbox whose clock Minutehand owns needs to fall idle;
+    """Run one scenario from its start. `start` starts the agent's program (its sandbox), once the world is seeded.
+    `signing` holds the secret each provider signs its pushed events with;
+    `traffic` sees the agent's outbound calls, which the sandbox needs to fall idle;
     `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
     beside its memory at each checkpoint; `replay` is the record answering the agent's model calls, when this is a
     replay of a finished run."""
@@ -1304,7 +1091,7 @@ async def run_scenario(
     return await Orchestrator(
         scenario=scenario,
         agent=agent,
-        reach=reach,
+        sandbox=sandbox,
         store=store,
         clock=clock,
         services=services,
@@ -1321,4 +1108,5 @@ async def run_scenario(
         model=model,
         desk=desk,
         replay=replay,
+        start=start,
     ).run()

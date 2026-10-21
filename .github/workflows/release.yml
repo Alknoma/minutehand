@@ -58,8 +58,11 @@ jobs:
         run: uv build
       - name: The metadata and README as PyPI will read them
         run: uvx twine==7.0.0 check --strict dist/*
-      - name: The sdist and wheel as a user installs them, run from a clean environment
-        run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
+      - name: The wheel as a user installs it, run from a clean environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheel"
+          "$RUNNER_TEMP/wheel/bin/python" -m pip install --disable-pip-version-check dist/*.whl
+          "$RUNNER_TEMP/wheel/bin/minutehand" --help
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist

@@ -19,7 +19,7 @@ from minutehand.application.people import Booking, WrittenTransition
 from minutehand.application.run_clock import RunClock
 from minutehand.application.services import ServiceDesk, WrittenAnswer
 from minutehand.domain.conversation import ModelMessage, Wrote
-from minutehand.domain.scenario import Scenario
+from minutehand.domain.scenario import ProviderKey, Scenario
 from minutehand.domain.services import Service
 from minutehand.domain.transitions import Transition
 from minutehand.domain.world import (
@@ -34,6 +34,7 @@ from minutehand.domain.world import (
 from minutehand.ports.model import Answered, AnswerT
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.services import Call, Delivered
+from minutehand.ports.store import Store
 from tests.support.people import people_engine, people_model
 
 START = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
@@ -97,7 +98,9 @@ class Pushes:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    async def push(self, url: str, body: str) -> Delivered:
+    async def push(
+        self, store: Store, *, service: ProviderKey, item: str, url: str, body: str, parent: str | None = None
+    ) -> Delivered:
         self.sent.append((url, body))
         return Delivered(status=200, failure=None)
 

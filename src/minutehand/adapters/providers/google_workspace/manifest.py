@@ -8,11 +8,12 @@ issues. The proxy routes by host alone, so no second provider could claim Calend
 from __future__ import annotations
 
 from minutehand.domain.items import CALENDAR_EVENT, COMMENT, DOCUMENT, EMAIL
-from minutehand.domain.provider import DocumentChange, Manifest, Tier
+from minutehand.domain.provider import AgentSends, DocumentChange, Manifest, Tier
 from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="google_workspace",
+    sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=[
         "www.googleapis.com",

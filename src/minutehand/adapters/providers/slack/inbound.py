@@ -23,11 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import time
 from datetime import timedelta
 
-import httpx
-
+from minutehand.adapters.agent.delivery import Door, Sent
 from minutehand.adapters.providers.slack import seed, socket_mode, state, wire
 from minutehand.adapters.providers.slack.manifest import MANIFEST
 from minutehand.adapters.providers.slack.state import SlackWorld
@@ -75,18 +73,24 @@ def refuse_foreign(target: InboundTarget) -> None:
 
 
 async def post_signed(
+    store: Store,
     url: str,
     body: bytes,
     content_type: str,
     secret: str,
     *,
+    item: str,
+    at: int,
     timeout: timedelta,
     retry: int | None = None,
     reason: str | None = None,
-) -> httpx.Response:
-    """One signed request from Slack to the agent, given `timeout` (the target's `push_timeout`) to answer; raises
-    only when it could not be made."""
-    stamp = str(int(time.time()))  # clock-lint: exempt the request's send time, checked against the agent's own clock
+) -> Sent:
+    """One signed request from Slack to the agent, given `timeout` (the target's `push_timeout`) to answer, and
+    recorded as it ended (`EntityKind.PUSH`, actor SCENARIO, so no check counts it as anyone's work) through the one
+    door everything sent the agent goes through (`adapters.agent.delivery`). `at` is the request's timestamp, the
+    simulated moment it is sent at: the agent's verifier checks it against its own clock, which is the sandbox's,
+    and a fork sending the request again must send the same signature."""
+    stamp = str(at)
     headers = {
         "Content-Type": content_type,
         "X-Slack-Request-Timestamp": stamp,
@@ -96,8 +100,23 @@ async def post_signed(
     if retry is not None and reason is not None:
         headers["X-Slack-Retry-Num"] = str(retry)
         headers["X-Slack-Retry-Reason"] = reason
-    async with httpx.AsyncClient(timeout=timeout.total_seconds(), trust_env=False, verify=False) as client:
-        return await client.post(url, content=body, headers=headers)
+    return await Door().send(
+        store,
+        service=MANIFEST.key,
+        item=item,
+        url=url,
+        body=body,
+        headers=headers,
+        timeout=timeout.total_seconds(),
+        attempt=retry or 0,
+        retry_reason=reason,
+        parent=PUSHES,
+    )
+
+
+def _ended(snapshot: PushSnapshot) -> str:
+    said = f"answered {snapshot.status}" if snapshot.status is not None else (snapshot.failure or "no answer")
+    return f"send {snapshot.attempt + 1} {said} after {snapshot.seconds or 0:g}s"
 
 
 def sent(
@@ -111,8 +130,8 @@ def sent(
     failure: str | None,
     seconds: float,
 ) -> PushSnapshot:
-    """One send of an event to the agent, recorded as it ended: actor SCENARIO, so no check counts it as anyone's
-    work, under `EntityKind.PUSH` like a declared service's push."""
+    """One send of an event on the agent's Socket Mode connection, recorded as it ended: no HTTP request crosses, so
+    there are no headers to keep, and a fork does not play a Socket Mode agent back (`application.trace`)."""
     snapshot = PushSnapshot(
         service=MANIFEST.key,
         item=callback.event_id,
@@ -137,11 +156,6 @@ def sent(
     return snapshot
 
 
-def _ended(snapshot: PushSnapshot) -> str:
-    said = f"answered {snapshot.status}" if snapshot.status is not None else (snapshot.failure or "no answer")
-    return f"send {snapshot.attempt + 1} {said} after {snapshot.seconds or 0:g}s"
-
-
 async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.EventCallback, secret: str) -> None:
     """An Events API callback, sent again on failure as Slack sends it, until the agent acknowledges it: a signed
     request to the target's URL, or, for a target in Socket Mode, an envelope on the connection the agent holds open
@@ -156,33 +170,27 @@ async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.Ev
     sends: list[PushSnapshot] = []
     for attempt in range(RETRIES + 1):
         reason = None if attempt == 0 else ("http_timeout" if status is None else "http_error")
-        began = time.monotonic()
-        try:
-            answered = await post_signed(
-                url,
-                body,
-                "application/json",
-                secret,
-                timeout=target.push_timeout,
-                retry=attempt or None,
-                reason=reason,
-            )
-        except httpx.TimeoutException as e:
-            status, last = None, repr(e)
-            failure = f"no answer within {target.push_timeout.total_seconds():g}s ({last})"
-            sends.append(sent(slack, callback, url, attempt=attempt, reason=reason, status=None, failure=failure,
-                              seconds=time.monotonic() - began))  # fmt: skip
+        made = await post_signed(
+            slack.store,
+            url,
+            body,
+            "application/json",
+            secret,
+            item=callback.event_id,
+            at=callback.event_time,
+            timeout=target.push_timeout,
+            retry=attempt or None,
+            reason=reason,
+        )
+        sends.append(made.snapshot)
+        if made.snapshot.status is None:
+            if not made.timed_out:
+                raise DeliveryRefused(url, None, made.snapshot.failure or "")
+            status, last = None, made.snapshot.failure or ""
             continue
-        except httpx.HTTPError as e:
-            sent(slack, callback, url, attempt=attempt, reason=reason, status=None, failure=repr(e),
-                 seconds=time.monotonic() - began)  # fmt: skip
-            raise DeliveryRefused(url, None, repr(e)) from e
-        refused = None if answered.is_success else f"the address answered {answered.status_code}"
-        sends.append(sent(slack, callback, url, attempt=attempt, reason=reason, status=answered.status_code,
-                          failure=refused, seconds=time.monotonic() - began))  # fmt: skip
-        if answered.is_success:
+        if made.snapshot.failure is None:
             return
-        status, last = answered.status_code, answered.text
+        status, last = made.snapshot.status, made.body.decode("utf-8", errors="replace")
     raise DeliveryRefused(
         url,
         status,
@@ -236,26 +244,28 @@ def where(world: Store, channel: str) -> SlackWorld:
     return found
 
 
-async def verify_url(target: InboundTarget, secret: str, challenge: str) -> None:
+async def verify_url(store: Store, target: InboundTarget, secret: str, challenge: str, *, at: int) -> None:
     """Slack's `url_verification`, as it is sent when an app's request URL is set: the agent must echo the challenge,
     as JSON or as plain text. Nothing in a run sends it; a check of an agent's endpoint does."""
     refuse_foreign(target)
     url = target.request_url()
     body = wire.event_body(wire.UrlVerification(token=wire.VERIFICATION_TOKEN, challenge=challenge))
-    try:
-        answered = await post_signed(url, body, "application/json", secret, timeout=target.push_timeout)
-    except httpx.HTTPError as e:
-        raise DeliveryRefused(url, None, repr(e), what="url_verification") from e
-    if not answered.is_success:
-        raise DeliveryRefused(url, answered.status_code, answered.text, what="url_verification")
-    echoed = answered.text.strip()
+    made = await post_signed(
+        store, url, body, "application/json", secret, item="url_verification", at=at, timeout=target.push_timeout
+    )
+    status, text = made.snapshot.status, made.body.decode("utf-8", errors="replace")
+    if status is None:
+        raise DeliveryRefused(url, None, made.snapshot.failure or "", what="url_verification")
+    if made.snapshot.failure is not None:
+        raise DeliveryRefused(url, status, text, what="url_verification")
+    echoed = text.strip()
     if echoed != challenge:
         try:
-            echoed = wire.Challenged.model_validate_json(answered.content).challenge
+            echoed = wire.Challenged.model_validate_json(made.body).challenge
         except ValueError:
             echoed = ""
     if echoed != challenge:
-        raise DeliveryRefused(url, answered.status_code, answered.text, what="url_verification's challenge")
+        raise DeliveryRefused(url, status, text, what="url_verification's challenge")
 
 
 # --------------------------------------------------------------------------- replies and messages

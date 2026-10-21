@@ -41,7 +41,7 @@
     minutehand scenarios                         the scenario library: each scenario's name and situation
     minutehand scenarios show <name>             the situation one puts the agent in, and the values it takes
     minutehand scenarios new <name>...|--all --person 'Name <email>' [--other 'Name <email>'] [--knows TEXT]
-                     [--credential-env VAR] [--provider KEY] [--wakes reported|booked|polled] [--out DIR] [--force]
+                     [--credential-env VAR] [--provider KEY] [--wakes booked] [--out DIR] [--force]
                                                  write library worlds out with the team's people (docs/scenarios.md)
     minutehand serve [--state DIR] [--host H] [--proxy-port N] [--control-port N] [--telemetry-port N]
                      [--agent-host NAME] [--keep N] [--capture-unknown] [--upstream-ca FILE]
@@ -73,7 +73,7 @@ cannot imply. With --json,
 `run`, `fork` and `findings` print one shape: {"outcomes": [...], "stability": ...}.
 
 Exit codes of `run`, `fork` and `findings`, which follow the verdict each report starts with:
-  0  passed: nothing failed, and the agent finished: it reported done, or nothing was left open
+  0  passed: nothing failed, and nothing was left open
   1  failed: a rule, an expectation or a check failed
   2  the run could not be performed
   3  not finished: nothing failed, but the run stopped without the agent reporting done (the wake limit, the
@@ -178,7 +178,7 @@ VIEW_PORT = 8081
 STATE_VARIABLE = "MINUTEHAND_STATE"
 
 _STOPPED = {
-    StopReason.AGENT_DONE: "the agent reported it was done",
+    StopReason.AGENT_DONE: "whoever drove the agent relayed that it was done",
     StopReason.WAKE_LIMIT: "its wake limit was reached",
     StopReason.DEADLINE_PASSED: "the clock reached the scenario's deadline",
     StopReason.WINDOW_ENDED: "the clock reached the end of the scenario's window",
@@ -275,6 +275,14 @@ def _parser() -> _Parser:
             metavar="PORT",
             help="also listen here for connections the agent's container redirects to the proxy with iptables, so a "
             "client that ignores HTTPS_PROXY is captured too (docs/containers.md, `env --format redirect`)",
+        )
+        sub.add_argument(
+            "--dns-port",
+            type=int,
+            default=None,
+            metavar="PORT",
+            help="also answer every DNS lookup a sealed sandbox makes, here, with the proxy's address, so a client "
+            "that ignores HTTPS_PROXY lands on the transparent listener by any name (sandbox/seal.sh)",
         )
         sub.add_argument(
             "--no-receive-telemetry",
@@ -678,8 +686,9 @@ def _library_parser(library: argparse.ArgumentParser) -> None:
     new.add_argument(
         "--wakes",
         choices=[p.value for p in PlannedBy],
-        default=PlannedBy.REPORTED.value,
-        help="how the agent asks for its own wakes, for the scenarios whose scheduler goes wrong (default %(default)s)",
+        default=PlannedBy.BOOKED.value,
+        help="how the agent asks for the wakes a scheduler delivers, for the scenarios whose scheduler goes wrong "
+        "(default %(default)s)",
     )
     new.add_argument("--out", type=Path, default=Path("."), help="the folder to write into (default: this one)")
     new.add_argument("--force", action="store_true", help="replace a file of the same name")
@@ -958,6 +967,7 @@ def _listen(args: argparse.Namespace) -> session.Listen:
         telemetry_port=args.telemetry_port,
         receive_telemetry=not args.no_receive_telemetry,
         transparent_port=args.transparent_port,
+        dns_port=args.dns_port,
         record_model_calls=args.record_model_calls,
         capture_unknown=UnknownHosts(args.capture_unknown),
         upstream_ca=args.upstream_ca,

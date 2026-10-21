@@ -12,7 +12,6 @@ same port.
 
     POST /minutehand/agent/store   the agent's memory (`minutehand.agent.store`): a get, a list or a write,
                                    answered from the run and recorded in it (`application.memory`)
-    POST /minutehand/agent/wake    the agent's next wake (`minutehand.agent.wake`), recorded in the run
     POST /minutehand/mcp           a tool call `minutehand mcp-relay` saw, recorded in the run
 
 The agent's own calls are held while `hold` is on: a fork's agent may start before the fork's run exists, and what it
@@ -61,7 +60,7 @@ from minutehand.adapters.proxy import mcp
 from minutehand.adapters.telemetry import otlp
 from minutehand.adapters.telemetry.forward import ENDPOINT, Forwarding, forward, signal_variable
 from minutehand.application import memory
-from minutehand.domain.memory import MemoryGet, MemoryList, StoreCall, WakeMark
+from minutehand.domain.memory import Found, Item, Listed, MemoryGet, MemoryList, StoreCall, Written
 from minutehand.domain.scenario import Model
 from minutehand.domain.telemetry import ReceivedSpan, Signal, SpanSource
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
@@ -142,6 +141,7 @@ class Receiver:
         self._mounted = asyncio.Event()
         self._mounted.set()
         self._reads = memory.Reads()
+        self._playback: _Playback | None = None
 
     @property
     def notices(self) -> list[str]:
@@ -162,6 +162,15 @@ class Receiver:
     def hold(self) -> None:
         """Hold the agent's calls until the next `mount`: a fork's agent starts before the fork's run exists."""
         self._mounted.clear()
+
+    def playing_back(self, parent: Store, cursor: Callable[[], int]) -> None:
+        """`application.playback.HoldsMemory`: until `live`, the agent's memory is answered as the parent run's log
+        stood at `cursor()`, and nothing it writes, exports or relays is recorded: the fork's agent is being played
+        back to its checkpoint, and the record of all of it is the parent's, which the fork shares."""
+        self._playback = _Playback(parent, cursor)
+
+    def live(self) -> None:
+        self._playback = None
 
     def route(self, by_span: Callable[[ReceivedSpan], Store | None]) -> None:
         """`minutehand serve`: a span is kept where `by_span` says (the world whose calls carried its trace, or the
@@ -187,17 +196,11 @@ class Receiver:
             await self._mounted.wait()
             return self._remembered(body)
 
-        async def marked(request: Request) -> Response:
-            body = await request.body()
-            await self._mounted.wait()
-            return self._marked(body)
-
         return Starlette(
             routes=[
                 *(route(signal) for signal in Signal),
                 Route(MCP_PATH, relayed, methods=["POST"]),
                 Route(f"{AGENT_PATH}/store", remembered, methods=["POST"]),
-                Route(f"{AGENT_PATH}/wake", marked, methods=["POST"]),
             ]
         )
 
@@ -208,6 +211,8 @@ class Receiver:
             call = _STORE_CALL.validate_json(body)
         except ValidationError as e:
             return PlainTextResponse(f"not a call of the agent's store: {e}", status_code=400)
+        if self._playback is not None:
+            return Response(self._playback.answer(call).model_dump_json(), media_type=JSON)
         if isinstance(call, MemoryGet):
             answer: Model = self._reads.recall(self.store, self.clock.wake(), call)
         elif isinstance(call, MemoryList):
@@ -216,14 +221,6 @@ class Receiver:
             answer = memory.remember(self.store, call)
         return Response(answer.model_dump_json(), media_type=JSON)
 
-    def _marked(self, body: bytes) -> Response:
-        try:
-            said = WakeMark.model_validate_json(body)
-        except ValidationError as e:
-            return PlainTextResponse(f"not a next wake: {e}", status_code=400)
-        memory.mark(self.store, said)
-        return Response(status_code=204)
-
     def _relayed(self, body: bytes) -> Response:
         """A tool call `minutehand mcp-relay` saw pass between the agent and an MCP server on its standard input and
         output: recorded as the agent's, in the run being played."""
@@ -231,6 +228,8 @@ class Receiver:
             said = RelayedCall.model_validate_json(body)
         except ValueError as e:
             return PlainTextResponse(f"not a relayed MCP call: {e}", status_code=400)
+        if self._playback is not None:
+            return Response(status_code=204)  # the parent's record holds it
         for n, call in enumerate(mcp.tool_calls(said.server, said.request, JSON, said.response, JSON)):
             head = self.store.head()
             self.store.apply(
@@ -265,6 +264,8 @@ class Receiver:
 
     def keep(self, signal: Signal, message: Message) -> None:
         """What a decoded export request holds that the run keeps: its spans, and its GenAI log events."""
+        if self._playback is not None:
+            return  # a fork's agent being played back: the parent's spans of those wakes are the fork's already
         if signal is Signal.TRACES:
             received, source = otlp.spans(message), SpanSource.RECEIVED
         elif signal is Signal.LOGS:
@@ -470,3 +471,29 @@ class GrpcServer:
         server = self._server
         if isinstance(server, grpc.aio.Server):
             await server.stop(grace=SHUTDOWN_SECONDS)
+
+
+class _Playback:
+    """The agent's memory as a parent run's log stood at a moment, for `Receiver.playing_back`: a read is answered
+    from the memory as of `cursor()`, a write answered as taken and written nowhere."""
+
+    def __init__(self, parent: Store, cursor: Callable[[], int]) -> None:
+        self._parent = parent
+        self._cursor = cursor
+        self._at = -1
+        self._memory: dict[tuple[str, str], str] = {}
+
+    def answer(self, call: StoreCall) -> Model:
+        seq = self._cursor()
+        if seq != self._at:
+            self._memory = memory.memory_of(self._parent.events(until=seq, kinds=[EntityKind.MEMORY]))
+            self._at = seq
+        if isinstance(call, MemoryGet):
+            value = self._memory.get((call.collection, call.key))
+            return Found(found=False) if value is None else Found(found=True, value=memory.value_of(value))
+        if isinstance(call, MemoryList):
+            found = sorted(
+                (k, v) for (c, k), v in self._memory.items() if c == call.collection and k.startswith(call.prefix)
+            )
+            return Listed(items=[Item(key=key, value=memory.value_of(body)) for key, body in found])
+        return Written(seq=seq)

@@ -45,7 +45,6 @@ from minutehand.domain.checks import (
     AroundProxy,
     Check,
     CheckReport,
-    CommitmentsReported,
     DeclaredCollection,
     Effectiveness,
     Finding,
@@ -259,7 +258,7 @@ def assessed_by(view: RunView, own: Sequence[Check] = ()) -> list[str]:
 
 
 _STOPPED = {
-    StopReason.AGENT_DONE: "the agent reported it was done",
+    StopReason.AGENT_DONE: "whoever drove the agent relayed that it was done",
     StopReason.WAKE_LIMIT: "the run stopped at its wake limit",
     StopReason.DEADLINE_PASSED: "the run stopped at the scenario's deadline",
     StopReason.WINDOW_ENDED: "the run watched the agent to the end of its window",
@@ -284,12 +283,13 @@ def verdict(
     Tool failed when Minutehand broke answering any call: such a run says nothing about the agent. Simulation
     incomplete when the world did not play as its files declare (an incomplete kind in `simulation`): the agent is
     still judged on what did happen, and that verdict is kept in `on_what_happened`, its words after the world's.
-    Otherwise failed when a finding failed; not judged when a check could not run; passed when the agent
-    reported done, or nothing was left open; unfinished otherwise. Whether the agent should have done anything
-    else is the team's to say, in its rules (`domain/assessments.py`).
+    Otherwise failed when a finding failed; not judged when a check could not run; passed when nothing was left
+    open (or, in a standing world, whoever drove the agent relayed that it was done); unfinished otherwise. Whether
+    the agent should have done anything else is the team's to say, in its rules (`domain/assessments.py`).
 
-    "Open" is read from the world: a wait the world had not settled, or a commitment the agent's last report held
-    open. Nothing else is read into it: a wait on someone who never answers is open, whatever it said.
+    "Open" is read from the world: a wait the world had not settled, or, in a standing world, a commitment the
+    relayed report held open. Nothing else is read into it: a wait on someone who never answers is open, whatever
+    it said.
     """
     judged = _verdict(view, card, stop)
     problems = [f for f in simulation if f.incomplete]
@@ -360,8 +360,7 @@ def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Ver
         left_open = [_count(open_waits, "wait")] if open_waits else []
         left_open += [_count(commitments, "commitment")] if commitments else []
         words = (
-            f"Not finished: no check failed, but the agent never reported it was done; {how}, "
-            f"with {' and '.join(left_open)} still open."
+            f"Not finished: no check failed, but work was left open; {how}, with {' and '.join(left_open)} still open."
         )
     return Verdict(
         kind=kind,
@@ -504,7 +503,6 @@ def view_of(
     broken_calls: list[Exchange] | None = None,
     contract_breaks: list[Exchange] | None = None,
     dues: list[DueEntry] | None = None,
-    reported: list[CommitmentsReported] | None = None,
     around_proxy: list[AroundProxy] | None = None,
     uncalled_providers: Sequence[ProviderKey] = (),
     rules: Sequence[Rule] = (),
@@ -534,7 +532,6 @@ def view_of(
         broken_calls=broken_calls or [],
         contract_breaks=contract_breaks or [],
         dues=dues,
-        reported=reported,
         around_proxy=around_proxy,
         uncalled_providers=list(uncalled_providers),
         rules=list(rules),

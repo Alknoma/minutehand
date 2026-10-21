@@ -12,7 +12,7 @@ from minutehand.adapters.query.build import at
 from minutehand.adapters.query.reader import QueryRefused, Record, Value
 from minutehand.domain.scenario import Model
 
-KINDS = ("message", "write", "read", "memory", "stored", "next_wake", "call", "model_call")
+KINDS = ("message", "write", "read", "memory", "stored", "call", "model_call")
 
 
 class TraceFilter(Model):

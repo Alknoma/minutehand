@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
+# The seal's probe (`sandbox/README.md`): a sandbox like the example's, named `probe`, with nothing inbound.
+version: 1
+name: seal_probe
+sandbox:
+  deadlines: [runsc, --root, /tmp/minutehand-sandbox, debug, --deadlines, probe]
+  advance: [runsc, --root, /tmp/minutehand-sandbox, debug, "--advance-clock={nanoseconds}ns", probe]

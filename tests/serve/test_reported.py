@@ -92,7 +92,7 @@ def test_the_agents_word_that_it_is_done_is_how_the_run_stopped(served: Served, 
         closed = world.close().result.verdict
 
     assert closed.kind is VerdictKind.PASSED and closed.stop is StopReason.AGENT_DONE
-    assert "the agent reported it was done" in closed.words
+    assert "whoever drove the agent relayed that it was done" in closed.words
     assert session.load(state, world.world_id).record.stop is StopReason.AGENT_DONE
 
 

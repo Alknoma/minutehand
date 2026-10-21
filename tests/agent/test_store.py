@@ -9,18 +9,18 @@ import json
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, Receiver
-from minutehand.agent import _store, _wire, store, wake
+from minutehand.agent import _store, _wire, store
 from minutehand.application.memory import memory_of
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.memory import MEMORY_PROVIDER
-from minutehand.domain.world import Actor, EntityKind, NextWakeSnapshot, Operation
+from minutehand.domain.world import Actor, Operation
 
 T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 
@@ -123,13 +123,6 @@ def test_two_processes_share_one_sqlite_file(tmp_path: Path, production: None) -
     assert store.list("from/") == [("from/child", 2), ("from/test", 1)]
 
 
-def test_wake_does_nothing_in_production(production: None) -> None:
-    wake.at(T0)
-    wake.clear()
-    with pytest.raises(ValueError, match="timezone"):
-        wake.at(datetime(2026, 9, 1, 9, 0))
-
-
 def test_production_records_nothing_and_never_calls_minutehand(
     backend: store.Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -142,7 +135,6 @@ def test_production_records_nothing_and_never_calls_minutehand(
     store.list()
     with store.batch() as b:
         b.delete("k")
-    wake.at(T0)
     assert called == []
 
 
@@ -209,15 +201,6 @@ async def test_under_minutehand_a_read_is_answered_from_the_run_as_the_clock_mov
     assert memory_of(run.events()) == {("default", "count"): "2"}
 
 
-async def test_under_minutehand_a_wake_mark_is_recorded_as_the_agents_next_wake(run: SqliteStore) -> None:
-    at = T0 + timedelta(days=2)
-    await asyncio.to_thread(wake.at, at)
-    await asyncio.to_thread(wake.clear)
-    marks = [e for e in run.events() if e.entity.kind is EntityKind.NEXT_WAKE]
-    assert [m.after for m in marks] == [NextWakeSnapshot(at=at), NextWakeSnapshot(at=None)]
-    assert all(m.actor is Actor.AGENT for m in marks)
-
-
 async def test_minutehand_unreachable_while_it_is_on_is_refused_and_nothing_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -245,7 +228,7 @@ def test_the_agent_package_imports_nothing_but_the_standard_library() -> None:
     probe = (
         "import sys, json\n"
         "before = set(sys.modules)\n"
-        "from minutehand.agent import store, wake\n"
+        "from minutehand.agent import store\n"
         "print(json.dumps(sorted(set(sys.modules) - before)))\n"
     )
     done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=30)

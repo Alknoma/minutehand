@@ -117,32 +117,6 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SEED: ${{ github.run_id }}
 
-  # examples/recipes: an agent per framework (LangGraph, the OpenAI Agents SDK, the Claude Agent SDK, Pydantic AI,
-  # the Vercel AI SDK), each run through both of its scenarios against the recipes' fake model, and the proactive
-  # agent, whose wake decider is Pydantic AI. The frameworks are
-  # the `recipes` dependency group, kept out of every other job; RECIPES_NODE_REQUIRED turns a missing node or a
-  # failed `npm ci` from a skip into a failure.
-  recipes:
-    name: Framework recipes
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          enable-cache: true
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          package-manager-cache: false
-      - run: uv sync --group recipes
-      - run: uv run --group recipes pytest -q -rs -n auto -m recipes tests/recipes tests/proactive_agent
-        env:
-          RECIPES_NODE_REQUIRED: "1"
-
   # The viewer's page in headless Chromium (tests/web/test_viewer_page.py): it draws a run, every view opens with no
   # script error, redrawing binds no listener twice (the cause of the old page's hang), and a year-long run of ~34,000
   # marks loads and zooms at interactive speed. Playwright is in the dev group; its Chromium is fetched here only.
@@ -188,9 +162,9 @@ jobs:
       - run: uv run pytest -q -m docker tests/providers/slack/test_slack_redirected_container.py
 
   # What a user installs, as they would install it: the wheel in an environment with none of the
-  # dev dependencies, and the image, each running tests/agents/follow_up end to end. Nothing is pushed.
+  # dev dependencies, and the image. Nothing is pushed.
   build:
-    name: Package and image (install and run the example)
+    name: Package and image
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -208,16 +182,20 @@ jobs:
       - run: uv sync
       - name: Build the sdist and the wheel
         run: uv build
-      - name: Install the wheel into a clean environment and run both examples with it
-        run: uv run pytest -q -m packaging tests/packaging/test_installed_package.py
-      - name: Build the image and run both examples through it
-        run: uv run pytest -q -m packaging tests/packaging/test_container_image.py
+      - name: Install the wheel into a clean environment and run the installed command
+        run: |
+          python3 -m venv "$RUNNER_TEMP/wheel"
+          "$RUNNER_TEMP/wheel/bin/python" -m pip install --disable-pip-version-check dist/*.whl
+          "$RUNNER_TEMP/wheel/bin/minutehand" --help
+      - name: Build the image and run its entrypoint
+        run: |
+          docker build -t minutehand:ci .
+          docker run --rm minutehand:ci --help
 
   # How another repository gets Minutehand (docs/ci.md): the composite action, used by its local path, on a
-  # runner with nothing set up but the checkout. It installs into a plain venv with pip, builds the image,
-  # and then the installed command and the image each run.
+  # runner with nothing set up but the checkout. It installs into a plain venv with pip and builds the image.
   action:
-    name: Setup action (install, run the example, build the image)
+    name: Setup action (install, build the image)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -245,18 +223,6 @@ jobs:
           test "$COMMIT" = "$(git rev-parse HEAD)"
           test -n "$VERSION"
           "$RUNNER_TEMP/venv/bin/minutehand" --help
-      - name: The example, with the installed command
-        working-directory: tests/agents/follow_up
-        env:
-          AGENT_BEHAVIOUR: diligent
-        run: |
-          "$RUNNER_TEMP/venv/bin/python" -m pip install --disable-pip-version-check slack_sdk
-          # Rosa's words are a model's: the recipes' stand-in writes them offline, as the example's README says.
-          "$RUNNER_TEMP/venv/bin/python" ../../../examples/recipes/fake_model.py &
-          until "$RUNNER_TEMP/venv/bin/python" -c 'import socket; socket.create_connection(("127.0.0.1", 8790), 1)' 2>/dev/null; do sleep 0.2; done
-          export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
-          "$RUNNER_TEMP/venv/bin/minutehand" run scenario.yaml --agent agent.yaml --state "$RUNNER_TEMP/state" \
-            -- "$RUNNER_TEMP/venv/bin/python" agent.py
       - name: The image the action built
         run: docker run --rm minutehand:action --help
       # What a caller's runner holds: this commit's files, no .git, unpacked into a folder named by the
@@ -309,7 +275,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [types, style, lints, workflows, tests, recipes, browser, transparent, build, action, promotion]
+    needs: [types, style, lints, workflows, tests, browser, transparent, build, action, promotion]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

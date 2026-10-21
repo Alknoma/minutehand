@@ -6,18 +6,18 @@ asked for again, except for a person a `PersonChange` changes: each message to t
 (no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
 The agent's memory (`minutehand.agent.store`) is part of the same log, so the child has its parent's memory as it
-stood at the checkpoint with nothing restored. `application.restore.start_fork` proves it (the memory's digest against
-the checkpoint's), starts the agent's program when Minutehand runs it, and compares the agent's report with the one
-recorded at the checkpoint: a report that differs means state outside the store, and the fork is refused, saying so.
-A checkpoint the agent went on writing its memory after, in the same wake, is not one a fork can start from. Every
-refusal that can be decided from the parent is decided before the child run exists, and a child refused after it
-exists is discarded, so no refusal leaves a run behind.
+stood at the checkpoint with nothing restored. Everything else the agent is lives in its sandbox, brought back by
+playing the agent's recorded inputs into a fresh one up to the checkpoint (`application.restore`,
+`application.playback`): the agent is asked nothing, and a fork is refused where the agent does not do what it did
+before. A checkpoint the agent went on writing its memory after, in the same wake, is not one a fork can start
+from. Every refusal that can be decided from the parent is decided before the child run exists, and a child refused
+after it exists is discarded, so no refusal leaves a run behind.
 
-What no fork can rewind, because it was never in the log: whatever the agent keeps outside the store (its own
-database, files, a cache, a process's memory), what a real third-party service the run reached keeps (the proxy
-refuses unclaimed hosts, but a model API is reached for real), what a model provider keeps on its side (a stored
-conversation, a cache, a batch), and the AWS provider's queues and schedules (in moto's memory). A provider that says
-it keeps state outside the log (`Manifest.state_outside_log`, AWS) refuses any fork after the parent first used it.
+What no fork can rewind, because it was never in the log: what a real third-party service the run reached keeps
+(the proxy refuses unclaimed hosts, but a model API is reached for real), what a model provider keeps on its side
+(a stored conversation, a cache, a batch), and the AWS provider's queues and schedules (in moto's memory). A provider
+that says it keeps state outside the log (`Manifest.state_outside_log`, AWS) refuses any fork after the parent first
+used it.
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ from minutehand.application.orchestrator import (
     Mounts,
     Orchestrator,
     OutsideState,
-    Reach,
     Replay,
     Scorer,
     Services,
@@ -53,8 +52,9 @@ from minutehand.application.orchestrator import (
 )
 from minutehand.application.people import People, move
 from minutehand.application.refusals import RunRefused
-from minutehand.application.restore import OwnProgram, Progress, Restored, start_fork
+from minutehand.application.restore import OwnProgram, Playback, Progress, Restored, start_fork
 from minutehand.application.run_clock import RunClock
+from minutehand.application.sandbox import SandboxClock
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.domain.agent import AgentUnderTest
@@ -81,7 +81,7 @@ from minutehand.domain.world import (
     RecordedCall,
     WorldEvent,
 )
-from minutehand.ports.agent import Reports, TakesReplies
+from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
 from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.people import Replier
@@ -98,9 +98,9 @@ FORK_RECORD = "fork.json"
 """`Fork`, in the directory of each run it started: what the child changed, as it was asked for."""
 
 CANNOT_REWIND = (
-    "A fork rewinds the fakes' world and the agent's memory (`minutehand.agent.store`); it cannot rewind what the "
-    "agent keeps anywhere else, what a real third-party service the run reached keeps, what a model provider keeps on "
-    "its side, the AWS provider's queues and schedules, or what an external emulator holds."
+    "A fork rewinds the fakes' world, the agent's memory (`minutehand.agent.store`) and the agent's sandbox, from "
+    "the record; it cannot rewind what a real third-party service the run reached keeps, what a model provider keeps "
+    "on its side, the AWS provider's queues and schedules, or what an external emulator holds."
 )
 
 
@@ -154,7 +154,8 @@ async def fork_run(
     run_id: str,
     scenario: Scenario,
     agent: AgentUnderTest,
-    reach: Reach,
+    sandbox: SandboxClock,
+    playback_for: Callable[[Store, Checkpoint], Playback],
     services: Services,
     replier_for: Callable[[Scenario, Sequence[ReplyAt]], Replier],
     model: LanguageModel | None = None,
@@ -180,9 +181,9 @@ async def fork_run(
 
     `open_parent` opens the parent run's store stamping from the clock it is given; the child the store's
     `fork` makes stamps from that same clock, which this function moves to the checkpoint. `own` is the agent's
-    program when Minutehand runs it, not yet started: it is started once the child exists, so it reads the child's
-    memory from its first call. `progress` hears each step as it is taken. How each child's agent was found at its
-    start is kept as `restore.json` in its directory.
+    program (its sandbox), not yet started: it is started once the child exists, and `playback_for` gives, for the
+    parent's store and the checkpoint, the playback of the agent's recorded inputs into it. `progress` hears each
+    step as it is taken. How each child's agent was brought back is kept as `restore.json` in its directory.
 
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
     without the scenario or agent file naming it is still one whose state may be outside the log. `replay` is the
@@ -200,8 +201,6 @@ async def fork_run(
         )
     changed = changed_scenario(scenario, fork)
     _refuse_ticket_edits(fork, services, changed)
-    main = reach.main
-    reports = main if isinstance(main, Reports) else None
     records: list[RunRecord] = []
     for sample in range(fork.samples):
         child_id = run_id if fork.samples == 1 else f"{run_id}-{sample + 1}"
@@ -228,7 +227,7 @@ async def fork_run(
             orchestrator = Orchestrator(
                 scenario=changed,
                 agent=agent,
-                reach=reach,
+                sandbox=sandbox,
                 store=child,
                 clock=clock,
                 services=services,
@@ -261,7 +260,7 @@ async def fork_run(
                 checkpoint.agent,
                 memory=store_digest(child),
                 checkpoint_seq=fork.at_seq,
-                reports=reports,
+                playback=playback_for(parent_store, checkpoint),
                 own=own,
                 progress=progress,
                 edit=edit if edits else None,
@@ -279,7 +278,7 @@ async def fork_run(
         _keep(state_dir / child_id, restored, fork)
         if wire is not None and on_wire:
             wire.apply(child_id, on_wire)
-        records.append(await orchestrator.resume(checkpoint, replan=restored.replanned))
+        records.append(await orchestrator.resume(checkpoint))
     return records
 
 
@@ -323,8 +322,8 @@ def refused_by(writes: dict[int, list[WorldEvent]], at_seq: int, checkpoint: Che
     key = f"{first.collection}/{first.key}" if isinstance(first, MemorySnapshot) else late[0].entity.external_id
     return NotRestorable(
         reason=f"the agent went on writing its memory after this checkpoint, in the same wake ({len(late)} write(s), "
-        f"the first to {key} at seq {late[0].seq}): its memory here was half written. Report WORKING until the "
-        "wake's writes are done"
+        f"the first to {key} at seq {late[0].seq}): its memory here was half written, since the sandbox fell idle "
+        "before the agent had finished"
     )
 
 

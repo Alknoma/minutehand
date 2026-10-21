@@ -144,6 +144,10 @@ class NotionWorld:
     def __init__(self, store: Store) -> None:
         self._store = store
 
+    @property
+    def store(self) -> Store:
+        return self._store
+
     # ------------------------------------------------------------------ ids
 
     def next_seq(self) -> int:

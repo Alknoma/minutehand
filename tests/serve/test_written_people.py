@@ -15,7 +15,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from examples.recipes import fake_model
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound
 from minutehand.adapters.model.environment import VARIABLES
 from minutehand.domain.conversation import Wrote
@@ -26,6 +25,7 @@ from minutehand.testing.world import OpenWorld
 from tests.inboxes.product import Product, serving
 from tests.inboxes.support import NADIA, TOKENS, inbox
 from tests.serve.support import SECRET, Served, dm, event_receiver
+from tests.support import fake_model
 from tests.support.people import people_environment, people_requests
 
 FACTS = ["Thursday works for me", "the room is booked from 10"]

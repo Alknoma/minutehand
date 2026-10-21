@@ -6,17 +6,20 @@ host is a local HTTPS server it signed. Nothing here reaches the public internet
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import certifi
 import httpx
 import pytest
+from cryptography import x509
+from mitmproxy.addons.tlsconfig import TlsConfig
 
 from minutehand.adapters.proxy.policy import HostPolicy, Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
+from minutehand.adapters.proxy.trust import VALID_FROM, VALID_UNTIL, EverValidCertStore, write_bundle
 from minutehand.adapters.proxy.trust import authority as proxy_authority
-from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
 from tests.proxy.support import client
@@ -75,3 +78,28 @@ def test_the_ca_is_made_once_and_kept(tmp_path: Path) -> None:
     first = proxy_authority(tmp_path / "ca").read_bytes()
     write_bundle(tmp_path / "ca")
     assert proxy_authority(tmp_path / "ca").read_bytes() == first
+
+
+def test_the_ca_and_every_host_certificate_are_valid_at_any_instant_the_agents_clock_reads(tmp_path: Path) -> None:
+    """The agent's clock is the run's: a scenario set two months before the machine's day, or two years after, must
+    find the proxy's certificates valid. mitmproxy's own are dated from two days before the machine's clock."""
+    store = EverValidCertStore.open(tmp_path / "ca")
+    host = store.get_cert("ledger.example", [x509.DNSName("ledger.example")]).cert
+    for cert in (store.default_ca, host):
+        assert cert.notbefore == VALID_FROM.replace(tzinfo=UTC), cert.notbefore
+        assert cert.notafter == VALID_UNTIL.replace(tzinfo=UTC), cert.notafter
+    assert store.get_cert("ledger.example", [x509.DNSName("ledger.example")]) is store.get_cert(
+        "ledger.example", [x509.DNSName("ledger.example")]
+    )  # made once per host, as mitmproxy's
+
+
+async def test_the_proxy_presents_certificates_valid_at_any_instant(
+    registry: Registry, store: SqliteStore, clock: RunClock, tmp_path: Path
+) -> None:
+    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+        master = proxy._master  # pyright: ignore[reportPrivateUsage]
+        assert master is not None
+        tls = master.addons.get("tlsconfig")
+        assert isinstance(tls, TlsConfig)
+        presented = tls.certstore.get_cert("ledger.example", [x509.DNSName("ledger.example")]).cert
+    assert presented.notbefore.year == 1970 and presented.notafter.year == 9999

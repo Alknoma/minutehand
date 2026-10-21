@@ -23,9 +23,7 @@ from minutehand.application.checkpoint import (
     PendingService,
     PendingTimer,
     PendingTransition,
-    PendingWake,
 )
-from minutehand.domain.agent import WakeReason
 from minutehand.domain.clock import PLANNED_BY, REACHED, Drawn, Due, DueClosed, DueEntry, DueKind, DueSource
 from minutehand.domain.scenario import DispatchFault, DispatchRule, Model, PlannedBy
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation, PendingSnapshot, WorldEvent
@@ -34,8 +32,6 @@ from minutehand.ports.store import Store
 
 
 def source_of(pending: Pending) -> DueSource:
-    if isinstance(pending, PendingWake):
-        return DueSource.POLLED if pending.reason is WakeReason.TICK else DueSource.REPORTED
     if isinstance(pending, PendingBooking):
         return DueSource.BOOKED
     if isinstance(pending, PendingHappening):
@@ -245,9 +241,7 @@ class Dues:
 
 
 def _again(pending: Pending, at: datetime, fault: DispatchFault) -> Pending:
-    """The late or second delivery of one of the agent's own wakes, at `at`. It keeps whatever its delivery needs
-    (a booking's own reference), and a tick of it books no next tick."""
+    """The late or second delivery of one of the agent's own booked wakes, at `at`. It keeps whatever its delivery
+    needs (a booking's own reference)."""
     due = Due(at=at, kind=pending.due.kind, ref=f"{pending.due.ref}~{fault.value}")
-    if isinstance(pending, PendingWake):
-        return pending.model_copy(update={"due": due, "repeat": True})
     return pending.model_copy(update={"due": due})

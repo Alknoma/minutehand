@@ -1,38 +1,55 @@
 # A small proactive agent
 
 `agent.py` gets answers from people and passes them on. Its work is its own: `work.json` lists each ask (who answers,
-the question, who is told, and for work not due yet, from when: `not_before`), and the code names no one. It asks in Slack, follows up at most twice, a working day
-apart, and tells the answer on, or that none came. Nothing hands it this work, and nothing wakes it on a schedule: it
-decides when it next wakes.
+the question, who is told), and the code names no one. It asks in Slack, follows up at most twice, a working day
+apart, and tells the answer on, or that none came. Nothing hands it this work and nothing outside it wakes it: its
+own scheduler, one thread waiting on the next deadline, decides when it next acts, and its state is its own SQLite
+file (`proactive_agent.db`). It imports nothing of Minutehand's and has no endpoint for it. It is plain Python on
+stock `slack_sdk`, about 150 lines, and the whole of it is the agent's.
 
-That decision is the only part that needs judgement, so it is the only part that uses a model, and it lives in its own
-small package, `wake/`:
-
-| File | What it does |
-|---|---|
-| `wake/decide.py` | A Pydantic AI agent, the wake decider. It is shown what the agent is waiting on (since when, and the earliest it may act on it again) and proposes one moment to wake, and why. It can weigh what plain code cannot, such as a person who usually answers in the afternoon. |
-| `wake/guard.py` | The rules every wake keeps, whatever the decider proposed: nothing open, no wake; something open, always a wake; never before an answer can be due; never in the past; always in working hours (a weekend is skipped). If the decider proposes nothing, or fails, the earliest due moment is used. |
-
-The rest of `agent.py` is plain code: ask, follow up, report. Its memory is `minutehand.agent.store`, a SQLite file in
-production and the run's own memory under Minutehand. Everything it knows between wakes is there, even the time of its last wake, so a restarted agent (a
-fork from a checkpoint) is the agent it was. A Slack event is only recorded; the agent acts on the wake it brings.
-
-The worlds are the people `work.json` names; the example's work asks Sam, in finance, for a cost centre and tells Owen.
+Under Minutehand it runs unchanged, in a sandbox whose clock Minutehand owns (`docs/design.md`, "A sandbox whose
+clock Minutehand owns"): the sandbox's clock reads simulated time, so a day's wait passes in a jump; the deadline its
+scheduler thread waits on is read from the sandbox as the agent's next wake; and the only way out of the sandbox is
+Minutehand's proxy, where the fake Slack answers. A fork from any checkpoint plays the agent's recorded inputs back
+into a fresh sandbox and the agent stands where it stood, database and timers included.
 
 | World | What happens |
 |---|---|
-| `worlds/answers.yaml` | Sam answers a few hours after he is asked. The agent tells Owen his answer at once, and names no wake after. |
+| `worlds/answers.yaml` | Sam answers a few hours after he is asked. The agent tells Owen his answer at once; nothing is left open and its scheduler waits on nothing. |
 | `worlds/quiet.yaml` | Sam never answers. The agent follows up a working day after its question, again a day after that, then tells Owen, and stops. |
-| `worlds/team.yaml` with `AGENT_WORK=team.json` | Three weeks of onboarding: eight asks of six people, each asked when it falls due (`not_before`). Sam answers within hours, Priya always answers but takes two to three working days, Marco is on leave the first week with Lena covering, Jade never answers, Ana answers the next day, Tom in a day or two. Its one-day patience chases Priya inside her window and writes to Marco while he is away (both for review). Its work owes Owen each answer, declared as `relayed` expectations, so each late answer it gave up on and never passed on (Marco's, Priya's, Tom's) fails the run, read from the record. The reviewer (`--judge`) reads what no rule can: it passes Marco's automatic reply on to Owen as his answer. |
+| `worlds/sam_answers_the_follow_up.yaml` | A fork's changes, not a world: from a checkpoint of the quiet run, Sam answers the first follow-up three hours on. The agent, played back to the checkpoint, tells Owen and follows up no more. |
 
 ## Run it
 
+It needs the patched gVisor (`sandbox/build.sh`) and Linux with a privileged container; `sandbox/lab` is one. From the
+repository root:
+
 ```bash
-pip install minutehand slack_sdk 'pydantic-ai-slim[openai]'
-export AGENT_MODEL=openai-responses:gpt-6-luna OPENAI_API_KEY=... # the wake decider's model; AGENT_MODEL=test offline
-export MINUTEHAND_MODEL=... MINUTEHAND_MODEL_API_KEY=...         # the model that plays Sam and Owen
-minutehand run worlds/quiet.yaml --agent agent.yaml -- python agent.py
+sandbox/build.sh
+docker build -t minutehand-lab sandbox/lab
+docker run --rm --privileged -v "$PWD:/work" -v "$PWD/sandbox/dist:/opt/gv:ro" minutehand-lab \
+  sandbox/lab/run-example.sh examples/proactive_agent/worlds/quiet.yaml
 ```
 
-`tests/proactive_agent` runs both worlds, and tests the guard against a decider that proposes too early, one that
-proposes well, and one that fails.
+On a Linux host with `runsc` and its `gvisor-bin/` on the path, the run itself is:
+
+```bash
+pip install slack_sdk
+export MINUTEHAND_MODEL=... MINUTEHAND_MODEL_API_KEY=...   # the model that plays Sam and Owen; or the offline
+                                                          # stand-in: python tests/support/fake_model.py
+minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 0.0.0.0 --agent-proxy-host 192.168.10.3 \
+  --transparent-port 8082 --dns-port 8053 -- ./run_in_sandbox.sh
+minutehand checkpoints <run>                              # seq 27, after wake 2: asked, followed up once
+minutehand fork <run> --at 27 --changes worlds/sam_answers_the_follow_up.yaml --proxy-host 0.0.0.0 \
+  --agent-proxy-host 192.168.10.3 --transparent-port 8082 --dns-port 8053 -- ./run_in_sandbox.sh
+```
+
+`run_in_sandbox.sh` seals the sandbox's link first (`sandbox/seal.sh`: the proxy is its only way out), then starts
+the agent with `runsc do` on that link (192.168.10.2, its gateway 192.168.10.3 where the proxy listens), born at the
+run's start (`MINUTEHAND_STARTS_AT_NS`), and passes it the environment Minutehand hands the command. `agent.yaml` names the two control calls Minutehand makes on the sandbox
+and where Slack's events reach the agent inside it. What each run showed is under "Evidence" in `docs/design.md`
+(2026-10-22): four wakes a day apart in the quiet world, Owen told in the same wake Sam answered in, and the fork
+verified at its checkpoint.
+
+`tests/examples/test_proactive_agent.py` holds the agent's own logic (when a follow-up falls due, what it says and
+when it stops) against its own SQLite memory, with no Slack and no sandbox.

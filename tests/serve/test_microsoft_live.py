@@ -28,6 +28,7 @@ from minutehand.domain.world import Actor, DocumentSnapshot, EntityKind, GrantSn
 from minutehand.testing.client import Refused, Unsupported
 from minutehand.testing.world import OpenWorld
 from tests.serve.support import Served
+from tests.support.tokens import decode_at
 
 LOGIN = "https://login.microsoftonline.com"
 GRAPH = "https://graph.microsoft.com/v1.0"
@@ -138,7 +139,8 @@ class Bot:
     accepted: list[dict[str, Any]] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
 
-    def check(self, authorization: str, service_url: str) -> str | None:
+    def check(self, authorization: str, service_url: str, *, now: datetime) -> str | None:
+        """At `now`, the bot's clock: the world's, as a bot in its sandbox reads it."""
         if not authorization.startswith("Bearer "):
             return "no bearer token"
         presented = authorization.removeprefix("Bearer ")
@@ -147,13 +149,8 @@ class Bot:
         try:
             kid = jwt.get_unverified_header(presented)["kid"]
             key = next(k for k in self.keys.keys if k.key_id == kid)
-            claims = jwt.decode(
-                presented,
-                key.key,
-                algorithms=["RS256"],
-                audience=self.app_id,
-                issuer=BOT_ISSUER,
-                options={"require": ["exp", "iss", "aud"]},
+            claims = decode_at(
+                presented, key.key, audience=self.app_id, issuer=BOT_ISSUER, now=now, require=["exp", "iss", "aud"]
             )
         except (jwt.PyJWTError, StopIteration) as e:
             return f"{type(e).__name__}: {e}"
@@ -176,7 +173,12 @@ def _bot(served: Served, app_id: str) -> Iterator[Bot]:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             activity = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            why = bot.check(self.headers["Authorization"] or "", activity["serviceUrl"])
+            # the bot's clock is the world's: the activity's timestamp is the moment it was pushed at
+            why = bot.check(
+                self.headers["Authorization"] or "",
+                activity["serviceUrl"],
+                now=datetime.fromisoformat(activity["timestamp"].replace("Z", "+00:00")),
+            )
             if why is None:
                 bot.accepted.append(activity)
                 self.send_response(200)
@@ -345,8 +347,9 @@ def test_a_minted_bot_framework_token_passes_the_bots_check_and_a_missing_audien
             "microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience=directory.bot_app_id)
         )
         assert [h.name for h in minted.headers] == ["Authorization"]
-        assert bot.check(minted.headers[0].value, CONNECTOR) is None
-        assert bot.check(minted.headers[0].value, "https://elsewhere.example.com/") is not None
+        now = datetime.fromisoformat(STARTS)
+        assert bot.check(minted.headers[0].value, CONNECTOR, now=now) is None
+        assert bot.check(minted.headers[0].value, "https://elsewhere.example.com/", now=now) is not None
         with pytest.raises(Refused) as refused:
             world.inbound_credential("microsoft", InboundCredentialAsk(service_url=CONNECTOR))
         assert refused.value.status == 409
@@ -362,11 +365,12 @@ def test_an_expired_token_and_one_for_another_bot_are_minted_signed_and_refused_
         expired = world.inbound_credential(
             "microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience=directory.bot_app_id, expires_in=-600)
         )
-        assert "expired" in (bot.check(expired.headers[0].value, CONNECTOR) or ""), "an expired token passed"
+        now = datetime.fromisoformat(STARTS)
+        assert "expired" in (bot.check(expired.headers[0].value, CONNECTOR, now=now) or ""), "an expired token passed"
         foreign = world.inbound_credential(
             "microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience="another-app", foreign_audience=True)
         )
-        assert bot.check(foreign.headers[0].value, CONNECTOR) is not None, "a token for another app passed"
+        assert bot.check(foreign.headers[0].value, CONNECTOR, now=now) is not None, "a token for another app passed"
         with pytest.raises(Refused):
             world.inbound_credential("microsoft", InboundCredentialAsk(service_url=CONNECTOR, audience="another-app"))
         with pytest.raises(Refused):

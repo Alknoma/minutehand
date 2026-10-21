@@ -44,7 +44,7 @@ def test_a_stop_without_done_while_a_wait_is_open_is_not_finished_and_exits_3(st
 
     assert [f for f in result.findings if f.kind is FindingKind.FAIL] == []
     assert result.verdict.kind is VerdictKind.UNFINISHED and result.exit_code == 3
-    assert result.verdict.words.startswith("Not finished: no check failed, but the agent never reported it was done")
+    assert result.verdict.words.startswith("Not finished: no check failed, but work was left open")
     assert "with 1 wait still open" in result.verdict.words
     assert result.verdict.stop is stop and result.verdict.open_waits == 1
 
@@ -89,7 +89,7 @@ def test_done_after_following_the_question_up_passes() -> None:
     result = evaluate(world, stop=StopReason.AGENT_DONE, ended=at(31))
 
     assert result.verdict.kind is VerdictKind.PASSED and result.exit_code == 0
-    assert result.verdict.words == "Passed: no check failed, and the agent reported it was done."
+    assert result.verdict.words == "Passed: no check failed, and whoever drove the agent relayed that it was done."
 
 
 def test_a_message_to_a_silent_owner_is_an_open_wait_whatever_it_said() -> None:

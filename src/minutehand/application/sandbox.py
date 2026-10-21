@@ -1,25 +1,25 @@
-"""The sandbox whose clock Minutehand owns (`Contained`): reading whether it is idle and when its earliest deadline
-falls, and moving its clock with the run's."""
+"""The sandbox every agent runs in, whose clock Minutehand owns (`domain.agent.Sandbox`): reading whether it is idle
+and when its earliest deadline falls, and moving its clock with the run's."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import time
+from datetime import UTC, datetime, timedelta
 
 from pydantic import ConfigDict, Field
 
+from minutehand.application.refusals import AgentFailed
 from minutehand.application.traffic import Traffic
-from minutehand.domain.agent import Contained
+from minutehand.domain.agent import Sandbox
 from minutehand.domain.scenario import Model
+from minutehand.domain.templates import STARTS_AT_VARIABLE
 
 
-class SandboxFailed(RuntimeError):
-    """A sandbox command could not be run, or did not answer as `Contained` says."""
-
-
-HOUSEKEEPING_SLACK = 1.02
-"""How far past a task's housekeeping period a deadline still reads as that housekeeping re-armed."""
+class SandboxFailed(AgentFailed):
+    """A sandbox command could not be run, or did not answer as `Sandbox` says: the agent's sandbox is the agent,
+    and one that is gone (its program exited, and the sandbox with it) or cannot be read is the agent failed."""
 
 
 class TaskWait(Model):
@@ -32,29 +32,32 @@ class TaskWait(Model):
 
 
 class SandboxDeadlines(Model):
-    """As `Contained.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
+    """As `Sandbox.deadlines` prints them; anything else it prints (a task count) is the sandbox's, and ignored."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     idle: bool
+    now_ns: int = Field(description="The sandbox's realtime clock, nanoseconds since the epoch")
     earliest_ns: int = Field(description="Until the earliest deadline any blocked task waits for; -1 for none")
     waits: list[TaskWait] | None = Field(
         default=None,
         description="Every blocked task's deadline, when the sandbox says; None when it says only the earliest",
     )
 
-    def earliest(self, quiet: dict[int, int]) -> int:
-        """Until the earliest deadline that is not a task's own housekeeping: one no further than the period that
-        task's timer was seen to fire at and do nothing (`quiet`, task to nanoseconds). A longer deadline on the
-        same task is the agent's own timer. -1 for none."""
-        if self.waits is None:
-            return self.earliest_ns
-        mine = [w.ns for w in self.waits if w.task not in quiet or w.ns > quiet[w.task] * HOUSEKEEPING_SLACK]
-        return min(mine) if mine else -1
+    def now(self) -> datetime:
+        """The sandbox's realtime clock, as an instant."""
+        return datetime.fromtimestamp(self.now_ns // 1_000_000_000, UTC) + timedelta(
+            microseconds=(self.now_ns % 1_000_000_000) / 1000
+        )
 
-    def tasks_at(self, ns: int) -> set[int]:
-        """The tasks whose deadline is `ns` away."""
-        return {w.task for w in self.waits or [] if w.ns == ns}
+    def earliest(self, housekeeping: timedelta) -> int:
+        """Until the earliest deadline longer than `housekeeping` (`Sandbox.housekeeping`): a shorter one is a
+        runtime's own timer (an HTTP server's poll), which fires in real time while the sandbox is read as idle and
+        is no wake. -1 for none."""
+        floor = housekeeping.total_seconds() * 1_000_000_000
+        waits = [w.ns for w in self.waits] if self.waits is not None else [self.earliest_ns]
+        mine = [ns for ns in waits if ns > floor]
+        return min(mine) if mine else -1
 
 
 async def _run(argv: list[str]) -> str:
@@ -71,7 +74,7 @@ async def _run(argv: list[str]) -> str:
 
 
 class SandboxClock:
-    def __init__(self, source: Contained) -> None:
+    def __init__(self, source: Sandbox) -> None:
         self._source = source
 
     async def deadlines(self) -> SandboxDeadlines:
@@ -85,10 +88,41 @@ class SandboxClock:
             raise SandboxFailed(f"{' '.join(self._source.deadlines)} printed {lines[-1]!r}: {e}") from e
 
     async def advance(self, nanoseconds: int) -> None:
-        """Move the sandbox's clock forward with the run's; nothing for a step of none."""
-        if nanoseconds <= 0:
+        """Move the sandbox's clock forward with the run's; nothing for a step of none. Never back: a timer the
+        agent armed from its clock before a backward step would fire that much early."""
+        if nanoseconds < 0:
+            raise ValueError(f"a sandbox's clock is never moved back ({nanoseconds} ns)")
+        if nanoseconds == 0:
             return
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
+
+    async def sync(self, to: datetime) -> None:
+        """Bring the sandbox's clock up to the run's, `to`, when it is behind. A sandbox ahead of `to` is left
+        where it is, and the run's clock catches up to it when its wake ends (`Orchestrator._plan_timer`): the
+        real time an agent spends working passes on its clock. One ahead by more than `settle_limit` was not born at
+        the run's start, and is refused: moved back, its timers would fire early."""
+        said = await self._once_up()
+        step = int(to.timestamp() * 1_000_000_000) - said.now_ns
+        if step < 0 and -step > self._source.settle_limit.total_seconds() * 1_000_000_000:
+            raise SandboxFailed(
+                f"the agent's sandbox clock reads {said.now().isoformat()}, after the run's {to.isoformat()}: a "
+                f"sandbox is born at the run's start ({STARTS_AT_VARIABLE} in the agent's command's environment) "
+                "and its clock is only ever moved forward"
+            )
+        if step > 0:
+            await self.advance(step)
+
+    async def _once_up(self) -> SandboxDeadlines:
+        """The sandbox's deadlines once it answers: the agent's command creates the sandbox, and the first read may
+        come before it exists. Read again, `quiet` apart, up to `settle_limit`; then the last refusal stands."""
+        give_up = time.monotonic() + self._source.settle_limit.total_seconds()  # clock-lint: exempt real-time limit
+        while True:
+            try:
+                return await self.deadlines()
+            except SandboxFailed:
+                if time.monotonic() >= give_up:  # clock-lint: exempt real-time limit
+                    raise
+                await asyncio.sleep(self._source.quiet.total_seconds())
 
     async def settle(self, traffic: Traffic | None) -> SandboxDeadlines | None:
         """Wait until the sandbox is idle on two reads `quiet` apart with no call of the agent's in flight, and

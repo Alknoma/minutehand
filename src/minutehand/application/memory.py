@@ -30,7 +30,6 @@ from minutehand.domain.memory import (
     MemoryPut,
     MemoryWrite,
     SeededMemory,
-    WakeMark,
     Written,
     canonical,
     entity_id,
@@ -42,16 +41,12 @@ from minutehand.domain.world import (
     EntityKind,
     EntityRef,
     MemorySnapshot,
-    NextWakeSnapshot,
     Operation,
     WorldEvent,
 )
 from minutehand.ports.store import Store
 
 PAGE = 500
-
-NEXT_WAKE = EntityRef(provider=MEMORY_PROVIDER, kind=EntityKind.NEXT_WAKE, external_id="next_wake")
-"""The one entity `minutehand.agent.wake` writes: the agent's next wake as it last said it."""
 
 
 def ref(collection: str, key: str) -> EntityRef:
@@ -135,7 +130,7 @@ class Reads:
         )
         if found is None:
             return Found(found=False)
-        return Found(found=True, value=_value(found.body))
+        return Found(found=True, value=value_of(found.body))
 
     def listing(self, store: Store, wake: int, call: MemoryList) -> Listed:
         """Every key under a prefix, ordered by key, counted as the agent's search."""
@@ -152,7 +147,7 @@ class Reads:
                 after=MemorySnapshot(collection=call.collection, key=call.prefix, listing=True),
             ),
         )
-        return Listed(items=[Item(key=key, value=_value(body)) for key, body in found])
+        return Listed(items=[Item(key=key, value=value_of(body)) for key, body in found])
 
     def _read(
         self, store: Store, wake: int, read: tuple[Operation, str, str], found: str | None, change: Change
@@ -195,19 +190,6 @@ def remember(store: Store, call: MemoryWrite) -> Written:
             )
     events = store.apply_all(changes)
     return Written(seq=events[-1].seq)
-
-
-def mark(store: Store, said: WakeMark) -> WorldEvent:
-    """The agent's next wake as it said it (`minutehand.agent.wake`), recorded as its own."""
-    return store.apply(
-        Change(
-            entity=NEXT_WAKE,
-            operation=Operation.UPDATE if store.get(NEXT_WAKE) is not None else Operation.CREATE,
-            actor=Actor.AGENT,
-            body=said.model_dump_json(),
-            after=NextWakeSnapshot(at=said.at),
-        )
-    )
 
 
 def held(store: Store, collection: str, prefix: str = "") -> list[tuple[str, str]]:
@@ -264,6 +246,7 @@ def store_digest(store: Store) -> str:
         after = page[-1].entity.external_id
 
 
-def _value(body: str) -> JsonValue:
+def value_of(body: str) -> JsonValue:
+    """A memory value as the agent wrote it, from the JSON text the log keeps."""
     loaded: JsonValue = json.loads(body)
     return loaded

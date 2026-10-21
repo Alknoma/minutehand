@@ -867,23 +867,26 @@ class ServiceDesk:
                     fixed = RouteMeaning(route=meaning.route, means=Meaning.OTHER, shape=shape_of(json.loads(body)))
                     text = fixed.model_dump_json()
                     self._keep(service, ServiceRecordKind.ROUTE, route, text, RecordSource.MODEL, world)
-                delivered = await self._pushes.push(url, body)
-                status, failure = delivered.status, delivered.failure
-            snapshot = PushSnapshot(
-                service=service.key, item=item.id, url=url, body=body, status=status, failure=failure
-            )
-            world.apply(
-                Change(
-                    entity=EntityRef(
-                        provider=service.key, kind=EntityKind.PUSH, external_id=f"push:{world.head() + 1}"
-                    ),
-                    operation=Operation.CREATE,
-                    actor=Actor.SCENARIO,
-                    body=snapshot.model_dump_json(),
-                    parent=service.key,
-                    after=snapshot,
+                delivered = await self._pushes.push(
+                    world, service=service.key, item=item.id, url=url, body=body, parent=service.key
                 )
-            )
+                status, failure = delivered.status, delivered.failure
+            if written is None:
+                snapshot = PushSnapshot(
+                    service=service.key, item=item.id, url=url, body=body, status=status, failure=failure
+                )
+                world.apply(
+                    Change(
+                        entity=EntityRef(
+                            provider=service.key, kind=EntityKind.PUSH, external_id=f"push:{world.head() + 1}"
+                        ),
+                        operation=Operation.CREATE,
+                        actor=Actor.SCENARIO,
+                        body=snapshot.model_dump_json(),
+                        parent=service.key,
+                        after=snapshot,
+                    )
+                )
 
     def odds(self, service: Service, item: Item, legal: Sequence[MachineTransition]) -> MachineTransition | None:
         """The person transition the service's odds draw for the item in its state, seeded; None without odds."""

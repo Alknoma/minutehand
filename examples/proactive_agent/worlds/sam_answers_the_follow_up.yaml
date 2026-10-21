@@ -1,0 +1,12 @@
+# A fork's changes (`minutehand fork <run> --at <seq> --changes worlds/sam_answers_the_follow_up.yaml`): from the
+# checkpoint on, Sam answers the agent's second message to him, the first follow-up, three hours after it, and says
+# nothing more. The agent, played back to the checkpoint, should tell Owen the answer and follow up no more.
+overrides:
+  - kind: person_change
+    person: sam
+    reply:
+      kind: scripted
+      replies:
+        - {to_ask: 2, verbatim: "Sorry for the delay. The cost centre for new-starter equipment is CC-4410."}
+      then: silent
+  - {kind: reply_at, person: sam, to_ask: 2, after: PT3H}

@@ -117,9 +117,9 @@ class MemoryKey(Model):
 
 
 class MemoryEdit(Model):
-    """The agent's memory changed at the checkpoint: keys written and keys removed, as the scenario, before the agent
-    is asked anything. Its plan made from the old memory may no longer hold, so the fork asks the agent for its report
-    again and its own planned wakes are replaced by what it answers (`application/rewind.py`)."""
+    """The agent's memory changed at the checkpoint: keys written and keys removed, as the scenario, once the fork's
+    agent stands where the checkpoint was. The agent is asked nothing: its timers and bookings planned from the old
+    memory stand, and it finds the changed memory on its next read, as it would find a database changed under it."""
 
     kind: Literal["memory_edit"] = "memory_edit"
     put: list[SeededMemory] = Field(default=[], description="Each key and the value it holds from the fork on")

@@ -154,7 +154,7 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
     clock = RunClock(T0)
     store = SqliteStore(directory / WORLD, RUN_ID, clock)
     began = time.monotonic()
-    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=Remembered(report=None, memory=digest({})))
+    empty = Checkpoint(wake=0, now=T0, replies=0, pending=[], agent=Remembered(memory=digest({})))
     write_checkpoint(store, empty)
     wakes: list[WakeRecord] = []
     due_n = 0
@@ -244,7 +244,7 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
         nxt = now + timedelta(days=1)
         entry = DueEntry(
             due=Due(at=nxt, kind=DueKind.AGENT_WAKE, ref=f"wake-{day + 1}"),
-            source=DueSource.REPORTED,
+            source=DueSource.TIMER,
             entered_at=now,
             entered_wake=wake,
             closed=DueClosed.DELAYED if fault is not None else DueClosed.FIRED,
@@ -343,7 +343,7 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
             due_n += 1
         clock.jump(max(clock.now(), now))
         write_checkpoint(store, empty.model_copy(update={"wake": wake, "now": clock.now()}))
-        wakes.append(WakeRecord(index=wake, sim_time=now, world_changes=sent + 8, commitments_changed=False))
+        wakes.append(WakeRecord(index=wake, sim_time=now, world_changes=sent + 8))
     events = store.events()
     # as a run does: its messages read as Slack's item types, so each output is assessed by the checks its kind takes
     built = view_of(played, events, wakes, store.replies(), stop=StopReason.DEADLINE_PASSED)

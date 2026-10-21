@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from tests.orchestrator.world import serving
+from tests.support.serving import serving
 
 
 @dataclass(frozen=True)

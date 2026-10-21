@@ -11,7 +11,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
-from slack_sdk.signature import Clock as VerifierClock
 from slack_sdk.signature import SignatureVerifier
 
 from minutehand.adapters.providers.slack import state
@@ -19,6 +18,7 @@ from minutehand.adapters.providers.slack.inbound import DeliveryRefused
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget, PersonMessage, PersonReply
 from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation, PushSnapshot
+from tests.providers.slack.intercepted import SimulatedTime
 from tests.providers.slack.slack_workspace import GENERAL, START, Workspace, body, form, messages_of, text_of
 
 SECRET = "a-secret-made-for-the-run"
@@ -63,16 +63,6 @@ def agent() -> Iterator[Agent]:
     server.server_close()
 
 
-class SimulatedTime(VerifierClock):
-    """The verifier's replay window, read on the run's clock as an agent under the run's time would."""
-
-    def __init__(self, workspace: Workspace) -> None:
-        self._workspace = workspace
-
-    def now(self) -> float:
-        return self._workspace.clock.now().timestamp()
-
-
 def _message(ts: object) -> EntityRef:
     return EntityRef(provider="slack", kind=EntityKind.MESSAGE, external_id=str(ts))
 
@@ -95,11 +85,13 @@ async def test_a_reply_arrives_signed_the_way_slack_signs(
     )
 
     [got] = agent.received
-    verifier = SignatureVerifier(SECRET)
+    verifier = SignatureVerifier(SECRET, clock=SimulatedTime(workspace.clock))
     assert verifier.is_valid_request(got.body, got.headers)
-    assert not SignatureVerifier("another-secret").is_valid_request(got.body, got.headers)
-    assert not SignatureVerifier(SECRET, clock=SimulatedTime(workspace)).is_valid_request(got.body, got.headers), (
-        "the request timestamp is the send time, not world time"
+    assert not SignatureVerifier("another-secret", clock=SimulatedTime(workspace.clock)).is_valid_request(
+        got.body, got.headers
+    )
+    assert not SignatureVerifier(SECRET).is_valid_request(got.body, got.headers), (
+        "the request timestamp is the simulated send time, which the agent's sandbox clock reads, not this machine's"
     )
     callback = json.loads(got.body)
     assert callback["type"] == "event_callback" and callback["team_id"] == state.TEAM_ID
@@ -197,7 +189,7 @@ async def test_a_person_dms_the_bot_unprompted_as_a_signed_im_event(workspace: W
         text="Please chase the pricing.", channel=workspace.dm("iris"), recipient_emails=[]
     )
     [got] = agent.received
-    assert SignatureVerifier(SECRET).is_valid_request(got.body, got.headers)
+    assert SignatureVerifier(SECRET, clock=SimulatedTime(workspace.clock)).is_valid_request(got.body, got.headers)
     event = json.loads(got.body)["event"]
     assert (event["channel"], event["user"], event["channel_type"]) == (
         workspace.dm("iris"),
@@ -232,8 +224,9 @@ async def test_events_are_signed_with_the_secret_the_provider_is_given_and_no_ot
         secret="the-agents-own-secret",
     )
     got = agent.received[0]
-    assert SignatureVerifier("the-agents-own-secret").is_valid_request(got.body, got.headers)
-    assert not SignatureVerifier(SECRET).is_valid_request(got.body, got.headers)
+    at = SimulatedTime(workspace.clock)
+    assert SignatureVerifier("the-agents-own-secret", clock=at).is_valid_request(got.body, got.headers)
+    assert not SignatureVerifier(SECRET, clock=at).is_valid_request(got.body, got.headers)
 
 
 async def test_a_reply_to_a_message_that_does_not_exist_is_refused(workspace: Workspace, agent: Agent) -> None:

@@ -64,7 +64,6 @@ _BOOKKEEPING = frozenset(
         EntityKind.DUE,
         EntityKind.PENDING,
         EntityKind.MEMORY,
-        EntityKind.NEXT_WAKE,
         EntityKind.SERVICE_RECORD,
         EntityKind.CHANNEL,
         EntityKind.PUSH,

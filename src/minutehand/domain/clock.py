@@ -55,25 +55,20 @@ class Drawn(Model):
 class DueSource(StrEnum):
     """Who put an entry into the run loop's table of what is due next."""
 
-    REPORTED = "reported"  # the agent's `AgentReport.next_wake`
     BOOKED = "booked"  # the agent's booking with a scheduler provider
-    POLLED = "polled"  # the declared rhythm of a `Polled` agent
     REPLY = "reply"  # a person's reply, decided and on its way
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
     MACHINE = "machine"  # something the scenario does to the agent's own machine
-    TIMER = "timer"  # the agent's own in-process timer, read from the sandbox its clock is owned in (`Contained`)
+    TIMER = "timer"  # the agent's own in-process timer, read from its sandbox
     TRANSITION = "transition"  # a person's move on an item pending on them (`application.people`)
     SERVICE = "service"  # a declared service's own move on an item: a timer's, or a system actor's
     CALL = "call"  # a call of the agent's held until the world can answer it: a long poll, at its end or sooner
 
 
-PLANNED_BY = {
-    DueSource.REPORTED: PlannedBy.REPORTED,
-    DueSource.BOOKED: PlannedBy.BOOKED,
-    DueSource.POLLED: PlannedBy.POLLED,
-}
-"""The agent's own wakes, by how it asked for them: what a dispatch rule can be about."""
+PLANNED_BY = {DueSource.BOOKED: PlannedBy.BOOKED}
+"""The agent's own wakes a scheduler delivers, by how it asked for them: what a dispatch rule can be about. Its own
+timer is no delivery: it fires inside the sandbox when the clock passes it, and nothing can hold it back."""
 
 AGENT_SOURCES = frozenset({*PLANNED_BY, DueSource.TIMER})
 """The entries that are the agent's own plan to come back to work, whoever else may wake it first."""

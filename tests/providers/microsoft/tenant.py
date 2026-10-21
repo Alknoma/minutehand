@@ -41,6 +41,7 @@ from minutehand.domain.scenario import DocumentAction, DocumentHappening, Scenar
 from minutehand.domain.world import EntityKind, WorldEvent
 from tests.certificates import untrusted_certificate
 from tests.ports import free_port
+from tests.support.tokens import decode_at
 
 START = datetime(2026, 9, 14, 8, 30, tzinfo=UTC)
 
@@ -188,8 +189,11 @@ class Bot:
         return InboundTarget(provider="microsoft", url=self.url)
 
 
-async def validate(authorization: str, app_id: str, service_url: str, intercepted: Intercepted) -> str | None:
-    """The bot's own check, re-created from its source: None when it accepts, else why it refuses."""
+async def validate(
+    authorization: str, app_id: str, service_url: str, intercepted: Intercepted, *, now: datetime
+) -> str | None:
+    """The bot's own check, re-created from its source, at `now`, the bot's clock (the run's, in its sandbox): None
+    when it accepts, else why it refuses."""
     if not authorization.startswith("Bearer "):
         return "no bearer token"
     presented = authorization[len("Bearer ") :].strip()
@@ -199,14 +203,8 @@ async def validate(authorization: str, app_id: str, service_url: str, intercepte
     client = PyJWKClient(jwks_uri, cache_keys=True, ssl_context=intercepted.trust)
     try:
         key = await asyncio.to_thread(_signing_key, client, presented)
-        claims = jwt.decode(
-            presented,
-            key,
-            algorithms=["RS256"],
-            audience=app_id,
-            issuer=VALID_ISSUERS,
-            options={"require": ["exp", "iss", "aud"]},
-            leeway=300,
+        claims = decode_at(
+            presented, key, audience=app_id, issuer=VALID_ISSUERS, now=now, require=["exp", "iss", "aud"]
         )
     except jwt.PyJWTError as e:
         return f"{type(e).__name__}: {e}"
@@ -231,7 +229,9 @@ async def bot(tenant: Tenant, microsoft: Intercepted, monkeypatch: pytest.Monkey
     async def messages(request: Request) -> Response:
         activity = json.loads(await request.body())
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
-        refused = await validate(authorization, tenant.directory.bot_app_id, activity["serviceUrl"], microsoft)
+        refused = await validate(
+            authorization, tenant.directory.bot_app_id, activity["serviceUrl"], microsoft, now=tenant.clock.now()
+        )
         handle.received.append(Received(activity=activity, accepted=refused is None, reason=refused or ""))
         if refused is not None:
             return Response(status_code=401)
