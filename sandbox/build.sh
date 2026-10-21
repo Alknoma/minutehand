@@ -25,9 +25,9 @@ git -C "$SRC" apply "$HERE/gvisor-sim-clock.patch"
 docker run --rm -v "$SRC:/src" -w /src -v minutehand-gvisor-gomod:/go/pkg/mod -v minutehand-gvisor-gocache:/root/.cache/go-build \
   -e CGO_ENABLED=0 golang:1.27 sh -eu -c '
     mkdir -p /src/out/gvisor-bin
-    go build -o /src/out/runsc ./runsc
-    go build -o /src/out/gvisor-bin/gvisor_sentry ./runsc/cmd/sentry
-    go build -o /src/out/gvisor-bin/checkpointgofer ./runsc/checkpointgofer
+    go build -buildvcs=false -o /src/out/runsc ./runsc
+    go build -buildvcs=false -o /src/out/gvisor-bin/gvisor_sentry ./runsc/cmd/sentry
+    go build -buildvcs=false -o /src/out/gvisor-bin/checkpointgofer ./runsc/checkpointgofer
     C="gcc -O2 -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector -fno-builtin -fPIE -pie -Wl,--build-id=none"
     $C -o /src/out/gvisor-bin/gvisor-sentry-prewarmer runsc/prewarmer/prewarmer.c
     $C -o /src/out/gvisor-bin/runsc-fd-parking runsc/fdparking/fdparking.c
