@@ -32,8 +32,9 @@ asked with `--pre`.
 
 0. Agree the number first. It is the next patch (`0.2.10` → `0.2.11`), features included, unless the maintainer
    names a minor or major one. Ask for it as a question and wait for an answer that states or confirms the number
-   itself: "release it" approves releasing, not a number someone proposed. PyPI never takes a version twice, so a
-   number released without that answer is undone only by yanking it and releasing again (0.3.0, 20 October 2026).
+   itself: "release it" approves releasing, not a number someone proposed. PyPI never takes a file name twice,
+   yanked or deleted, so a number released without that answer is spent: 0.3.0 was released on 20 October 2026
+   without it, deleted from PyPI, and the same code released as 0.2.11; the next minor became 0.3.1.
 1. On a branch from `integration-main`, set `version` in `pyproject.toml`, run `uv lock` (the lock records the
    project's version), and open the pull request. CI's `build` job installs the wheel and runs the example.
 2. After it merges, promote `integration-main` to `main` as usual.
