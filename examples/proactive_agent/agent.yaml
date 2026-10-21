@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/agent.schema.json
+# The agent runs in a gVisor sandbox whose clock Minutehand owns (docs/design.md, "A sandbox whose clock Minutehand
+# owns"): `run_in_sandbox.sh` starts it there, and these two control calls read the sandbox's deadlines and move its
+# clock. Nothing is asked of the agent: its own scheduler's next deadline is its next wake.
+version: 1
+name: proactive_agent
+
+sandbox:
+  deadlines: [runsc, debug, --deadlines, proactive_agent]
+  advance: [runsc, debug, "--advance-clock={nanoseconds}ns", proactive_agent]
+
+inbound:
+  - provider: slack
+    url: "http://192.168.10.2:8740/slack/events"    # the sandbox's address on its link; the proxy sits on its gateway
+    secret: {kind: generated, env: AGENT_SLACK_SIGNING_SECRET}
+
+tick: PT24H     # it comes back by itself at most once a working day: sizes the wake limit from the world's window

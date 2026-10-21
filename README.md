@@ -41,35 +41,39 @@ yet.
 
 ## Quick start
 
-Minutehand runs your agent, unchanged, in a sandbox whose clock it owns, against fake services it plays people
-on, and tells you what the agent did and when. Two files describe the run (below), and the agent's command, in its
-sandbox, comes after `--`:
+`examples/proactive_agent` is a small proactive agent: it gets answers from people and passes them on. Its work is
+its own file (`work.json`: a cost centre from Sam, for Owen); it asks in Slack, follows up at most twice, a working
+day apart, and tells the answer on. It is plain Python on stock `slack_sdk` with its own scheduler and its own SQLite
+file, imports nothing of Minutehand's, and runs unchanged in a sandbox whose clock Minutehand owns.
 
 ```bash
+git clone --depth 1 -b main https://github.com/Alknoma/minutehand
+cd minutehand/examples/proactive_agent
+pip install slack_sdk
+
 # Offline: a stand-in writes the people's words. With an account, set MINUTEHAND_MODEL* instead.
-uv run python tests/support/fake_model.py &
+python ../../tests/support/fake_model.py &
 export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
 
-minutehand run world.yaml --agent agent.yaml -- <the agent's command, in its sandbox>
+minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 192.168.10.3 -- ./run_in_sandbox.sh
 ```
 
-Simulated weeks pass in seconds: a person who never answers, a follow-up the agent sends a working day apart, the
-answer it passes on. Runs are kept in `.minutehand/` in the folder you ran them from.
+Two simulated weeks pass in seconds: Sam never answers; the agent follows up a working day apart, twice, tells Owen,
+and stops. Runs are kept in `.minutehand/` in the folder you ran them from. The sandbox is a patched gVisor
+(`docs/design.md`, "A sandbox whose clock Minutehand owns"), which this repository does not ship yet: until it does,
+the example has not been run through Minutehand.
 
 ```bash
 minutehand runs                  # every run, one line each
 minutehand findings <run_id>     # a run's findings, and the checkpoints it can be forked from
 minutehand trace <run_id>        # what the agent did, in order
-minutehand replay <run_id> -- <command>              # the run again, its model's answers from the record
-minutehand replay <run_id> --at <seq> --frozen -- <command>   # from a checkpoint, the agent played back to it;
-                                 # nothing sent to a model, exit 7 at the first model call the record lacks
-minutehand fork <run_id> --at <seq> --changes fork.yaml -- <command>   # the same moment, something changed
+minutehand replay <run_id> -- ./run_in_sandbox.sh              # the run again, its model's answers from the record
+minutehand replay <run_id> --at <seq> --frozen -- ./run_in_sandbox.sh   # from a checkpoint, the agent played back
+                                 # to it; nothing sent to a model, exit 7 at the first model call the record lacks
+minutehand fork <run_id> --at <seq> --changes fork.yaml -- ./run_in_sandbox.sh   # the same moment, something changed
 minutehand model-calls <run_id>  # the agent's model calls, as OpenAI Batch API lines
 minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```
-
-The sandbox is a patched gVisor (`docs/design.md`, "A sandbox whose clock Minutehand owns"), which this repository
-does not ship yet: until it does, no whole run of an agent is in the test suite.
 
 ## Your own agent
 
@@ -173,6 +177,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 |---|---|
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
+| `examples/proactive_agent/README.md` | The example agent: plain Python, its own scheduler, no Minutehand in it |
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |
 | `docs/querying.md` | Reading a run with SQL: the views, their columns, the stability guarantee, ready-made queries |

@@ -1,0 +1,17 @@
+# A world, not a task: the agent brings its own work. Sam answers a few hours after he is asked.
+name: cost_centre_answered
+starts_at: "2026-08-24T09:00:00Z"   # a Monday
+runs_for: P14D
+people:
+  - key: owen
+    name: Owen Hart
+    email: owen@example.com
+    profile: Asked for the laptops; wants the cost centre so the purchase can go ahead.
+    reply: {kind: scripted, then: silent}
+  - key: sam
+    name: Sam Okafor
+    email: sam@example.com
+    profile: Finance lead; answers within a few hours, in working hours.
+    facts: ["The cost centre for new-starter equipment is CC-4410."]
+    reply_within: {min: PT2H, max: PT5H}
+    working_hours: {timezone: Europe/London, opens: "09:00", closes: "17:30"}

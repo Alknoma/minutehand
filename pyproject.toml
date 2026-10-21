@@ -150,7 +150,7 @@ filterwarnings = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-include = ["src", "lints", "tests", "scripts"]
+include = ["src", "lints", "tests", "scripts", "examples"]
 exclude = []
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
