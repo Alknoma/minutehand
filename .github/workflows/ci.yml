@@ -60,15 +60,24 @@ jobs:
           uvx --from actionlint-py==1.7.12.24 actionlint
           uvx zizmor==1.30.1 --offline .github/workflows .github/actions
 
-  # The whole suite, once. Linux only: the agent and the sandbox run on Linux and nowhere else, and a
-  # second operating system or interpreter adds another chance for a timing test to fail without adding a
-  # fact about the code. Python 3.13, the top of `requires-python`, runs nightly (nightly.yml).
+  # The whole suite, once, in four shards that run at the same time: the suite is about nine minutes on one of
+  # GitHub's runners and under three in four. Linux only, on the image's Python: the agent and the sandbox
+  # run on Linux and nowhere else, and a second operating system or interpreter adds another chance for a
+  # timing test to fail without adding a fact about the code. Python 3.13, the top of `requires-python`,
+  # runs nightly (nightly.yml).
+  # The shards are split by each test's duration (.test_durations, written by
+  # `pytest -n auto --store-durations --clean-durations`; a test it does not list counts as the average).
+  # Every shard shuffles with the same seed, so each splits the same order and every test runs exactly once.
   # Random order, in parallel, with no network beyond this machine (pyproject.toml).
   # The seed is the run's id, printed at the top of the output; rerun with --randomly-seed=N.
   tests:
-    name: Tests
+    name: Tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,8 +87,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync
-      - run: uv run pytest -q -n auto --randomly-seed="$SEED"
+      - run: uv run pytest -q -n auto --splits 4 --group "$SHARD" --randomly-seed="$SEED"
         env:
+          SHARD: ${{ matrix.shard }}
           SEED: ${{ github.run_id }}
 
   # The viewer's page in headless Chromium (tests/web/test_viewer_page.py): it draws a run, every view opens with no

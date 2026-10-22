@@ -113,6 +113,7 @@ dev = [
     "google-cloud-recaptcha-enterprise>=1.34.0",
     "pydantic-ai-slim[openai,anthropic,google,bedrock,mistral,groq,cohere,xai]>=2.59",
     "anthropic>=1.12.1,<2",  # as the `anthropic` extra pins it
+    "pytest-split>=0.10",
 ]
 
 [build-system]
