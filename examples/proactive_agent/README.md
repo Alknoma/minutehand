@@ -35,8 +35,9 @@ On a Linux host with `runsc` and its `gvisor-bin/` on the path, the run itself i
 
 ```bash
 pip install slack_sdk
-export MINUTEHAND_MODEL=... MINUTEHAND_MODEL_API_KEY=...   # the model that plays Sam and Owen; or the offline
-                                                          # stand-in: python tests/support/fake_model.py
+export MINUTEHAND_MODEL=openai:gpt-5-mini OPENAI_API_KEY=...   # the model that plays Sam and Owen, named as pydantic-ai
+    # names it, with its provider's own key; or the offline stand-in: python tests/support/fake_model.py, with
+    # MINUTEHAND_MODEL=openai-chat:people OPENAI_BASE_URL=http://127.0.0.1:8790/v1 OPENAI_API_KEY=offline
 minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 0.0.0.0 --agent-proxy-host 192.168.10.3 \
   --transparent-port 8082 --dns-port 8053 -- ./run_in_sandbox.sh
 minutehand checkpoints <run>                              # seq 27, after wake 2: asked, followed up once
@@ -46,10 +47,7 @@ minutehand fork <run> --at 27 --changes worlds/sam_answers_the_follow_up.yaml --
 
 `run_in_sandbox.sh` seals the sandbox's link first (`sandbox/seal.sh`: the proxy is its only way out), then starts
 the agent with `runsc do` on that link (192.168.10.2, its gateway 192.168.10.3 where the proxy listens), born at the
-run's start (`MINUTEHAND_STARTS_AT_NS`); the agent inside sources the file Minutehand wrote its environment to
-(`MINUTEHAND_AGENT_ENVIRONMENT`), so nothing of it is on a command line. That environment is what `agent.yaml`
-declares (`docs/agent-environment.md`): the machine's, then `agent.env`, the agent's own file with its Slack token
-and its port, which Minutehand reads itself and whose names, never values, the run records. `agent.yaml` names the two control calls Minutehand makes on the sandbox
+run's start (`MINUTEHAND_STARTS_AT_NS`), and passes it the environment Minutehand hands the command. `agent.yaml` names the two control calls Minutehand makes on the sandbox
 and where Slack's events reach the agent inside it. What each run showed is under "Evidence" in `docs/design.md`
 (2026-10-22): four wakes a day apart in the quiet world, Owen told in the same wake Sam answered in, and the fork
 verified at its checkpoint.

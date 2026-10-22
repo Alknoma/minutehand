@@ -13,7 +13,7 @@ STATE=${MINUTEHAND_STATE:-/tmp/mh-state}
 cd "$(dirname "$0")/../.."
 uv run python tests/support/fake_model.py --port 8790 > /tmp/model.log 2>&1 &
 sleep 2
-export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
+export MINUTEHAND_MODEL=openai-chat:people OPENAI_BASE_URL=http://127.0.0.1:8790/v1 OPENAI_API_KEY=offline
 cd examples/proactive_agent
 timeout 600 uv run minutehand run "$WORLD" --agent "$AGENT" --state "$STATE" \
   --proxy-host 0.0.0.0 --proxy-port 8080 --agent-proxy-host 192.168.10.3 --telemetry-port 8081 \

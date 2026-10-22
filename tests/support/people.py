@@ -7,12 +7,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import cache
 
-from minutehand.adapters.model.environment import API_KEY_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.model.openai_compatible import OpenAICompatible
+from minutehand.adapters.model.pydantic_ai import MODEL_VARIABLE, PydanticAIModel
 from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier
 from minutehand.domain.scenario import Person, ProviderKey, Scenario
 from minutehand.ports.model import Model as LanguageModel
+from tests.model.fake_completions import PROVIDER, model_over
 from tests.support import fake_model
 
 MODEL = "people-fake"
@@ -29,14 +29,15 @@ def people_base_url() -> str:
     return f"http://127.0.0.1:{server.server_port}/v1"
 
 
-def people_model() -> OpenAICompatible:
+def people_model() -> PydanticAIModel:
     """A model port over the stand-in."""
-    return OpenAICompatible(base_url=people_base_url(), api_key=KEY, model_id=MODEL)
+    return model_over(people_base_url(), model_id=MODEL, key=KEY)
 
 
 def people_environment() -> dict[str, str]:
-    """The variables `minutehand run` and `serve` read the people's model from, pointed at the stand-in."""
-    return {BASE_URL_VARIABLE: people_base_url(), API_KEY_VARIABLE: KEY, MODEL_VARIABLE: MODEL}
+    """The variables `minutehand run` and `serve` read the people's model from, pointed at the stand-in: the model's
+    name for Minutehand, and the OpenAI client's own variables for the endpoint and a key it never looks at."""
+    return {MODEL_VARIABLE: f"{PROVIDER}:{MODEL}", "OPENAI_BASE_URL": people_base_url(), "OPENAI_API_KEY": KEY}
 
 
 def people_requests() -> list[dict[str, object]]:

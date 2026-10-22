@@ -34,10 +34,10 @@ Nothing from the request's headers or query string is kept, so an API key in `Au
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from secrets import token_hex
 from urllib.parse import urlsplit
 
 from minutehand.adapters.proxy import redact
@@ -311,10 +311,9 @@ def _utf8(raw: bytes) -> str | None:
         return None
 
 
-def kept_body(raw: bytes, content_type: str, *, secrets: redact.Secrets = redact.NONE) -> AttributeValue | None:
-    """A body as the span keeps it: UTF-8 text, credentials and declared values redacted, or exactly its bytes;
-    None when empty."""
-    text, kept = redact.kept(raw, content_type, secrets=secrets)
+def kept_body(raw: bytes, content_type: str) -> AttributeValue | None:
+    """A body as the span keeps it: UTF-8 text, credentials redacted, or exactly its bytes; None when empty."""
+    text, kept = redact.kept(raw, content_type)
     if kept is not None:
         return BytesValue(value=kept.hex())
     return StringValue(value=text) if text is not None else None
@@ -338,9 +337,9 @@ class Exchanged:
     broke_off: str | None = None  # why the client closed the connection before the stream ended, when it did
 
 
-def span_of(exchanged: Exchanged, *, secrets: redact.Secrets = redact.NONE) -> ReceivedSpan:
+def span_of(exchanged: Exchanged) -> ReceivedSpan:
     """The span for one model call: in the caller's trace and under its span when the call carried a
-    traceparent, else the root of a trace of its own. `secrets` are the declared values its bodies never show."""
+    traceparent, else the root of a trace of its own."""
     request = _json(exchanged.request_body)
     call = _Call(shape=_shape(exchanged.path, request))
     _read_request(call, request)
@@ -363,7 +362,7 @@ def span_of(exchanged: Exchanged, *, secrets: redact.Secrets = redact.NONE) -> R
         ("minutehand.request.body", exchanged.request_body, exchanged.request_type),
         ("minutehand.response.body", exchanged.response_body, exchanged.response_type),
     ):
-        kept = kept_body(raw, kind, secrets=secrets)
+        kept = kept_body(raw, kind)
         if kept is not None:
             attributes.append((key, kept))
     if exchanged.response_type:
@@ -400,8 +399,8 @@ def span_of(exchanged: Exchanged, *, secrets: redact.Secrets = redact.NONE) -> R
     caller = caller_of(exchanged.traceparent)
     failed = exchanged.status >= 400
     return ReceivedSpan(
-        trace_id=caller[0] if caller is not None else token_hex(16),
-        span_id=token_hex(8),
+        trace_id=caller[0] if caller is not None else secrets.token_hex(16),
+        span_id=secrets.token_hex(8),
         parent_span_id=caller[1] if caller is not None else None,
         name=" ".join(part for part in (OPERATION if known else UNREAD, call.request_model) if part),
         start=exchanged.started,

@@ -1,5 +1,8 @@
 """A chat-completions server for tests: real HTTP on 127.0.0.1 at an ephemeral port, answering by rule.
 
+Minutehand asks for a structured answer as one tool named for the answer's class (`adapters.model.pydantic_ai`), so
+the fake reads the schema from the request's one tool and answers with a call of it.
+
 It records every request as it arrived, so a test can read what the model was told, and answers each with
 whatever its rule returns: the JSON text of a structured answer, or an `Answer` carrying a status and a body
 of its own. Nothing here is a model; a rule is the test saying what the model would have answered.
@@ -12,13 +15,21 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+from httpx2 import AsyncClient
 from pydantic import BaseModel
+from pydantic_ai.models import Model as ProviderModel
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from minutehand.adapters.model.pydantic_ai import PydanticAIModel
 from tests.support.serving import serving
+
+PROVIDER = "openai-chat"
+"""pydantic-ai's name for OpenAI's chat completions API, which every OpenAI-compatible endpoint speaks."""
 
 
 @dataclass(frozen=True)
@@ -63,16 +74,21 @@ class Received:
         return self.last.rstrip().splitlines()[-1].split("] They: ", 1)[-1]
 
     @property
+    def tool(self) -> dict[str, object]:
+        """The one tool the request offers: the structured answer it asks for, named for the answer's class."""
+        tools = self.body["tools"]
+        assert isinstance(tools, list) and len(tools) == 1, tools
+        function = tools[0]["function"]
+        assert isinstance(function, dict)
+        return function
+
+    @property
     def schema_name(self) -> str:
-        response_format = self.body["response_format"]
-        assert isinstance(response_format, dict)
-        return str(response_format["json_schema"]["name"])
+        return str(self.tool["name"])
 
     @property
     def schema(self) -> dict[str, object]:
-        response_format = self.body["response_format"]
-        assert isinstance(response_format, dict)
-        schema = response_format["json_schema"]["schema"]
+        schema = self.tool["parameters"]
         assert isinstance(schema, dict)
         return schema
 
@@ -88,7 +104,8 @@ class Answer:
 Rule = Callable[[Received], "str | BaseModel | Answer"]
 
 
-def completion(content: str, model: str) -> dict[str, object]:
+def completion(content: str, model: str, tool: str) -> dict[str, object]:
+    """A chat completion calling `tool` with `content` as its arguments: how a structured answer comes back."""
     return {
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -97,8 +114,15 @@ def completion(content: str, model: str) -> dict[str, object]:
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content, "refusal": None},
-                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "refusal": None,
+                    "tool_calls": [
+                        {"id": "call_test", "type": "function", "function": {"name": tool, "arguments": content}}
+                    ],
+                },
+                "finish_reason": "tool_calls",
             }
         ],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -129,16 +153,27 @@ class FakeCompletions:
         if received.schema_name == "FactCheck" and not self.checks_facts:
             self.checked.append(received)
             supported = '{"supported": true, "unsupported": [], "rationale": "It says only what they know."}'
-            return JSONResponse(completion(supported, received.model))
+            return JSONResponse(completion(supported, received.model, received.schema_name))
         self.received.append(received)
         answered = self.rule(received)
         if isinstance(answered, Answer):
             return Response(answered.body, status_code=answered.status, media_type="application/json")
         content = answered.model_dump_json() if isinstance(answered, BaseModel) else answered
-        return JSONResponse(completion(content, received.model))
+        return JSONResponse(completion(content, received.model, received.schema_name))
 
     def app(self) -> Starlette:
         return Starlette(routes=[Route("/v1/chat/completions", self._complete, methods=["POST"])])
+
+
+def model_over(base_url: str, *, model_id: str, key: str = "sk-test-never-shown") -> PydanticAIModel:
+    """Minutehand's model port over the chat completions at `base_url`: pydantic-ai's OpenAI chat model with a provider
+    given `key` by hand, as a test may, over the HTTP client of each call."""
+
+    def resolve(name: str, client: AsyncClient) -> ProviderModel:
+        _, _, named = name.partition(":")
+        return OpenAIChatModel(named, provider=OpenAIProvider(base_url=base_url, api_key=key, http_client=client))
+
+    return PydanticAIModel(resolve, provider=PROVIDER, model_id=model_id)
 
 
 @asynccontextmanager

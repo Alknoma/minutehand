@@ -28,9 +28,10 @@ says it is finished. The tools it calls are the same in every recipe:
 
     python fake_model.py [--port 8790]
 
-It also writes what Minutehand's people say, when Minutehand itself asks (a request whose structured answer is
-`WrittenStep`, `WrittenReply`, `WrittenTransition` or `WrittenSummary`), so a run with
-model-written people needs no real model either. The rules read the prompt Minutehand sends, never guess:
+It also writes what Minutehand's people say, when Minutehand itself asks (a request offering one tool, the
+structured answer it asks for: `WrittenStep`, `WrittenReply`, `WrittenTransition` or `WrittenSummary`), so a run
+with model-written people needs no real model either; Minutehand names it `MINUTEHAND_MODEL=openai-chat:<any>` with
+`OPENAI_BASE_URL` pointed here and `OPENAI_API_KEY` set to anything. The rules read the prompt Minutehand sends, never guess:
 
     a script step       its facts ("What this reply says:"), as plain sentences; a step that declines, asks back
                         or defers says so in a fixed sentence
@@ -363,11 +364,12 @@ def service_answer(schema: str, system: str, shown: str) -> dict[str, object]:
 
 
 def people_schema(body: dict[str, object]) -> str | None:
-    """The structured answer a request asks for when Minutehand asks it to write what a person says."""
-    response_format = body["response_format"] if "response_format" in body else None
-    if not isinstance(response_format, dict) or "json_schema" not in response_format:
+    """The structured answer a request asks for when Minutehand asks it to write what a person says: the one tool
+    it offers, named for the answer's class (`adapters.model.pydantic_ai`)."""
+    offered = _offered(body)
+    if len(offered) != 1:
         return None
-    name = str(response_format["json_schema"]["name"])
+    name = offered[0]
     return name if name in PEOPLE or name in SERVICES or name in JUDGES else None
 
 
@@ -476,12 +478,14 @@ def people_completion(body: dict[str, object], schema: str, number: int) -> dict
     else:
         answered = person_answer(schema, system, shown)
     content = json.dumps(answered)
+    call = {"id": f"call_{number}", "type": "function", "function": {"name": schema, "arguments": content}}
+    message = {"role": "assistant", "content": None, "tool_calls": [call]}
     return {
         "id": f"chatcmpl-{number}",
         "object": "chat.completion",
         "created": 0,
         "model": body["model"],
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
         "usage": {
             "prompt_tokens": (len(system) + len(shown)) // 4,
             "completion_tokens": len(content) // 4,

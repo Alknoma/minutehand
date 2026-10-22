@@ -7,7 +7,6 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 
-from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.kept import KeptModel
 from minutehand.application.run_clock import RunClock
@@ -22,7 +21,7 @@ from minutehand.domain.transitions import EXISTS, Transition
 from minutehand.domain.world import Actor, EntityKind, EntityRef
 from minutehand.ports.model import JudgedCheck
 from tests.checks.world import Log, at, person, scenario, view
-from tests.model.fake_completions import Received, fake_completions
+from tests.model.fake_completions import Received, fake_completions, model_over
 from tests.support.people import email, people_model
 
 TRIAL = Path(__file__).parents[2] / "data" / "trial"
@@ -183,7 +182,7 @@ async def test_a_judged_checks_calls_are_kept_with_the_world_as_a_judges(tmp_pat
         return AskedAboutVerdict(asks_about=True, rationale="It asks for the price.")
 
     async with fake_completions(verdict) as fake:
-        model = OpenAICompatible(base_url=fake.base_url, api_key="sk-judge", model_id="judge-1")
+        model = model_over(fake.base_url, model_id="judge-1")
 
         def kept(check: JudgedCheck) -> KeptModel:
             return KeptModel(

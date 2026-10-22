@@ -640,25 +640,6 @@ VIEWS: tuple[View, ...] = (
             ),
         ],
     ),
-    View(
-        name="environment",
-        description="Where the agent's environment came from when Minutehand started its command "
-        "(docs/agent-environment.md): each declared source in order with the variables it supplied, by name, then "
-        "Minutehand's own variables and the credentials of its own it withheld. Names only: no value is ever kept. "
-        "Empty for an agent Minutehand did not start.",
-        order="position",
-        columns=[
-            _c("position", N, "The source's place in the declared order, from 1; Minutehand's own rows come last"),
-            _c(
-                "kind",
-                T,
-                "inherit, files or only (the declared source), minutehand (the variables it hands every agent, applied "
-                "last) or withheld (its own credentials a source held and the agent was not given)",
-            ),
-            _c("source", T, "The dotenv file, for files; NULL for every other kind"),
-            _c("names", T, "JSON array of the variable names, in the source's order"),
-        ],
-    ),
 )
 
 BY_NAME = {v.name: v for v in VIEWS}

@@ -152,14 +152,13 @@ def _first_header(message: http.Message, name: str) -> str | None:
     return values[0] if values else None
 
 
-def _headers_of(response: http.Response, secrets: redact.Secrets) -> list[Header]:
-    """The answer's headers as the record keeps them: in order, credentials redacted, declared values too."""
+def _headers_of(response: http.Response) -> list[Header]:
+    """The answer's headers as the record keeps them: in order, credentials redacted."""
     return redact.headers(
         [
             (k.decode("utf-8", "surrogateescape"), v.decode("utf-8", "surrogateescape"))
             for k, v in response.headers.fields
-        ],
-        secrets=secrets,
+        ]
     )
 
 
@@ -337,18 +336,6 @@ class ProxyAddon:
         self._closing: set[asyncio.Task[None]] = set()
         # The provider that said it does not serve a call, by flow id, while the call's declaration answers it.
         self._not_served: dict[str, ProviderKey] = {}
-        self._secrets = redact.NONE
-
-    @property
-    def secrets(self) -> redact.Secrets:
-        """The values the agent's declared environment supplied (`application.environment`): redacted wherever they
-        appear in what the record keeps of a call, a message or a model call, whatever key they are under."""
-        return self._secrets
-
-    @secrets.setter
-    def secrets(self, values: redact.Secrets) -> None:
-        self._secrets = values
-        self.local.secrets = values
 
     def _seen(self, what: str) -> None:
         """Every outbound call is seen as it starts and, when the proxy answers it, as it ends, so a checkpoint
@@ -630,7 +617,7 @@ class ProxyAddon:
         host = flow.request.pretty_host
         if self.forwarded(host):
             return
-        self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}")
+        self._seen(f"{flow.request.method} {host}{redact.path(flow.request.path)}")
         policy = self.policy(host)
         if self.trace_replay is not None and policy not in (HostPolicy.TUNNEL, HostPolicy.EDIT, HostPolicy.RECORD):
             self._played_back(flow, host)
@@ -642,14 +629,10 @@ class ProxyAddon:
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._replayed(flow, host):
             return
         if policy is HostPolicy.EDIT:
-            self._sent_on[flow.id] = (
-                f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}"
-            )
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
-            self._sent_on[flow.id] = (
-                f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}"
-            )
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         manifest = self.routing.claimant(host)
@@ -663,7 +646,7 @@ class ProxyAddon:
             host, presented, world_keys(manifest, host, request.path) if manifest is not None else []
         )
         if world is not None and world is not self.worlds.lobby:
-            self._routed(flow.id, world, f"{request.method} {host}{redact.path(request.path, secrets=self.secrets)}")
+            self._routed(flow.id, world, f"{request.method} {host}{redact.path(request.path)}")
         if policy is HostPolicy.ANSWER and manifest is not None and world is not None:
             if is_grpc(request):
                 await self._send_grpc(flow, host, manifest, world)
@@ -763,11 +746,9 @@ class ProxyAddon:
             asked, asked_bytes, said, said_bytes = answered.request, None, answered.answer, None
             first, last, failure = answered.first, answered.last, answered.failure
         else:
-            asked, asked_bytes = redact.kept(flow.request.get_content(strict=False) or b"", GRPC, secrets=self.secrets)
+            asked, asked_bytes = redact.kept(flow.request.get_content(strict=False) or b"", GRPC)
             said, said_bytes = (
-                redact.kept(response.get_content(strict=False) or b"", GRPC, secrets=self.secrets)
-                if response is not None
-                else (None, None)
+                redact.kept(response.get_content(strict=False) or b"", GRPC) if response is not None else (None, None)
             )
             first, last, failure = world.store.head() + 1, world.store.head(), None
         exchange = Exchange(
@@ -803,7 +784,7 @@ class ProxyAddon:
             return False
         request = flow.request
         port = await self.local.sockets(world, manifest, provider)
-        self._sockets[flow.id] = _Socket(world, manifest.key, host, redact.path(request.path, secrets=self.secrets))
+        self._sockets[flow.id] = _Socket(world, manifest.key, host, redact.path(request.path))
         request.scheme = "http"
         request.host = "127.0.0.1"
         request.port = port
@@ -814,9 +795,7 @@ class ProxyAddon:
         response = flow.response
         assert response is not None
         said, said_bytes = redact.kept(
-            response.get_content(strict=False) or b"",
-            _first_header(response, "content-type") or "",
-            secrets=self.secrets,
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or ""
         )
         exchange = Exchange(
             method=flow.request.method,
@@ -843,9 +822,7 @@ class ProxyAddon:
         message = flow.websocket.messages[-1]
         socket.carried += 1
         sender = FrameSender.AGENT if message.from_client else FrameSender.SERVICE
-        kept, kept_bytes = redact.kept(
-            message.content, "application/json" if message.is_text else "", secrets=self.secrets
-        )
+        kept, kept_bytes = redact.kept(message.content, "application/json" if message.is_text else "")
         exchange = Exchange(
             method=flow.request.method,
             host=socket.host,
@@ -882,19 +859,12 @@ class ProxyAddon:
         manifest = self.routing.claimant(host)
         data = frozenset(k.lower() for k in manifest.data_keys) if manifest is not None else frozenset()
         text, raw = redact.kept(
-            request.get_content(strict=False) or b"",
-            _first_header(request, "content-type") or "",
-            data=data,
-            secrets=self.secrets,
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or "", data=data
         )
         body = text.encode("utf-8") if text is not None else raw or b""
-        answered = self.trace_replay.answer(
-            (request.method, host, redact.path(request.path, also=data, secrets=self.secrets), body)
-        )
+        answered = self.trace_replay.answer((request.method, host, redact.path(request.path, also=data), body))
         if isinstance(answered, PlaybackParted):
-            self._seen(
-                f"{request.method} {host}{redact.path(request.path, secrets=self.secrets)} refused: the playback parted"
-            )
+            self._seen(f"{request.method} {host}{redact.path(request.path)} refused: the playback parted")
             flow.response = http.Response.make(answered.status, answered.body, {"content-type": "text/plain"})
             return
         kept = [(h.name.encode(), h.value.encode()) for h in answered.headers if h.name.lower() not in _HOP_BY_HOP]
@@ -932,7 +902,7 @@ class ProxyAddon:
             ended=now,
             replayed_from=self.model_replay.source,
         )
-        span = span_of(exchanged, secrets=self.secrets)
+        span = span_of(exchanged)
         kept_in = self.worlds.keeping(host, span.trace_id if span.parent_span_id is not None else None)
         kept_in.store.receive([span], source=SpanSource.WIRE)
         return True
@@ -999,7 +969,7 @@ class ProxyAddon:
             ended=datetime.fromtimestamp(response.timestamp_end or response.timestamp_start, UTC),
             broke_off=broke_off,
         )
-        span = span_of(exchanged, secrets=self.secrets)
+        span = span_of(exchanged)
         kept_in = self.worlds.keeping(exchanged.host, span.trace_id if span.parent_span_id is not None else None)
         kept_in.store.receive([span], source=SpanSource.WIRE)
 
@@ -1141,27 +1111,21 @@ class ProxyAddon:
         request, response = flow.request, flow.response
         assert response is not None
         asked, asked_bytes = redact.kept(
-            request.get_content(strict=False) or b"",
-            _first_header(request, "content-type") or "",
-            data=data,
-            secrets=self.secrets,
+            request.get_content(strict=False) or b"", _first_header(request, "content-type") or "", data=data
         )
         answered, answered_bytes = redact.kept(
-            response.get_content(strict=False) or b"",
-            _first_header(response, "content-type") or "",
-            data=data,
-            secrets=self.secrets,
+            response.get_content(strict=False) or b"", _first_header(response, "content-type") or "", data=data
         )
         exchange = Exchange(
             method=request.method,
             host=host,
-            path=redact.path(path, secrets=self.secrets),
+            path=redact.path(path),
             status=response.status_code,
             request_body=asked,
             response_body=answered,
             request_bytes=asked_bytes,
             response_bytes=answered_bytes,
-            response_headers=_headers_of(response, self.secrets),
+            response_headers=_headers_of(response),
             traceparent=_first_header(request, TRACEPARENT),
             late_for=late_for,
             outcome=kind_of(answered_by, response.status_code) if answered_by is not None else None,
@@ -1181,9 +1145,7 @@ class ProxyAddon:
         """Answer a call to a host no provider claims as its world declares, or, undeclared, pass it through."""
         if declaration is None:
             self._passing[flow.id] = _Passing(world, None, CaptureMode.DISCOVERED, None)
-            self._sent_on[flow.id] = (
-                f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}"
-            )
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
@@ -1198,9 +1160,7 @@ class ProxyAddon:
         plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
         if plan is None:
             self._passing[flow.id] = _Passing(world, declaration, mode, None)
-            self._sent_on[flow.id] = (
-                f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}"
-            )
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         request = flow.request
         whole = capture.keep(
@@ -1208,12 +1168,11 @@ class ProxyAddon:
             _first_header(request, "content-type"),
             limit=TEE_LIMIT,
             paths=declaration.redact,
-            secrets=self.secrets,
         )
         asked = capture.Asked(
             method=request.method,
             host=host,
-            path=redact.path(request.path, also=capture.query_keys(declaration), secrets=self.secrets),
+            path=redact.path(request.path, also=capture.query_keys(declaration)),
             body=whole.text,
             content_type=_first_header(request, "content-type"),
             raw_digest=whole.body.sha256,
@@ -1233,9 +1192,7 @@ class ProxyAddon:
             return
         if plan.on_miss is OnMiss.PASS_THROUGH:
             self._passing[flow.id] = _Passing(world, declaration, mode, f"not replayed: {why}")
-            self._sent_on[flow.id] = (
-                f"{flow.request.method} {host}{redact.path(flow.request.path, secrets=self.secrets)}"
-            )
+            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
@@ -1275,7 +1232,7 @@ class ProxyAddon:
             None,
             forwarded=_Forwarded(route, host, original_path, caller, sent),
         )
-        self._sent_on[flow.id] = f"{request.method} {host}{redact.path(original_path, secrets=self.secrets)}"
+        self._sent_on[flow.id] = f"{request.method} {host}{redact.path(original_path)}"
         kept_host = _first_header(request, "host") or host
         request.scheme = "http"
         request.host = "127.0.0.1"
@@ -1305,11 +1262,7 @@ class ProxyAddon:
                 return
             content_type = _first_header(request, "content-type")
             whole = capture.keep(
-                request.get_content(strict=False) or b"",
-                content_type,
-                limit=TEE_LIMIT,
-                paths=declaration.redact,
-                secrets=self.secrets,
+                request.get_content(strict=False) or b"", content_type, limit=TEE_LIMIT, paths=declaration.redact
             )
             read = capture.read_message(reading, whole.text, content_type, world.capturing.people)
             if read.unread is None:
@@ -1663,15 +1616,9 @@ class ProxyAddon:
         limit = declaration.body_limit if declaration is not None else BODY_LIMIT
         paths = capture.redacted_paths(declaration)
         asked = capture.keep(
-            request.get_content(strict=False) or b"",
-            _first_header(request, "content-type"),
-            limit=limit,
-            paths=paths,
-            secrets=self.secrets,
+            request.get_content(strict=False) or b"", _first_header(request, "content-type"), limit=limit, paths=paths
         )
-        answered = capture.keep(
-            answer, _first_header(response, "content-type"), limit=limit, paths=paths, secrets=self.secrets
-        )
+        answered = capture.keep(answer, _first_header(response, "content-type"), limit=limit, paths=paths)
         if whole_size is not None and whole_size > len(answer):
             answered = capture.KeptBody(
                 None, answered.body.model_copy(update={"size": whole_size, "kept": BodyKept.BINARY}), None
@@ -1690,13 +1637,13 @@ class ProxyAddon:
         exchange = Exchange(
             method=request.method,
             host=host,
-            path=redact.path(request.path, also=keys, secrets=self.secrets),
+            path=redact.path(request.path, also=keys),
             status=response.status_code,
             request_body=asked.text,
             response_body=answered.text,
             request_bytes=asked.raw,
             response_bytes=answered.raw,
-            response_headers=_headers_of(response, self.secrets),
+            response_headers=_headers_of(response),
             traceparent=_first_header(request, TRACEPARENT),
             outcome=outcome,
             captured=Captured(

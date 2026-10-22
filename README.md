@@ -51,9 +51,10 @@ git clone --depth 1 -b main https://github.com/Alknoma/minutehand
 cd minutehand/examples/proactive_agent
 pip install slack_sdk
 
-# Offline: a stand-in writes the people's words. With an account, set MINUTEHAND_MODEL* instead.
+# Offline: a stand-in writes the people's words. With an account, name the model (MINUTEHAND_MODEL=openai:gpt-5-mini,
+# anthropic:…, google:…) and set that provider's own key variable instead: Minutehand manages no key.
 python ../../tests/support/fake_model.py &
-export MINUTEHAND_MODEL_BASE_URL=http://127.0.0.1:8790/v1 MINUTEHAND_MODEL=people MINUTEHAND_MODEL_API_KEY=offline
+export MINUTEHAND_MODEL=openai-chat:people OPENAI_BASE_URL=http://127.0.0.1:8790/v1 OPENAI_API_KEY=offline
 
 minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 192.168.10.3 -- ./run_in_sandbox.sh
 ```
@@ -177,7 +178,6 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 |---|---|
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
-| `docs/agent-environment.md` | Where the agent's own environment comes from: inherited, dotenv files, or an allowlist; what never reaches it |
 | `examples/proactive_agent/README.md` | The example agent: plain Python, its own scheduler, no Minutehand in it |
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |

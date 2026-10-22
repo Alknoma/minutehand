@@ -2,7 +2,7 @@
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
 # installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
-version = "0.3.2"
+version = "0.3.3"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -48,12 +48,27 @@ dependencies = [
     "python-dateutil>=2.8.2",
     # uvicorn's WebSocket protocol for the providers' socket servers (Slack's Socket Mode); mitmproxy needs it too.
     "wsproto>=1.2",
+    "pydantic-ai-slim>=2.59",
 ]
 
 [project.optional-dependencies]
 # gRPC: receiving an agent's OTLP over gRPC on the same port as OTLP/HTTP, and answering the gRPC transport of
 # Google's client libraries (Cloud Tasks), whose messages come from Google's own package.
 grpc = ["grpcio>=1.60", "google-cloud-tasks>=2.16"]
+# One extra per model provider, each pydantic-ai's own extra of the same name: `minutehand[openai]` serves OpenAI,
+# Azure OpenAI, DeepSeek, OpenRouter, Together, Fireworks, Ollama and any OpenAI-compatible endpoint; the rest are
+# named for their provider. MINUTEHAND_MODEL names the provider (`openai:gpt-5-mini`); a missing extra is refused
+# naming it (adapters/model/pydantic_ai.py).
+openai = ["pydantic-ai-slim[openai]>=2.59"]
+# anthropic 2.x (2026-10-21) turned BetaMessageParam into a union pydantic-ai 2.59 still instantiates; lifted when
+# pydantic-ai does (tests/model/test_pydantic_ai.py, the Anthropic stub, shows it).
+anthropic = ["pydantic-ai-slim[anthropic]>=2.59", "anthropic>=1.12.1,<2"]
+google = ["pydantic-ai-slim[google]>=2.59"]
+bedrock = ["pydantic-ai-slim[bedrock]>=2.59"]
+mistral = ["pydantic-ai-slim[mistral]>=2.59"]
+groq = ["pydantic-ai-slim[groq]>=2.59"]
+cohere = ["pydantic-ai-slim[cohere]>=2.59"]
+xai = ["pydantic-ai-slim[xai]>=2.59"]
 
 [project.urls]
 Repository = "https://github.com/Alknoma/minutehand"
@@ -96,6 +111,9 @@ dev = [
     "youtrack-sdk==1.0.202607080632",
     "firebase-admin>=7.7.0",
     "google-cloud-recaptcha-enterprise>=1.34.0",
+    "pydantic-ai-slim[openai,anthropic,google,bedrock,mistral,groq,cohere,xai]>=2.59",
+    "anthropic>=1.12.1,<2",  # as the `anthropic` extra pins it
+    "pytest-split>=0.10",
 ]
 
 [build-system]

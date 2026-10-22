@@ -13,8 +13,6 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
     <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
                                          `own_databases`: the agent's state beside its memory, outside forks
-    <state>/runs/<run_id>/environment.json  where the agent's environment came from and the NAMES each source
-                                         supplied (`application.environment`); never a value
     <state>/runs/<run_id>/restore.json   for a fork: how its agent was brought back (its memory, its playback)
 
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
@@ -23,10 +21,6 @@ and move it from sample to sample with `Proxy.mount`, and never two at once.
 A provider signs the events it pushes with the secret its `InboundTarget.secret` resolves to for the run:
 one generated per run and handed to the agent's command, or the agent's own, read from a variable of this
 process. The secret is given to the provider with each push; it is never set in this process's environment.
-
-The agent's command is started with the environment its agent file declares (`AgentUnderTest.environment`,
-`application.environment`): inherited from this process's by default, or read from dotenv files, or an allowlist;
-Minutehand's own variables (`agent_environment`) last, and never this process's own credentials (`WITHHELD`).
 """
 
 from __future__ import annotations
@@ -39,7 +33,6 @@ import secrets
 import shutil
 import signal
 import sqlite3
-import tempfile
 from collections.abc import AsyncIterator, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -56,8 +49,7 @@ from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
-from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.proxy import redact
+from minutehand.adapters.model.pydantic_ai import MODEL_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
@@ -68,8 +60,7 @@ from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
-from minutehand.adapters.telemetry.forward import HEADERS as OTLP_HEADERS
-from minutehand.adapters.telemetry.forward import Forwarding, signal_variable
+from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.agent._wire import ON as AGENT_ON
 from minutehand.agent._wire import URL as AGENT_URL
@@ -79,7 +70,6 @@ from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
-from minutehand.application.environment import ENVIRONMENT_RECORD, EnvironmentRecord, resolve, written
 from minutehand.application.files import FileRefused, load_document, read_yaml
 from minutehand.application.forks import (
     ForkAccount,
@@ -152,10 +142,8 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
-from minutehand.domain.telemetry import Signal
 from minutehand.domain.templates import (
     DNS_PORT_VARIABLE,
-    ENVIRONMENT_FILE_VARIABLE,
     RUN_DIR_VARIABLE,
     RUN_PORT_VARIABLE,
     STARTS_AT_VARIABLE,
@@ -210,11 +198,6 @@ ignores it. An older Node may not read it: such an agent needs a base URL or tra
 
 LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
-
-WITHHELD = frozenset({API_KEY_VARIABLE, OTLP_HEADERS, *(signal_variable(s, "HEADERS") for s in Signal)})
-"""This process's own credentials, never handed to the agent under any source of its environment: the key of the
-model that writes what people say, and the OTLP headers the agent's telemetry is forwarded with (an API key as often
-as not). They are the runner's, not the environment's (docs/agent-environment.md)."""
 
 STOP_TIMEOUT = 5.0
 
@@ -301,9 +284,9 @@ async def play(
     `judge`, runs the judged checks; a scenario with anyone a model speaks for and no model is refused before
     anything starts. `seed` replaces the scenario's own seed, where every draw of the run comes from.
 
-    `command`, when given, is the agent's own program: started for each run with the environment the agent file
-    declares (`AgentUnderTest.environment`; this process's by default) and the proxy, its CA and the run's signing
-    secrets on top, waited for until it accepts connections, and stopped when the run ends.
+    `command`, when given, is the agent's own program: started before each run with only the proxy, its
+    CA and the run's signing secrets added to this process's environment, waited for until it accepts
+    connections, and stopped when the run ends.
 
     Each sample is a run of its own, so its memory (`minutehand.agent.store`) starts from the scenario's and
     nothing else, and so does every own database the agent file names. What the agent keeps anywhere else, in a
@@ -383,7 +366,6 @@ async def play(
                 | {STARTS_AT_VARIABLE: str(int(scenario.starts_at.timestamp() * 1_000_000_000))}
             )
             async with _agent_process(command, env, agent, directory / AGENT_LOG, state=state, started=False) as own:
-                proxy.proxy.addon.secrets = redact.Secrets(own.declared if own is not None else ())
                 record = await run_scenario(
                     scenario=scenario,
                     agent=agent,
@@ -633,7 +615,6 @@ async def fork(
                 )
 
             async with _agent_process(command, env, agent, log, state=state, started=False) as own:
-                proxy.proxy.addon.secrets = redact.Secrets(own.declared if own is not None else ())
                 records = await fork_run(
                     fork=changes,
                     parent=parent.record,
@@ -809,13 +790,6 @@ def restore_of(state: Path, run_id: str) -> Restored | None:
     """How a fork's agent was found at its start. None for a run that started from the beginning."""
     path = run_dir(state, run_id) / RESTORE_RECORD
     return Restored.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
-
-
-def environment_record(state: Path, run_id: str) -> EnvironmentRecord | None:
-    """Where the run's agent got its environment and the names each source supplied (`environment.json`); None for
-    an agent Minutehand did not start."""
-    path = run_dir(state, run_id) / ENVIRONMENT_RECORD
-    return EnvironmentRecord.model_validate_json(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
 def program_record(state: Path, run_id: str) -> AgentProgram | None:
@@ -1161,13 +1135,14 @@ def _read_only(path: Path) -> sqlite3.Connection:
 # -- the parts of a run ---------------------------------------------------------------------------------------
 
 
+MODEL_HOW = f"set {MODEL_VARIABLE} to the model as pydantic-ai names it, `provider:model` (`openai:gpt-5-mini`, `anthropic:claude-sonnet-5-5`, `google:gemini-2.5-pro`), and the provider's own variables, which its client reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, ...)"
+"""How a model is configured, said by every refusal for want of one."""
+
+
 def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
     """`--capture-unknown model` with no model configured would refuse every write it means to answer."""
     if listen.capture_unknown is UnknownHosts.MODEL and model is None:
-        raise RunRefused(
-            "--capture-unknown model needs a model to stand in for undeclared services: set MINUTEHAND_MODEL and "
-            "MINUTEHAND_MODEL_API_KEY, and MINUTEHAND_MODEL_BASE_URL for a service other than OpenAI's"
-        )
+        raise RunRefused(f"--capture-unknown model needs a model to stand in for undeclared services: {MODEL_HOW}")
 
 
 def rules_for(agent: AgentUnderTest, scenario: Scenario, own: Sequence[Check] = ()) -> list[Rule]:
@@ -1432,11 +1407,7 @@ def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: Language
     without one the run is refused before it starts, naming each and why."""
     needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario), *unvoiced(scenario)]
     if needing and model is None:
-        raise RunRefused(
-            f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
-            f"{API_KEY_VARIABLE}, {API_VARIABLE}=anthropic for Anthropic's Messages API, and {BASE_URL_VARIABLE} for "
-            "a service other than OpenAI's or Anthropic's"
-        )
+        raise RunRefused(f"a model writes what {'; '.join(needing)} say, and no model is configured: {MODEL_HOW}")
 
 
 def _now() -> datetime:
@@ -1466,15 +1437,9 @@ def _write_inputs(directory: Path, scenario: Scenario, agent: AgentUnderTest) ->
     directory.mkdir(parents=True, exist_ok=True)
     (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
     (directory / AGENT).write_text(agent.model_dump_json(indent=2), encoding="utf-8")
-    told = _told()
+    told = {k: os.environ[k] for k in (RUN_PORT_VARIABLE, RUN_DIR_VARIABLE) if k in os.environ}
     if told:
         (directory / RUN_ENVIRONMENT).write_text(json.dumps(told, indent=2), encoding="utf-8")
-
-
-def _told() -> dict[str, str]:
-    """What `{run.port}` and `{run.dir}` were filled with, as `run` and `run-all` tell this process
-    (`RUN_PORT_VARIABLE`, `RUN_DIR_VARIABLE`): handed to the agent's command among Minutehand's own variables."""
-    return {k: os.environ[k] for k in (RUN_PORT_VARIABLE, RUN_DIR_VARIABLE) if k in os.environ}
 
 
 def _as_run_was(state: Path, run_id: str) -> None:
@@ -1997,47 +1962,26 @@ class OwnDatabases:
 
 class _Program:
     """The agent's own program, started by Minutehand: `application.restore.OwnProgram`, so a fork can start it once
-    its run exists, with the same environment. `env` is the whole environment it is started with, resolved from the
-    agent file's declaration (`application.environment.resolve`): nothing of this process's reaches it but what the
-    declaration says. `declared` are the values a `files` or `only` source supplied, for the record's redaction."""
+    its run exists, with the same environment."""
 
-    def __init__(
-        self,
-        command: Sequence[str],
-        env: Mapping[str, str],
-        agent: AgentUnderTest,
-        log: Path,
-        *,
-        declared: frozenset[str] = frozenset(),
-    ) -> None:
+    def __init__(self, command: Sequence[str], env: Mapping[str, str], agent: AgentUnderTest, log: Path) -> None:
         self._command = list(command)
-        self._env = dict(env)
+        self._env = {**os.environ, **env}
         self._agent = agent
         self._log = log
         self._process: asyncio.subprocess.Process | None = None
-        self._file: Path | None = None
-        self.declared = declared
 
     @property
     def command(self) -> Sequence[str]:
         return self._command
 
     async def start(self) -> None:
-        # The whole environment in a file of its own too (mode 0600, this process's temporary directory), named to
-        # the command in ENVIRONMENT_FILE_VARIABLE: how a sandbox launcher hands it to the process inside
-        # explicitly, sourced, never on a command line. Removed when the command is stopped.
-        self._remove_file()
-        handle, named = tempfile.mkstemp(prefix="minutehand-agent-", suffix=".env")
-        self._file = Path(named)
-        with os.fdopen(handle, "w", encoding="utf-8") as out:
-            out.write(written(self._env))
-        env = {**self._env, ENVIRONMENT_FILE_VARIABLE: str(self._file)}
         with self._log.open("ab") as out:
             try:
                 # a group of its own, so stopping it stops whatever it started too
                 self._process = await asyncio.create_subprocess_exec(
                     *self._command,
-                    env=env,
+                    env=self._env,
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=out,
                     stderr=out,
@@ -2057,7 +2001,6 @@ class _Program:
         timeout ran out would otherwise outlive it, still listening on the agent's port, and answer for the agent
         the next run starts."""
         process, self._process = self._process, None
-        self._remove_file()
         if process is None:
             return
         _signal_group(process.pid, signal.SIGTERM)
@@ -2065,12 +2008,6 @@ class _Program:
             await asyncio.wait_for(process.wait(), STOP_TIMEOUT)
         _signal_group(process.pid, signal.SIGKILL)  # whatever is left of the group, the command itself included
         await process.wait()
-
-    def _remove_file(self) -> None:
-        file, self._file = self._file, None
-        if file is not None:
-            with contextlib.suppress(FileNotFoundError):
-                file.unlink()
 
 
 def _signal_group(pgid: int, sig: signal.Signals) -> None:
@@ -2089,19 +2026,13 @@ async def _agent_process(
     started: bool = True,
 ) -> AsyncIterator[_Program | None]:
     """The agent's program, started before the block unless `started` is False (a fork starts it itself, once its
-    run exists), and stopped after it. What program it is is kept beside the run's log (`application.program`), and
-    so is where its environment came from (`application.environment`): the agent file's declaration is resolved
-    here, now, so a run and a fork alike read its sources at their start, and a source that cannot be read refuses
-    the run before anything is played. `env` is Minutehand's own: the proxy, its CA, the secrets, applied last."""
+    run exists), and stopped after it. What program it is is kept beside the run's log (`application.program`)."""
     if not command:
         yield None
         return
     kept = program_of(command, Path.cwd(), state)
     (log.parent / PROGRAM_RECORD).write_text(kept.model_dump_json(indent=2), encoding="utf-8")
-    resolved = resolve(agent.environment, inherited=os.environ, own={**env, **_told()}, withheld=WITHHELD)
-    record = resolved.record.model_copy(update={"own": sorted({*resolved.record.own, ENVIRONMENT_FILE_VARIABLE})})
-    (log.parent / ENVIRONMENT_RECORD).write_text(record.model_dump_json(indent=2), encoding="utf-8")
-    program = _Program(command, resolved.values, agent, log, declared=resolved.declared)
+    program = _Program(command, env, agent, log)
     try:
         if started:
             await program.start()

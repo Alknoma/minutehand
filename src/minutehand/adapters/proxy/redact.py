@@ -1,68 +1,22 @@
 """Keep credentials out of the record.
 
-An `Exchange` stores no request headers, so `Authorization`, `Cookie` and `X-Api-Key` never
+An `Exchange` stores no headers, so `Authorization`, `Cookie` and `X-Api-Key` never
 reach it. What remains are the places APIs put credentials besides headers: the
 query string (`?token=`), a form body (Slack's `token=xoxb-…`) and a JSON body
 (an OAuth token response). Values under a credential-named key are replaced; the
 shape around them is kept so the provider's normaliser can still read the call.
-
-Beside the names, the values: every value the agent's declared environment supplied
-(`application.environment`, a `files` or `only` source) is a `Secrets` member, and is
-replaced wherever it appears in a path, a header or a body, whatever key it is under.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from urllib.parse import parse_qsl, quote, unquote_plus, urlsplit, urlunsplit
 
 from minutehand.domain.world import Header
 
 REDACTED = "[redacted]"
-
-LEAST = 8
-"""Characters a declared value needs to be redacted by value. A shorter one (a port, `true`, a log level) is not a
-secret anyone keeps, and replacing it wherever it occurs would take ordinary numbers and words out of the record."""
-
-
-class Secrets:
-    """Values the record must never hold, replaced wherever they appear. Holds nothing of less than `LEAST`
-    characters, and says nothing of what it holds."""
-
-    __slots__ = ("_values",)
-
-    def __init__(self, values: Iterable[str] = ()) -> None:
-        self._values = tuple(sorted({v for v in values if len(v) >= LEAST}, key=len, reverse=True))
-
-    def __bool__(self) -> bool:
-        return bool(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __repr__(self) -> str:
-        return f"Secrets({len(self._values)} values)"
-
-    def hide(self, text: str) -> str:
-        """`text` with every value replaced, the longest first, so a value that holds another is one redaction."""
-        for value in self._values:
-            if value in text:
-                text = text.replace(value, REDACTED)
-        return text
-
-    def hide_bytes(self, raw: bytes) -> bytes:
-        """`raw` with every value's UTF-8 bytes replaced: a secret in a body that is not text is still a secret."""
-        for value in self._values:
-            encoded = value.encode("utf-8")
-            if encoded in raw:
-                raw = raw.replace(encoded, REDACTED.encode("utf-8"))
-        return raw
-
-
-NONE = Secrets()
-"""No declared values: what every reader redacts with until a run declares some."""
 
 CREDENTIAL_KEYS = frozenset(
     {
@@ -120,23 +74,22 @@ def _pairs(text: str, also: frozenset[str] = frozenset()) -> str:
     return "&".join(kept)
 
 
-def headers(pairs: Sequence[tuple[str, str]], *, secrets: Secrets = NONE) -> list[Header]:
+def headers(pairs: Sequence[tuple[str, str]]) -> list[Header]:
     """Headers as they crossed, in order, the value of each whose name is a credential's (`authorization`,
-    `set-cookie`, an API key) redacted, and every declared value (`secrets`) in any other."""
+    `set-cookie`, an API key) redacted."""
     return [
-        Header(name=name, value=REDACTED if _is_credential(name, _HEADER_CREDENTIALS) else secrets.hide(value))
+        Header(name=name, value=REDACTED if _is_credential(name, _HEADER_CREDENTIALS) else value)
         for name, value in pairs
     ]
 
 
-def path(raw: str, *, also: frozenset[str] = frozenset(), secrets: Secrets = NONE) -> str:
-    """A request path with credential query parameters redacted; `also` names more, lower case, `_` for `-`; every
-    declared value (`secrets`) redacted wherever it stands."""
+def path(raw: str, *, also: frozenset[str] = frozenset()) -> str:
+    """A request path with credential query parameters redacted; `also` names more, lower case, `_` for `-`."""
     parts = urlsplit(raw)
     pairs = parse_qsl(parts.query, keep_blank_values=True)
     if not parts.query or not any(_is_credential(k, also) for k, _ in pairs):
-        return secrets.hide(raw)
-    return secrets.hide(urlunsplit(parts._replace(query=_pairs(parts.query, also))))
+        return raw
+    return urlunsplit(parts._replace(query=_pairs(parts.query, also)))
 
 
 def _named(name: object, data: frozenset[str]) -> bool:
@@ -153,18 +106,11 @@ def _walk(value: object, data: frozenset[str]) -> object:
     return value
 
 
-def body(
-    text: str | None, content_type: str, *, data: frozenset[str] = frozenset(), secrets: Secrets = NONE
-) -> str | None:
-    """A request or response body with credential fields redacted, in its own format, and every declared value
-    (`secrets`) wherever it stands, whatever the format; a JSON key in `data` (lower case) is the provider's data,
-    and kept."""
+def body(text: str | None, content_type: str, *, data: frozenset[str] = frozenset()) -> str | None:
+    """A request or response body with credential fields redacted, in its own format; a JSON key in `data` (lower
+    case) is the provider's data, and kept."""
     if not text:
         return text
-    return secrets.hide(_by_name(text, content_type, data))
-
-
-def _by_name(text: str, content_type: str, data: frozenset[str]) -> str:
     kind = content_type.split(";", 1)[0].strip().lower()
     if kind == "application/x-www-form-urlencoded":
         return _pairs(text)
@@ -220,17 +166,14 @@ def _every_credential(value: object, data: frozenset[str]) -> list[object]:
     return []
 
 
-def kept(
-    raw: bytes, content_type: str, *, data: frozenset[str] = frozenset(), secrets: Secrets = NONE
-) -> tuple[str | None, bytes | None]:
+def kept(raw: bytes, content_type: str, *, data: frozenset[str] = frozenset()) -> tuple[str | None, bytes | None]:
     """A body as the record keeps it: UTF-8 text with its credentials redacted, or, when it is not UTF-8 text (a
-    file, an image, JSON in another encoding), exactly its bytes, with every declared value's bytes redacted. No
-    body is (None, None). `data` names the JSON keys of the answering provider's own data (`Manifest.data_keys`),
-    kept as sent."""
+    file, an image, JSON in another encoding), exactly its bytes. No body is (None, None). `data` names the JSON keys
+    of the answering provider's own data (`Manifest.data_keys`), kept as sent."""
     if not raw:
         return None, None
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None, secrets.hide_bytes(raw)
-    return body(text, content_type, data=data, secrets=secrets), None
+        return None, raw
+    return body(text, content_type, data=data), None

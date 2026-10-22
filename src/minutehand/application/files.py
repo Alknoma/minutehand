@@ -17,7 +17,6 @@ from typing import TypeVar
 import yaml
 from pydantic import BaseModel, JsonValue, ValidationError
 
-from minutehand.application.environment import relative_to
 from minutehand.domain.agent import AgentUnderTest, Instructions
 from minutehand.domain.experiment import Fork, ReplayCases
 from minutehand.domain.prices import Prices
@@ -89,7 +88,6 @@ def _with_checks_from(path: Path, agent: AgentUnderTest) -> AgentUnderTest:
             "checks": [str((base / c).resolve()) for c in agent.checks],
             "watches": [str((base / w).resolve()) for w in agent.watches],
             "instructions": [_read_instructions(path, base, i) for i in agent.instructions],
-            "environment": relative_to(agent.environment, base),
         }
     )
 
