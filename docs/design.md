@@ -316,6 +316,7 @@ class AgentUnderTest(Model):
     name: str
     sandbox: Sandbox
     goal: GoalByMessage | None = None
+    start_limit: timedelta = timedelta(seconds=30)
     take_limit: timedelta = timedelta(seconds=30)
     tick: timedelta | None = None
     inbound: list[InboundTarget] = []

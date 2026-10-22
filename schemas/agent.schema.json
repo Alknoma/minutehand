@@ -3348,6 +3348,13 @@
     "sandbox": {
       "$ref": "#/$defs/Sandbox"
     },
+    "start_limit": {
+      "default": "PT30S",
+      "description": "How long, in real time, the agent's command may take to start: from its launch until the address the world pushes to accepts connections. Nothing is pushed before then",
+      "format": "duration",
+      "title": "Start Limit",
+      "type": "string"
+    },
     "take_limit": {
       "default": "PT30S",
       "description": "How long, in real time, the run waits for the agent to take a booking's delivery from its own queue before it moves on, when the scheduler can tell (`ConfirmsDelivery`)",
