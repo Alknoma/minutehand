@@ -21,6 +21,8 @@ MINUTEHAND = Path(sys.executable).parent / "minutehand"
 
 
 def _agent(directory: Path) -> Path:
+    """An agent whose environment comes from two files, one of which is not there (`docs/agent-environment.md`)."""
+    (directory / "agent.env").write_text("AGENT_TOKEN=xoxb-doctor-sentinel-value\nAGENT_PORT=8740\n", encoding="utf-8")
     agent = directory / "agent.yaml"
     agent.write_text(
         yaml.safe_dump(
@@ -29,6 +31,9 @@ def _agent(directory: Path) -> Path:
                 "sandbox": {
                     "deadlines": ["runsc", "debug", "--deadlines", "a"],
                     "advance": ["runsc", "debug", "--advance-clock={nanoseconds}ns", "a"],
+                },
+                "environment": {
+                    "sources": [{"kind": "inherit"}, {"kind": "files", "paths": ["agent.env", "missing.env"]}]
                 },
                 "outbound": [
                     {"host": "api.mail.example", "kind": "acknowledge"},
@@ -62,6 +67,17 @@ def test_the_doctor_names_each_client_that_would_bypass_the_proxy_and_each_host_
     assert results["aiohttp"].startswith("bypassed") and results["urllib3"].startswith("bypassed")
     hosts = {h["host"]: (h["bypassed_by"], h["unreachable_by"]) for h in found["hosts"]}
     assert hosts == {"api.mail.example": ([], []), "search.localhost": ([], []), "2001:db8::1": ([], ["httpx"])}
+    # each declared source of the agent's environment: readable or not, its names, never a value
+    inherited, readable, missing = found["environment"]
+    assert inherited["kind"] == "inherit" and inherited["readable"] and "PATH" in inherited["names"]
+    assert (readable["kind"], readable["readable"], readable["names"]) == ("files", True, ["AGENT_TOKEN", "AGENT_PORT"])
+    assert readable["path"] == str(tmp_path / "agent.env")
+    assert (
+        missing["readable"] is False
+        and missing["names"] == []
+        and "missing.env, which does not exist" in missing["problem"]
+    )
+    assert "xoxb-doctor-sentinel-value" not in done.stdout
 
 
 def test_the_doctor_names_each_host_a_name_handed_out_would_send_direct_for_an_agent_in_a_container(

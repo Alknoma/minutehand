@@ -279,6 +279,11 @@ class WakeRecord(Model):
         default=0, ge=0, description="Gets and listings of the agent's memory (`minutehand.agent.store`) in the wake"
     )
     memory_writes: int = Field(default=0, ge=0, description="Keys of the agent's memory written or deleted in the wake")
+    counted: bool = Field(
+        default=True,
+        description="Counted against the run's wake limit: in a run with an end, a wake the agent's own timer alone "
+        "began, in which it made no call and wrote nothing, is not (`domain.run.counts_against_limit`)",
+    )
 
 
 class WakeModelCalls(Model):

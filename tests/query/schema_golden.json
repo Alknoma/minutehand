@@ -343,6 +343,12 @@
       "attributes TEXT",
       "is_model_call INTEGER",
       "call_id INTEGER"
+    ],
+    "environment": [
+      "position INTEGER",
+      "kind TEXT",
+      "source TEXT",
+      "names TEXT"
     ]
   }
 }

@@ -165,7 +165,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 
 - **Built and tested, with no agent in the loop:** the proxy, the fakes against their vendors' client libraries,
   the store, the people, the checks over hand-written records, the read model, the viewer, `validate`, `schema`.
-- **Run in the sandbox on every push (`sandbox.yml`) and by hand in the lab container:** the run loop on the
+- **Run in the sandbox on every push (the `sandbox` job of `ci.yml`) and by hand in the lab container:** the run loop on the
   agent's own timers, pushed events into the sandbox, the sealed network, a fork's playback (`docs/design.md`,
   "Evidence", 2026-10-22). Built against the sandbox's control calls and not yet run against one: the agent's memory
   under a fork, dispatch rules (a booked wake delivered late, twice or never), `run-all`, `replay`.
@@ -177,6 +177,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 |---|---|
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
+| `docs/agent-environment.md` | Where the agent's own environment comes from: inherited, dotenv files, or an allowlist; what never reaches it |
 | `examples/proactive_agent/README.md` | The example agent: plain Python, its own scheduler, no Minutehand in it |
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |

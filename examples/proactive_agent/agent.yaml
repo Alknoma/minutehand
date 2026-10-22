@@ -9,6 +9,14 @@ sandbox:
   deadlines: [runsc, --root, /tmp/minutehand-sandbox, debug, --deadlines, agent]
   advance: [runsc, --root, /tmp/minutehand-sandbox, debug, "--advance-clock={nanoseconds}ns", agent]
 
+# The agent's own environment (docs/agent-environment.md): the machine's, then its own file, which holds its Slack
+# token and its port. Minutehand reads the file itself when it starts `run_in_sandbox.sh`; the record keeps the
+# names, never a value, and the token is redacted wherever the agent sends it.
+environment:
+  sources:
+    - {kind: inherit}
+    - {kind: files, paths: [agent.env]}
+
 inbound:
   - provider: slack
     url: "http://192.168.10.2:8740/slack/events"    # the sandbox's address on its link; the proxy sits on its gateway

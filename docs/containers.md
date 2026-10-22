@@ -15,6 +15,7 @@ in `docs/serve.md`, "One container in a stack".
 | The proxy's CA bundle, mounted, and its path in `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and the rest | The agent's clients must trust the certificates the proxy makes for each host |
 | The agent's URLs in the agent file reachable from the host | Minutehand wakes the agent and pushes events to the URLs in `wakes` and `inbound`. Publish the port, and have the agent listen on `0.0.0.0` inside the container, not `127.0.0.1` |
 | Its signing secret as `secret: {kind: from_env, env: <variable>}` | A secret generated for each run reaches only a command Minutehand starts; `minutehand env` refuses an agent file that asks for one |
+| Its own secrets, as the agent file declares them (`docs/agent-environment.md`) | `environment: {sources: [{kind: files, paths: [agent.env]}]}` becomes each service's `env_file:` in the Compose override, under Minutehand's variables; `only` is refused by name, since a container inherits nothing of the host's |
 
 ## The commands
 

@@ -2,7 +2,7 @@
 name = "minutehand"
 # The one place the version is written. `minutehand --version` and `minutehand.__version__` read it from the
 # installed package's metadata; a release's tag is `v` and this (docs/releasing.md).
-version = "0.3.1"
+version = "0.3.2"
 description = "Build your proactive agent yourself: simulated days, fake services, real findings."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -92,7 +92,6 @@ dev = [
     "python-docx==1.2.0",
     "openpyxl>=3.1",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
-    "pytest-split>=0.10",
     "playwright==1.55.0",
     "youtrack-sdk==1.0.202607080632",
     "firebase-admin>=7.7.0",

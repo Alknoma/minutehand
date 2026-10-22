@@ -547,6 +547,17 @@ The agent's own telemetry, every span it exported (and the model calls recorded 
 | `is_model_call` | INTEGER | 1 when the GenAI conventions mark it a model call |
 | `call_id` | INTEGER | The HTTP call whose traceparent names it (calls.call_id); its events are first_seq..last_seq |
 
+### `environment`
+
+Where the agent's environment came from when Minutehand started its command (docs/agent-environment.md): each declared source in order with the variables it supplied, by name, then Minutehand's own variables and the credentials of its own it withheld. Names only: no value is ever kept. Empty for an agent Minutehand did not start. Kept in the order `position`.
+
+| Column | Type | What it holds |
+|---|---|---|
+| `position` | INTEGER | The source's place in the declared order, from 1; Minutehand's own rows come last |
+| `kind` | TEXT | inherit, files or only (the declared source), minutehand (the variables it hands every agent, applied last) or withheld (its own credentials a source held and the agent was not given) |
+| `source` | TEXT | The dotenv file, for files; NULL for every other kind |
+| `names` | TEXT | JSON array of the variable names, in the source's order |
+
 ## Queries an agent asks
 
 Each runs as written against a run: `tests/query/test_docs_queries.py` runs every one on a run written by hand and expects rows, and `tests/architecture/test_read_model_on_real_runs.py` runs every one on real runs of the two examples, expecting rows wherever the run holds the data. Change a

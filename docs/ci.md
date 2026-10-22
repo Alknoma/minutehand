@@ -7,14 +7,15 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 
 | Workflow | Runs on | Jobs |
 |---|---|---|
-| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `types` (pyright), `style` (`ruff format --check`, `ruff check`), `lints` (`python -m lints`), `workflows` (actionlint, zizmor over workflows and `.github/actions`), `tests` (Linux on Python 3.12 and 3.13, macOS on 3.12), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `promotion`, `gate` |
-| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders), `newest-clients` (the suite against the newest release of every dependency) |
+| `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `static` (pyright; `ruff format --check`, `ruff check`; `python -m lints`; actionlint and zizmor over workflows and `.github/actions`), `tests` (the suite once, Linux, Python 3.12), `browser` (the viewer in Chromium), `redirect` (transparent capture in a container), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `sandbox` (the example agent's two worlds and the seal's probe in the real gVisor sandbox), `promotion`, `gate` |
+| `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders, on Python 3.13), `newest-clients` (the suite against the newest release of every dependency) |
 | `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
 
 - **No network beyond this machine** (`--disable-socket --allow-hosts=127.0.0.1,::1,localhost`). A provider test that reaches the real service is a broken test.
 - **Random order every run**, and `-n auto` in CI. A test that depends on another running first fails.
+- **One operating system, one interpreter, one run.** The agent and the sandbox run on Linux and nowhere else, so the suite runs on Linux, on the image's Python (3.12), once. A matrix was tried (Linux 3.12 and 3.13, macOS 3.12, four shards each, twelve jobs a pull request) and removed on 2026-10-22: it found no defect in the code and failed twice that day on macOS timing alone. Python 3.13 runs nightly.
 - **60 seconds per test.** A hang is a failure, not a stuck job.
 - **A warning raised against our own code is an error.** Third-party internals are left alone.
 
@@ -115,7 +116,7 @@ and runs the installed `minutehand --help` and the built image.
 
 | Tier | When | Required | State |
 |---|---|---|---|
-| **Gate**: types, lints, workflow lint, the whole test suite on three runners | Every pull request and merge-queue entry | Yes | On |
+| **Gate**: types, lints, workflow lint, the whole test suite once on Linux, the viewer in a browser, transparent capture, the example in the sandbox | Every pull request and merge-queue entry | Yes | On |
 | **Build**: `uv build` makes the sdist and the wheel; the wheel, installed into a fresh environment with none of the dev dependencies, runs `minutehand --help`; the image runs its entrypoint | Every pull request | Yes, behind `gate` | On: the `build` job |
 | **Nightly**: repeat runs, newest dependencies | Nightly | No. A failure is a signal about tomorrow, not about the pull request in front of you. | On |
 | **Conformance**: each provider's answers validated against the service's published API description; recorded real traffic replayed against the fake | Nightly | No | Off. Not built. |
