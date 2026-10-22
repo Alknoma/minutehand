@@ -40,10 +40,10 @@ it, whatever the channel:
     collections: [{path: /v1/orders, id: {at: id, format: prefixed, prefix: ord_}}]
 ```
 
-To run one, from the pattern's folder, with a model for the people's words (any OpenAI-compatible endpoint, or Anthropic's with
-`MINUTEHAND_MODEL_API=anthropic`; offline,
-the recipes' fake model, `python tests/support/fake_model.py --port 8799`, with `MINUTEHAND_MODEL_BASE_URL=
-http://127.0.0.1:8799/v1`, `MINUTEHAND_MODEL_API_KEY` and `MINUTEHAND_MODEL` set to anything):
+To run one, from the pattern's folder, with a model for the people's words (`MINUTEHAND_MODEL=provider:model` and the
+provider's own variables; offline, the recipes' fake model, `python tests/support/fake_model.py --port 8799`, with
+`MINUTEHAND_MODEL=openai-chat:people`, `OPENAI_BASE_URL=http://127.0.0.1:8799/v1` and `OPENAI_API_KEY` set to
+anything):
 
 ```bash
 cd docs/approvals/inbox

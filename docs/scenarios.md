@@ -44,8 +44,8 @@ A library scenario fixes the situation. It leaves to the team who its people are
 - **The channel is not a value.** How the agent reaches people (Slack, email through a declared host, its own product)
   is the agent file's, never the scenario's, so one filled scenario runs against any of them. The exception is a
   person writing in unprompted, which needs a provider that pushes messages (`--provider`).
-- **A model plays the people,** so a library scenario needs one configured (`MINUTEHAND_MODEL`,
-  `MINUTEHAND_MODEL_API_KEY`); a run is refused at the start, naming who, without one.
+- **A model plays the people,** so a library scenario needs one configured (`MINUTEHAND_MODEL=provider:model`, and
+  the provider's own key variable); a run is refused at the start, naming who, without one.
 
 Every library scenario starts on Monday 2026-08-24 at 09:00 UTC, simulated, and watches the agent for thirty days.
 Any text may name a date relative to that start with `{{start+P4D}}`.

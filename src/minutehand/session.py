@@ -49,7 +49,7 @@ from minutehand.adapters.agent.openapi import OperationUnresolved
 from minutehand.adapters.agent.replies import CapturedReplies
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import Running
-from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
+from minutehand.adapters.model.pydantic_ai import MODEL_VARIABLE
 from minutehand.adapters.proxy.base_url import base_url
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.hosts import LOOPBACK_NAME, loopback
@@ -1135,13 +1135,14 @@ def _read_only(path: Path) -> sqlite3.Connection:
 # -- the parts of a run ---------------------------------------------------------------------------------------
 
 
+MODEL_HOW = f"set {MODEL_VARIABLE} to the model as pydantic-ai names it, `provider:model` (`openai:gpt-5-mini`, `anthropic:claude-sonnet-5-5`, `google:gemini-2.5-pro`), and the provider's own variables, which its client reads (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, ...)"
+"""How a model is configured, said by every refusal for want of one."""
+
+
 def _refuse_unmodeled(listen: Listen, model: LanguageModel | None) -> None:
     """`--capture-unknown model` with no model configured would refuse every write it means to answer."""
     if listen.capture_unknown is UnknownHosts.MODEL and model is None:
-        raise RunRefused(
-            "--capture-unknown model needs a model to stand in for undeclared services: set MINUTEHAND_MODEL and "
-            "MINUTEHAND_MODEL_API_KEY, and MINUTEHAND_MODEL_BASE_URL for a service other than OpenAI's"
-        )
+        raise RunRefused(f"--capture-unknown model needs a model to stand in for undeclared services: {MODEL_HOW}")
 
 
 def rules_for(agent: AgentUnderTest, scenario: Scenario, own: Sequence[Check] = ()) -> list[Rule]:
@@ -1406,11 +1407,7 @@ def _refuse_unwritten(scenario: Scenario, agent: AgentUnderTest, model: Language
     without one the run is refused before it starts, naming each and why."""
     needing = [*unspoken(scenario, agent.inboxes), *needs_model(scenario), *unvoiced(scenario)]
     if needing and model is None:
-        raise RunRefused(
-            f"a model writes what {'; '.join(needing)} say, and no model is configured: set {MODEL_VARIABLE} and "
-            f"{API_KEY_VARIABLE}, {API_VARIABLE}=anthropic for Anthropic's Messages API, and {BASE_URL_VARIABLE} for "
-            "a service other than OpenAI's or Anthropic's"
-        )
+        raise RunRefused(f"a model writes what {'; '.join(needing)} say, and no model is configured: {MODEL_HOW}")
 
 
 def _now() -> datetime:

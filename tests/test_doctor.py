@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from minutehand.doctor import claimed_hosts, docker_warnings, people_model
@@ -145,14 +146,22 @@ def test_the_doctor_warns_of_a_docker_config_that_sends_every_host_direct(tmp_pa
     assert len(found["docker"]) == 1 and "sets proxies.default.noProxy to '*'" in found["docker"][0], done.stderr
 
 
-def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say() -> None:
-    configured = people_model({"MINUTEHAND_MODEL": "people-1", "MINUTEHAND_MODEL_API_KEY": "k"})
-    assert configured.configured and configured.said == "people-1 at https://api.openai.com/v1 (openai API)"
-    anthropic = people_model(
-        {"MINUTEHAND_MODEL": "claude-test", "MINUTEHAND_MODEL_API_KEY": "k", "MINUTEHAND_MODEL_API": "anthropic"}
-    )
-    assert anthropic.said == "claude-test at https://api.anthropic.com (anthropic API)"
-    missing = people_model({})
+def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The model is named by MINUTEHAND_MODEL alone; its provider's client reads its own variables, and the doctor
+    repeats what that client says when it refuses, never reading a key itself."""
+    monkeypatch.setenv("MINUTEHAND_MODEL", "openai-chat:people-1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-doctor-sentinel")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    configured = people_model()
+    assert configured.configured
+    assert configured.said == "openai-chat:people-1, the openai-chat provider's client configured by its own variables"
+    monkeypatch.delenv("OPENAI_API_KEY")
+    unkeyed = people_model()
+    assert not unkeyed.configured and "the openai-chat provider refused its configuration" in unkeyed.said
+    assert "OPENAI_API_KEY" in unkeyed.said, "the provider's own words name what it wants"
+    monkeypatch.setenv("MINUTEHAND_MODEL", "people-1")
+    bare = people_model()
+    assert not bare.configured and "`provider:model`" in bare.said
+    monkeypatch.delenv("MINUTEHAND_MODEL")
+    missing = people_model()
     assert not missing.configured and "no model is configured" in missing.said and "is refused" in missing.said
-    half = people_model({"MINUTEHAND_MODEL": "people-1"})
-    assert not half.configured and "MINUTEHAND_MODEL_API_KEY is not set" in half.said

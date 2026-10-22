@@ -16,7 +16,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, Inbound
-from minutehand.adapters.model.environment import VARIABLES
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Seed
 from minutehand.testing.background import serve_in_background
@@ -33,9 +32,10 @@ SAID = "Thursday works for me. The room is booked from 10."
 
 
 def served_with(environment: dict[str, str], tmp_path_factory: pytest.TempPathFactory) -> Iterator[Served]:
-    """A server whose own environment holds exactly `environment` of the model's variables."""
+    """A server whose own environment holds exactly `environment` of the model's variables: Minutehand's one, and the
+    stand-in's provider's own."""
     with pytest.MonkeyPatch.context() as patched:
-        for name in VARIABLES:
+        for name in people_environment():
             patched.delenv(name, raising=False)
         for name, value in environment.items():
             patched.setenv(name, value)
@@ -172,7 +172,8 @@ class _FailsFirst(ThreadingHTTPServer):
 
 @contextmanager
 def model_that_fails_first() -> Iterator[str]:
-    """A model API whose first answer is a 503 and every later one the recipes' stand-in's: its base URL."""
+    """A model API whose first answer is a 400, which no client retries on its own (the OpenAI client retries a 503
+    twice before it gives up), and every later one the recipes' stand-in's: its base URL."""
     asked: list[int] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -181,7 +182,7 @@ def model_that_fails_first() -> Iterator[str]:
             asked.append(1)
             schema = fake_model.people_schema(body)
             if len(asked) == 1 or schema is None:
-                payload, status = b'{"error": {"message": "overloaded"}}', 503
+                payload, status = b'{"error": {"message": "refused once"}}', 400
             else:
                 payload, status = json.dumps(fake_model.people_completion(body, schema, len(asked))).encode(), 200
             self.send_response(status)

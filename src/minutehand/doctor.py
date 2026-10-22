@@ -33,13 +33,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from minutehand.adapters.model.environment import (
-    API_KEY_VARIABLE,
-    MODEL_VARIABLE,
-    api_of,
-    base_url_of,
-)
-from minutehand.adapters.model.environment import from_environment as model_from_environment
+from minutehand.adapters.model.pydantic_ai import MODEL_VARIABLE
+from minutehand.adapters.model.pydantic_ai import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -279,20 +274,22 @@ class PeopleModel(Model):
     said: str = Field(description="Which model at which service, or what is missing")
 
 
-def people_model(environ: Mapping[str, str]) -> PeopleModel:
-    """The model this environment configures for people, as `run` and `serve` read it."""
+def people_model() -> PeopleModel:
+    """The model this process's environment names for people, as `run` and `serve` read it: built, so a provider
+    whose package is missing or whose client refuses its configuration is reported here, in its words."""
     try:
-        found = model_from_environment(environ)
+        found = model_from_environment()
     except RunRefused as e:
         return PeopleModel(configured=False, said=str(e))
     if found is None:
         return PeopleModel(
             configured=False,
-            said=f"no model is configured ({MODEL_VARIABLE}, {API_KEY_VARIABLE}): a run or standing world in which a "
+            said=f"no model is configured ({MODEL_VARIABLE} is not set): a run or standing world in which a "
             "person speaks in a model's words is refused",
         )
     return PeopleModel(
-        configured=True, said=f"{found.model_id} at {base_url_of(environ)} ({api_of(environ).value} API)"
+        configured=True,
+        said=f"{found.provider}:{found.model_id}, the {found.provider} provider's client configured by its own variables",
     )
 
 
@@ -399,7 +396,7 @@ async def diagnose(
         notes=notes,
         no_proxy=no_proxy,
         docker=docker_warnings(claimed_hosts(agent), os.environ),
-        people_model=people_model(os.environ),
+        people_model=people_model(),
     )
 
 

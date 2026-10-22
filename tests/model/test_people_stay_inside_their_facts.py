@@ -11,7 +11,6 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-from minutehand.adapters.model.openai_compatible import OpenAICompatible
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.replier import FACT_CHECK_PROMPT_VERSION, STEP_PROMPT_VERSION, PeopleReplier
 from minutehand.application.run_clock import RunClock
@@ -30,7 +29,7 @@ from minutehand.domain.scenario import (
     WorkingHours,
 )
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, MessageSnapshot, Operation
-from tests.model.fake_completions import FakeCompletions, Received, Rule, fake_completions
+from tests.model.fake_completions import FakeCompletions, Received, Rule, fake_completions, model_over
 from tests.support import fake_model
 from tests.support.people import email
 from tests.support.scenarios import T0, person, scenario
@@ -79,7 +78,7 @@ async def _reply(tmp_path: Path, *, learns: bool) -> tuple[str, SqliteStore, Fak
     store = SqliteStore(tmp_path / "world.db", "r", clock)
     played = _played()
     async with fake_completions(_model(learns=learns), checks_facts=True) as fake:
-        model = OpenAICompatible(base_url=fake.base_url, api_key="sk-facts", model_id="people-1")
+        model = model_over(fake.base_url, model_id="people-1")
         asked = store.apply(
             Change(
                 entity=EntityRef(provider="testchat", kind=EntityKind.MESSAGE, external_id="ask"),

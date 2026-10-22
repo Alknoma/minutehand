@@ -35,8 +35,9 @@ On a Linux host with `runsc` and its `gvisor-bin/` on the path, the run itself i
 
 ```bash
 pip install slack_sdk
-export MINUTEHAND_MODEL=... MINUTEHAND_MODEL_API_KEY=...   # the model that plays Sam and Owen; or the offline
-                                                          # stand-in: python tests/support/fake_model.py
+export MINUTEHAND_MODEL=openai:gpt-5-mini OPENAI_API_KEY=...   # the model that plays Sam and Owen, named as pydantic-ai
+    # names it, with its provider's own key; or the offline stand-in: python tests/support/fake_model.py, with
+    # MINUTEHAND_MODEL=openai-chat:people OPENAI_BASE_URL=http://127.0.0.1:8790/v1 OPENAI_API_KEY=offline
 minutehand run worlds/quiet.yaml --agent agent.yaml --proxy-host 0.0.0.0 --agent-proxy-host 192.168.10.3 \
   --transparent-port 8082 --dns-port 8053 -- ./run_in_sandbox.sh
 minutehand checkpoints <run>                              # seq 27, after wake 2: asked, followed up once

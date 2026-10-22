@@ -18,7 +18,7 @@ from tests.support.people import people_environment
 @pytest.fixture(scope="module")
 def failing(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Served]:
     with model_that_fails_first() as base_url:
-        yield from served_with(people_environment() | {"MINUTEHAND_MODEL_BASE_URL": base_url}, tmp_path_factory)
+        yield from served_with(people_environment() | {"OPENAI_BASE_URL": base_url}, tmp_path_factory)
 
 
 def test_a_failed_model_call_leaves_the_answer_owed_and_its_moment_writes_it(failing: Served) -> None:
@@ -34,9 +34,9 @@ def test_a_failed_model_call_leaves_the_answer_owed_and_its_moment_writes_it(fai
             assert receiver.texts() == []
             view = failing.client.world(world.world_id)
             [owed] = view.people_owe
-            assert owed.failed is not None and "503" in owed.failed
+            assert owed.failed is not None and "400" in owed.failed
             [failed] = view.person_calls
-            assert failed.answer is None and failed.failure is not None and "503" in failed.failure
+            assert failed.answer is None and failed.failure is not None and "400" in failed.failure
 
             world.advance(timedelta(hours=2))
             assert receiver.texts() == [SAID]

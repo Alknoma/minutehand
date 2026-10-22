@@ -61,9 +61,11 @@ model, another provider), so it is recorded, edited by a fork's PromptPatch or M
 (acknowledge, pass_through or replay); --capture-unknown passes every undeclared one through and keeps it, and
 the run ends with the hosts it saw and a declaration for each (docs/capture.md).
 
-A model, for people whose replies it writes and for --judge, is configured by MINUTEHAND_MODEL,
-MINUTEHAND_MODEL_API_KEY and MINUTEHAND_MODEL_BASE_URL, and MINUTEHAND_MODEL_API: openai (the default, any
-OpenAI-compatible chat-completions API) or anthropic (Anthropic's Messages API, base URL https://api.anthropic.com).
+A model, for people whose replies it writes and for --judge, is named by MINUTEHAND_MODEL as pydantic-ai names
+models, provider:model (openai:gpt-5-mini; openai-chat:<model> for any OpenAI-compatible endpoint at
+OPENAI_BASE_URL; anthropic:…, google:…, bedrock:…, azure:…, mistral:…, groq:…, cohere:…, xai:…, deepseek:…,
+openrouter:…, together:…, fireworks:…, ollama:…). The provider's own client reads its own variables (OPENAI_API_KEY,
+ANTHROPIC_API_KEY, GOOGLE_API_KEY, AWS_*, …) from the environment Minutehand runs in: Minutehand manages no key.
 
 Every run is assessed against the world its files declare, with nothing more to write: each effect of the agent's,
 by kind of item, against the goal, the deadline, the people's facts and windows, the services and their machines
@@ -118,7 +120,7 @@ from minutehand import agent_api, mcp_relay, replay_all, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
-from minutehand.adapters.model.environment import from_environment as model_from_environment
+from minutehand.adapters.model.pydantic_ai import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
 from minutehand.adapters.query import reader as read_model
