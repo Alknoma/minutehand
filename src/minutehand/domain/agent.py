@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from datetime import timedelta
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, model_validator
 
 from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules
+from minutehand.domain.common import VariableName
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
@@ -118,6 +119,54 @@ class OwnDatabase(Model):
     form: OwnDatabaseForm = OwnDatabaseForm.FILE
 
 
+class EnvironmentSourceKind(StrEnum):
+    INHERIT = "inherit"
+    FILES = "files"
+    ONLY = "only"
+
+
+class InheritedEnvironment(Model):
+    """The environment Minutehand was started in, as the agent's: the default when the agent file declares no
+    `environment`. Minutehand's own credentials (its model API key, the OTLP headers it forwards with) are never in
+    it: they are the runner's, not the environment's."""
+
+    kind: Literal[EnvironmentSourceKind.INHERIT] = EnvironmentSourceKind.INHERIT
+
+
+class EnvironmentFiles(Model):
+    """Dotenv files, read by Minutehand when it starts the agent's process, as Compose reads `env_file`: `KEY=value`
+    lines, `export` prefixes, comments, single and double quotes. A file that cannot be read refuses the run,
+    naming it. Nobody handles a value: it goes from the file to the agent's process."""
+
+    kind: Literal[EnvironmentSourceKind.FILES] = EnvironmentSourceKind.FILES
+    paths: list[str] = Field(
+        min_length=1, description="Dotenv files, in order; a relative path is read from the agent file's folder"
+    )
+
+
+class OnlyFromInherited(Model):
+    """An allowlist: these variables of the environment Minutehand was started in, and nothing else of it."""
+
+    kind: Literal[EnvironmentSourceKind.ONLY] = EnvironmentSourceKind.ONLY
+    names: list[VariableName] = Field(min_length=1, description="The variables the agent sees, by name")
+
+
+EnvironmentSource = Annotated[InheritedEnvironment | EnvironmentFiles | OnlyFromInherited, Field(discriminator="kind")]
+
+
+class AgentEnvironment(Model):
+    """Where the agent's own environment comes from (docs/agent-environment.md): its sources, in order, a later one
+    overriding an earlier one. Minutehand's own variables (the proxy, its CA, the telemetry receiver, the signing
+    secrets, MINUTEHAND_AGENT_URL) apply last, and no source overrides them. Every value a `files` or `only`
+    source supplies joins the record's redaction, so a secret the agent sends in a call is redacted in the record."""
+
+    sources: list[EnvironmentSource] = Field(
+        default=[InheritedEnvironment()],
+        min_length=1,
+        description="In order; absent, the agent gets the environment Minutehand was started in",
+    )
+
+
 class GoalByMessage(Model):
     """The scenario's owner sends the goal as a message through this provider, as a person would, and every
     scripted direction the same way."""
@@ -169,6 +218,12 @@ class AgentUnderTest(Model):
     )
     name: str
     sandbox: Sandbox
+    environment: AgentEnvironment = Field(
+        default=AgentEnvironment(),
+        description="Where the agent's own environment comes from when Minutehand starts its command: inherited "
+        "from Minutehand's own by default, read from dotenv files, or an allowlist of the inherited one "
+        "(docs/agent-environment.md)",
+    )
     goal: GoalByMessage | None = Field(
         default=None,
         description="Where an older scenario's owner sends its goal and directions, as a person would; none for a "
