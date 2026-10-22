@@ -637,7 +637,8 @@ Orchestrator.run():
                      -> People.act (ProvidesTransitions.apply), ChangesDocuments.change; no wake, unless the agent
                      watches a changed provider's documents (NotifiesChanges.watched), then a DUE wake in which
                      NotifiesChanges.notify tells it
-    otherwise, one wake (the agent's timer among them: a wake that changes nothing is still its wake):
+    otherwise, one wake (the agent's timer among them: a wake that changes nothing is still its wake, though one
+                     its timer alone began, in which it called and wrote nothing, is not counted in a run with an end):
       the sandbox released to the moment
       fire in order: people's moves (People.act -> ProvidesTransitions.apply: a reply, a control, a decision, a
                      ticket moved), happenings (a transition for a ticket, ChangesDocuments.change for a document,
@@ -658,7 +659,7 @@ Orchestrator.run():
 - Nothing is asked of the agent. A wake ends when its sandbox is idle on two reads `quiet` apart with no call in flight; one still busy after `settle_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says so. There is no `done`: whether the work is finished is read from the world ("The verdict").
 - When one jump fires several things, the wake is recorded under the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, then `DUE`.
 - A wake made only of bookings is the scheduler's delivery: the loop waits for the agent to take it when the scheduler can tell (`ConfirmsDelivery`), up to `take_limit`, then for the sandbox to fall idle.
-- The wake limit (`domain/run.wake_limit`): the scenario's `max_wakes`; else, with a window or a deadline and a rhythm the agent file declares (`tick`), every tick across it and 20 more, for the wakes replies and happenings bring; a window with no rhythm gets one wake a simulated minute across it, a guard against an agent waking itself without end; anything else gets 20. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it.
+- The wake limit (`domain/run.wake_limit`): the scenario's `max_wakes`; else, with a window or a deadline and a rhythm the agent file declares (`tick`), every tick across it and 20 more, for the wakes replies and happenings bring; a window with no rhythm gets one wake a simulated minute across it, a guard against an agent waking itself without end; anything else gets 20. In a run with an end, a wake the agent's own timer alone began, in which it made no call and wrote nothing, is not counted against it (`domain/run.counts_against_limit`, `WakeRecord.counted`): it is a runtime's hours-long timer coming round (a JVM's keepalive, a gRPC library's), not a go of the agent's, and the end bounds how many there can be. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it.
 - An agent that refuses a pushed event fails the wake.
 
 ## Implementation

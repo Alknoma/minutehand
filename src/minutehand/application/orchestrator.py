@@ -48,7 +48,7 @@ from minutehand.domain.checks import WakeRecord
 from minutehand.domain.clock import Due, DueKind, next_jump
 from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import InboundTarget, PersonMessage
-from minutehand.domain.run import RunRecord, StopReason, wake_limit
+from minutehand.domain.run import RunRecord, StopReason, counts_against_limit, wake_limit
 from minutehand.domain.scenario import (
     DocumentHappening,
     Happening,
@@ -563,7 +563,7 @@ class Orchestrator:
                 await self._notify(self._watched(due))
                 await self._taken(due)
 
-            stop = await self._wake(wake, self._reason(fired), fire)
+            stop = await self._wake(wake, self._reason(fired), fire, timer_only=all(map(_timer, fired)))
             if stop is not None:
                 return stop
 
@@ -763,14 +763,16 @@ class Orchestrator:
                 reasons.add(WakeReason.DIRECTION)
         return next((r for r in _PRIORITY if r in reasons), WakeReason.DUE)
 
-    async def _wake(self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]]) -> StopReason | None:
+    async def _wake(
+        self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]], *, timer_only: bool = False
+    ) -> StopReason | None:
         """Change the world for what is due, wait until the agent's sandbox is idle again, read what the agent did,
         and checkpoint. An agent that refuses a pushed event fails the wake. The store keeps the real moments the
         wake began and, after its checkpoint, ended: the agent's spans are placed in the wake whose window holds
         their start, however late they arrive."""
         self._store.wake_began(wake)
         try:
-            stop = await self._played(wake, reason, fire)
+            stop = await self._played(wake, reason, fire, timer_only=timer_only)
         finally:
             self._store.wake_ended(wake)
         if self._environment is not None and self._environment.failure() is not None:
@@ -786,7 +788,9 @@ class Orchestrator:
             return None
         return self._replay.parted
 
-    async def _played(self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]]) -> StopReason | None:
+    async def _played(
+        self, wake: int, reason: WakeReason, fire: Callable[[], Awaitable[None]], *, timer_only: bool
+    ) -> StopReason | None:
         if self._telemetry is not None:
             self._telemetry.wake_started(wake, reason, self._clock.now())
         failed = False
@@ -804,17 +808,24 @@ class Orchestrator:
         if not failed:
             await self._schedule(new, retry=True)
         mine = [e for e in new if e.wake == wake and e.actor is Actor.AGENT]
+        world_changes = sum(1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD)
+        memory_writes = sum(1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation not in _NOT_CHANGES)
+        # what Minutehand itself called in the wake (an inbox read as a person) is not the agent's
+        calls = sum(1 for c in self._store.calls() if c.wake == wake and c.exchange.inbox_call is None)
         self._wakes.append(
             WakeRecord(
                 index=wake,
                 sim_time=self._clock.now(),
                 reason=reason.value,
-                world_changes=sum(
-                    1 for e in mine if e.operation not in _NOT_CHANGES and e.entity.kind not in _NOT_THE_WORLD
-                ),
+                world_changes=world_changes,
                 memory_reads=self._mounts.memory_reads(wake) if isinstance(self._mounts, HoldsMemory) else 0,
-                memory_writes=sum(
-                    1 for e in mine if e.entity.kind is EntityKind.MEMORY and e.operation not in _NOT_CHANGES
+                memory_writes=memory_writes,
+                counted=counts_against_limit(
+                    timer_only=timer_only,
+                    ends=self._scenario.window_end is not None,
+                    calls=calls,
+                    world_changes=world_changes,
+                    memory_writes=memory_writes,
                 ),
             )
         )
@@ -823,7 +834,7 @@ class Orchestrator:
         if failed:
             return StopReason.AGENT_FAILED
         self._checkpoint()
-        if len(self._wakes) >= self._limit.wakes:
+        if sum(1 for w in self._wakes if w.counted) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
 

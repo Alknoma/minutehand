@@ -182,6 +182,16 @@ def wake_limit(scenario: Scenario, agent: AgentUnderTest) -> WakeLimit:
     )
 
 
+def counts_against_limit(*, timer_only: bool, ends: bool, calls: int, world_changes: int, memory_writes: int) -> bool:
+    """Whether a wake counts against the wake limit. One the agent's own timer alone began, in which it made no call
+    and wrote nothing, is its runtime's timer coming round (a JVM's or a gRPC library's hours-long keepalive), not
+    a go of the agent's, and in a run with an end (a window or a deadline) it is not counted: the clock moved on by
+    more than `housekeeping` to reach it, so such wakes are bounded by the end. A run without one counts it, the
+    limit then being all that stops an agent waking itself without end."""
+    idle = timer_only and calls == 0 and world_changes == 0 and memory_writes == 0
+    return not (idle and ends)
+
+
 def _said(tick: timedelta) -> str:
     minutes = round(tick.total_seconds() / 60)
     return f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
