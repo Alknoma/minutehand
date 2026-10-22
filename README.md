@@ -177,7 +177,6 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 |---|---|
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
-| `docs/agent-environment.md` | Where the agent's own environment comes from: inherited, dotenv files, or an allowlist; what never reaches it |
 | `examples/proactive_agent/README.md` | The example agent: plain Python, its own scheduler, no Minutehand in it |
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |

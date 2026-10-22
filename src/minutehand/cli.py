@@ -129,7 +129,6 @@ from minutehand.adapters.query.trace import KINDS, TraceFilter, explain, explana
 from minutehand.adapters.query.trace import described as traced_lines
 from minutehand.adapters.telemetry.otel import ENDPOINT_VARIABLE, OtelTelemetry, from_environment
 from minutehand.application.checkpoint import NotRestorable, Remembered
-from minutehand.application.environment import files_of
 from minutehand.application.files import (
     FileKind,
     FileRefused,
@@ -152,7 +151,7 @@ from minutehand.application.restore import Restored
 from minutehand.checks.health import silent_responders
 from minutehand.checks.patterns import PATTERNS, pattern
 from minutehand.checks.runner import ChecksRefused, exit_code, load_checks, stability
-from minutehand.domain.agent import AgentUnderTest, EnvironmentFiles, OnlyFromInherited
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.assessments import merged, refuse_unknown_people
 from minutehand.domain.checks import Effectiveness, Finding, FindingKind, HealthFinding, RuleRead
 from minutehand.domain.library import DEFAULT_KNOWS, OTHER, LibraryScenario, TeamValues, Who, WhoRefused
@@ -994,10 +993,6 @@ def _env(args: argparse.Namespace, state: Path) -> int:
         return 2
     agent = load_agent(args.agent)
     listen = _listen(args)
-    refused = _environment_refusal(agent, EnvFormat(args.format))
-    if refused is not None:
-        print(f"minutehand env: {refused}", file=sys.stderr)
-        return 2
     from minutehand import doctor  # loaded only here and for `doctor`: it starts nothing, but imports the proxy
 
     for warning in doctor.docker_warnings(doctor.claimed_hosts(agent), os.environ):
@@ -1028,47 +1023,10 @@ def _env(args: argparse.Namespace, state: Path) -> int:
         script = (state / REDIRECT_SCRIPT).resolve()
         script.write_text(_redirect_script(listen), encoding="utf-8")
     print(
-        yaml.safe_dump(
-            _compose(
-                args.service,
-                variables,
-                bundle,
-                args.ca_path,
-                in_container,
-                script,
-                env_files=[str(Path(p).resolve()) for p in files_of(agent.environment)],
-            ),
-            sort_keys=False,
-        ),
+        yaml.safe_dump(_compose(args.service, variables, bundle, args.ca_path, in_container, script), sort_keys=False),
         end="",
     )
     return 0
-
-
-def _environment_refusal(agent: AgentUnderTest, written_as: EnvFormat) -> str | None:
-    """`minutehand env` is for an agent Minutehand does not start, and prints no value, so a source only a command
-    Minutehand starts is handed means nothing here, and is refused by name rather than ignored: `only` in every
-    format (a container, or a shell of the team's, inherits nothing of this machine's through a printed file), and
-    `files` for `--format shell` (source the file yourself, or start the agent with `minutehand run -- <command>`).
-    For `--format compose` a `files` source becomes the services' `env_file:`, which is Compose reading the same
-    files; the values Minutehand hands out go in `environment:`, which Compose applies over them."""
-    only = [s for s in agent.environment.sources if isinstance(s, OnlyFromInherited)]
-    if only:
-        names = ", ".join(n for s in only for n in s.names)
-        return (
-            f"agent {agent.name} declares its environment as an allowlist of Minutehand's ({names}), which only a "
-            "command Minutehand starts is handed: start the agent with `minutehand run -- <command>`, or hand it "
-            "those variables yourself and declare `inherit`"
-        )
-    files = [p for s in agent.environment.sources if isinstance(s, EnvironmentFiles) for p in s.paths]
-    if files and written_as is not EnvFormat.COMPOSE:
-        return (
-            f"agent {agent.name} declares its environment from {', '.join(files)}, which only a command Minutehand "
-            "starts is handed (`minutehand env` prints no value): start the agent with `minutehand run -- "
-            "<command>`, source the file yourself beside these variables, or write a Compose override "
-            "(--format compose), where it becomes `env_file:`"
-        )
-    return None
 
 
 def _redirect_script(listen: session.Listen) -> str:
@@ -1085,11 +1043,8 @@ def _compose(
     ca_path: str,
     listen: session.Listen,
     script: Path | None,
-    *,
-    env_files: Sequence[str] = (),
 ) -> dict[str, object]:
-    """A Compose override file: every named service gets the variables and the CA bundle mounted read-only, and the
-    agent file's dotenv files (`environment: {sources: [{kind: files}]}`) as its `env_file:`, under the variables.
+    """A Compose override file: every named service gets the variables and the CA bundle mounted read-only.
     A service reaching the host as host.docker.internal is given that name on Linux too, where Docker does not
     define it by itself. With `script` (`--transparent-port`), each also gets the redirect script mounted read-only
     and the `NET_ADMIN` capability it needs; the service's own entrypoint runs it, as root, before the agent."""
@@ -1097,8 +1052,6 @@ def _compose(
     if script is not None:
         volumes.append(f"{script}:{COMPOSE_REDIRECT_PATH}:ro")
     service: dict[str, object] = {"environment": variables, "volumes": volumes}
-    if env_files:
-        service["env_file"] = list(env_files)
     if script is not None:
         service["cap_add"] = ["NET_ADMIN"]
     if listen.agent_host == DOCKER_HOST:

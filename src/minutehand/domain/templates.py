@@ -43,11 +43,6 @@ TRANSPARENT_PORT_VARIABLE = "MINUTEHAND_TRANSPARENT_PORT"
 DNS_PORT_VARIABLE = "MINUTEHAND_DNS_PORT"
 """The proxy's transparent listener and Minutehand's name answerer, on the proxy's host, as the agent's command is
 told: what `sandbox/seal.sh` sends every connection and every lookup the sandbox makes to."""
-ENVIRONMENT_FILE_VARIABLE = "MINUTEHAND_AGENT_ENVIRONMENT"
-"""The file holding the whole environment the agent's command was started with (docs/agent-environment.md): one
-`export NAME=value` a line, quoted for a POSIX shell, mode 0600, written when the command starts and removed when it
-is stopped. How the environment crosses into the sandbox explicitly, sourced by the command inside it
-(`sandbox/README.md`), and never on a command line."""
 """What `{run.port}` and `{run.dir}` were filled with, as the agent's command is told: kept with each run, so a fork
 or a replay starts the agent listening, and keeping its files, where the run's agent file says it does."""
 

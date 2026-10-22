@@ -216,8 +216,6 @@ The clock of a world stands still. Nothing fires on its own.
   passes its moment on `advance` (or `inboxes/due` for a decision); then it is delivered as the provider delivers
   (for Slack, the signed event to the world's inbound target), recorded as actor `PERSON` and as the transition it
   is. An edit that changes what an ask says, before its answer, is put to the person again.
-- **The agent's environment** (`docs/agent-environment.md`) does not apply: `serve` reads no agent file and starts
-  no agent. A suite starts the agent itself, with the variables `GET /v1/environment` prints.
 - **The model** is the server's own, from its environment exactly as `run` reads it (`MINUTEHAND_MODEL`,
   `MINUTEHAND_MODEL_API_KEY`, `MINUTEHAND_MODEL_BASE_URL`, `MINUTEHAND_MODEL_API`: `openai` or `anthropic`; a person's `model` names another), never from a request.
   A world created with `scripted_people: true` whose people a model speaks for, on a server with no model, is
