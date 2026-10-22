@@ -61,6 +61,27 @@ by the proxy (502, no provider claims the host); `api.anthropic.com` tunnelled o
 `8.8.8.8:9999` accepted by the proxy and closed; UDP to `8.8.8.8:4444` unanswered. The run itself ends as the agent
 exiting, which is what the probe does when done.
 
+## The agent's environment
+
+The process inside the sandbox gets its environment explicitly, from a file, never on a command line and not through
+whatever `runsc` inherits. Minutehand starts the agent's command with the environment the agent file declares
+(`docs/agent-environment.md`: inherited by default, or dotenv files it reads itself, or an allowlist; its own
+variables last) and writes the same environment to a file of its own, mode 0600, named to the command in
+`MINUTEHAND_AGENT_ENVIRONMENT` and removed when the command is stopped. The example's launcher starts `runsc` under
+`env -i` with nothing but `PATH` and that name, and the command inside sources the file:
+
+```sh
+exec env -i PATH="$PATH" MINUTEHAND_AGENT_ENVIRONMENT="$MINUTEHAND_AGENT_ENVIRONMENT" \
+  runsc --root /tmp/minutehand-sandbox --network=sandbox --ignore-cgroups --sim-clock-at "$MINUTEHAND_STARTS_AT_NS" \
+  do --name agent --state-dir /tmp/minutehand-sandbox --ip 192.168.10.2 -- \
+  /bin/sh -c '. "$MINUTEHAND_AGENT_ENVIRONMENT" && exec python3 agent.py'
+```
+
+`runsc do` runs the command over the host's root filesystem (a memory overlay on it), so the file is at the same path
+inside. The launcher itself runs with the agent's environment, so it needs `PATH` to find `runsc`: the example
+declares `inherit` before its own `agent.env`. A generated signing secret, which the launcher used to pass on
+`runsc`'s command line, now reaches the agent only through the file.
+
 ## What the two control calls print
 
 ```

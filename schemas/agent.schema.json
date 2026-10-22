@@ -95,6 +95,46 @@
       "title": "Acknowledge",
       "type": "object"
     },
+    "AgentEnvironment": {
+      "additionalProperties": false,
+      "description": "Where the agent's own environment comes from (docs/agent-environment.md): its sources, in order, a later one\noverriding an earlier one. Minutehand's own variables (the proxy, its CA, the telemetry receiver, the signing\nsecrets, MINUTEHAND_AGENT_URL) apply last, and no source overrides them. Every value a `files` or `only`\nsource supplies joins the record's redaction, so a secret the agent sends in a call is redacted in the record.",
+      "properties": {
+        "sources": {
+          "default": [
+            {
+              "kind": "inherit"
+            }
+          ],
+          "description": "In order; absent, the agent gets the environment Minutehand was started in",
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "files": "#/$defs/EnvironmentFiles",
+                "inherit": "#/$defs/InheritedEnvironment",
+                "only": "#/$defs/OnlyFromInherited"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/InheritedEnvironment"
+              },
+              {
+                "$ref": "#/$defs/EnvironmentFiles"
+              },
+              {
+                "$ref": "#/$defs/OnlyFromInherited"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "title": "AgentEnvironment",
+      "type": "object"
+    },
     "Answer": {
       "additionalProperties": false,
       "description": "What an acknowledged call is answered with. With neither body, the JSON `{}`. Any `{message_id}` in its\nstrings is replaced by an id made for that call.",
@@ -720,6 +760,32 @@
       "title": "Each",
       "type": "string"
     },
+    "EnvironmentFiles": {
+      "additionalProperties": false,
+      "description": "Dotenv files, read by Minutehand when it starts the agent's process, as Compose reads `env_file`: `KEY=value`\nlines, `export` prefixes, comments, single and double quotes. A file that cannot be read refuses the run,\nnaming it. Nobody handles a value: it goes from the file to the agent's process.",
+      "properties": {
+        "kind": {
+          "const": "files",
+          "default": "files",
+          "title": "Kind",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Dotenv files, in order; a relative path is read from the agent file's folder",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Paths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "title": "EnvironmentFiles",
+      "type": "object"
+    },
     "ErrorMarker": {
       "additionalProperties": false,
       "description": "An answer that is an error of a known kind: its status, and, with `at`, a value in its JSON body at that path\n(`equals` it, or present at all when `equals` is None). For GraphQL: `errors[*].extensions.code`.",
@@ -1285,6 +1351,20 @@
       "title": "InboundTarget",
       "type": "object"
     },
+    "InheritedEnvironment": {
+      "additionalProperties": false,
+      "description": "The environment Minutehand was started in, as the agent's: the default when the agent file declares no\n`environment`. Minutehand's own credentials (its model API key, the OTLP headers it forwards with) are never in\nit: they are the runner's, not the environment's.",
+      "properties": {
+        "kind": {
+          "const": "inherit",
+          "default": "inherit",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "InheritedEnvironment",
+      "type": "object"
+    },
     "Instructions": {
       "additionalProperties": false,
       "description": "A file whose words state the agent's work: its prompt, its task list, its rules. Read when the agent file is,\nand kept with the run, so the reviewers judge the agent against what it was told, not against a prompt it gave a\nmodel for one part of its work.",
@@ -1565,6 +1645,33 @@
       ],
       "title": "OnMiss",
       "type": "string"
+    },
+    "OnlyFromInherited": {
+      "additionalProperties": false,
+      "description": "An allowlist: these variables of the environment Minutehand was started in, and nothing else of it.",
+      "properties": {
+        "kind": {
+          "const": "only",
+          "default": "only",
+          "title": "Kind",
+          "type": "string"
+        },
+        "names": {
+          "description": "The variables the agent sees, by name",
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "names"
+      ],
+      "title": "OnlyFromInherited",
+      "type": "object"
     },
     "OperationRequest": {
       "additionalProperties": false,
@@ -3249,6 +3356,17 @@
       },
       "title": "Emulators",
       "type": "array"
+    },
+    "environment": {
+      "$ref": "#/$defs/AgentEnvironment",
+      "default": {
+        "sources": [
+          {
+            "kind": "inherit"
+          }
+        ]
+      },
+      "description": "Where the agent's own environment comes from when Minutehand starts its command: inherited from Minutehand's own by default, read from dotenv files, or an allowlist of the inherited one (docs/agent-environment.md)"
     },
     "fail_on_integrity": {
       "default": [],

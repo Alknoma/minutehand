@@ -73,9 +73,9 @@ def _serialized(message: ProtoMessage) -> bytes:
     return message.SerializeToString()
 
 
-def _json(message: ProtoMessage) -> str | None:
+def _json(message: ProtoMessage, secrets: redact.Secrets) -> str | None:
     text = json_format.MessageToJson(message, indent=None)
-    kept, _ = redact.kept(text.encode("utf-8"), "application/json")
+    kept, _ = redact.kept(text.encode("utf-8"), "application/json", secrets=secrets)
     return kept
 
 
@@ -87,6 +87,8 @@ class LocalServers:
         self.answered: dict[str, GrpcAnswered] = {}
         self.grpc_ports: set[int] = set()
         """Every port a gRPC server here listens on: the proxy speaks HTTP/2 without TLS to these."""
+        self.secrets = redact.NONE
+        """The declared values a recorded gRPC message never shows (`ProxyAddon.secrets`)."""
 
     async def grpc(self, world: Mounted, manifest: Manifest, provider: ServesGrpc) -> int:
         """The port `provider`'s gRPC methods are answered on in `world`, its server started on first use."""
@@ -140,8 +142,8 @@ class LocalServers:
                     answered[call] = GrpcAnswered(
                         first=first,
                         last=last,
-                        request=_json(request),
-                        answer=_json(found) if found is not None else None,
+                        request=_json(request, self.secrets),
+                        answer=_json(found, self.secrets) if found is not None else None,
                         failure=ended.failure if ended is not None else None,
                     )
                 if ended is not None:
