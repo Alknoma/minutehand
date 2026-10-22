@@ -61,9 +61,11 @@ OWN_KEY = "minutehands-own-model-key-4b2c9d-never-handed-over"
 MACHINE = "machine-only-value-5d6e7f"
 
 AGENT = """
-import http.server, json, os, ssl, sys, time, urllib.error, urllib.request
+import http.server, json, os, socketserver, ssl, sys, time, urllib.error, urllib.request
 out = sys.argv[1]
 record = {"argv": sys.argv, "env": dict(os.environ)}
+def say(what):
+    print("[agent] " + what, file=sys.stderr, flush=True)  # never a value: the log is searched for one
 named = os.environ.get("MINUTEHAND_AGENT_ENVIRONMENT")
 if named:
     record["file_mode"] = oct(os.stat(named).st_mode & 0o777)
@@ -78,11 +80,13 @@ if "HTTPS_PROXY" in os.environ and "AGENT_SECRET" in os.environ:
         method="POST",
         headers={"Authorization": "Bearer " + secret, "Content-Type": "application/json", "X-Note": secret},
     )
+    say("calling slack.com through the proxy")
     try:
-        with urllib.request.urlopen(request, context=context, timeout=30) as answer:
+        with urllib.request.urlopen(request, context=context, timeout=20) as answer:
             record["slack"] = answer.status
     except urllib.error.HTTPError as e:
         record["slack"] = e.code
+    say("answered " + str(record["slack"]))
 with open(out, "a", encoding="utf-8") as f:
     f.write(json.dumps(record) + "\\n")
 port = int(os.environ.get("AGENT_PORT", "0"))
@@ -96,7 +100,12 @@ if port:
             self.end_headers()
         def log_message(self, *args):
             pass
-    http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    class Server(http.server.ThreadingHTTPServer):
+        def server_bind(self):  # http.server's own looks the address's name up, which stalls on some machines
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+    say("listening on " + str(port))
+    Server(("127.0.0.1", port), Handler).serve_forever()
 while True:
     time.sleep(1)
 """
