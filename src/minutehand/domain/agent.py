@@ -174,6 +174,12 @@ class AgentUnderTest(Model):
         description="Where an older scenario's owner sends its goal and directions, as a person would; none for a "
         "scenario that is only a world",
     )
+    start_limit: timedelta = Field(
+        default=timedelta(seconds=30),
+        gt=timedelta(0),
+        description="How long, in real time, the agent's command may take to start: from its launch until the address "
+        "the world pushes to accepts connections. Nothing is pushed before then",
+    )
     take_limit: timedelta = Field(
         default=timedelta(seconds=30),
         gt=timedelta(0),

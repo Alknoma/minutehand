@@ -196,7 +196,6 @@ is `1` (Node 24 and later; Node 25 applies it to `http` and `https` too). Set fo
 a Node process started by a shell script or by another program is reached all the same, and every other runtime
 ignores it. An older Node may not read it: such an agent needs a base URL or transparent capture."""
 
-LISTEN_TIMEOUT = 30.0
 """Seconds the agent's process has to accept connections on its wake or inbound URL."""
 
 STOP_TIMEOUT = 5.0
@@ -1991,7 +1990,7 @@ class _Program:
                 raise RunRefused(f"the agent's command {self._command[0]} could not be started: {e}") from e
         url = _listens_on(self._agent)
         if url is not None:
-            await _until_listening(self._process, url, self._log)
+            await _until_listening(self._process, url, self._log, self._agent.start_limit)
 
     def exited(self) -> int | None:
         return self._process.returncode if self._process is not None else None
@@ -2044,12 +2043,12 @@ async def _agent_process(
         await program.stop()
 
 
-async def _until_listening(process: asyncio.subprocess.Process, url: str, log: Path) -> None:
+async def _until_listening(process: asyncio.subprocess.Process, url: str, log: Path, limit: timedelta) -> None:
     parts = urlsplit(url)
     host = parts.hostname or "127.0.0.1"
     port = parts.port or (443 if parts.scheme == "https" else 80)
     loop = asyncio.get_running_loop()
-    give_up = loop.time() + LISTEN_TIMEOUT
+    give_up = loop.time() + limit.total_seconds()
     while True:
         if process.returncode is not None:
             raise AgentExited(
@@ -2061,7 +2060,7 @@ async def _until_listening(process: asyncio.subprocess.Process, url: str, log: P
             if loop.time() > give_up:
                 raise AgentExited(
                     f"the agent's command did not accept connections on {url} within "
-                    f"{LISTEN_TIMEOUT:.0f}s:\n{_tail(log)}"
+                    f"{limit.total_seconds():.0f}s (the agent file's start_limit):\n{_tail(log)}"
                 ) from None
             await asyncio.sleep(0.05)
             continue
