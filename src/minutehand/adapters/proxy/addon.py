@@ -327,6 +327,8 @@ class ProxyAddon:
         # bytes tell of whether the agent awaits an answer on it (`tunnel.Tunnel`).
         self._sent_on: dict[str, str] = {}
         self._tunnels: dict[str, _Relayed] = {}
+        # Rises each time `waiting` gains or loses a call (`activity`).
+        self._activity = 0
         # Each call routed to a world and not yet answered, by flow id, with the world and what it is.
         self._in: dict[str, tuple[Mounted, str]] = {}
         # The gRPC and WebSocket servers of each provider and world, and what is on its way to them, by flow id.
@@ -376,6 +378,19 @@ class ProxyAddon:
             awaiting for relayed in self._tunnels.values() if (awaiting := relayed.tunnel.awaiting()) is not None
         ]
         return sent + tunnels
+
+    def activity(self) -> int:
+        """How many times what `waiting` reads has moved: a call sent on to a real host or answered, and a tunnel
+        turning from answered to awaiting or back, or closing while awaiting. Only ever rises."""
+        return self._activity
+
+    def _send_on(self, flow_id: str, what: str) -> None:
+        self._sent_on[flow_id] = what
+        self._activity += 1
+
+    def _answered(self, flow_id: str) -> None:
+        if self._sent_on.pop(flow_id, None) is not None:
+            self._activity += 1
 
     def forwarded(self, host: str) -> bool:
         """`localhost` itself, which nothing claims or declares: the agent's environment no longer sends it direct
@@ -443,7 +458,10 @@ class ProxyAddon:
         relayed = self._tunnels[flow.id] if flow.id in self._tunnels else self._relayed(flow)
         self._tunnels[flow.id] = relayed
         tunnel = relayed.tunnel
+        asked = tunnel.asked
         carried = tunnel.moved(message.content, from_client=message.from_client)
+        if tunnel.asked != asked:
+            self._activity += 1
         self._seen(f"bytes {'to' if message.from_client else 'from'} {tunnel.host} on an open tunnel")
         earlier = relayed.burst
         if message.from_client and earlier is not None and earlier.world.clock.wake() != earlier.began.wake:
@@ -492,6 +510,8 @@ class ProxyAddon:
         relayed = self._tunnels.pop(flow.id, None)
         if relayed is None:
             return
+        if relayed.tunnel.asked:
+            self._activity += 1
         ends = [t for t in (flow.client_conn.timestamp_end, flow.server_conn.timestamp_end) if t is not None]
         closed = max(ends) if ends else relayed.burst.ended if relayed.burst is not None else None
         self._write(relayed, closed=closed)
@@ -629,10 +649,10 @@ class ProxyAddon:
         if policy in (HostPolicy.EDIT, HostPolicy.RECORD) and self._replayed(flow, host):
             return
         if policy is HostPolicy.EDIT:
-            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
+            self._send_on(flow.id, f"{flow.request.method} {host}{redact.path(flow.request.path)}")
             return
         if policy not in (HostPolicy.ANSWER, HostPolicy.REFUSE):
-            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
+            self._send_on(flow.id, f"{flow.request.method} {host}{redact.path(flow.request.path)}")
             return
         request = flow.request
         manifest = self.routing.claimant(host)
@@ -724,7 +744,7 @@ class ProxyAddon:
             self._grpc_passed(flow)
             return
         port = await self.local.grpc(world, manifest, provider)
-        self._sent_on[flow.id] = f"gRPC {host}{request.path}"
+        self._send_on(flow.id, f"gRPC {host}{request.path}")
         request.headers[CALL_HEADER] = flow.id
         request.scheme = "http"
         request.host = "127.0.0.1"
@@ -927,7 +947,7 @@ class ProxyAddon:
         response.stream = tee
 
     def response(self, flow: http.HTTPFlow) -> None:
-        self._sent_on.pop(flow.id, None)
+        self._answered(flow.id)
         self._ended(flow.id)
         if flow.id in self._grpc:
             self._grpc_passed(flow)
@@ -1145,7 +1165,7 @@ class ProxyAddon:
         """Answer a call to a host no provider claims as its world declares, or, undeclared, pass it through."""
         if declaration is None:
             self._passing[flow.id] = _Passing(world, None, CaptureMode.DISCOVERED, None)
-            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
+            self._send_on(flow.id, f"{flow.request.method} {host}{redact.path(flow.request.path)}")
             return
         if isinstance(declaration, Acknowledge):
             await self._acknowledge(flow, host, world, declaration)
@@ -1160,7 +1180,7 @@ class ProxyAddon:
         plan = world.capturing.replaying[declaration.host] if declaration.host in world.capturing.replaying else None
         if plan is None:
             self._passing[flow.id] = _Passing(world, declaration, mode, None)
-            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
+            self._send_on(flow.id, f"{flow.request.method} {host}{redact.path(flow.request.path)}")
             return
         request = flow.request
         whole = capture.keep(
@@ -1192,7 +1212,7 @@ class ProxyAddon:
             return
         if plan.on_miss is OnMiss.PASS_THROUGH:
             self._passing[flow.id] = _Passing(world, declaration, mode, f"not replayed: {why}")
-            self._sent_on[flow.id] = f"{flow.request.method} {host}{redact.path(flow.request.path)}"
+            self._send_on(flow.id, f"{flow.request.method} {host}{redact.path(flow.request.path)}")
             return
         flow.response = _json_response(502, f"no recording answers this call: {why}", host)
         await self._keep(flow, host, world, declaration, mode, AnsweredBy.REFUSAL, note=f"not replayed: {why}")
@@ -1232,7 +1252,7 @@ class ProxyAddon:
             None,
             forwarded=_Forwarded(route, host, original_path, caller, sent),
         )
-        self._sent_on[flow.id] = f"{request.method} {host}{redact.path(original_path)}"
+        self._send_on(flow.id, f"{request.method} {host}{redact.path(original_path)}")
         kept_host = _first_header(request, "host") or host
         request.scheme = "http"
         request.host = "127.0.0.1"
@@ -1458,7 +1478,7 @@ class ProxyAddon:
         still streaming (a harness that cancels the stream once its terminal event is in hand does, on every call)
         is kept from the chunks that had arrived, saying the client broke off; one that never got a chunk, or
         whose real host could not be reached, is not kept."""
-        self._sent_on.pop(flow.id, None)
+        self._answered(flow.id)
         self._ended(flow.id)
         if flow.id in self._grpc:
             self._grpc_passed(flow)

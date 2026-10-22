@@ -1813,6 +1813,10 @@ class Intercepting:
         """`application.traffic.Traffic`: what the agent sent and the proxy has not seen answered."""
         return self.proxy.waiting()
 
+    def activity(self) -> int:
+        """`application.traffic.Traffic`: how many times the proxy saw a call sent on or answered."""
+        return self.proxy.activity()
+
     def flush(self) -> None:
         self.proxy.flush()
 
