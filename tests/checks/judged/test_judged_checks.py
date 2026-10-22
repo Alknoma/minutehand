@@ -12,14 +12,14 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 
-from minutehand.adapters.model.openai_compatible import OpenAICompatible
+from minutehand.adapters.model.pydantic_ai import PydanticAIModel
 from minutehand.adapters.telemetry.otel import OtelTelemetry
 from minutehand.checks.judged.asked_about import ASKED_ABOUT_PROMPT_VERSION, AskedAboutVerdict
 from minutehand.checks.runner import NO_MODEL, RunResult, discover, discover_judged, evaluate, evaluate_judged
 from minutehand.domain.checks import FindingKind
 from minutehand.domain.scenario import Expectation, PersonAsked
 from tests.checks.world import Log, person, scenario, view
-from tests.model.fake_completions import Answer, FakeCompletions, Received, fake_completions
+from tests.model.fake_completions import Answer, FakeCompletions, Received, fake_completions, model_over
 
 OWNER, SOFIA, TOM = person("owner"), person("sofia"), person("tom")
 
@@ -36,8 +36,8 @@ def judged_blocked(result: RunResult) -> list[str]:
     return [b for b in result.blocked if b.split(":")[0] in {"asked_about"}]
 
 
-def model(fake: FakeCompletions) -> OpenAICompatible:
-    return OpenAICompatible(base_url=fake.base_url, api_key="sk-judged", model_id="judge-1")
+def model(fake: FakeCompletions) -> PydanticAIModel:
+    return model_over(fake.base_url, model_id="judge-1")
 
 
 def asked_sofia() -> tuple[list[Expectation], Log]:

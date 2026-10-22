@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from minutehand.doctor import claimed_hosts, docker_warnings, people_model
@@ -21,8 +22,6 @@ MINUTEHAND = Path(sys.executable).parent / "minutehand"
 
 
 def _agent(directory: Path) -> Path:
-    """An agent whose environment comes from two files, one of which is not there (`docs/agent-environment.md`)."""
-    (directory / "agent.env").write_text("AGENT_TOKEN=xoxb-doctor-sentinel-value\nAGENT_PORT=8740\n", encoding="utf-8")
     agent = directory / "agent.yaml"
     agent.write_text(
         yaml.safe_dump(
@@ -31,9 +30,6 @@ def _agent(directory: Path) -> Path:
                 "sandbox": {
                     "deadlines": ["runsc", "debug", "--deadlines", "a"],
                     "advance": ["runsc", "debug", "--advance-clock={nanoseconds}ns", "a"],
-                },
-                "environment": {
-                    "sources": [{"kind": "inherit"}, {"kind": "files", "paths": ["agent.env", "missing.env"]}]
                 },
                 "outbound": [
                     {"host": "api.mail.example", "kind": "acknowledge"},
@@ -67,17 +63,6 @@ def test_the_doctor_names_each_client_that_would_bypass_the_proxy_and_each_host_
     assert results["aiohttp"].startswith("bypassed") and results["urllib3"].startswith("bypassed")
     hosts = {h["host"]: (h["bypassed_by"], h["unreachable_by"]) for h in found["hosts"]}
     assert hosts == {"api.mail.example": ([], []), "search.localhost": ([], []), "2001:db8::1": ([], ["httpx"])}
-    # each declared source of the agent's environment: readable or not, its names, never a value
-    inherited, readable, missing = found["environment"]
-    assert inherited["kind"] == "inherit" and inherited["readable"] and "PATH" in inherited["names"]
-    assert (readable["kind"], readable["readable"], readable["names"]) == ("files", True, ["AGENT_TOKEN", "AGENT_PORT"])
-    assert readable["path"] == str(tmp_path / "agent.env")
-    assert (
-        missing["readable"] is False
-        and missing["names"] == []
-        and "missing.env, which does not exist" in missing["problem"]
-    )
-    assert "xoxb-doctor-sentinel-value" not in done.stdout
 
 
 def test_the_doctor_names_each_host_a_name_handed_out_would_send_direct_for_an_agent_in_a_container(
@@ -161,14 +146,22 @@ def test_the_doctor_warns_of_a_docker_config_that_sends_every_host_direct(tmp_pa
     assert len(found["docker"]) == 1 and "sets proxies.default.noProxy to '*'" in found["docker"][0], done.stderr
 
 
-def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say() -> None:
-    configured = people_model({"MINUTEHAND_MODEL": "people-1", "MINUTEHAND_MODEL_API_KEY": "k"})
-    assert configured.configured and configured.said == "people-1 at https://api.openai.com/v1 (openai API)"
-    anthropic = people_model(
-        {"MINUTEHAND_MODEL": "claude-test", "MINUTEHAND_MODEL_API_KEY": "k", "MINUTEHAND_MODEL_API": "anthropic"}
-    )
-    assert anthropic.said == "claude-test at https://api.anthropic.com (anthropic API)"
-    missing = people_model({})
+def test_doctor_says_whether_a_model_is_configured_to_write_what_people_say(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The model is named by MINUTEHAND_MODEL alone; its provider's client reads its own variables, and the doctor
+    repeats what that client says when it refuses, never reading a key itself."""
+    monkeypatch.setenv("MINUTEHAND_MODEL", "openai-chat:people-1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-doctor-sentinel")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    configured = people_model()
+    assert configured.configured
+    assert configured.said == "openai-chat:people-1, the openai-chat provider's client configured by its own variables"
+    monkeypatch.delenv("OPENAI_API_KEY")
+    unkeyed = people_model()
+    assert not unkeyed.configured and "the openai-chat provider refused its configuration" in unkeyed.said
+    assert "OPENAI_API_KEY" in unkeyed.said, "the provider's own words name what it wants"
+    monkeypatch.setenv("MINUTEHAND_MODEL", "people-1")
+    bare = people_model()
+    assert not bare.configured and "`provider:model`" in bare.said
+    monkeypatch.delenv("MINUTEHAND_MODEL")
+    missing = people_model()
     assert not missing.configured and "no model is configured" in missing.said and "is refused" in missing.said
-    half = people_model({"MINUTEHAND_MODEL": "people-1"})
-    assert not half.configured and "MINUTEHAND_MODEL_API_KEY is not set" in half.said

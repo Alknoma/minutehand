@@ -33,23 +33,17 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from minutehand.adapters.model.environment import (
-    API_KEY_VARIABLE,
-    MODEL_VARIABLE,
-    api_of,
-    base_url_of,
-)
-from minutehand.adapters.model.environment import from_environment as model_from_environment
+from minutehand.adapters.model.pydantic_ai import MODEL_VARIABLE
+from minutehand.adapters.model.pydantic_ai import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.environment import EnvironmentRefused, SourceCheck, inspect, resolve
 from minutehand.application.refusals import RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.agent import AgentEnvironment, AgentUnderTest
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.scenario import Model
-from minutehand.session import WITHHELD, Listen, agent_environment
+from minutehand.session import Listen, agent_environment
 
 CANARY = "0.0.0.1"
 """Where each library's canary request goes: an address no packet can reach, so a client that goes around the proxy
@@ -280,20 +274,22 @@ class PeopleModel(Model):
     said: str = Field(description="Which model at which service, or what is missing")
 
 
-def people_model(environ: Mapping[str, str]) -> PeopleModel:
-    """The model this environment configures for people, as `run` and `serve` read it."""
+def people_model() -> PeopleModel:
+    """The model this process's environment names for people, as `run` and `serve` read it: built, so a provider
+    whose package is missing or whose client refuses its configuration is reported here, in its words."""
     try:
-        found = model_from_environment(environ)
+        found = model_from_environment()
     except RunRefused as e:
         return PeopleModel(configured=False, said=str(e))
     if found is None:
         return PeopleModel(
             configured=False,
-            said=f"no model is configured ({MODEL_VARIABLE}, {API_KEY_VARIABLE}): a run or standing world in which a "
+            said=f"no model is configured ({MODEL_VARIABLE} is not set): a run or standing world in which a "
             "person speaks in a model's words is refused",
         )
     return PeopleModel(
-        configured=True, said=f"{found.model_id} at {base_url_of(environ)} ({api_of(environ).value} API)"
+        configured=True,
+        said=f"{found.provider}:{found.model_id}, the {found.provider} provider's client configured by its own variables",
     )
 
 
@@ -309,11 +305,6 @@ class Diagnosis(Model):
         default=[],
         description="Warnings about the Docker client config: a noProxy that would replace the handed-out NO_PROXY "
         "in a container and send calls to claimed hosts around the proxy",
-    )
-    environment: list[SourceCheck] = Field(
-        default=[],
-        description="Each source of the agent's declared environment (docs/agent-environment.md): readable or not, "
-        "and the names it supplies; never a value",
     )
 
     @property
@@ -350,20 +341,15 @@ async def diagnose(
     listen = listen or Listen()
     hosts = sorted({d.host for d in agent.outbound if not d.host.startswith("*.")} if agent is not None else set())
     hosts += [h for h in model_hosts if h not in DEFAULT_MODEL_HOSTS]
-    declared = agent.environment if agent is not None else AgentEnvironment()
-    sources = inspect(declared, inherited=os.environ, withheld=WITHHELD)
     with tempfile.TemporaryDirectory() as scratch:
         base = Path(scratch)
         clock = RunClock(datetime.now(UTC))  # clock-lint: exempt a probe outside any run, stamped for the record only
         store = SqliteStore(base / "world.db", "doctor", clock)
         async with Proxy(Routing(Registry.installed(), model_hosts=list(model_hosts)), store, clock, confdir=base) as p:
-            # The proxy as this machine reaches it, and the NO_PROXY the run will hand the agent wherever it runs,
-            # over the environment the agent file declares, as a run resolves it; a source that cannot be read is
-            # reported above, and the probe runs with the sources that can.
+            # The proxy as this machine reaches it, and the NO_PROXY the run will hand the agent wherever it runs.
             handed = agent_environment(Listen(), p.port, p.ca_bundle, {}, telemetry_port=None)
             direct = ",".join(listen.direct())
-            own = {**handed, "NO_PROXY": direct, "no_proxy": direct, "no_grpc_proxy": direct}
-            env = _resolved(declared, own)
+            env = {**os.environ, **handed, "NO_PROXY": direct, "no_proxy": direct, "no_grpc_proxy": direct}
             process = await asyncio.create_subprocess_exec(
                 *probe.argv,
                 "-c",
@@ -410,27 +396,8 @@ async def diagnose(
         notes=notes,
         no_proxy=no_proxy,
         docker=docker_warnings(claimed_hosts(agent), os.environ),
-        people_model=people_model(os.environ),
-        environment=sources,
+        people_model=people_model(),
     )
-
-
-def _resolved(declared: AgentEnvironment, own: Mapping[str, str]) -> dict[str, str]:
-    """The environment the probe runs in: the agent's, as a run would start it; with a source that cannot be read,
-    the sources before it, so the probe still runs and the report names the source."""
-    sources = list(declared.sources)
-    while True:
-        try:
-            return resolve(
-                declared.model_copy(update={"sources": sources or [AgentEnvironment().sources[0]]}),
-                inherited=os.environ,
-                own=own,
-                withheld=WITHHELD,
-            ).values
-        except EnvironmentRefused:
-            if not sources:
-                raise
-            sources.pop()
 
 
 def described(diagnosis: Diagnosis) -> str:
@@ -459,17 +426,6 @@ def described(diagnosis: Diagnosis) -> str:
                 lines.append(f"  ok   {host.host}")
     if diagnosis.docker:
         lines += ["", *[f"WARN {warning}" for warning in diagnosis.docker]]
-    lines += ["", "the agent's environment, source by source (names only; no value is read back):"]
-    for source in diagnosis.environment:
-        where = f" {source.path}" if source.path is not None else ""
-        names = ", ".join(source.names) if source.names else "nothing"
-        if not source.readable:
-            lines.append(f"  MISS {source.kind.value}{where}: {source.problem}")
-            continue
-        line = f"  ok   {source.kind.value}{where}: supplies {names}"
-        if source.problem is not None:
-            line += f" ({source.problem})"
-        lines.append(line)
     mark = "ok  " if diagnosis.people_model.configured else "MISS"
     lines += ["", f"  {mark} the model that writes what people say: {diagnosis.people_model.said}"]
     lines += ["", *[f"note: {n}" for n in diagnosis.notes]]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from minutehand.adapters.model.openai_compatible import OpenAICompatible
+from minutehand.adapters.model.pydantic_ai import PydanticAIModel
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import (
@@ -44,7 +44,7 @@ from minutehand.domain.world import (
     Operation,
     WorldEvent,
 )
-from tests.model.fake_completions import FakeCompletions, Received, fake_completions
+from tests.model.fake_completions import FakeCompletions, Received, fake_completions, model_over
 from tests.support.people import email
 from tests.support.scenarios import T0, person, scenario
 
@@ -95,8 +95,8 @@ def say(
     )
 
 
-def model(fake: FakeCompletions) -> OpenAICompatible:
-    return OpenAICompatible(base_url=fake.base_url, api_key=KEY, model_id="people-1")
+def model(fake: FakeCompletions) -> PydanticAIModel:
+    return model_over(fake.base_url, model_id="people-1", key=KEY)
 
 
 @pytest.mark.parametrize("helpfulness", list(Helpfulness))

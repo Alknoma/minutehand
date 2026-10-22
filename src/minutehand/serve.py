@@ -59,8 +59,7 @@ from minutehand.adapters.answering import injected
 from minutehand.adapters.control.wire import Claims, CreateWorld, Fault, FurtherSeed, ProviderView, Quiet, Quieted
 from minutehand.adapters.emulator.fleet import Emulators
 from minutehand.adapters.emulator.process import EmulatorRefused
-from minutehand.adapters.model.environment import API_KEY_VARIABLE, API_VARIABLE, BASE_URL_VARIABLE, MODEL_VARIABLE
-from minutehand.adapters.model.environment import from_environment as model_from_environment
+from minutehand.adapters.model.pydantic_ai import from_environment as model_from_environment
 from minutehand.adapters.proxy.capture import Capturing, refuse_claimed, replaying_for, write_recordings
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS, Routing
 from minutehand.adapters.proxy.registry import ProviderConflict, Registry
@@ -115,6 +114,7 @@ from minutehand.ports.store import Store
 from minutehand.ports.transitions import ProvidesTransitions
 from minutehand.session import (
     KEPT,
+    MODEL_HOW,
     RECORD,
     RESULT,
     RUNS,
@@ -565,9 +565,8 @@ class Standing:
             needing = unspoken(scenario, spec.inboxes)
             if needing:
                 raise WorldRefused(
-                    f"a model writes what {'; '.join(needing)} say, and this server has no model configured: start "
-                    f"it with {MODEL_VARIABLE} and {API_KEY_VARIABLE} set ({API_VARIABLE}=anthropic for Anthropic's "
-                    f"Messages API, and {BASE_URL_VARIABLE} for a service other than OpenAI's or Anthropic's)"
+                    f"a model writes what {'; '.join(needing)} say, and this server has no model configured: "
+                    f"start it with the model named: {MODEL_HOW}"
                 )
         directory = run_dir(self._state, world_id)
         clock = RunClock(scenario.starts_at)
@@ -1152,7 +1151,7 @@ async def serving(state: Path, options: ServeOptions) -> AsyncIterator[Serving]:
         routing = Routing(registry, model_hosts=list(dict.fromkeys([*DEFAULT_MODEL_HOSTS, *options.model_hosts])))
     except ProviderConflict as e:
         raise RunRefused(f"the model hosts {', '.join(options.model_hosts)}: {e}") from e
-    standing = Standing(state, registry, keep=options.keep, routing=routing, model=model_from_environment(os.environ))
+    standing = Standing(state, registry, keep=options.keep, routing=routing, model=model_from_environment())
     lobby = standing.lobby
     try:
         async with Proxy(

@@ -189,11 +189,9 @@ def _rewritten(text: str, content_type: str | None, paths: Sequence[str], *, rep
     return json.dumps(parsed, ensure_ascii=False)
 
 
-def redacted(
-    text: str, content_type: str | None, paths: Sequence[str], *, secrets: redact.Secrets = redact.NONE
-) -> str:
-    """Credential fields, the declared `paths` and every declared value (`secrets`) replaced by `[redacted]`."""
-    once = redact.body(text, content_type or "", secrets=secrets) or ""
+def redacted(text: str, content_type: str | None, paths: Sequence[str]) -> str:
+    """Credential fields and the declared `paths` replaced by `[redacted]`."""
+    once = redact.body(text, content_type or "") or ""
     return _rewritten(once, content_type, paths, replace=True)
 
 
@@ -223,17 +221,9 @@ class KeptBody:
     """The bytes themselves, when the body is not UTF-8 text and fits the limit."""
 
 
-def keep(
-    raw: bytes,
-    content_type: str | None,
-    *,
-    limit: int,
-    paths: Sequence[str],
-    secrets: redact.Secrets = redact.NONE,
-) -> KeptBody:
-    """What the record holds of a body: UTF-8 text or JSON redacted (credential fields, `paths`, and every declared
-    value in `secrets`) and cut at `limit` bytes; any other body (binary, or text not valid in UTF-8) its bytes
-    exactly, declared values redacted, when they fit `limit`, else its length, type and hash only."""
+def keep(raw: bytes, content_type: str | None, *, limit: int, paths: Sequence[str]) -> KeptBody:
+    """What the record holds of a body: UTF-8 text or JSON redacted and cut at `limit` bytes; any other body (binary,
+    or text not valid in UTF-8) its bytes exactly, when they fit `limit`, else its length, type and hash only."""
     if not raw:
         return KeptBody(None, Body(content_type=content_type, size=0, kept=BodyKept.EMPTY, sha256=digest("")))
     decoded: str | None = None
@@ -252,9 +242,9 @@ def keep(
                 kept=BodyKept.BYTES if fits else BodyKept.BINARY,
                 sha256=hashlib.sha256(raw).hexdigest(),
             ),
-            secrets.hide_bytes(raw) if fits else None,
+            raw if fits else None,
         )
-    clean = redacted(decoded, content_type, paths, secrets=secrets)
+    clean = redacted(decoded, content_type, paths)
     encoded = clean.encode("utf-8")
     whole = len(encoded) <= limit
     text = clean if whole else encoded[:limit].decode("utf-8", errors="ignore")

@@ -21,7 +21,7 @@ WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY src ./src
 RUN uv build --out-dir /dist \
- && uv export --frozen --no-dev --no-emit-project --no-hashes --output-file /dist/requirements.txt \
+ && uv export --frozen --no-dev --no-emit-project --no-hashes --extra openai --extra anthropic --extra google --extra bedrock --extra mistral --extra groq --extra cohere --extra xai --output-file /dist/requirements.txt \
  && uv venv /opt/minutehand \
  && uv pip install --python /opt/minutehand/bin/python --requirement /dist/requirements.txt \
  && uv pip install --python /opt/minutehand/bin/python --no-deps /dist/*.whl

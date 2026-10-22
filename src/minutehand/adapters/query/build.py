@@ -24,7 +24,6 @@ from minutehand import session
 from minutehand.adapters.query.schema import BY_NAME, VERSION, VIEWS, SqlType
 from minutehand.application.checkpoint import Checkpoint, checkpoints
 from minutehand.application.dues import due_entries
-from minutehand.application.environment import EnvironmentRecord
 from minutehand.application.model_calls import EventTrace, is_model_call, model_call, trace_of
 from minutehand.checks.facts import asks
 from minutehand.checks.ledger import absences
@@ -548,22 +547,8 @@ def build(state: Path, run_id: str, prices: Prices | None = None) -> sqlite3.Con
     actions = _actions(events, calls, agent_calls, traces, call_of, messages, wake_times)
     tables.put("actions", actions)
     tables.put("wakes", _wakes(wakes, kept, dues, actions, agent_calls))
-    tables.put("environment", _environment(session.environment_record(state, run_id)))
     tables.db.commit()
     return tables.db
-
-
-def _environment(record: EnvironmentRecord | None) -> list[Row]:
-    """The agent's environment as the run kept it: names only (`application.environment`)."""
-    if record is None:
-        return []
-    rows: list[Row] = [
-        {"position": n, "kind": s.kind.value, "source": s.path, "names": _json(list(s.supplied))}
-        for n, s in enumerate(record.sources, start=1)
-    ]
-    rows.append({"position": len(rows) + 1, "kind": "minutehand", "source": None, "names": _json(list(record.own))})
-    rows.append({"position": len(rows) + 1, "kind": "withheld", "source": None, "names": _json(list(record.withheld))})
-    return rows
 
 
 def _items(events: list[WorldEvent]) -> list[Row]:
