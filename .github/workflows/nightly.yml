@@ -1,7 +1,8 @@
 name: nightly
 
 # What is too slow or too noisy for a pull request: the suite repeated to surface tests
-# that only sometimes fail, and the suite against the newest release of every client
+# that only sometimes fail, on Python 3.13 (the top of `requires-python`; the pull-request
+# tier runs 3.12, the image's), and the suite against the newest release of every client
 # library the providers imitate, to catch a service's own client moving under a fake.
 on:
   schedule:
@@ -13,7 +14,7 @@ permissions:
 
 jobs:
   repeat:
-    name: Suite five times, five orders
+    name: Suite five times, five orders, on Python 3.13
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,7 +23,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
       - run: |
