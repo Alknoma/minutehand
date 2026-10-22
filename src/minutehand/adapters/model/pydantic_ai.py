@@ -34,6 +34,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx2
+import pydantic_ai
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent, ToolOutput
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UserError
@@ -47,6 +48,10 @@ from pydantic_ai.settings import ModelSettings
 from minutehand.application.refusals import RunRefused
 from minutehand.domain.conversation import ModelMessage, Speaker
 from minutehand.ports.model import Answered, AnswerT, ModelFailed
+
+pydantic_ai.BANNER_ENABLED = False
+"""pydantic-ai prints a first-run banner advertising its observability to a terminal; Minutehand's output is its
+own, so the banner is turned off before any run."""
 
 MODEL_VARIABLE = "MINUTEHAND_MODEL"
 TIMEOUT_SECONDS = 120.0

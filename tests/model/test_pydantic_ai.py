@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+import pydantic_ai as pydantic_ai_library
 import pytest
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -352,6 +353,12 @@ async def test_an_error_status_is_a_failure_naming_the_provider_and_the_status(
         with pytest.raises(ModelFailed, match="openai-chat answered 503"):
             await model.answer("You forecast.", ASKED, Forecast)
     assert stub.bodies == []
+
+
+def test_pydantic_ais_first_run_banner_is_turned_off_by_importing_the_adapter() -> None:
+    """pydantic-ai would print its observability banner to a terminal on the first run of a process; Minutehand's
+    output is its own. (Under pytest the library never prints it, so the switch is what can be seen.)"""
+    assert pydantic_ai_library.BANNER_ENABLED is False
 
 
 def test_the_missing_package_refusal_names_the_extra_to_install() -> None:
