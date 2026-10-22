@@ -27,7 +27,7 @@ from pathlib import Path
 import certifi
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from mitmproxy import certs
 from mitmproxy.options import CONF_BASENAME
@@ -147,7 +147,7 @@ class EverValidCertStore(certs.CertStore):
 
 
 def _host_cert(
-    privkey: rsa.RSAPrivateKey,
+    privkey: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey,
     cacert: x509.Certificate,
     commonname: str | None,
     sans: x509.GeneralNames,
