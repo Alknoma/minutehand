@@ -11618,22 +11618,6 @@
  "dues": [
   {
    "due": {
-    "at": "2026-08-24T10:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T09:00:00Z",
-   "entered_wake": 1,
-   "closed": "fired",
-   "closed_at": "2026-08-24T10:30:00Z",
-   "closed_wake": 1,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
     "at": "2026-08-24T12:41:12Z",
     "kind": "person_reply",
     "ref": "transition:sam|slack|message|1787562000.000029|0000000035"
@@ -11658,38 +11642,6 @@
     "offset": "PT3H41M12S",
     "lands_at": "2026-08-24T12:41:12Z"
    }
-  },
-  {
-   "due": {
-    "at": "2026-08-24T14:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T10:30:00Z",
-   "entered_wake": 2,
-   "closed": "replaced",
-   "closed_at": "2026-08-24T12:41:12Z",
-   "closed_wake": 3,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-24T16:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T12:41:12Z",
-   "entered_wake": 3,
-   "closed": "fired",
-   "closed_at": "2026-08-24T16:00:00Z",
-   "closed_wake": 3,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
   },
   {
    "due": {
@@ -11720,198 +11672,6 @@
   },
   {
    "due": {
-    "at": "2026-08-24T19:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T16:00:00Z",
-   "entered_wake": 4,
-   "closed": "fired",
-   "closed_at": "2026-08-24T19:00:00Z",
-   "closed_wake": 4,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-24T22:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T19:00:00Z",
-   "entered_wake": 5,
-   "closed": "fired",
-   "closed_at": "2026-08-24T22:00:00Z",
-   "closed_wake": 5,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T01:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T22:00:00Z",
-   "entered_wake": 6,
-   "closed": "fired",
-   "closed_at": "2026-08-25T01:00:00Z",
-   "closed_wake": 6,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T04:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T01:00:00Z",
-   "entered_wake": 7,
-   "closed": "fired",
-   "closed_at": "2026-08-25T04:00:00Z",
-   "closed_wake": 7,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T07:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T04:00:00Z",
-   "entered_wake": 8,
-   "closed": "fired",
-   "closed_at": "2026-08-25T07:00:00Z",
-   "closed_wake": 8,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T10:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T07:00:00Z",
-   "entered_wake": 9,
-   "closed": "fired",
-   "closed_at": "2026-08-25T10:00:00Z",
-   "closed_wake": 9,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T11:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T10:00:00Z",
-   "entered_wake": 10,
-   "closed": "fired",
-   "closed_at": "2026-08-25T11:00:00Z",
-   "closed_wake": 10,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T12:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T11:00:00Z",
-   "entered_wake": 11,
-   "closed": "fired",
-   "closed_at": "2026-08-25T12:00:00Z",
-   "closed_wake": 11,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T12:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T12:00:00Z",
-   "entered_wake": 12,
-   "closed": "fired",
-   "closed_at": "2026-08-25T12:30:00Z",
-   "closed_wake": 12,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T15:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T12:30:00Z",
-   "entered_wake": 13,
-   "closed": "fired",
-   "closed_at": "2026-08-25T15:30:00Z",
-   "closed_wake": 13,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T17:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T15:30:00Z",
-   "entered_wake": 14,
-   "closed": "fired",
-   "closed_at": "2026-08-25T17:00:00Z",
-   "closed_wake": 14,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-25T19:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T17:00:00Z",
-   "entered_wake": 15,
-   "closed": "fired",
-   "closed_at": "2026-08-25T19:00:00Z",
-   "closed_wake": 15,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
     "at": "2026-08-27T11:23:50Z",
     "kind": "transition",
     "ref": "transition:nadia|approvals|service_item|req_65|0000000264"
@@ -11936,38 +11696,6 @@
     "offset": "PT11H53M50S",
     "lands_at": "2026-08-27T11:23:50Z"
    }
-  },
-  {
-   "due": {
-    "at": "2026-08-26T09:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-25T19:00:00Z",
-   "entered_wake": 16,
-   "closed": "fired",
-   "closed_at": "2026-08-26T09:00:00Z",
-   "closed_wake": 16,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-26T14:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-26T09:00:00Z",
-   "entered_wake": 17,
-   "closed": "fired",
-   "closed_at": "2026-08-26T14:00:00Z",
-   "closed_wake": 17,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
   },
   {
    "due": {
@@ -11998,54 +11726,6 @@
   },
   {
    "due": {
-    "at": "2026-08-26T18:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-26T14:00:00Z",
-   "entered_wake": 18,
-   "closed": "fired",
-   "closed_at": "2026-08-26T18:00:00Z",
-   "closed_wake": 18,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-27T09:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-26T18:00:00Z",
-   "entered_wake": 19,
-   "closed": "replaced",
-   "closed_at": "2026-08-27T08:00:00Z",
-   "closed_wake": 20,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-27T09:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-27T08:00:00Z",
-   "entered_wake": 20,
-   "closed": "fired",
-   "closed_at": "2026-08-27T09:30:00Z",
-   "closed_wake": 20,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
     "at": "2026-08-27T16:06:59Z",
     "kind": "person_reply",
     "ref": "transition:nadia|slack|message|1787817600.000346|0000000362"
@@ -12070,38 +11750,6 @@
     "offset": "PT8H6M59S",
     "lands_at": "2026-08-27T16:06:59Z"
    }
-  },
-  {
-   "due": {
-    "at": "2026-08-27T10:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-27T09:30:00Z",
-   "entered_wake": 21,
-   "closed": "fired",
-   "closed_at": "2026-08-27T10:30:00Z",
-   "closed_wake": 21,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-27T12:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-27T10:30:00Z",
-   "entered_wake": 22,
-   "closed": "fired",
-   "closed_at": "2026-08-27T12:00:00Z",
-   "closed_wake": 22,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
   }
  ],
  "around_proxy": null,

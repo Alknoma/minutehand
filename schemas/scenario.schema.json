@@ -634,7 +634,7 @@
     },
     "DispatchRule": {
       "additionalProperties": false,
-      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own booked wakes are covered: when a person answers is their `reply`, a ticket's pace its fate,\nand a timer of the agent's own fires inside its sandbox, which no scheduler stands between.",
+      "description": "A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.\n\nOnly the agent's own booked wakes are covered: when a person answers is their `reply`, and a ticket's pace its\nfate.",
       "properties": {
         "by": {
           "anyOf": [
@@ -2523,7 +2523,7 @@
       "type": "object"
     },
     "PlannedBy": {
-      "description": "How the agent asked for one of its own wakes that a scheduler delivers: which of them a dispatch rule is\nabout. Its own timers fire inside its sandbox and are nobody's to deliver.",
+      "description": "How the agent asked for one of its own wakes that a scheduler delivers: which of them a dispatch rule is\nabout.",
       "enum": [
         "booked"
       ],
@@ -2532,7 +2532,7 @@
     },
     "PlannedWakes": {
       "additionalProperties": false,
-      "description": "Wakes the agent asked for itself (a booking, its own timer), counted at the moment each\nwas due, from the run loop's table. Only a run Minutehand played keeps that table.",
+      "description": "Wakes the agent asked for itself (its bookings with a scheduler), counted at the moment each\nwas due, from the run loop's table. Only a run Minutehand played keeps that table.",
       "properties": {},
       "title": "PlannedWakes",
       "type": "object"

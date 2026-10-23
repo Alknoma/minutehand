@@ -43,8 +43,9 @@ yet.
 
 `examples/proactive_agent` is a small proactive agent: it gets answers from people and passes them on. Its work is
 its own file (`work.json`: a cost centre from Sam, for Owen); it asks in Slack, follows up at most twice, a working
-day apart, and tells the answer on. It is plain Python on stock `slack_sdk` with its own scheduler and its own SQLite
-file, imports nothing of Minutehand's, and runs unchanged in a sandbox whose clock Minutehand owns.
+day apart, and tells the answer on. It is plain Python on stock `slack_sdk` that books its follow-ups with Slack as
+scheduled messages and keeps its own SQLite file, imports nothing of Minutehand's, and runs unchanged in a sandbox
+whose clock Minutehand owns.
 
 ```bash
 git clone --depth 1 -b main https://github.com/Alknoma/minutehand
@@ -93,9 +94,10 @@ minutehand doctor -- <your agent's command>         # HTTP clients in the agent 
 
 **Nothing is asked of the agent.** It runs unchanged, in a sandbox whose clock and network Minutehand owns (a
 patched gVisor, `docs/design.md`, "A sandbox whose clock Minutehand owns"): its calls can only reach the fakes, its
-own clock reads the simulated time, and its next wake is observed, never declared: a scheduler it books with (Cloud
-Tasks, EventBridge Scheduler) delivers when the clock reaches the booking, and a sleep or timer of its own fires when
-the sandbox's clock passes it. The agent carries no endpoint, protocol or import that exists for Minutehand.
+own clock reads the simulated time, and its next wake is observed, never declared: it is a booking with a scheduler
+it calls (Cloud Tasks, EventBridge Scheduler, Slack's scheduled messages), kept in the run's log and delivered when
+the clock reaches it. A sleep or timer of its own fires when the clock passes it for something else, and wakes
+nothing. The agent carries no endpoint, protocol or import that exists for Minutehand.
 
 The one thing an agent may opt into is its memory, through one import that does nothing unless `MINUTEHAND_ON` is set:
 
@@ -167,7 +169,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 - **Built and tested, with no agent in the loop:** the proxy, the fakes against their vendors' client libraries,
   the store, the people, the checks over hand-written records, the read model, the viewer, `validate`, `schema`.
 - **Run in the sandbox on every push (the `sandbox` job of `ci.yml`) and by hand in the lab container:** the run loop on the
-  agent's own timers, pushed events into the sandbox, the sealed network, a fork's playback (`docs/design.md`,
+  agent's bookings, pushed events into the sandbox, the sealed network, a fork's playback (`docs/design.md`,
   "Evidence", 2026-10-22). Built against the sandbox's control calls and not yet run against one: the agent's memory
   under a fork, dispatch rules (a booked wake delivered late, twice or never), `run-all`, `replay`.
 - **Not built:** generated providers, the hosted service.
@@ -178,7 +180,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 |---|---|
 | `docs/design.md` | The design, what exists, and its known limits |
 | `docs/agent-contract.md` | Every way an agent and Minutehand touch |
-| `examples/proactive_agent/README.md` | The example agent: plain Python, its own scheduler, no Minutehand in it |
+| `examples/proactive_agent/README.md` | The example agent: plain Python, its follow-ups booked with Slack, no Minutehand in it |
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |
 | `docs/querying.md` | Reading a run with SQL: the views, their columns, the stability guarantee, ready-made queries |

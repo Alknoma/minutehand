@@ -201,7 +201,7 @@ class Wakes(Model):
 
 
 class PlannedWakes(Model):
-    """Wakes the agent asked for itself (a booking, its own timer), counted at the moment each
+    """Wakes the agent asked for itself (its bookings with a scheduler), counted at the moment each
     was due, from the run loop's table. Only a run Minutehand played keeps that table."""
 
 

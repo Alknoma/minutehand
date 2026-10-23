@@ -1,6 +1,6 @@
-"""The sandbox's clock as Minutehand drives it (`application/sandbox.py`): which deadline is the agent's next wake,
-and that the clock is only ever moved forward. The control calls here are real commands that print what the patched
-gVisor's `runsc debug --deadlines` prints; nothing starts a sandbox."""
+"""The sandbox's clock as Minutehand drives it (`application/sandbox.py`): that it is read only for whether it is idle
+and what its clock says, never for a wake, and that the clock is only ever moved forward. The control calls here are
+real commands that print what the patched gVisor's `runsc debug --deadlines` prints; nothing starts a sandbox."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from minutehand.application.sandbox import SandboxClock, SandboxDeadlines, SandboxFailed
+from minutehand.application.sandbox import SandboxClock, SandboxFailed, SandboxReading
 from minutehand.application.traffic import SeenCall
 from minutehand.domain.agent import Sandbox
 
@@ -45,11 +45,15 @@ def _said(now: datetime, waits: dict[int, int]) -> dict[str, object]:
     }
 
 
-def test_the_next_wake_is_the_earliest_deadline_longer_than_housekeeping() -> None:
-    said = SandboxDeadlines.model_validate(_said(T0, {1: 86_400 * SECOND, 2: SECOND // 2}))
-    assert said.earliest(timedelta(seconds=1)) == 86_400 * SECOND  # the HTTP server's half-second poll is not it
-    assert said.earliest(timedelta(milliseconds=100)) == SECOND // 2  # a floor the agent file lowers
-    assert SandboxDeadlines.model_validate(_said(T0, {2: SECOND // 2})).earliest(timedelta(seconds=1)) == -1
+async def test_the_sandbox_is_read_for_whether_it_is_idle_and_its_clock_and_nothing_else() -> None:
+    reading = await SandboxClock(_sandbox(_said(T0, {1: 86_400 * SECOND, 2: SECOND // 2}))).read()
+    assert reading.model_dump() == {"idle": True, "now_ns": int(T0.timestamp() * SECOND)}
+    assert reading.now() == T0
+
+
+def test_a_stale_housekeeping_key_is_refused() -> None:
+    with pytest.raises(ValueError, match=r"`sandbox\.housekeeping` is gone: no deadline in the sandbox is a wake"):
+        Sandbox.model_validate({"deadlines": ["runsc"], "advance": ["runsc", "{nanoseconds}"], "housekeeping": "PT1S"})
 
 
 async def test_a_sandbox_behind_the_run_is_brought_up_to_it_and_one_slightly_ahead_is_left(tmp_path) -> None:
@@ -111,11 +115,11 @@ class _Blocked(SandboxClock):
         self._between = between
         self._reads = 0
 
-    async def deadlines(self) -> SandboxDeadlines:
+    async def read(self) -> SandboxReading:
         self._reads += 1
         if self._reads % 2 == 1:
             self._between()
-        return SandboxDeadlines.model_validate(_said(T0, {}))
+        return SandboxReading.model_validate(_said(T0, {}))
 
 
 async def test_settle_does_not_answer_idle_when_calls_moved_between_its_two_reads() -> None:

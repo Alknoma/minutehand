@@ -244,7 +244,7 @@ def write(state: Path, *, days: int = 400, seed: int = 7) -> str:
         nxt = now + timedelta(days=1)
         entry = DueEntry(
             due=Due(at=nxt, kind=DueKind.AGENT_WAKE, ref=f"wake-{day + 1}"),
-            source=DueSource.TIMER,
+            source=DueSource.BOOKED,
             entered_at=now,
             entered_wake=wake,
             closed=DueClosed.DELAYED if fault is not None else DueClosed.FIRED,
