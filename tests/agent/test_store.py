@@ -285,3 +285,51 @@ async def test_a_poll_of_memory_that_has_not_changed_is_counted_every_time_and_k
         (2, Operation.SEARCH, "jobs/*"),  # the first of its wake
     ]
     assert (receiver.memory_reads(1), receiver.memory_reads(2)) == (110, 1)
+
+
+# -- versioned writes ------------------------------------------------------------------------------------------------
+
+
+def test_out_of_order_versioned_puts_keep_the_newer_in_the_shipped_backend(backend: store.Backend) -> None:
+    # Two processes mirror one job after their own commits, and the older commit's write arrives last.
+    assert store.put("jobs/7", {"run_at": "2026-08-24T10:00:00+00:00"}, version=8) is True
+    assert store.put("jobs/7", {"run_at": "2026-08-24T09:00:00+00:00"}, version=7) is False
+    assert store.get("jobs/7") == {"run_at": "2026-08-24T10:00:00+00:00"}, "the older write overwrote the newer"
+    assert store.put("jobs/7", {"run_at": "2026-08-24T11:00:00+00:00"}, version=8) is True  # an equal version lands
+    assert store.delete("jobs/7", version=9) is True
+    assert store.put("jobs/7", {"run_at": "2026-08-24T09:00:00+00:00"}, version=8) is False
+    assert store.get("jobs/7") is None, "an older put brought back a key a newer delete removed"
+    with store.batch() as b:
+        b.put("jobs/8", {"run_at": "x"}, version=2)
+        b.put("jobs/8", {"run_at": "y"}, version=1)
+    assert b.applied == [True, False] and store.get("jobs/8") == {"run_at": "x"}
+
+
+def test_a_version_that_is_an_instant_is_refused(backend: store.Backend) -> None:
+    with pytest.raises(ValueError, match="version is an integer"):
+        store.put("jobs/7", {}, version="2026-08-24T10:00:00+00:00")  # pyright: ignore[reportArgumentType]
+
+
+async def test_under_minutehand_out_of_order_versioned_puts_keep_the_newer_in_the_receiver(run: SqliteStore) -> None:
+    newer = await store.aput("jobs/7", {"run_at": "2026-08-24T10:00:00+00:00"}, version=8)
+    older = await store.aput("jobs/7", {"run_at": "2026-08-24T09:00:00+00:00"}, version=7)
+    assert (newer, older) == (True, False)
+    assert await store.aget("jobs/7") == {"run_at": "2026-08-24T10:00:00+00:00"}, "the older write overwrote the newer"
+    assert await store.adelete("jobs/7", version=9) is True
+    assert await store.aput("jobs/7", {"run_at": "2026-08-24T09:00:00+00:00"}, version=8) is False
+    assert memory_of(run.events()) == {}, "an older put brought back a key a newer delete removed"
+
+
+async def test_a_fork_keeps_the_versions_its_parent_left(run: SqliteStore, tmp_path: Path) -> None:
+    await store.aput("jobs/7", {"run_at": "2026-08-24T10:00:00+00:00"}, version=8)
+    child = run.fork("child", at_seq=run.head(), clock=RunClock(T0))
+    [receiver] = _receivers
+    receiver.mount(child, RunClock(T0))
+    assert await store.aput("jobs/7", {"run_at": "2026-08-24T09:00:00+00:00"}, version=7) is False
+    assert memory_of(child.events()) == {("default", "jobs/7"): '{"run_at":"2026-08-24T10:00:00+00:00"}'}
+
+
+async def test_a_wire_version_that_is_an_instant_is_refused(run: SqliteStore) -> None:
+    put = {"op": "put", "key": "k", "value": 1, "version": "2026-08-24T10:00:00Z"}
+    with pytest.raises(_wire.MinutehandRefused, match=r"(?s)400.*version is a JSON integer"):
+        await asyncio.to_thread(_wire.call, "store", {"op": "write", "writes": [put]})

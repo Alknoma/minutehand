@@ -96,8 +96,9 @@ minutehand doctor -- <your agent's command>         # HTTP clients in the agent 
 patched gVisor, `docs/design.md`, "A sandbox whose clock Minutehand owns"): its calls can only reach the fakes, its
 own clock reads the simulated time, and its next wake is observed, never declared: it is a booking with a scheduler
 it calls (Cloud Tasks, EventBridge Scheduler, Slack's scheduled messages), kept in the run's log and delivered when
-the clock reaches it. A sleep or timer of its own fires when the clock passes it for something else, and wakes
-nothing. The agent carries no endpoint, protocol or import that exists for Minutehand.
+the clock reaches it, or a due record it keeps in its memory, read as it stands each time the run decides its next jump
+(`docs/agent-contract.md`, "Due records"). A sleep or timer of its own fires when the clock passes it for something
+else, and wakes nothing. The agent carries no endpoint, protocol or import that exists for Minutehand.
 
 The one thing an agent may opt into is its memory, through one import that does nothing unless `MINUTEHAND_ON` is set:
 
