@@ -141,6 +141,7 @@ class Receiver:
         self._mounted = asyncio.Event()
         self._mounted.set()
         self._reads = memory.Reads()
+        self._versions = memory.Versions()
         self._playback: _Playback | None = None
 
     @property
@@ -153,6 +154,7 @@ class Receiver:
         self.store = world
         self.clock = clock
         self._reads = memory.Reads()
+        self._versions = memory.Versions()
         self._mounted.set()
 
     def memory_reads(self, wake: int) -> int:
@@ -218,7 +220,7 @@ class Receiver:
         elif isinstance(call, MemoryList):
             answer = self._reads.listing(self.store, self.clock.wake(), call)
         else:
-            answer = memory.remember(self.store, call)
+            answer = memory.remember(self.store, call, self._versions)
         return Response(answer.model_dump_json(), media_type=JSON)
 
     def _relayed(self, body: bytes) -> Response:
@@ -475,18 +477,21 @@ class GrpcServer:
 
 class _Playback:
     """The agent's memory as a parent run's log stood at a moment, for `Receiver.playing_back`: a read is answered
-    from the memory as of `cursor()`, a write answered as taken and written nowhere."""
+    from the memory as of `cursor()`, a write answered as it would have landed there and written nowhere."""
 
     def __init__(self, parent: Store, cursor: Callable[[], int]) -> None:
         self._parent = parent
         self._cursor = cursor
         self._at = -1
         self._memory: dict[tuple[str, str], str] = {}
+        self._versions: dict[tuple[str, str], int] = {}
 
     def answer(self, call: StoreCall) -> Model:
         seq = self._cursor()
         if seq != self._at:
-            self._memory = memory.memory_of(self._parent.events(until=seq, kinds=[EntityKind.MEMORY]))
+            events = self._parent.events(until=seq, kinds=[EntityKind.MEMORY])
+            self._memory = memory.memory_of(events)
+            self._versions = memory.versions_of(events)
             self._at = seq
         if isinstance(call, MemoryGet):
             value = self._memory.get((call.collection, call.key))
@@ -496,4 +501,4 @@ class _Playback:
                 (k, v) for (c, k), v in self._memory.items() if c == call.collection and k.startswith(call.prefix)
             )
             return Listed(items=[Item(key=key, value=memory.value_of(body)) for key, body in found])
-        return Written(seq=seq)
+        return Written(seq=seq, applied=memory.landed_in(dict(self._versions), call))

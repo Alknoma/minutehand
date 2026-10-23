@@ -513,6 +513,9 @@ class MemorySnapshot(Model):
     key: str = Field(description="The key; for a listing, the prefix listed")
     value: str | None = Field(default=None, description="The value written, as canonical JSON text; None otherwise")
     listing: bool = Field(default=False, description="A listing of every key under `key`, not one key")
+    version: int | None = Field(
+        default=None, description="The version a put or delete carried, when it landed: none newer was held"
+    )
 
 
 class StoredSnapshot(Model):

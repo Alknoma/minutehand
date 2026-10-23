@@ -62,6 +62,7 @@ from minutehand.domain.checks import (
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import PersonCall, Wrote
 from minutehand.domain.items import ItemAssessment, ItemCheck, ProvidedTypes, TypedItem
+from minutehand.domain.memory import DueRecords
 from minutehand.domain.people import PersonReply
 from minutehand.domain.run import EXIT_CODES, StopReason, Verdict, VerdictKind
 from minutehand.domain.scenario import Model, PersonAsked, ProviderKey, Scenario
@@ -514,6 +515,7 @@ def view_of(
     rhythm: timedelta | None = None,
     person_calls: Sequence[PersonCall] = (),
     collections: Sequence[DeclaredCollection] = (),
+    due: Sequence[DueRecords] = (),
 ) -> RunView:
     """What every check reads: the world, the wakes, and the obligations ledger built from the replies that
     landed."""
@@ -543,6 +545,7 @@ def view_of(
         rhythm=rhythm,
         person_calls=list(person_calls),
         collections=list(collections),
+        due=list(due),
     )
 
 

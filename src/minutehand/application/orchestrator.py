@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from minutehand.application import memory
+from minutehand.application import due_records, memory
 from minutehand.application.checkpoint import (
     Checkpoint,
     Pending,
@@ -25,6 +25,7 @@ from minutehand.application.checkpoint import (
     PendingDirection,
     PendingHappening,
     PendingMachine,
+    PendingRecord,
     PendingService,
     PendingTransition,
     Remembered,
@@ -296,6 +297,8 @@ class Orchestrator:
         _refuse_unlanded_happenings(scenario, agent, services)
         self._scenario = scenario
         self._agent = agent
+        self._woken: set[due_records.Woken] = set()
+        """The due records the agent was woken for, with the instant each held: read from the log for a fork."""
         self._limit = wake_limit(scenario, agent)
         self._sandbox = sandbox
         self._store = store
@@ -414,6 +417,7 @@ class Orchestrator:
             raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {held}")
         # a held call is a connection of the process that played the parent: the fork's agent makes its own calls
         self._dues.resume([p for p in checkpoint.pending if not isinstance(p, PendingCall)])
+        self._woken = due_records.woken(self._store)
         self._untaken = list(checkpoint.untaken)
         self._seen = self._store.head()
         self._watcher.look()
@@ -517,6 +521,7 @@ class Orchestrator:
             if not await self._settle():
                 return StopReason.AGENT_FAILED
             await self._holding.settled()  # a call the agent made is held or answered at this moment, not the next
+            self._plan_records()
             items = self._dues.items
             # a call held to the end of its wait changes nothing by being answered empty: with nothing else due,
             # nothing more is
@@ -532,6 +537,9 @@ class Orchestrator:
                 return ended
             await self._jump(jump.now)
             dispatched = self._dues.dispatch(jump.firing)
+            for item in dispatched.delivered:
+                if isinstance(item, PendingRecord):
+                    self._woken |= due_records.woken_by(item)
             for item in dispatched.finished:
                 # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
                 await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
@@ -599,6 +607,16 @@ class Orchestrator:
         if at > self._clock.now():
             self._clock.jump(at)
         return True
+
+    def _plan_records(self) -> None:
+        """The agent's due records, read from its memory as it stands now, at this decision and never an earlier
+        one: the earliest it has not been woken for at its instant enters the table in place of the one read
+        before, and none leaves none there."""
+        if not self._agent.due:
+            return
+        found = due_records.read(self._store, self._agent.due)
+        nxt = due_records.next_due(found, self._agent.due, self._woken, self._clock.now())
+        self._dues.replace(lambda p: isinstance(p, PendingRecord), nxt)
 
     async def _run_on_to(self, deadline: datetime | None) -> None:
         """The world does not stop when the agent goes quiet: with nothing more due before it, the clock runs on to
