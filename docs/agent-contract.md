@@ -20,9 +20,9 @@ checkpoint.
 | **agent file** | The YAML or JSON file an agent's repository keeps: `AgentUnderTest` | config, manifest |
 | **scenario**, **seed** | The situation a run plays (`Scenario`), or a standing world opens with (`Seed`) | fixture |
 | **sandbox** | Where the agent runs: a gVisor sandbox whose clock Minutehand moves and whose only route out is the proxy | container (that is the outer one), VM |
-| **wake** | One go of the agent's, as the run records it: from the moment something reaches it (a delivery, its own timer going off) until its sandbox is idle again | tick, trigger, turn |
-| **timer** | A deadline a task in the sandbox waits for (a sleep, a scheduler loop's next check), read from the sandbox: the agent's own next wake | schedule (that is its own scheduler's) |
-| **booking** | A wake the agent asked a faked scheduler for, by calling it | cron |
+| **wake** | One go of the agent's, as the run records it: from the moment something reaches it (a person's answer, a pushed event, a booking delivered) until its sandbox is idle again | tick, trigger, turn |
+| **timer** | A deadline a task in the sandbox waits for (a sleep, a scheduler loop's next check). It fires when the clock passes it for some other reason, and is never a wake: Minutehand does not read it | schedule (that is its own scheduler's) |
+| **booking** | A wake the agent asked a faked scheduler for, by calling it: a record in the run's log, delivered at its moment, changed or cancelled through the scheduler's own API | cron |
 | **memory** | What the agent remembers across wakes, through `minutehand.agent.store`: the run's own under Minutehand | state, snapshot |
 | **deliver** | Minutehand handing the agent what a person did: a reply, a press, a happening | push (that is the provider's word) |
 | **inbox** | Where work waits on a person in the agent's own product | queue, human action |
@@ -37,7 +37,7 @@ checkpoint.
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
-| **sandbox** | Minutehand → the sandbox's control calls, before each wake (its deadlines) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", "earliest_ns", "waits": [{"task", "ns"}]}`; `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
@@ -68,7 +68,7 @@ reads `sandbox.quiet` apart (default 50 ms), with no call of the agent's in flig
 `sandbox.settle_limit` (default 30 s of real time) stops the run `agent_failed`, saying so. Nothing is printed while
 it waits.
 
-A run ends when nothing is due and the agent has planned nothing (`nothing_pending`), at the end of the scenario's
+A run ends when nothing is due and the agent has booked nothing (`nothing_pending`), at the end of the scenario's
 window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, or when the agent's sandbox
 fails to fall idle. There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
 verdict"), never from the agent.
@@ -77,7 +77,6 @@ verdict"), never from the agent.
 |---|---|---|
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
-| `sandbox.housekeeping` | `PT1S` | A deadline no longer than this is the runtime's own timer (`http.server`'s half-second poll), never a wake |
 | `start_limit` | `PT30S` | Real time the agent's command may take, from its launch, before the address the world pushes to accepts connections; nothing is pushed before then. An agent whose front door opens only once everything behind it is up declares how long that takes |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
@@ -96,10 +95,20 @@ agent's command is handed `MINUTEHAND_STARTS_AT_NS` and gives it to `runsc --sim
 instruction reads simulated time; from there the clock moves forward with every jump of the run's, and never back,
 so a sleep, a backoff, a scheduler loop's next check and a date the agent reads all follow simulated time with no
 change to the agent. The real time the agent spends in a wake passes on its clock, and the run's clock catches up to
-it when the wake ends. Between wakes Minutehand reads the sandbox's deadlines: the earliest a task waits for that is
-longer than `sandbox.housekeeping` is the agent's own next wake, entered in the run's table as its timer
-(`planned_wakes`, `dispatch.source = timer`); a shorter one is the runtime's own (an HTTP server's poll) and fires in
-real time while the sandbox is read as idle. The agent checks the proxy's certificates against its own clock, so the
+it when the wake ends. Between wakes Minutehand reads only whether the sandbox is idle and what its clock says.
+
+No deadline a task in the sandbox waits for is a wake. A timer the agent armed fires when the clock passes it for
+something else (a reply, a pushed event, a booking), and a runtime's own (an HTTP server's poll, a JVM's keepalive, an
+emulator's event loop) never moves the clock. Work the agent means to come back to by itself is a booking with a
+scheduler it calls (Cloud Tasks, EventBridge Scheduler, Slack's `chat.scheduleMessage`): a record in the run's log,
+delivered at its moment (`planned_wakes`, `dispatch.source = booked`), moved or cancelled through the scheduler's API
+with each change kept, and carried into a fork from any checkpoint. A date the agent keeps in its memory is its data,
+and wakes nothing. Through 0.3.4 the earliest deadline in the sandbox longer than `sandbox.housekeeping` was the
+agent's next wake; it could not tell the agent's timer from a runtime's, it saw one deadline and never the schedule
+behind it, and nothing recorded a change to it, so it is gone. An agent file that still names
+`sandbox.housekeeping` is refused, saying so.
+
+The agent checks the proxy's certificates against its own clock, so the
 proxy's CA and host certificates are valid at every instant (`sandbox/README.md` for the sandbox itself).
 
 ## The sandbox's network
@@ -195,7 +204,7 @@ agent's own checks. A rule may not take the id of a check.
 ## The wake limit
 
 A run stops after its wake limit. The scenario's `max_wakes` sets it. Without one, a scenario with a window or a
-deadline and an agent with a rhythm of its own (`tick` in the agent file: how often its timers or bookings bring it
+deadline and an agent with a rhythm of its own (`tick` in the agent file: how often its bookings bring it
 back at most, `tick: PT1H`) get every tick across it and 20 more, for the wakes replies and happenings bring; a window
 with no rhythm declared gets one wake a simulated minute across it, a guard against an agent waking itself without
 end. Otherwise the limit is 20. A run that stops there says the limit and where it came from.

@@ -70,8 +70,9 @@ runsc --root <state> debug --deadlines <name>
 runsc --root <state> debug --advance-clock=86400s <name>
 ```
 
-`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. `waits`: each blocked task's deadline, as
-nanoseconds from now; `earliest_ns` the smallest, -1 for none. `advance-clock` moves both clocks forward by the
+`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. These two are all Minutehand reads. `waits`:
+each blocked task's deadline, as nanoseconds from now; `earliest_ns` the smallest, -1 for none. Minutehand no longer
+reads them: no deadline in the sandbox is a wake (`docs/design.md`, "How the clock knows what is next"). `advance-clock` moves both clocks forward by the
 duration and tells every timer the clock was set, so a sleep, futex, poll or epoll timeout past the new time
 returns at once. `--sim-clock-at=<ns since the epoch>` on `runsc` births the sandbox at that realtime, with the
 first application instruction already reading it; Minutehand hands the run's start to the agent's command as

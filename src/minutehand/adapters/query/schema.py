@@ -296,7 +296,7 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "source",
                 T,
-                "booked, reply, happening, direction, machine, timer, transition, service, or call (a call of the "
+                "booked, reply, happening, direction, machine, transition, service, or call (a call of the "
                 "agent's held until the world could answer it)",
             ),
             _c("due_at", T, f"When it was due; {TIME}"),

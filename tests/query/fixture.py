@@ -363,8 +363,8 @@ def build_fixture(state: Path) -> Fixture:
         last_seq=head,
     )
     next_wake = DueEntry(
-        due=Due(at=T0 + timedelta(hours=26), kind=DueKind.AGENT_WAKE, ref="timer"),
-        source=DueSource.TIMER,
+        due=Due(at=T0 + timedelta(hours=26), kind=DueKind.AGENT_WAKE, ref="booking:slack:Q0FOLLOWUP"),
+        source=DueSource.BOOKED,
         entered_at=T0,
         entered_wake=1,
     )

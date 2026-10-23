@@ -398,7 +398,7 @@ def test_each_rule_is_tallied_by_the_times_it_applied_and_the_times_it_could_not
     )
 
 
-def _planned(due_hours: float, *, entered: float = 0, source: DueSource = DueSource.TIMER) -> DueEntry:
+def _planned(due_hours: float, *, entered: float = 0, source: DueSource = DueSource.BOOKED) -> DueEntry:
     kind = DueKind.AGENT_WAKE if source is not DueSource.REPLY else DueKind.PERSON_REPLY
     return DueEntry(
         due=Due(at=at(due_hours), kind=kind, ref="next_wake" if kind is DueKind.AGENT_WAKE else "reply:0"),

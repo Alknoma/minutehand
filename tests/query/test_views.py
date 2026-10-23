@@ -352,7 +352,7 @@ def test_wakes_say_why_each_began_and_what_the_agent_did(run: Fixture) -> None:
             "wake": 2,
             "at": "2026-08-25T12:00:00.000Z",
             "reason": "due",
-            "woken_by": "timer",
+            "woken_by": "booked",
             "actions": 4,
             "model_calls": 1,
         },
@@ -375,7 +375,7 @@ def test_dispatch_holds_each_entry_as_it_last_stood(run: Fixture) -> None:
         {
             "due_id": 1,
             "kind": "agent_wake",
-            "source": "timer",
+            "source": "booked",
             "due_at": "2026-08-25T12:00:00.000Z",
             "entered_wake": 1,
             "closed": "fired",

@@ -17,7 +17,11 @@ What no fork can rewind, because it was never in the log: what a real third-part
 (the proxy refuses unclaimed hosts, but a model API is reached for real), what a model provider keeps on its side
 (a stored conversation, a cache, a batch), and the AWS provider's queues and schedules (in moto's memory). A provider
 that says it keeps state outside the log (`Manifest.state_outside_log`, AWS) refuses any fork after the parent first
-used it.
+used it, a booking pending with it among what it built.
+
+A booking pending at the checkpoint with any other scheduler is the child's too: the scheduler keeps it in the log the
+child shares (a Cloud Tasks task, a Slack scheduled message), the checkpoint's table carries it, and the child
+delivers it when its clock reaches it.
 """
 
 from __future__ import annotations
@@ -33,7 +37,6 @@ from minutehand.application.checkpoint import (
     Checkpoint,
     NotRestorable,
     Pending,
-    PendingBooking,
     PendingTransition,
     checkpoints,
 )
@@ -213,7 +216,6 @@ async def fork_run(
                 f"the checkpoint at seq {fork.at_seq} of run {parent.run_id} is not restorable: {unsettled.reason}. "
                 "Fork from a checkpoint `minutehand findings` lists as restorable. " + CANNOT_REWIND
             )
-        _refuse_pending_bookings(checkpoint, parent.run_id, fork.at_seq)
         _refuse_state_outside_log(
             parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
         )
@@ -365,20 +367,6 @@ def _keep(directory: Path, restored: Restored, fork: Fork) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / RESTORE_RECORD).write_text(restored.model_dump_json(indent=2), encoding="utf-8")
     (directory / FORK_RECORD).write_text(fork.model_dump_json(indent=2), encoding="utf-8")
-
-
-def _refuse_pending_bookings(checkpoint: Checkpoint, parent: str, at_seq: int) -> None:
-    """A booking pending at the fork could not be delivered by the child: a scheduler keeps the schedule's target
-    (AWS: the SQS queue, in moto's memory of the process that played the parent, under the parent's account) out
-    of the run's log, so the child has nowhere to deliver it. Refused before the agent is restored or woken."""
-    pending = [p for p in checkpoint.pending if isinstance(p, PendingBooking)]
-    if pending:
-        named = ", ".join(f"{p.provider} {p.ref}" for p in pending)
-        raise RunRefused(
-            f"run {parent} has {len(pending)} booked wake(s) pending at seq {at_seq} ({named}); a scheduler keeps "
-            "what a booking delivers to outside the run's log, so a fork could not deliver it. Fork from a "
-            "checkpoint with no booking pending"
-        )
 
 
 def _refuse_state_outside_log(store: Store, manifests: Sequence[Manifest], checkpoint: Checkpoint, at_seq: int) -> None:

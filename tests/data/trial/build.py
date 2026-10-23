@@ -8,6 +8,10 @@ calls to its model's API keep their place among the calls but not their host or 
 to their first 300 characters (no check reads them), and the product and model names the model wrote
 are replaced by neutral ones. The agent's own instructions to its model are kept, less the lines its framework writes
 into every system prompt.
+
+They were recorded when a deadline in the agent's sandbox was its wake: the run loop's table (`dues`) then held an
+entry of the `timer` source for each. That source is gone (store schema 10), and those entries were dropped from the
+fixtures as they stood; everything else is the run as it was recorded.
 """
 
 from __future__ import annotations

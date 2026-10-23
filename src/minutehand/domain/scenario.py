@@ -893,7 +893,7 @@ class MachineCommand(Model):
 
 class PlannedBy(StrEnum):
     """How the agent asked for one of its own wakes that a scheduler delivers: which of them a dispatch rule is
-    about. Its own timers fire inside its sandbox and are nobody's to deliver."""
+    about."""
 
     BOOKED = "booked"  # a booking with a scheduler provider
 
@@ -909,8 +909,8 @@ class DispatchFault(StrEnum):
 class DispatchRule(Model):
     """A fault in delivering the agent's own wakes: the nth of one kind to fall due, or every one.
 
-    Only the agent's own booked wakes are covered: when a person answers is their `reply`, a ticket's pace its fate,
-    and a timer of the agent's own fires inside its sandbox, which no scheduler stands between."""
+    Only the agent's own booked wakes are covered: when a person answers is their `reply`, and a ticket's pace its
+    fate."""
 
     wakes: PlannedBy
     nth: int | None = Field(default=None, ge=1, description="The nth wake of that kind to fall due, from 1; None: each")

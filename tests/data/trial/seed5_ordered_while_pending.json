@@ -4598,70 +4598,6 @@
  "dues": [
   {
    "due": {
-    "at": "2026-08-24T10:00:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T09:00:00Z",
-   "entered_wake": 1,
-   "closed": "fired",
-   "closed_at": "2026-08-24T10:00:00Z",
-   "closed_wake": 1,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-24T10:45:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T10:00:00Z",
-   "entered_wake": 2,
-   "closed": "fired",
-   "closed_at": "2026-08-24T10:45:00Z",
-   "closed_wake": 2,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-24T12:45:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T10:45:00Z",
-   "entered_wake": 3,
-   "closed": "fired",
-   "closed_at": "2026-08-24T12:45:00Z",
-   "closed_wake": 3,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
-    "at": "2026-08-24T14:45:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T12:45:00Z",
-   "entered_wake": 4,
-   "closed": "fired",
-   "closed_at": "2026-08-24T14:45:00Z",
-   "closed_wake": 4,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
-  },
-  {
-   "due": {
     "at": "2026-08-24T15:11:53Z",
     "kind": "person_reply",
     "ref": "transition:sam|slack|message|1787575500.000083|0000000089"
@@ -4686,22 +4622,6 @@
     "offset": "PT2H26M53S",
     "lands_at": "2026-08-24T15:11:53Z"
    }
-  },
-  {
-   "due": {
-    "at": "2026-08-24T15:30:00Z",
-    "kind": "agent_wake",
-    "ref": "next_wake"
-   },
-   "source": "timer",
-   "entered_at": "2026-08-24T14:45:00Z",
-   "entered_wake": 5,
-   "closed": null,
-   "closed_at": null,
-   "closed_wake": null,
-   "fault": null,
-   "asked_for": null,
-   "drawn": null
   }
  ],
  "around_proxy": null,
