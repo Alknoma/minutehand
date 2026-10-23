@@ -7,7 +7,7 @@ Cancelled, Status, Priority and Story Points), written as a scenario rather than
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -135,12 +135,13 @@ def section(name: str, project: str = BACKEND) -> str:
 
 
 @pytest.fixture
-def rich(tmp_path: Path) -> Workspace:
+def rich(tmp_path: Path) -> Iterator[Workspace]:
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed(SCENARIO, store)
-    return Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    yield Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    store.close()
 
 
 def client_as(rich: Workspace, token: str) -> httpx.AsyncClient:

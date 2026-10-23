@@ -4,6 +4,7 @@ organizer, a moved event asks again, the calendar view and free/busy read every 
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,8 +29,10 @@ REVIEW = {
 
 
 @pytest.fixture
-def tenant(tmp_path: Path) -> Tenant:
-    return seeded(tmp_path / "world.db", OUTLOOK)
+def tenant(tmp_path: Path) -> Iterator[Tenant]:
+    found = seeded(tmp_path / "world.db", OUTLOOK)
+    yield found
+    found.store.close()
 
 
 def _at(tenant: Tenant, later: timedelta) -> str:
@@ -265,6 +268,7 @@ async def test_a_seeded_all_day_out_of_office_is_shown_as_oof(tmp_path: Path, mi
         [leave] = [e for e in listed.json()["value"] if e["subject"] == "Leave"]
         assert (leave["isAllDay"], leave["showAs"]) == (True, "oof")
         assert leave["start"]["dateTime"].startswith(f"{start.isoformat()}T00:00:00")
+    seeded_tenant.store.close()
 
 
 def test_a_seeded_event_neither_timed_nor_all_day_is_refused() -> None:
