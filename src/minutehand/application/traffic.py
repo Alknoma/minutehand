@@ -30,3 +30,9 @@ class Traffic(Protocol):
         """What the agent sent and is still awaiting an answer to, for a person: a call sent on to a real host, or a
         tunnel whose last bytes went from the agent."""
         ...
+
+    def activity(self) -> int:
+        """A count that rises each time what `waiting` reads moves: a call sent on to a real host or answered, a
+        tunnel turning from answered to awaiting or back. It never falls, so two equal reads mean nothing was sent
+        or answered between them, even when `waiting` is empty at both."""
+        ...

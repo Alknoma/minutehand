@@ -78,6 +78,7 @@ verdict"), never from the agent.
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
 | `sandbox.housekeeping` | `PT1S` | A deadline no longer than this is the runtime's own timer (`http.server`'s half-second poll), never a wake |
+| `start_limit` | `PT30S` | Real time the agent's command may take, from its launch, before the address the world pushes to accepts connections; nothing is pushed before then. An agent whose front door opens only once everything behind it is up declares how long that takes |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 

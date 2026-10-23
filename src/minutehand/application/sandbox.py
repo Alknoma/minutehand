@@ -125,15 +125,27 @@ class SandboxClock:
                 await asyncio.sleep(self._source.quiet.total_seconds())
 
     async def settle(self, traffic: Traffic | None) -> SandboxDeadlines | None:
-        """Wait until the sandbox is idle on two reads `quiet` apart with no call of the agent's in flight, and
-        answer its deadlines then; None when it did not fall idle within `settle_limit`."""
+        """Wait until the sandbox has settled, and answer its deadlines then; None when it did not within
+        `settle_limit`. Settled is: idle on two reads `quiet` apart, no call of the agent's in flight at either read,
+        and none sent or answered between them (`Traffic.activity` unchanged). While a call to a real host is in
+        flight the agent's tasks are blocked on its socket and every read is idle, so `waiting` empty at one
+        instant says only that the instant fell between one call's answer and the next call."""
         give_up = time.monotonic() + self._source.settle_limit.total_seconds()  # clock-lint: exempt real-time limit
         quiet = self._source.quiet.total_seconds()
         while time.monotonic() < give_up:  # clock-lint: exempt real-time limit
+            before = _moving(traffic)
             first = await self.deadlines()
             await asyncio.sleep(quiet)
             second = await self.deadlines()
-            busy = traffic is not None and bool(traffic.waiting())
-            if first.idle and second.idle and not busy:
+            after = _moving(traffic)
+            still = before == after and not before[1]
+            if first.idle and second.idle and still:
                 return second
         return None
+
+
+def _moving(traffic: Traffic | None) -> tuple[int, bool]:
+    """What `traffic` reads now: its activity count, and whether any call of the agent's is in flight."""
+    if traffic is None:
+        return 0, False
+    return traffic.activity(), bool(traffic.waiting())

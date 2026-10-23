@@ -79,13 +79,17 @@ class Sandbox(Model):
     the time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the
     sandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is
     born at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a
-    timer the agent armed before a backward step would fire early. When the sandbox is idle and no call of the
-    agent's is in flight, its earliest deadline longer than `housekeeping` is a wake the agent asked for."""
+    timer the agent armed before a backward step would fire early. When the sandbox is idle on two reads `quiet`
+    apart, no call of the agent's is in flight at either, and none was sent or answered between them, its earliest
+    deadline longer than `housekeeping` is a wake the agent asked for."""
 
     deadlines: list[str] = Field(min_length=1)
     advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step forward goes")
     quiet: timedelta = Field(
-        default=timedelta(milliseconds=50), gt=timedelta(0), description="Idle on two reads this far apart is idle"
+        default=timedelta(milliseconds=50),
+        gt=timedelta(0),
+        description="Idle on two reads this far apart, with no call of the agent's in flight at either and none "
+        "sent or answered between them, is idle",
     )
     settle_limit: timedelta = Field(
         default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
@@ -173,6 +177,12 @@ class AgentUnderTest(Model):
         default=None,
         description="Where an older scenario's owner sends its goal and directions, as a person would; none for a "
         "scenario that is only a world",
+    )
+    start_limit: timedelta = Field(
+        default=timedelta(seconds=30),
+        gt=timedelta(0),
+        description="How long, in real time, the agent's command may take to start: from its launch until the address "
+        "the world pushes to accepts connections. Nothing is pushed before then",
     )
     take_limit: timedelta = Field(
         default=timedelta(seconds=30),
