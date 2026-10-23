@@ -2310,7 +2310,7 @@
     },
     "Sandbox": {
       "additionalProperties": false,
-      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"). The agent's own in-process timers are its next wakes, with no code of\nMinutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"now_ns\": int,\n\"earliest_ns\": int, \"waits\": [{\"task\": int, \"ns\": int}]}` (whether every task is blocked, its realtime clock,\nthe time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the\nsandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is\nborn at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a\ntimer the agent armed before a backward step would fire early. When the sandbox is idle and no call of the\nagent's is in flight, its earliest deadline longer than `housekeeping` is a wake the agent asked for.",
+      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"). The agent's own in-process timers are its next wakes, with no code of\nMinutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, `{\"idle\": bool, \"now_ns\": int,\n\"earliest_ns\": int, \"waits\": [{\"task\": int, \"ns\": int}]}` (whether every task is blocked, its realtime clock,\nthe time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the\nsandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is\nborn at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a\ntimer the agent armed before a backward step would fire early. When the sandbox is idle on two reads `quiet`\napart, no call of the agent's is in flight at either, and none was sent or answered between them, its earliest\ndeadline longer than `housekeeping` is a wake the agent asked for.",
       "properties": {
         "advance": {
           "description": "Holds {nanoseconds} where the step forward goes",
@@ -2338,7 +2338,7 @@
         },
         "quiet": {
           "default": "PT0.05S",
-          "description": "Idle on two reads this far apart is idle",
+          "description": "Idle on two reads this far apart, with no call of the agent's in flight at either and none sent or answered between them, is idle",
           "format": "duration",
           "title": "Quiet",
           "type": "string"

@@ -647,7 +647,8 @@ Orchestrator.run():
                      PushesEvents.happen for a message), directions by message (say),
                      bookings (BooksWakes.deliver_booking, .advance_booking); a booking's delivery waited for
                      until the agent took it (ConfirmsDelivery), up to `take_limit`
-      SandboxClock.settle: the wake is over when every task in the sandbox is blocked and no call is in flight
+      SandboxClock.settle: the wake is over when every task in the sandbox is blocked on two reads `quiet` apart,
+                     no call is in flight at either, and none was sent or answered between them
       People.look: what now waits on each person in each provider (items_for), as it reads when the wake ends
                            -> a conversation: Replier.plan (when, and how) -> Replier.write (the words)
                            -> anything else: a take, or the model's pick at its moment
@@ -658,7 +659,7 @@ Orchestrator.run():
 ```
 
 - A person answers a message as it reads when the people engine looks at it, at the end of the wake (`application/people.py`). A placeholder the agent edits into its question within the wake is never put to anyone; the question is, once. Their answer is planned and its words written then, and kept on the engine's record of the ask (`PendingSnapshot.plan`, `PendingSnapshot.answer`) until its moment, when it lands and is kept as said. An edit in a later wake that changes what the ask says or offers is put to the person again unless they have already answered it: the answer on its way is planned and written afresh from the new text, and an ask that, so read, needs no answer passes (`PendingStatus.PASSED`) and opens no wait. Only what landed is in the `replies` table; the ledger reads an answer planned and not yet landed from the engine's record.
-- Nothing is asked of the agent. A wake ends when its sandbox is idle on two reads `quiet` apart with no call in flight; one still busy after `settle_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says so. There is no `done`: whether the work is finished is read from the world ("The verdict").
+- Nothing is asked of the agent. A wake ends when its sandbox is idle on two reads `quiet` apart, no call is in flight at either, and none was sent or answered between them (while a call to a real host is in flight the agent's tasks are blocked on its socket, so the sandbox reads idle; a moment with nothing in flight may fall between one call's answer and the next); one still busy after `settle_limit` stops the run as `AGENT_FAILED`, and `RunRecord.failure` says so. There is no `done`: whether the work is finished is read from the world ("The verdict").
 - When one jump fires several things, the wake is recorded under the reason that matters most: `PERSON_REPLIED`, then `DIRECTION`, then `DUE`.
 - A wake made only of bookings is the scheduler's delivery: the loop waits for the agent to take it when the scheduler can tell (`ConfirmsDelivery`), up to `take_limit`, then for the sandbox to fall idle.
 - The wake limit (`domain/run.wake_limit`): the scenario's `max_wakes`; else, with a window or a deadline and a rhythm the agent file declares (`tick`), every tick across it and 20 more, for the wakes replies and happenings bring; a window with no rhythm gets one wake a simulated minute across it, a guard against an agent waking itself without end; anything else gets 20. In a run with an end, a wake the agent's own timer alone began, in which it made no call and wrote nothing, is not counted against it (`domain/run.counts_against_limit`, `WakeRecord.counted`): it is a runtime's hours-long timer coming round (a JVM's keepalive, a gRPC library's), not a go of the agent's, and the end bounds how many there can be. `RunRecord.wake_limit` keeps the number and where it came from, and a run stopped there says both and how to raise it.
@@ -1573,7 +1574,7 @@ Every agent runs in it (`AgentUnderTest.sandbox`, `domain/agent.py`; `applicatio
 |---|---|---|
 | Brings a sandbox behind the run's clock up to it | `advance`, by the difference between the run's clock and the `now_ns` that `deadlines` prints; never back | When the sandbox starts, for a run, a fork or a replay (born at the run's start, it is seldom behind) |
 | Moves it forward with every jump of the run's clock | `advance` | Released once the wake the jump may start has begun, so what the agent's timers do belongs to that wake |
-| Waits until the agent is idle | `deadlines`, idle on two reads `quiet` apart with no call of the agent's in flight (`Traffic.waiting`) | At the end of every wake; a sandbox still busy after `settle_limit` stops the run `AGENT_FAILED` |
+| Waits until the agent is idle | `deadlines`, idle on two reads `quiet` apart, no call of the agent's in flight at either (`Traffic.waiting`), and none sent or answered between them (`Traffic.activity`) | At the end of every wake; a sandbox still busy after `settle_limit` stops the run `AGENT_FAILED` |
 | Reads the agent's next wake | `deadlines`: the earliest deadline any blocked task waits for that is longer than `housekeeping` | Before every jump; enters the table as the agent's timer |
 | Is the sandbox's only way out | `sandbox/seal.sh` on its link: every connection to the transparent listener, every lookup to the name answerer, nothing forwarded ("Transparent capture") | Before `runsc do`, by the agent's command |
 

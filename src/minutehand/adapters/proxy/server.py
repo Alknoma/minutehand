@@ -133,6 +133,10 @@ class Proxy:
         from the agent."""
         return self.addon.waiting()
 
+    def activity(self) -> int:
+        """`application.traffic.Traffic`: how many times a call was sent on or answered, or a tunnel turned."""
+        return self.addon.activity()
+
     async def __aenter__(self) -> Proxy:
         if _running:
             raise ProxyRunning(
