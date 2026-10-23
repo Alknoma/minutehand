@@ -1,7 +1,7 @@
 """The agent under test: the sandbox it runs in, and how the world reaches it.
 
-Minutehand asks the agent nothing. Everything it learns, it observes: the agent's calls through the proxy, and its
-timers in the sandbox whose clock Minutehand owns.
+Minutehand asks the agent nothing. Everything it learns, it observes: the agent's calls through the proxy, and the
+sandbox whose clock Minutehand owns falling idle.
 """
 
 from __future__ import annotations
@@ -71,17 +71,19 @@ class AgentReport(Model):
 
 class Sandbox(Model):
     """The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, "A sandbox
-    whose clock Minutehand owns"). The agent's own in-process timers are its next wakes, with no code of
-    Minutehand's in it, and nothing the agent calls leaves the sandbox except through the proxy.
+    whose clock Minutehand owns"): every way the agent reads the time reads the run's, with no code of Minutehand's
+    in it, and nothing the agent calls leaves the sandbox except through the proxy.
 
-    Two commands reach the sandbox: `deadlines` prints, as its last line, `{"idle": bool, "now_ns": int,
-    "earliest_ns": int, "waits": [{"task": int, "ns": int}]}` (whether every task is blocked, its realtime clock,
-    the time until the earliest deadline any task waits for, -1 for none, and each task's), and `advance` moves the
-    sandbox's clock forward by `{nanoseconds}`, with every jump of the run's clock, so the two agree. The sandbox is
-    born at the run's start (its command reads `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a
-    timer the agent armed before a backward step would fire early. When the sandbox is idle on two reads `quiet`
-    apart, no call of the agent's is in flight at either, and none was sent or answered between them, its earliest
-    deadline longer than `housekeeping` is a wake the agent asked for."""
+    Two commands reach the sandbox: `deadlines` prints, as its last line, a JSON object holding `"idle": bool`
+    (whether every task is blocked) and `"now_ns": int` (its realtime clock); anything else it prints there is
+    the sandbox's and ignored. `advance` moves the sandbox's clock forward by `{nanoseconds}`, with every jump of
+    the run's clock, so the two agree. The sandbox is born at the run's start (its command reads
+    `MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a timer the agent armed before a backward step
+    would fire early. A wake is over when the sandbox is idle on two reads `quiet` apart, no call of the agent's is
+    in flight at either, and none was sent or answered between them. No deadline a task in it waits for is a wake:
+    a timer the agent armed fires when the clock passes it for something else, and work the agent means to come
+    back to is a booking with a scheduler, kept in the run's log (docs/design.md, "How the clock knows what is
+    next")."""
 
     deadlines: list[str] = Field(min_length=1)
     advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step forward goes")
@@ -94,11 +96,17 @@ class Sandbox(Model):
     settle_limit: timedelta = Field(
         default=timedelta(seconds=30), gt=timedelta(0), description="Real time a wake may take to fall idle"
     )
-    housekeeping: timedelta = Field(
-        default=timedelta(seconds=1),
-        gt=timedelta(0),
-        description="A deadline no longer than this is a runtime's own timer (an HTTP server's poll), never a wake",
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_housekeeping(cls, written: object) -> object:
+        if isinstance(written, dict) and "housekeeping" in written:
+            raise ValueError(
+                "`sandbox.housekeeping` is gone: no deadline in the sandbox is a wake any more, so there is no floor "
+                "to set. Work the agent comes back to by itself is a booking with a scheduler it calls (Cloud Tasks, "
+                "EventBridge Scheduler, Slack's chat.scheduleMessage), kept in the run's log (docs/agent-contract.md)"
+            )
+        return written
 
     @model_validator(mode="after")
     def _steps(self) -> Self:
@@ -165,8 +173,7 @@ class Instructions(Model):
 
 class AgentUnderTest(Model):
     """The agent under test: the sandbox it runs in, and how the world reaches it. Nothing is asked of it: it wakes
-    when a person's answer or a pushed event reaches it, when a scheduler it booked with delivers, and when one of
-    its own timers in the sandbox fires."""
+    when a person's answer or a pushed event reaches it, and when a scheduler it booked with delivers."""
 
     version: int | None = Field(
         default=None, ge=1, description="The agent file version it is written for; absent: the current one"
@@ -193,7 +200,7 @@ class AgentUnderTest(Model):
     tick: timedelta | None = Field(
         default=None,
         gt=timedelta(0),
-        description="How often the agent comes back to work by itself at most, by its own timers or its bookings. "
+        description="How often the agent comes back to work by itself at most, by its bookings. "
         "Sizes the wake limit from the scenario's deadline",
     )
     inbound: list[InboundTarget] = []
@@ -256,9 +263,9 @@ class AgentUnderTest(Model):
             )
         if isinstance(written, dict) and "wakes" in written:
             raise ValueError(
-                "`wakes:` is gone: every agent runs in a sandbox whose clock Minutehand owns (`sandbox`), and its "
-                "next wake is observed there, from its own timers or a scheduler it books with; nothing is asked of "
-                "it (docs/agent-contract.md)"
+                "`wakes:` is gone: every agent runs in a sandbox whose clock Minutehand owns (`sandbox`), and it "
+                "comes back to work by itself through a scheduler it books with, observed at the proxy; nothing is "
+                "asked of it (docs/agent-contract.md)"
             )
         return written
 

@@ -162,7 +162,7 @@ def test_explain_of_a_follow_up_names_the_ask_it_chases(run: Fixture, capsys: py
     found = json.loads(out)
     assert found["follows_up"]["seq"] == run.asked
     assert found["answers"] is None  # a follow-up answers nothing: the trial's `explain` said "answers: seq 29"
-    assert [d["source"] for d in found["woken_by"]] == ["timer"]
+    assert [d["source"] for d in found["woken_by"]] == ["booked"]
     _, said, _ = run_cli(capsys, "explain", run.run_id, str(run.follow_up), "--state", str(run.state))
     assert f"  follows up: seq {run.asked} 2026-08-24T10:00:00.000Z agent in slack D0SOFIA: {QUESTION}" in said
     assert "  answers:" not in said

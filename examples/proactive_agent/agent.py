@@ -2,10 +2,12 @@
 
 Its work is its own, a file it reads (AGENT_WORK, `work.json`): for each ask, who answers, the question and who is
 told. It asks in Slack, follows up at most twice, a working day apart, and tells the answer on, or that none came.
-Nothing hands it this work and nothing outside it wakes it: its own scheduler (one thread waiting on a deadline)
-decides when it next acts, and its state is its own SQLite file. It imports nothing of Minutehand's and has no
-endpoint for it; under Minutehand it runs unchanged in a sandbox whose clock Minutehand owns, so its sleeps follow
-simulated time and its next deadline is read from the sandbox as its next wake.
+Nothing hands it this work. What it will say later is booked when it asks, as Slack scheduled messages
+(`chat.scheduleMessage`): the two follow-ups, and the word to whoever asked that no answer came. Slack keeps them and
+posts each at its moment; when an answer comes, the agent deletes the ones not yet posted and passes the answer on.
+No thread of it waits on a deadline: its plan is records, Slack's and its own SQLite file's, which anyone can read
+and change. It imports nothing of Minutehand's and has no endpoint for it; under Minutehand it runs unchanged in a
+sandbox whose clock Minutehand owns, and each scheduled message is a booking the run delivers at its moment.
 
     POST /slack/events   someone wrote (Slack's Events API, signature checked): read, and acted on at once
 
@@ -30,6 +32,7 @@ from slack_sdk.signature import SignatureVerifier
 ANSWER_TAKES = timedelta(days=1)  # how long a person is given before a follow-up
 FOLLOW_UPS = 2  # at most; then whoever asked to be told hears that there is no answer
 OPENS, CLOSES = time(9, 0), time(17, 0)  # the agent writes to people in working hours, UTC
+UNDELETABLE = timedelta(seconds=60)  # Slack refuses to delete a scheduled message this close to its moment
 
 
 @dataclass(frozen=True)
@@ -83,70 +86,74 @@ class Memory:
 
 
 class Agent:
-    """Asks, follows up, tells. `act` does everything that is due now and answers when it next has something to do;
-    the scheduler thread sleeps until then, and a Slack event wakes it early."""
+    """Asks, books what it will say later, and passes answers on. `act` does everything there is to do now: it
+    asks whoever has not been asked, booking the follow-ups and the word that none came; it passes on an answer
+    that has come, deleting what it booked and has not been posted yet."""
 
     def __init__(self, work: list[Ask], memory: Memory, slack: WebClient) -> None:
         self.work = work
         self.memory = memory
         self.slack = slack
-        self._changed = threading.Condition()
+        self._acting = threading.Lock()
+
+    def _channel(self, email: str) -> str:
+        user = str(self.slack.users_lookupByEmail(email=email).get("user", {}).get("id"))
+        return str(self.slack.conversations_open(users=[user]).get("channel", {}).get("id"))
 
     def say(self, email: str, text: str) -> None:
         print(f"[agent] {datetime.now(UTC).isoformat()} to {email}: {text}", file=sys.stderr, flush=True)
-        user = str(self.slack.users_lookupByEmail(email=email).get("user", {}).get("id"))
-        channel = str(self.slack.conversations_open(users=[user]).get("channel", {}).get("id"))
-        self.slack.chat_postMessage(channel=channel, text=text)
+        self.slack.chat_postMessage(channel=self._channel(email), text=text)
 
-    def act(self, now: datetime) -> datetime | None:
-        """Do what is due at `now`; answer the earliest moment anything is due next, or None when nothing is open."""
-        print(f"[agent] {now.isoformat()} acting", file=sys.stderr, flush=True)
-        due_next: list[datetime] = []
-        for n, ask in enumerate(self.work):
-            done = self.memory.progress(n)
-            if "asked_at" not in done:
-                self.say(ask.ask, ask.question)
-                done = {"asked_at": now.isoformat(), "last_contact": now.isoformat(), "follow_ups": 0}
-                self.memory.keep(n, done)
-            if "ended" in done:
-                continue
-            answer = self.memory.answer_from(ask.ask)
-            follow_ups = int(str(done["follow_ups"]))
-            due = in_hours(datetime.fromisoformat(str(done["last_contact"])) + ANSWER_TAKES)
-            if answer is not None:
-                self.say(ask.tell, f'{ask.ask} answered "{ask.question}": {answer}')
-                self.memory.keep(n, {**done, "ended": "answered"})
-            elif now >= due and follow_ups < FOLLOW_UPS:
-                nth = follow_ups + 1  # each follow-up says which it is: none repeats the one before
-                asked_on = str(done["asked_at"])[:10]
-                self.say(ask.ask, f"Following up ({nth} of {FOLLOW_UPS}) on my question of {asked_on}: {ask.question}")
-                self.memory.keep(n, {**done, "last_contact": now.isoformat(), "follow_ups": nth})
-                due_next.append(in_hours(now + ANSWER_TAKES))
-            elif now >= due:
-                self.say(ask.tell, f'No answer from {ask.ask} to "{ask.question}" after {FOLLOW_UPS} follow-ups.')
-                self.memory.keep(n, {**done, "ended": "no answer"})
-            else:
-                due_next.append(due)
-        return min(due_next) if due_next else None
+    def book(self, email: str, at: datetime, text: str) -> dict[str, object]:
+        """Have Slack post `text` to `email` at `at`: what it keeps of the booking to delete it later."""
+        print(f"[agent] booked for {at.isoformat()} to {email}: {text}", file=sys.stderr, flush=True)
+        channel = self._channel(email)
+        booked = self.slack.chat_scheduleMessage(channel=channel, post_at=int(at.timestamp()), text=text)
+        return {"channel": channel, "id": str(booked.get("scheduled_message_id")), "at": at.isoformat()}
+
+    def act(self, now: datetime) -> None:
+        with self._acting:
+            for n, ask in enumerate(self.work):
+                done = self.memory.progress(n)
+                if "asked_at" not in done:
+                    done = self._ask(ask, now)
+                    self.memory.keep(n, done)
+                if "ended" in done:
+                    continue
+                answer = self.memory.answer_from(ask.ask)
+                if answer is not None:
+                    self._unbook(done, now)
+                    self.say(ask.tell, f'{ask.ask} answered "{ask.question}": {answer}')
+                    self.memory.keep(n, {**done, "ended": "answered"})
+
+    def _ask(self, ask: Ask, now: datetime) -> dict[str, object]:
+        """Ask, and book the rest: each follow-up a working day after the message before it, then, a working day
+        after the last, the word to whoever asked that none came."""
+        self.say(ask.ask, ask.question)
+        booked: list[dict[str, object]] = []
+        at = now
+        for nth in range(1, FOLLOW_UPS + 1):
+            at = in_hours(at + ANSWER_TAKES)
+            text = f"Following up ({nth} of {FOLLOW_UPS}) on my question of {now.date().isoformat()}: {ask.question}"
+            booked.append(self.book(ask.ask, at, text))
+        at = in_hours(at + ANSWER_TAKES)
+        none_came = f'No answer from {ask.ask} to "{ask.question}" after {FOLLOW_UPS} follow-ups.'
+        booked.append(self.book(ask.tell, at, none_came))
+        return {"asked_at": now.isoformat(), "booked": booked}
+
+    def _unbook(self, done: dict[str, object], now: datetime) -> None:
+        """Delete what was booked for this ask and has not been posted yet; Slack posts what is too close to delete."""
+        booked = done["booked"]
+        assert isinstance(booked, list)
+        for one in booked:
+            assert isinstance(one, dict)
+            if datetime.fromisoformat(str(one["at"])) > now + UNDELETABLE:
+                self.slack.chat_deleteScheduledMessage(channel=str(one["channel"]), scheduled_message_id=str(one["id"]))
 
     def heard(self, sender: str, text: str) -> None:
         print(f"[agent] {datetime.now(UTC).isoformat()} heard from {sender}: {text}", file=sys.stderr, flush=True)
         self.memory.heard(sender, text)
-        with self._changed:
-            self._changed.notify()
-
-    def run(self) -> None:
-        """The agent's own scheduler: act, sleep until the next moment anything is due (or until someone writes),
-        act again. The sleep is a wait on a deadline, which is what the sandbox reports as its next wake."""
-        while True:
-            next_due = self.act(datetime.now(UTC))
-            print(f"[agent] next due {next_due.isoformat() if next_due else None}", file=sys.stderr, flush=True)
-            if next_due is None:
-                with self._changed:
-                    self._changed.wait()
-                continue
-            with self._changed:
-                self._changed.wait(timeout=max(0.0, (next_due - datetime.now(UTC)).total_seconds()))
+        self.act(datetime.now(UTC))
 
 
 def serve(agent: Agent, port: int, secret: str) -> None:
@@ -185,8 +192,5 @@ if __name__ == "__main__":
     work = read_work(Path(os.environ.get("AGENT_WORK", "work.json")))
     memory = Memory(Path(os.environ.get("AGENT_DB", "proactive_agent.db")))
     agent = Agent(work, memory, WebClient(token=os.environ.get("AGENT_SLACK_TOKEN", "xoxb-proactive-agent")))
-    port = int(os.environ.get("AGENT_PORT", "8740"))
-    threading.Thread(
-        target=serve, args=(agent, port, os.environ.get("AGENT_SLACK_SIGNING_SECRET", "")), daemon=True
-    ).start()
-    agent.run()
+    agent.act(datetime.now(UTC))  # ask whoever has not been asked, and book what follows
+    serve(agent, int(os.environ.get("AGENT_PORT", "8740")), os.environ.get("AGENT_SLACK_SIGNING_SECRET", ""))

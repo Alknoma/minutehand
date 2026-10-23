@@ -21,7 +21,6 @@ from minutehand.application.checkpoint import (
     PendingHappening,
     PendingMachine,
     PendingService,
-    PendingTimer,
     PendingTransition,
 )
 from minutehand.domain.clock import PLANNED_BY, REACHED, Drawn, Due, DueClosed, DueEntry, DueKind, DueSource
@@ -38,8 +37,6 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.HAPPENING
     if isinstance(pending, PendingMachine):
         return DueSource.MACHINE
-    if isinstance(pending, PendingTimer):
-        return DueSource.TIMER
     if isinstance(pending, PendingTransition):
         return DueSource.REPLY if pending.due.kind is DueKind.PERSON_REPLY else DueSource.TRANSITION
     if isinstance(pending, PendingService):

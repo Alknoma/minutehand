@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
-# A world, not a task: the agent brings its own work and its own timers decide when it next wakes.
+# A world, not a task: the agent brings its own work and books with a scheduler when it next wakes.
 # Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
 # days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
 #   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- <the agent's command, in its sandbox>

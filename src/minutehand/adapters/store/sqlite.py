@@ -92,7 +92,7 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
 5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
 row; refused here as a whole file instead.
@@ -103,7 +103,9 @@ the pool beside the file; a version 5 file holds every body inline and its snaps
 8: the agent's snapshots and their pool are gone, with the state hooks that wrote them; a version 7 file's
 checkpoints name snapshots this version cannot restore.
 9: the calls made to a model for people (`person_call`), whose answers a rerun or fork replays; a reply carries how
-it was written and how its moment was drawn, which a version 8 reader would refuse row by row."""
+it was written and how its moment was drawn, which a version 8 reader would refuse row by row.
+10: no deadline in the agent's sandbox is a wake: a version 9 file's checkpoints may hold the agent's own timer
+(`kind: timer`), its table entries the `timer` source and its wakes `counted`, which this version has no such thing as."""
 
 _UNKEPT_IN_ROW = {"request_body", "response_body", "request_bytes", "response_bytes"}
 """Kept in columns of their own, not in an exchange's JSON. `inbox_call` is left out of it too when None, so a row

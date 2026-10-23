@@ -22,7 +22,7 @@ Three things hold throughout:
 
 The agent these files are written for brings its own work: order 40 laptops (PO-7731) once Nadia approves, and tell
 Owen, the requester, how it went. Each scenario is a world, not a task: the run hands the agent nothing. The agent
-is proactive: its own timers decide when it next wakes, read from its sandbox, and nothing wakes it on a schedule.
+is proactive: it books with a scheduler when it next wakes, and nothing else wakes it on a schedule.
 Its plan: ask Nadia; a day on, still undecided, remind her by email; two days on, ask Marta, the backup approver,
 too, and tell Owen; four days on, tell Owen it is still waiting and stop. On an approval it places the order with
 `POST https://api.orders.example/v1/orders`, naming the request it rests on; on a rejection it orders nothing and
@@ -608,7 +608,7 @@ which takes a rate:
 <!-- file: docs/approvals/inbox/timing/decision_timing.yaml -->
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/scenario.schema.json
-# A world, not a task: the agent brings its own work and its own timers decide when it next wakes.
+# A world, not a task: the agent brings its own work and books with a scheduler when it next wakes.
 # Nadia approves at a moment drawn anywhere in five days, so each seed plays a different timing; Marta, asked at two
 # days, approves within four hours. The team's promise: the laptops are ordered within three days of the request.
 #   minutehand run-all timing --agent agent.yaml --jobs 1 --samples 20 -- <the agent's command, in its sandbox>

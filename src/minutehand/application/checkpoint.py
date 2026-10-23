@@ -36,13 +36,6 @@ class PendingTransition(Model):
     pending: EntityRef = Field(description="The people engine's record of the item (`EntityKind.PENDING`)")
 
 
-class PendingTimer(Model):
-    """The earliest deadline of the agent's own timers, read from its sandbox."""
-
-    kind: Literal["timer"] = "timer"
-    due: Due
-
-
 class PendingMachine(Model):
     """A command the scenario runs on the agent's machine (`Scenario.machine`), not yet run."""
 
@@ -99,7 +92,6 @@ Pending = Annotated[
     | PendingDirection
     | PendingBooking
     | PendingMachine
-    | PendingTimer
     | PendingTransition
     | PendingService
     | PendingCall,
