@@ -64,6 +64,7 @@ class AwsProxy:
         self._failure: Exception | None = None
         self._thread = threading.Thread(target=self._main, name="aws-proxy", daemon=True)
         self.port = 0
+        self._clients: list[BaseClient] = []
 
     @property
     def ca(self) -> Path:
@@ -129,13 +130,17 @@ class AwsProxy:
         """A stock boto3 client: dummy credentials (or `key` and `secret`), the proxy, the CA. No endpoint_url.
         `config` is more of botocore's `Config`."""
         session = Session(aws_access_key_id=key, aws_secret_access_key=secret, region_name=region)
-        return session.client(
+        made = session.client(
             service,
             config=Config(proxies={"https": f"http://127.0.0.1:{self.port}"}, retries={"max_attempts": 1}, **config),
             verify=str(self.ca),
         )
+        self._clients.append(made)
+        return made
 
     def stop(self) -> None:
+        for made in self._clients:
+            made.close()
         if self._loop is not None and self._master is not None:
             self._loop.call_soon_threadsafe(self._master.shutdown)
         self._thread.join(timeout=10)

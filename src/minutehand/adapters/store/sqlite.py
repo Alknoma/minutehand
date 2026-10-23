@@ -235,6 +235,7 @@ class SqliteStore:
         # One connection shared across threads behind one lock: a provider mounted as a
         # WSGI app is served from a worker thread, and a second writer would not help SQLite.
         self._lock = threading.RLock()
+        self._closed = False
         self._db = db
         # zstd's (de)compressors are not safe across threads; each store's are used only under its lock.
         self._pack = zstandard.ZstdCompressor(level=3)
@@ -242,8 +243,12 @@ class SqliteStore:
 
     def close(self) -> None:
         """Close the file, cutting its write-ahead log to nothing when no other connection is reading it: a
-        process that holds many worlds over its life keeps open only those still in use."""
+        process that holds many worlds over its life keeps open only those still in use. Closing a closed store
+        does nothing, as closing a closed file does."""
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._db.close()
 
