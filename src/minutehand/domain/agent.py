@@ -15,6 +15,7 @@ from pydantic import AwareDatetime, Field, model_validator
 from minutehand.domain.assessments import IntegrityCheck, Rule, refuse_repeated_rules
 from minutehand.domain.emulator import ExternalEmulator, refuse_unknown_emulators
 from minutehand.domain.inboxes import HttpInbox, refuse_repeated_inboxes
+from minutehand.domain.memory import DueRecords
 from minutehand.domain.outbound import Forward, OutboundHost, refuse_repeats
 from minutehand.domain.people import InboundTarget
 from minutehand.domain.scenario import Model, ProviderKey
@@ -173,7 +174,8 @@ class Instructions(Model):
 
 class AgentUnderTest(Model):
     """The agent under test: the sandbox it runs in, and how the world reaches it. Nothing is asked of it: it wakes
-    when a person's answer or a pushed event reaches it, and when a scheduler it booked with delivers."""
+    when a person's answer or a pushed event reaches it, when a scheduler it booked with delivers, and when one of the
+    due records it keeps in its memory (`due`) falls due, as the record stands when the run decides its next jump."""
 
     version: int | None = Field(
         default=None, ge=1, description="The agent file version it is written for; absent: the current one"
@@ -200,10 +202,15 @@ class AgentUnderTest(Model):
     tick: timedelta | None = Field(
         default=None,
         gt=timedelta(0),
-        description="How often the agent comes back to work by itself at most, by its bookings. "
+        description="How often the agent comes back to work by itself at most, by its bookings or its due records. "
         "Sizes the wake limit from the scenario's deadline",
     )
     inbound: list[InboundTarget] = []
+    due: list[DueRecords] = Field(
+        default=[],
+        description="Where the agent keeps its due records in its memory (`minutehand.agent.store`): the run reads "
+        "them as they stand whenever it decides its next jump, and the earliest one's instant is a wake",
+    )
     inboxes: list[HttpInbox] = Field(
         default=[],
         description="Where work waits on a person inside the agent's own product (an approval, a question on its "

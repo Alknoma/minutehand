@@ -15,6 +15,7 @@ from minutehand.domain.assessments import IntegrityCheck, Rule, StoppedBy
 from minutehand.domain.clock import DueEntry
 from minutehand.domain.conversation import Judgement, PersonCall
 from minutehand.domain.items import Assessed, ItemAssessment, ProvidedTypes, TypedItem
+from minutehand.domain.memory import DueRecords
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import Model, ProviderKey, Scenario
 from minutehand.domain.world import EntityRef, Exchange, RecordedCall, WorldEvent
@@ -373,6 +374,9 @@ class RunView(Model):
         default=None,
         description="The agent's declared rhythm: the agent file's `tick`, else its shortest polled `every`; None when "
         "it declares none",
+    )
+    due: list[DueRecords] = Field(
+        default=[], description="Where the agent file says the agent keeps its due records (`AgentUnderTest.due`)"
     )
     fail_on_integrity: list[IntegrityCheck] = Field(
         default=[],

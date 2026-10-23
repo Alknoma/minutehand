@@ -6,9 +6,10 @@ at the end and has not been renamed.
 
 **Nothing is asked of the agent.** Every agent runs unchanged, in a sandbox whose clock and network Minutehand owns
 (`sandbox` in the agent file; `docs/design.md`, "A sandbox whose clock Minutehand owns"). Its calls reach the fakes
-because the sandbox has no other way out; its next wake is observed, never declared: a scheduler it books with
-(Cloud Tasks, EventBridge Scheduler) delivers when the clock reaches the booking, and a timer or sleep of its own
-fires when the sandbox's clock passes it. The agent carries no endpoint, protocol or import that exists for
+because the sandbox has no other way out; its next wake is a record, never a guess: a scheduler it books with
+(Cloud Tasks, EventBridge Scheduler) delivers when the clock reaches the booking, and a due record it keeps in its
+memory falls due at the instant the record holds when the run decides its next jump. A timer or sleep of its own
+fires when the clock passes it, and moves nothing. The agent carries no endpoint, protocol or import that exists for
 Minutehand, with one exception an agent opts into: an agent that remembers anything across wakes may keep it through
 `minutehand.agent.store` ("The agent's memory", below), so a fork starts from the memory as it stood at the
 checkpoint.
@@ -20,10 +21,11 @@ checkpoint.
 | **agent file** | The YAML or JSON file an agent's repository keeps: `AgentUnderTest` | config, manifest |
 | **scenario**, **seed** | The situation a run plays (`Scenario`), or a standing world opens with (`Seed`) | fixture |
 | **sandbox** | Where the agent runs: a gVisor sandbox whose clock Minutehand moves and whose only route out is the proxy | container (that is the outer one), VM |
-| **wake** | One go of the agent's, as the run records it: from the moment something reaches it (a person's answer, a pushed event, a booking delivered) until its sandbox is idle again | tick, trigger, turn |
+| **wake** | One go of the agent's, as the run records it: from the moment something reaches it (a person's answer, a pushed event, a booking delivered, a due record's moment) until its sandbox is idle again | tick, trigger, turn |
 | **timer** | A deadline a task in the sandbox waits for (a sleep, a scheduler loop's next check). It fires when the clock passes it for some other reason, and is never a wake: Minutehand does not read it | schedule (that is its own scheduler's) |
 | **booking** | A wake the agent asked a faked scheduler for, by calling it: a record in the run's log, delivered at its moment, changed or cancelled through the scheduler's own API | cron |
-| **memory** | What the agent remembers across wakes, through `minutehand.agent.store`: the run's own under Minutehand | state, snapshot |
+| **due record** | A key of the agent's memory holding when its own scheduler next runs something (a job's run-at, a next-check field), at a place the agent file names (`due:`): read as it stands whenever the run decides its next jump | timer, reminder |
+| **memory** | What the agent remembers across wakes, through `minutehand.agent.store`: the run's own under Minutehand. A write may carry a version, and lands only when none newer is held | state, snapshot |
 | **deliver** | Minutehand handing the agent what a person did: a reply, a press, a happening | push (that is the provider's word) |
 | **inbox** | Where work waits on a person in the agent's own product | queue, human action |
 | **item** | One thing waiting in an inbox | task, request |
@@ -39,13 +41,14 @@ checkpoint.
 |---|---|---|---|---|
 | **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
-| **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked |
+| **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked, or keeps due records |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
 | **deliver a reply** (provider) | Minutehand → agent, when a person's reply falls due | The provider's own event (Slack Events API, Bot Framework activity) → 2xx | `inbound[]` | Only for a provider that pushes |
 | **socket** (Slack) | The agent → Slack's `apps.connections.open`, then a WebSocket it holds open; replies arrive on it | `events_api` envelopes → the agent's `{"envelope_id": …}` | `inbound[]` with `delivery: socket_mode` and no `url` | Instead of a request URL |
 | **deliver a press** (provider) | Minutehand → agent, when a person uses a control | The provider's own interactivity payload → 2xx | `inbound[].interactivity_url` | Only for controls |
 | **deliver a reply** (declared host) | Minutehand → agent, an answer to a captured send | `DeliveredReply` (the default shape, no `body`), or the declared `body` → 2xx | `outbound[].replies` | Only when people answer a send |
 | **deliver a booking** (scheduler) | The faked scheduler → agent, when the clock reaches a booking | The scheduler's own delivery (a Cloud Tasks HTTP request, a message in an SQS queue the agent polls) | Nothing: the agent's own call booked it | No |
+| **due records** | Minutehand reads the agent's memory whenever it decides its next jump; nothing is called | The keys `due[]` names, as they stand; the earliest instant is a wake | `due[]` (`collection`, `prefix`, `where`, `field`, `poll`) | Only for an agent whose own scheduler polls its records |
 | **inbox list** | Minutehand → agent, as each person, after each wake or step and before the clock moves | Declared template or operation (default `listPending`, `PendingPage`) | `inboxes[].pending` | Only with an inbox |
 | **decide** | Minutehand → agent, as the person, when a decision falls due | Declared template or operation (default `decide`, `DecisionMade`) → declared success | `inboxes[].decisions[]` | Only with an inbox |
 | **use** | Minutehand → agent, as the person, when a scenario's `uses` happening falls due | Declared template or operation → declared success | `inboxes[].uses[]` | Only to play people using the product unprompted |
@@ -68,7 +71,8 @@ reads `sandbox.quiet` apart (default 50 ms), with no call of the agent's in flig
 `sandbox.settle_limit` (default 30 s of real time) stops the run `agent_failed`, saying so. Nothing is printed while
 it waits.
 
-A run ends when nothing is due and the agent has booked nothing (`nothing_pending`), at the end of the scenario's
+A run ends when nothing is due, the agent has booked nothing and no due record of its is left to wake for
+(`nothing_pending`), at the end of the scenario's
 window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, or when the agent's sandbox
 fails to fall idle. There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
 verdict"), never from the agent.
@@ -78,6 +82,7 @@ verdict"), never from the agent.
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
 | `start_limit` | `PT30S` | Real time the agent's command may take, from its launch, before the address the world pushes to accepts connections; nothing is pushed before then. An agent whose front door opens only once everything behind it is up declares how long that takes |
+| `due[].poll` | `PT0S` | How long the agent's own poller may take to find a due record after it falls due: the wake is that long after the record's instant, the latest its poller would have acted |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 
@@ -102,11 +107,41 @@ something else (a reply, a pushed event, a booking), and a runtime's own (an HTT
 emulator's event loop) never moves the clock. Work the agent means to come back to by itself is a booking with a
 scheduler it calls (Cloud Tasks, EventBridge Scheduler, Slack's `chat.scheduleMessage`): a record in the run's log,
 delivered at its moment (`planned_wakes`, `dispatch.source = booked`), moved or cancelled through the scheduler's API
-with each change kept, and carried into a fork from any checkpoint. A date the agent keeps in its memory is its data,
-and wakes nothing. Through 0.3.4 the earliest deadline in the sandbox longer than `sandbox.housekeeping` was the
+with each change kept, and carried into a fork from any checkpoint. Through 0.3.4 the earliest deadline in the sandbox longer than `sandbox.housekeeping` was the
 agent's next wake; it could not tell the agent's timer from a runtime's, it saw one deadline and never the schedule
 behind it, and nothing recorded a change to it, so it is gone. An agent file that still names
 `sandbox.housekeeping` is refused, saying so.
+
+### Due records
+
+An agent whose own scheduler polls its records for what has come due (a job table's run-at column, a `next_check`
+field) books nothing. It keeps a projection of those records in its memory, and the agent file says where:
+
+```yaml
+due:
+  - collection: due              # the store collection (default `default`)
+    prefix: "jobs/"              # the keys under it
+    where: {state: open}         # equality filters, a field or a dotted path, as `store.query`
+    field: run_at                # an ISO 8601 instant with an offset; absent or null is not due
+    poll: PT30S                  # how long its poller may take to find it (default PT0S)
+```
+
+- **Read at every decision.** Whenever the run decides its next jump, beside people's moves, replies and bookings, it
+  reads every declared record from the memory as it stands then (in a fork, the parent's up to the checkpoint and
+  the fork's own after), never from an earlier read. A record moved earlier, moved later, cleared or closed since is
+  followed as it now stands. The earliest record's instant, and `poll` after it, is next due: `planned_wakes`,
+  `dispatch.source = recorded`, its `ref` naming each key and instant. The wake is the clock reaching it; Minutehand
+  calls nothing, and the agent's own poller finds the work when its own clock passes it.
+- **Once for one instant.** A record wakes the agent at most once while it holds one instant. Woken and still holding
+  that instant when the wake ends, it is not woken again, and the check `due_records` says the agent left it due
+  (`review`): in production a poller whose wait and whose query disagree wakes for it forever with nothing to do. A
+  new instant is new. What has woken is read from the run's log, so a fork knows what its parent was woken for.
+- **A field that is not an instant** with an offset (a date alone, a time without one, a number) is not due, and
+  `due_records` names the key and what it held.
+- **The price.** The agent's scheduler reads its own database; the projection is a second copy it writes for the run
+  to read, and in production it goes to the backend `store` was configured with. Several processes mirroring one
+  record after their own commits can send their writes out of order, so a due record is written with a version
+  (`store.put(key, value, version=n)`, below): the newer stays, whichever arrives last.
 
 The agent checks the proxy's certificates against its own clock, so the
 proxy's CA and host certificates are valid at every instant (`sandbox/README.md` for the sandbox itself).
@@ -131,6 +166,7 @@ store.get("asks/sam")  # None when there is none, or get(key, default)
 store.list("asks/")  # [(key, value), ...] ordered by key
 store.query("asks/", where={"status": "asked"})  # a field may be a dotted path: "venue.city"
 store.delete("asks/sam")
+store.put("jobs/7", {"run_at": "2026-09-03T09:00:00+00:00"}, version=41)  # True when it landed
 with store.batch() as b:  # all or none; `async with` too
     b.put("asks/sam", {"status": "confirmed"})
     b.delete("asks/rosa")
@@ -144,6 +180,13 @@ goes to the run: every write is the agent's in the run's log, every read is answ
 from the scenario's `memory:` and each fork from its parent's memory at the checkpoint, and the configured backend
 is never called. If the run cannot be reached the call raises `MinutehandUnreachable`; it never falls back to the
 agent's own database. The package imports nothing but the standard library.
+
+**A versioned write** (`put`, `delete`, a batch's `put` and `delete`, each with `version=`) lands only when no version
+the key holds is newer; an equal one lands. A version is a JSON integer (a row's version, or its update time in
+microseconds); an ISO 8601 instant or any other text is refused, since two writes in one millisecond would tie. A
+delete keeps its version, so an older put arriving later does not bring the key back. `put` and `delete` answer
+whether they landed, and a batch's `applied` says it write by write. A write with no version always lands, and leaves
+the key's version as it was.
 
 **What a fork brings back.** The world as of the checkpoint, from the log it shares with its parent; the agent's
 memory, the same way; and the agent's sandbox, by playback: a fresh sandbox is started at the run's start, and the
@@ -163,14 +206,18 @@ serialised, so an adapter stores and returns the string unchanged:
 class FirestoreBackend:
     def get(self, collection: str, key: str) -> str | None: ...  # the value, or None
     def scan(self, collection: str, prefix: str) -> list[tuple[str, str]]: ...  # (key, value) by key, under prefix
-    def write(self, writes: Sequence[store.Write]) -> None: ...  # store.Put / store.Delete, all or none
+    def write(self, writes: Sequence[store.Write]) -> list[bool]: ...  # store.Put / store.Delete, all or none
 
 
 store.configure(FirestoreBackend(...))
 ```
 
-`write` must apply the whole list or none of it (a transaction, or a batched commit). `SqliteBackend` and
-`MemoryBackend` in `src/minutehand/agent/_store.py` are the two shipped and the pattern to copy.
+`write` must apply the whole list or none of it (a transaction, or a batched commit), and answer, write by write,
+whether it landed. A write carrying a `version` lands only when no version the key holds is newer
+(`store.lands(held, version)`), decided in the same transaction, and a delete keeps its version, so the adapter keeps
+each key's version beside its value. An adapter that keeps no versions refuses a write that carries one rather than
+land it unchecked. This changed in 0.3.6: an adapter whose `write` answers None is refused by name. `SqliteBackend`
+and `MemoryBackend` in `src/minutehand/agent/_store.py` are the two shipped and the pattern to copy.
 
 ### The wire, for an agent not written in Python
 
@@ -181,7 +228,7 @@ agent's `NO_PROXY`); `collection` defaults to `default`:
 |---|---|
 | `{"op": "get", "collection": "default", "key": "asks/sam"}` | `{"found": true, "value": …}` or `{"found": false, "value": null}` |
 | `{"op": "list", "collection": "default", "prefix": "asks/"}` | `{"items": [{"key": "asks/sam", "value": …}, …]}`, ordered by key |
-| `{"op": "write", "writes": [{"op": "put", "key": "k", "value": …}, {"op": "delete", "key": "j"}]}` | `{"seq": n}`, the last entry's seq in the run's log |
+| `{"op": "write", "writes": [{"op": "put", "key": "k", "value": …, "version": 8}, {"op": "delete", "key": "j"}]}` | `{"seq": n, "applied": [true, false]}`: the last entry's seq in the run's log (its head when none landed), and for each write whether it landed. `version`, on a put or a delete, is optional and a JSON integer |
 
 A body the receiver cannot read is answered 400 saying why.
 
@@ -204,7 +251,7 @@ agent's own checks. A rule may not take the id of a check.
 ## The wake limit
 
 A run stops after its wake limit. The scenario's `max_wakes` sets it. Without one, a scenario with a window or a
-deadline and an agent with a rhythm of its own (`tick` in the agent file: how often its bookings bring it
+deadline and an agent with a rhythm of its own (`tick` in the agent file: how often its bookings or due records bring it
 back at most, `tick: PT1H`) get every tick across it and 20 more, for the wakes replies and happenings bring; a window
 with no rhythm declared gets one wake a simulated minute across it, a guard against an agent waking itself without
 end. Otherwise the limit is 20. A run that stops there says the limit and where it came from.

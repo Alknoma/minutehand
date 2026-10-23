@@ -136,6 +136,7 @@ from minutehand.domain.common import GeneratedSecret, SecretFromEnvironment, Sig
 from minutehand.domain.emulator import EmulatorChange
 from minutehand.domain.experiment import Fork, Override, TicketEdit
 from minutehand.domain.items import ItemKind, TypedItem
+from minutehand.domain.memory import DueRecords
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
@@ -341,6 +342,7 @@ async def play(
                 fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
                 claims=_claims(registry, services),
                 rhythm=declared_rhythm(agent),
+                due=agent.due,
                 collections=declared_collections(agent),
                 messengers=declared_messengers(agent),
                 instructions=[i.text for i in agent.instructions if i.text is not None],
@@ -553,6 +555,7 @@ async def fork(
         fail_on_integrity=integrity_fails(agent.fail_on_integrity, changed.fail_on_integrity),
         claims=_claims(registry, services),
         rhythm=declared_rhythm(agent),
+        due=agent.due,
         collections=declared_collections(agent),
         messengers=declared_messengers(agent),
         instructions=[i.text for i in agent.instructions if i.text is not None],
@@ -703,6 +706,7 @@ def recorded_view(state: Path, run_id: str) -> RunView:
         fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
         claims=_Claims(registry, frozenset()),
         rhythm=declared_rhythm(agent),
+        due=agent.due,
         collections=declared_collections(agent),
         messengers=declared_messengers(agent),
         instructions=[i.text for i in agent.instructions if i.text is not None],
@@ -1227,8 +1231,10 @@ class _Judge:
         collections: Sequence[DeclaredCollection] = (),
         messengers: Mapping[ProviderKey, ItemKind] | None = None,
         instructions: Sequence[str] = (),
+        due: Sequence[DueRecords] = (),
     ) -> None:
         self._instructions = list(instructions)
+        self._due = list(due)
         self._claims = claims
         self._messengers = dict(messengers or {})
         self._rhythm = rhythm
@@ -1290,6 +1296,7 @@ class _Judge:
             rhythm=self._rhythm,
             person_calls=world.person_calls(),
             collections=self._collections,
+            due=self._due,
         )
 
     async def score(self, record: RunRecord, world: Store) -> RunResult:

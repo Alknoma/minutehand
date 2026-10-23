@@ -9,6 +9,10 @@ the log's seq. The memory as of a seq is the latest
 version of each key at or below it, so a fork, sharing its parent's log up to its checkpoint, reads exactly the
 memory its parent had there; nothing is copied or replayed. `digest` is that memory as one hash, kept in every
 checkpoint and compared once a fork exists.
+
+A versioned write lands only when no version the key holds is newer (`Versions`): each key's latest version, a
+delete's among them, is read from the log the first time a write needs it and kept as writes land, so a fork's
+receiver knows the versions its parent left at the checkpoint.
 """
 
 from __future__ import annotations
@@ -162,10 +166,48 @@ class Reads:
         self._found[read] = found
 
 
-def remember(store: Store, call: MemoryWrite) -> Written:
-    """Every write of one call, as the agent's, in one transaction."""
+class Versions:
+    """Each key's latest version, as the log holds it: the version of the last versioned put or delete that landed
+    there. Read from the log once, the first time a versioned write asks, then kept as writes land; a write with no
+    version leaves it as it was."""
+
+    def __init__(self) -> None:
+        self._held: dict[tuple[str, str], int] | None = None
+
+    def held(self, store: Store) -> dict[tuple[str, str], int]:
+        if self._held is None:
+            self._held = versions_of(store.events(kinds=[EntityKind.MEMORY]))
+        return self._held
+
+    def keep(self, held: dict[tuple[str, str], int]) -> None:
+        """The versions once a call's writes have landed in the log."""
+        self._held = held
+
+
+def versions_of(events: Sequence[WorldEvent], *, until: int | None = None) -> dict[tuple[str, str], int]:
+    """Each key's version as the events up to seq `until` (every one without it) leave it."""
+    held: dict[tuple[str, str], int] = {}
+    for event in events:
+        if until is not None and event.seq > until:
+            break
+        after = event.after
+        if not isinstance(after, MemorySnapshot) or after.version is None:
+            continue
+        if event.operation in (Operation.CREATE, Operation.UPDATE, Operation.DELETE):
+            held[(after.collection, after.key)] = after.version
+    return held
+
+
+def remember(store: Store, call: MemoryWrite, versions: Versions) -> Written:
+    """Every write of one call that lands, as the agent's, in one transaction; one whose version is older than the
+    key's is left out, and the answer says which landed. The caller awaits nothing between this and the next call,
+    so no other write comes between reading a key's version and writing it."""
     changes: list[Change] = []
-    for one in call.writes:
+    held = dict(versions.held(store)) if any(one.version is not None for one in call.writes) else None
+    applied = landed_in(held, call) if held is not None else [True] * len(call.writes)
+    for one, lands in zip(call.writes, applied, strict=True):
+        if not lands:
+            continue
         entity = ref(one.collection, one.key)
         if isinstance(one, MemoryPut):
             text = canonical(one.value)
@@ -176,7 +218,7 @@ def remember(store: Store, call: MemoryWrite) -> Written:
                     actor=Actor.AGENT,
                     body=text,
                     parent=one.collection,
-                    after=MemorySnapshot(collection=one.collection, key=one.key, value=text),
+                    after=MemorySnapshot(collection=one.collection, key=one.key, value=text, version=one.version),
                 )
             )
         else:
@@ -185,11 +227,28 @@ def remember(store: Store, call: MemoryWrite) -> Written:
                     entity=entity,
                     operation=Operation.DELETE,
                     actor=Actor.AGENT,
-                    after=MemorySnapshot(collection=one.collection, key=one.key),
+                    after=MemorySnapshot(collection=one.collection, key=one.key, version=one.version),
                 )
             )
+    if not changes:
+        return Written(seq=store.head(), applied=applied)
     events = store.apply_all(changes)
-    return Written(seq=events[-1].seq)
+    if held is not None:
+        versions.keep(held)
+    return Written(seq=events[-1].seq, applied=applied)
+
+
+def landed_in(held: dict[tuple[str, str], int], call: MemoryWrite) -> list[bool]:
+    """Which writes of `call` land on keys holding the versions `held` says, in order, a write landing before
+    another in the same call counting for it; `held` is left as the landed writes leave it."""
+    applied: list[bool] = []
+    for one in call.writes:
+        key = (one.collection, one.key)
+        lands = one.version is None or key not in held or held[key] <= one.version
+        applied.append(lands)
+        if lands and one.version is not None:
+            held[key] = one.version
+    return applied
 
 
 def held(store: Store, collection: str, prefix: str = "") -> list[tuple[str, str]]:

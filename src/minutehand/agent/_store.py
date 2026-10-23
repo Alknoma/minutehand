@@ -26,22 +26,32 @@ T = TypeVar("T")
 
 @dataclass(frozen=True)
 class Put:
-    """Write `value` (JSON text) under `key` in `collection`, replacing what was there."""
+    """Write `value` (JSON text) under `key` in `collection`, replacing what was there. With `version`, only when no
+    version the key holds is newer (an equal one lands)."""
 
     collection: str
     key: str
     value: str
+    version: int | None = None
 
 
 @dataclass(frozen=True)
 class Delete:
-    """Remove `key` from `collection`; nothing happens when it is not there."""
+    """Remove `key` from `collection`; nothing happens when it is not there. With `version`, only when no version
+    the key holds is newer, and the key keeps the version, so an older put arriving later does not bring it back."""
 
     collection: str
     key: str
+    version: int | None = None
 
 
 Write = Put | Delete
+
+
+def lands(held: int | None, version: int | None) -> bool:
+    """Whether a write carrying `version` lands on a key holding `held`: one with no version always does; one with
+    a version does unless the key holds a newer one."""
+    return version is None or held is None or held <= version
 
 
 class Backend(Protocol):
@@ -58,8 +68,10 @@ class Backend(Protocol):
         """Every (key, value) whose key starts with `prefix`, ordered by key ("" is every key)."""
         ...
 
-    def write(self, writes: Sequence[Write]) -> None:
-        """Apply every write, in order, all or none: a reader never sees some of them without the rest."""
+    def write(self, writes: Sequence[Write]) -> list[bool]:
+        """Apply every write that lands, in order, all or none: a reader never sees some of them without the rest.
+        A write with a `version` lands only when no version the key holds is newer, decided in the same
+        transaction; a delete with a version keeps it. Answers, for each write in order, whether it landed."""
         ...
 
 
@@ -75,6 +87,7 @@ class MemoryBackend:
 
     def __init__(self) -> None:
         self._held: dict[tuple[str, str], str] = {}
+        self._versions: dict[tuple[str, str], int] = {}
         self._lock = threading.Lock()
 
     def get(self, collection: str, key: str) -> str | None:
@@ -86,17 +99,30 @@ class MemoryBackend:
             found = [(k, v) for (c, k), v in self._held.items() if c == collection and k.startswith(prefix)]
         return sorted(found)
 
-    def write(self, writes: Sequence[Write]) -> None:
+    def write(self, writes: Sequence[Write]) -> list[bool]:
         with self._lock:
+            applied: list[bool] = []
             for one in writes:
+                key = (one.collection, one.key)
+                landed = lands(self._versions.get(key), one.version)
+                applied.append(landed)
+                if not landed:
+                    continue
+                if one.version is not None:
+                    self._versions[key] = one.version
                 if isinstance(one, Put):
-                    self._held[(one.collection, one.key)] = one.value
+                    self._held[key] = one.value
                 else:
-                    self._held.pop((one.collection, one.key), None)
+                    self._held.pop(key, None)
+            return applied
 
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS minutehand_store(
   collection TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (collection, key))"""
+VERSIONS = """CREATE TABLE IF NOT EXISTS minutehand_store_version(
+  collection TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (collection, key))"""
+"""Each key's version, beside its value, so a delete keeps it; a file written before versions existed gains the table
+the first time it is opened."""
 
 
 class SqliteBackend:
@@ -115,6 +141,7 @@ class SqliteBackend:
             db = sqlite3.connect(self.path, timeout=self._timeout, isolation_level=None, check_same_thread=False)
             db.execute("PRAGMA journal_mode=WAL")
             db.execute(SCHEMA)
+            db.execute(VERSIONS)
             self._db = db
         return self._db
 
@@ -140,12 +167,27 @@ class SqliteBackend:
             )
         return [(str(k), str(v)) for k, v in rows]
 
-    def write(self, writes: Sequence[Write]) -> None:
+    def write(self, writes: Sequence[Write]) -> list[bool]:
         with self._lock:
             db = self._open()
             db.execute("BEGIN IMMEDIATE")
+            applied: list[bool] = []
             try:
                 for one in writes:
+                    row = db.execute(
+                        "SELECT version FROM minutehand_store_version WHERE collection=? AND key=?",
+                        (one.collection, one.key),
+                    ).fetchone()
+                    landed = lands(None if row is None else int(row[0]), one.version)
+                    applied.append(landed)
+                    if not landed:
+                        continue
+                    if one.version is not None:
+                        db.execute(
+                            "INSERT INTO minutehand_store_version(collection, key, version) VALUES (?, ?, ?) "
+                            "ON CONFLICT(collection, key) DO UPDATE SET version=excluded.version",
+                            (one.collection, one.key, one.version),
+                        )
                     if isinstance(one, Put):
                         db.execute(
                             "INSERT INTO minutehand_store(collection, key, value) VALUES (?, ?, ?) "
@@ -160,6 +202,7 @@ class SqliteBackend:
                 db.execute("ROLLBACK")
                 raise
             db.execute("COMMIT")
+            return applied
 
     def close(self) -> None:
         with self._lock:
@@ -190,14 +233,24 @@ class MinutehandBackend:
             found.append((str(one["key"]), _canonical(one["value"] if "value" in one else None)))
         return found
 
-    def write(self, writes: Sequence[Write]) -> None:
-        said: list[object] = []
+    def write(self, writes: Sequence[Write]) -> list[bool]:
+        said: list[dict[str, object]] = []
         for one in writes:
             if isinstance(one, Put):
                 said.append({"op": "put", "collection": one.collection, "key": one.key, "value": json.loads(one.value)})
             else:
                 said.append({"op": "delete", "collection": one.collection, "key": one.key})
-        _wire.call("store", {"op": "write", "writes": said})
+            if one.version is not None:
+                said[-1]["version"] = one.version
+        answer = _object(_wire.call("store", {"op": "write", "writes": said}))
+        applied = answer["applied"] if "applied" in answer else None
+        if (
+            not isinstance(applied, list)
+            or len(applied) != len(writes)
+            or not all(isinstance(a, bool) for a in applied)
+        ):
+            raise _wire.MinutehandRefused(f"Minutehand answered a write without saying which landed: {answer!r}")
+        return [a is True for a in applied]
 
 
 def _object(answer: object) -> dict[str, object]:
@@ -258,12 +311,21 @@ class Store:
         found = self._where().get(self.name, _key(key))
         return default if found is None else json.loads(found)
 
-    def put(self, key: str, value: object) -> None:
-        """Keep `value`, any JSON value, under `key`, replacing what was there."""
-        self._where().write([Put(self.name, _key(key), _canonical(value))])
+    def put(self, key: str, value: object, *, version: int | None = None) -> bool:
+        """Keep `value`, any JSON value, under `key`, replacing what was there. With `version`, a JSON integer (a
+        row's version, or its update time in microseconds), only when no version the key holds is newer: two
+        processes mirroring the same record after their own commits keep the newer, whichever arrives last. Answers
+        whether it landed."""
+        one = Put(self.name, _key(key), _canonical(value), _version(version))
+        [landed] = _applied(self._where().write([one]), [one])
+        return landed
 
-    def delete(self, key: str) -> None:
-        self._where().write([Delete(self.name, _key(key))])
+    def delete(self, key: str, *, version: int | None = None) -> bool:
+        """Remove `key`. With `version`, only when no version the key holds is newer; the key keeps the version, so
+        an older put arriving later does not bring it back. Answers whether it landed."""
+        one = Delete(self.name, _key(key), _version(version))
+        [landed] = _applied(self._where().write([one]), [one])
+        return landed
 
     def list(self, prefix: str = "") -> list[tuple[str, object]]:
         """Every (key, value) whose key starts with `prefix`, ordered by key."""
@@ -282,11 +344,11 @@ class Store:
     async def aget(self, key: str, default: object = None) -> object:
         return await _thread(lambda: self.get(key, default))
 
-    async def aput(self, key: str, value: object) -> None:
-        await _thread(lambda: self.put(key, value))
+    async def aput(self, key: str, value: object, *, version: int | None = None) -> bool:
+        return await _thread(lambda: self.put(key, value, version=version))
 
-    async def adelete(self, key: str) -> None:
-        await _thread(lambda: self.delete(key))
+    async def adelete(self, key: str, *, version: int | None = None) -> bool:
+        return await _thread(lambda: self.delete(key, version=version))
 
     async def alist(self, prefix: str = "") -> list[tuple[str, object]]:
         return await _thread(lambda: self.list(prefix))
@@ -301,20 +363,22 @@ class Batch:
     def __init__(self, store: Store) -> None:
         self._store = store
         self._writes: list[Write] = []
+        self.applied: list[bool] = []
+        """Once the block has ended: for each write in order, whether it landed."""
 
-    def put(self, key: str, value: object, *, collection: str | None = None) -> None:
-        self._writes.append(Put(self._in(collection), _key(key), _canonical(value)))
+    def put(self, key: str, value: object, *, collection: str | None = None, version: int | None = None) -> None:
+        self._writes.append(Put(self._in(collection), _key(key), _canonical(value), _version(version)))
 
-    def delete(self, key: str, *, collection: str | None = None) -> None:
-        self._writes.append(Delete(self._in(collection), _key(key)))
+    def delete(self, key: str, *, collection: str | None = None, version: int | None = None) -> None:
+        self._writes.append(Delete(self._in(collection), _key(key), _version(version)))
 
     def _in(self, collection: str | None) -> str:
         return self._store.name if collection is None else Store(collection).name
 
-    def commit(self) -> None:
+    def commit(self) -> list[bool]:
         writes, self._writes = self._writes, []
-        if writes:
-            self._store._where().write(writes)  # pyright: ignore[reportPrivateUsage]
+        self.applied = _applied(self._store._where().write(writes), writes) if writes else []  # pyright: ignore[reportPrivateUsage]
+        return self.applied
 
     def __enter__(self) -> Batch:
         return self
@@ -339,6 +403,27 @@ def configure(backend: Backend) -> None:
     """Where the agent's memory lives in production, for every store that names no backend of its own. Ignored while
     MINUTEHAND_ON is set: the run's memory is used instead, and `backend` is never called."""
     _Configured.backend = backend
+
+
+def _version(version: object) -> int | None:
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int)):
+        raise ValueError(
+            f"a write's version is an integer (a row's version, or its update time in microseconds), not {version!r}: "
+            "an ISO 8601 instant or any other text is refused, since two writes in one millisecond would tie"
+        )
+    return version
+
+
+def _applied(answer: object, writes: Sequence[Write]) -> list[bool]:
+    """What a backend's `write` answered, held to the contract: one bool per write. An adapter written before
+    versions existed answers None, and is refused by name rather than read as every write landing."""
+    if not isinstance(answer, list) or len(answer) != len(writes) or not all(isinstance(a, bool) for a in answer):
+        raise TypeError(
+            f"a backend's write answers one bool per write, whether it landed, not {answer!r}: an adapter written "
+            "before versions existed returns None, and one that keeps no versions must refuse a write that carries "
+            'one rather than land it unchecked (docs/agent-contract.md, "Writing an adapter")'
+        )
+    return [a is True for a in answer]
 
 
 def _key(key: str) -> str:

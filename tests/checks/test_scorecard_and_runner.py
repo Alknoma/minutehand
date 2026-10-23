@@ -20,13 +20,14 @@ CHECKS = {
     "agent_contract_changed",
     "around_proxy",
     "assessments",
+    "due_records",
     "expectations",
     "items",
     "near_miss_name",
     "unmatched_call",
 }
 """Minutehand's own: the scenario's words (expectations, protected names), the run's integrity, the reader of the
-team's rules, and the assessment of the agent's effects against the declared world (`items`). None of them holds an
+team's rules, what the run read of the agent's own due records, and the assessment of the agent's effects against the declared world (`items`). None of them holds an
 opinion of how an agent should behave that the scenario does not declare."""
 
 

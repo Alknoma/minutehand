@@ -36,7 +36,7 @@ from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, Remembered, write_checkpoint
-from minutehand.application.memory import memory_of, remember, store_digest
+from minutehand.application.memory import Versions, memory_of, remember, store_digest
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.memory import MemoryPut, MemoryWrite
 from minutehand.domain.scenario import Person, Scenario, SignIn
@@ -261,13 +261,14 @@ def remembered(key: int) -> MemoryPut:
 async def run_c(directory: Path) -> Measured:
     clock = RunClock(START)
     store = SqliteStore(directory / "world.db", "c", clock)
-    remember(store, MemoryWrite(writes=[remembered(n) for n in range(300)]))
+    versions = Versions()
+    remember(store, MemoryWrite(writes=[remembered(n) for n in range(300)]), versions)
     mid_seq = 0
     began = time.perf_counter()
     for wake in range(1, 201):
         clock.begin_wake()
         clock.jump(clock.now() + timedelta(hours=1))
-        remember(store, MemoryWrite(writes=[remembered((wake * 3 + n) % 300) for n in range(3)]))
+        remember(store, MemoryWrite(writes=[remembered((wake * 3 + n) % 300) for n in range(3)]), versions)
         seq = write_checkpoint(
             store,
             Checkpoint(

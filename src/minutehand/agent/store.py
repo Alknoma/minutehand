@@ -12,6 +12,7 @@
     with store.batch() as b:                                # all or none
         b.put("asks/sam", {"status": "confirmed"})
         b.delete("asks/rosa")
+    store.put("jobs/7", {"run_at": "..."}, version=41)      # lands unless the key holds a newer version: True/False
     jobs = store.collection("jobs")                         # a namespace of its own, with the same calls
     await store.aget("asks/sam")                            # every call has an async twin: aput, alist, ...
 
@@ -49,6 +50,7 @@ from minutehand.agent._store import (
     Store,
     Write,
     configure,
+    lands,
 )
 from minutehand.agent._wire import MinutehandRefused, MinutehandUnreachable
 
@@ -75,6 +77,7 @@ __all__ = [
     "configure",
     "delete",
     "get",
+    "lands",
     "list",
     "put",
     "query",

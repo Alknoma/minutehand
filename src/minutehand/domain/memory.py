@@ -6,16 +6,27 @@ its checkpoint, starts from exactly the memory the parent had there. Each read i
 event with no version when it finds something new (`application.memory.Reads`). A run
 starts from the scenario's `memory:` (`SeededMemory`), written as actor SCENARIO before the first wake.
 
-The receiver takes the agent's calls (`StoreCall`) as JSON on `/minutehand/agent/store` and
-`/minutehand/agent/wake`; `docs/agent-contract.md` is the wire, for an agent not written in Python.
+The receiver takes the agent's calls (`StoreCall`) as JSON on `/minutehand/agent/store`; `docs/agent-contract.md`
+is the wire, for an agent not written in Python.
+
+A put or delete may carry a `version`, a JSON integer: it lands only when no version the key already has is newer
+(an equal one lands), and the answer says, write by write, whether it did. Several processes of one agent that each
+mirror a record after their own commit can send two writes out of order; the version keeps the newer. A write with no
+version always lands, and leaves the key's version as it was.
+
+The agent file may name where its due records are (`DueRecords`): keys of its memory whose field holds an instant
+its own scheduler acts on. The run reads them as they stand whenever it decides its next jump
+(`application.due_records`).
 """
 
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+import re
+from datetime import datetime, timedelta
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, JsonValue
+from pydantic import AwareDatetime, BeforeValidator, Field, JsonValue, StrictInt, model_validator
 
 from minutehand.domain.model import Model
 
@@ -63,17 +74,38 @@ class MemoryList(Model):
     prefix: str = ""
 
 
+def _integer_version(version: object) -> object:
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int)):
+        raise ValueError(
+            f"a write's version is a JSON integer (a row's version, or its update time in microseconds), not "
+            f"{version!r}: an ISO 8601 instant or any other text is refused, since two writes in one millisecond "
+            "would tie"
+        )
+    return version
+
+
+Version = Annotated[StrictInt, BeforeValidator(_integer_version)]
+"""A write's version: a JSON integer (a row's version, or its update time in microseconds), never a string or a
+float. An ISO 8601 instant is refused: two writes in one millisecond would tie."""
+
+
 class MemoryPut(Model):
     op: Literal["put"] = "put"
     collection: Collection = DEFAULT_COLLECTION
     key: Key
     value: JsonValue
+    version: Version | None = Field(
+        default=None, description="Lands only when no version the key holds is newer; None: always lands"
+    )
 
 
 class MemoryDelete(Model):
     op: Literal["delete"] = "delete"
     collection: Collection = DEFAULT_COLLECTION
     key: Key
+    version: Version | None = Field(
+        default=None, description="Lands only when no version the key holds is newer; None: always lands"
+    )
 
 
 MemoryWriteOne = Annotated[MemoryPut | MemoryDelete, Field(discriminator="op")]
@@ -108,6 +140,79 @@ class Listed(Model):
 
 
 class Written(Model):
-    """The answer to a write: the seq of its last entry in the run's log."""
+    """The answer to a write: the seq of its last entry in the run's log (the log's head when none landed), and
+    for each write in order whether it landed."""
 
     seq: int
+    applied: list[bool]
+
+
+Path = Annotated[
+    str, Field(pattern=r"^[^.\s]+(\.[^.\s]+)*$", description="A field, or a dotted path into nested objects")
+]
+
+
+class DueRecords(Model):
+    """Where the agent keeps due records in its memory: every key of `collection` under `prefix` whose value is an
+    object with each field of `where` equal to the value given there, holding in `field` an ISO 8601 instant with an
+    offset. Absent or null in `field` is not due. The agent's own scheduler polls its own records for what has come
+    due; this is the agent's projection of them, which the run reads to know when the next one falls due."""
+
+    collection: Collection = DEFAULT_COLLECTION
+    prefix: str = ""
+    where: dict[Path, JsonValue] = Field(default={}, description="Equality filters, by field or dotted path")
+    field: Path = Field(description="The field holding when the record falls due")
+    poll: timedelta = Field(
+        default=timedelta(0),
+        ge=timedelta(0),
+        description="How long the agent's own poller may take to find a record after it falls due: the wake is that "
+        "long after the record's instant, the latest moment its poller would have acted",
+    )
+
+    @model_validator(mode="after")
+    def _field_is_not_filtered(self) -> Self:
+        if self.field in self.where:
+            raise ValueError(
+                f"due record field {self.field!r} is also in `where`: a record whose due time must equal one value "
+                "is not a due time; name the field it falls due by in `field` and filter on another"
+            )
+        return self
+
+
+class RecordedDue(Model):
+    """One due record the run read: which declaration it was read by, where it is, and the instant it held."""
+
+    source: int = Field(ge=0, description="Its declaration's position in the agent file's `due`")
+    collection: str
+    key: str
+    at: AwareDatetime = Field(description="The instant its field held")
+
+
+def field_at(value: JsonValue, path: str) -> tuple[bool, JsonValue]:
+    """(True, the value at the dotted `path`), or (False, None) when it is not there."""
+    here = value
+    for part in path.split("."):
+        if not isinstance(here, dict) or part not in here:
+            return False, None
+        here = here[part]
+    return True, here
+
+
+def matches(value: JsonValue, where: dict[str, JsonValue]) -> bool:
+    """Whether `value` is an object with each field of `where` equal to the value given there (`store.query`)."""
+    return isinstance(value, dict) and all(field_at(value, f) == (True, w) for f, w in where.items())
+
+
+_INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+
+
+def instant(found: JsonValue) -> datetime | None:
+    """The instant an ISO 8601 text with an offset names; None for anything else (a date alone, a time with no
+    offset, a number)."""
+    if not isinstance(found, str) or not _INSTANT.match(found):
+        return None
+    try:
+        moment = datetime.fromisoformat(found)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None

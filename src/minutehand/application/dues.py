@@ -20,6 +20,7 @@ from minutehand.application.checkpoint import (
     PendingDirection,
     PendingHappening,
     PendingMachine,
+    PendingRecord,
     PendingService,
     PendingTransition,
 )
@@ -37,6 +38,8 @@ def source_of(pending: Pending) -> DueSource:
         return DueSource.HAPPENING
     if isinstance(pending, PendingMachine):
         return DueSource.MACHINE
+    if isinstance(pending, PendingRecord):
+        return DueSource.RECORDED
     if isinstance(pending, PendingTransition):
         return DueSource.REPLY if pending.due.kind is DueKind.PERSON_REPLY else DueSource.TRANSITION
     if isinstance(pending, PendingService):
@@ -117,6 +120,7 @@ class Dues:
             fault=fault,
             asked_for=asked_for,
             drawn=drawn,
+            records=pending.records if isinstance(pending, PendingRecord) else [],
         )
         self._write(ref, entry, Operation.CREATE)
         self._open[key_of(pending.due)] = (ref, entry)

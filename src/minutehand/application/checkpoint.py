@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, Field
 
 from minutehand.domain.clock import Due
+from minutehand.domain.memory import RecordedDue
 from minutehand.domain.scenario import Model, ProviderKey
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Operation
 from minutehand.ports.store import Store
@@ -34,6 +35,15 @@ class PendingTransition(Model):
     kind: Literal["transition"] = "transition"
     due: Due
     pending: EntityRef = Field(description="The people engine's record of the item (`EntityKind.PENDING`)")
+
+
+class PendingRecord(Model):
+    """The earliest of the agent's due records, as its memory held them when the run last decided its next jump
+    (`application.due_records`): every record falling due at that moment."""
+
+    kind: Literal["record"] = "record"
+    due: Due
+    records: list[RecordedDue] = Field(min_length=1)
 
 
 class PendingMachine(Model):
@@ -91,6 +101,7 @@ Pending = Annotated[
     PendingHappening
     | PendingDirection
     | PendingBooking
+    | PendingRecord
     | PendingMachine
     | PendingTransition
     | PendingService

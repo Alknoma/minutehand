@@ -9,8 +9,9 @@ the agent's own database through the adapter the agent configured (`store.config
 (`minutehand run` sets MINUTEHAND_ON and MINUTEHAND_AGENT_URL) every write is recorded in the run's log and every
 read answered from the run's state, so each run and each fork has a memory of its own and the agent's own database
 is never opened. Nothing else is asked of the agent, and nothing else of Minutehand's runs in it: what it comes back
-to by itself it books with a scheduler it calls, which the run keeps in its log. A date in `store` is the agent's
-data, and wakes nothing.
+to by itself it books with a scheduler it calls, which the run keeps in its log, or keeps as due records in `store`,
+which the agent file names (`due:`) and the run reads as they stand each time it decides its next jump. Any other
+date in `store` is the agent's data, and wakes nothing.
 
 This package imports nothing but the standard library and nothing else of Minutehand's, so an agent pays nothing for
 it in production; `tests/agent/test_agent_package.py` holds it to that.

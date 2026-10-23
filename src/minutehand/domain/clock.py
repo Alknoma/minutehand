@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from pydantic import AwareDatetime, Field
 
+from minutehand.domain.memory import RecordedDue
 from minutehand.domain.scenario import DelayRange, DispatchFault, Model, PlannedBy, Window
 
 
@@ -56,6 +57,7 @@ class DueSource(StrEnum):
     """Who put an entry into the run loop's table of what is due next."""
 
     BOOKED = "booked"  # the agent's booking with a scheduler provider
+    RECORDED = "recorded"  # a due record the agent keeps in its memory, read as it stood (`AgentUnderTest.due`)
     REPLY = "reply"  # a person's reply, decided and on its way
     HAPPENING = "happening"  # something the scenario has a person do by themselves
     DIRECTION = "direction"  # something the scenario's owner says to the agent
@@ -68,7 +70,7 @@ class DueSource(StrEnum):
 PLANNED_BY = {DueSource.BOOKED: PlannedBy.BOOKED}
 """The agent's own wakes a scheduler delivers, by how it asked for them: what a dispatch rule can be about."""
 
-AGENT_SOURCES = frozenset(PLANNED_BY)
+AGENT_SOURCES = frozenset({*PLANNED_BY, DueSource.RECORDED})
 """The entries that are the agent's own plan to come back to work, whoever else may wake it first."""
 
 
@@ -106,6 +108,9 @@ class DueEntry(Model):
     )
     drawn: Drawn | None = Field(
         default=None, description="A person's reply: the window or delay its moment was drawn from, and the draw"
+    )
+    records: list[RecordedDue] = Field(
+        default=[], description="A due record's entry: every record read as falling due at its moment, as it stood"
     )
 
     def open_at(self, moment: datetime) -> bool:
