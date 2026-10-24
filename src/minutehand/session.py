@@ -59,6 +59,7 @@ from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
+from minutehand.adapters.store.sharing import refuse_written_elsewhere
 from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
@@ -1132,6 +1133,7 @@ class _ReadOnlyStore(SqliteStore):
 
 
 def _read_only(path: Path) -> sqlite3.Connection:
+    refuse_written_elsewhere(path)
     return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
 
 

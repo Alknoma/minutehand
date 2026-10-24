@@ -1,7 +1,7 @@
 """The command line's one converter (`cli.main`): a refusal it knows keeps its message and exit code; anything else
-is Minutehand's own error, one line naming it and where its traceback was written, exit 4, and the traceback on
-screen only with --debug. Before, such an error ended the command in a raw Python traceback, exit 1, which reads as
-"a check failed"."""
+is Minutehand's own error, one line naming it and where under the state directory its traceback was kept, exit 4, and
+the traceback on screen only with --debug. Before, such an error ended the command in a raw Python traceback, exit 1,
+which reads as "a check failed"."""
 
 from __future__ import annotations
 
@@ -49,7 +49,9 @@ def test_each_kind_of_failure_is_answered_by_the_command_with_its_own_line_and_e
     assert "ValidationError" in last and "the traceback is in " in last
     written = Path(last.rsplit("the traceback is in ", 1)[1])
     assert written.is_file() and "Traceback (most recent call last)" in written.read_text(encoding="utf-8")
-    written.unlink()
+    # kept where the runs are, not in the system's temporary directory: a container whose state is mounted from
+    # outside keeps it when the container is gone. Mutation: the temporary directory again.
+    assert written.parent == state / cli.INTERNAL_ERRORS
     assert ("Traceback (most recent call last)" in printed) is ("--debug" in argv)
     if "--debug" not in argv:
         assert printed.count("\n") == 1, "one line, and nothing else"

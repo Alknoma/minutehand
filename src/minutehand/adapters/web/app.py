@@ -453,6 +453,7 @@ def _row(state: Path, entry: Logged, children: list[str]) -> RunRow:
     )
 
 
-def serve(state: Path, *, port: int, prices: Prices | None = None) -> None:
-    """Serve the viewer on 127.0.0.1 until interrupted."""
-    uvicorn.run(create_app(state, prices), host=HOST, port=port, log_level="warning")
+def serve(state: Path, *, port: int, host: str = HOST, prices: Prices | None = None) -> None:
+    """Serve the viewer on `host` (127.0.0.1 unless told) until interrupted. A viewer in a container listens on
+    0.0.0.0, so the port Docker publishes reaches it."""
+    uvicorn.run(create_app(state, prices), host=host, port=port, log_level="warning")
