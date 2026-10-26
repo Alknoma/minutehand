@@ -1,10 +1,16 @@
 """Code search's `q`: the terms and qualifiers it is made of, and whether a file matches them.
 
-Answered, in any combination: bare terms and quoted phrases (all must match, each as whole tokens, in any case),
-`AND` between them, and the qualifiers `repo:` (repeatable: any of them), `user:`, `org:`, `language:`, `path:`,
-`filename:`, `extension:` and `in:` (`file`, `path` or both). Refused with GitHub's 422, because they are not
-evaluated here: `OR`, `NOT`, a negated qualifier (`-path:…`), and the qualifiers `size:`, `fork:`, `is:` and
-`symbol:`. A word with a colon that is none of these is searched for as text.
+The REST endpoint takes the legacy code search syntax, not the newer one of GitHub's web search
+(https://docs.github.com/en/search-github/searching-on-github/searching-code). Answered, in any combination: bare
+terms and quoted phrases (all must match, each as whole tokens, in any case), `AND` between them, and the
+qualifiers `repo:` (repeatable: any of them), `user:`, `org:`, `language:`, `path:`, `filename:`, `extension:`,
+`in:` (`file`, `path` or both; the contents alone when it is left out), `size:` (the file's bytes: `n`, `>n`,
+`>=n`, `<n`, `<=n`, `n..n`, `n..*` or `*..n`) and `fork:` (`true` or `only`; no repository here is a fork). A word
+with a colon that is none of these is searched for as text. A query needs a term unless it names a `filename:`.
+
+Refused by name (`NotServed`), because the legacy syntax documents nothing of what they do: `OR`, `NOT`, a negated
+qualifier (`-path:…`), `is:` and `symbol:` (each documented only for the newer syntax or for search other than
+code), a `size:` or `fork:` value other than those above, and a second `size:`.
 
 Tokens are what the index sees: runs of letters, digits and underscores, folded to lower case. `check` does not
 match `checkout`, and `.`, `/`, `(` and the like separate tokens rather than being searched for.
@@ -13,17 +19,28 @@ match `checkout`, and `.`, `/`, `(` and the like separate tokens rather than bei
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from minutehand.adapters.providers.github import content, wire
+from minutehand.domain.errors import NotServed
 
 SECTION = "/search/search#search-code"
 _PART = re.compile(r'-?[A-Za-z_]+:"[^"]*"|"[^"]*"|\S+')
 _QUALIFIER = re.compile(r"^(-?)([A-Za-z_]+):(.+)$")
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
+_SIZE = re.compile(r"^(?:(>=|<=|>|<)(\d+)|(\d+)\.\.(\d+|\*)|\*\.\.(\d+)|(\d+))$")
 
-ANSWERED = {"repo", "user", "org", "language", "path", "filename", "extension", "in"}
-REFUSED = {"size", "fork", "is", "symbol"}
+ANSWERED = {"repo", "user", "org", "language", "path", "filename", "extension", "in", "size", "fork"}
+NEWER_SYNTAX = {"is", "symbol"}
+# `size:`'s comparisons, GitHub's own spelling, as inclusive bounds in bytes.
+_COMPARED: dict[str, Callable[[int], tuple[int, int | None]]] = {
+    ">": lambda n: (n + 1, None),
+    ">=": lambda n: (n, None),
+    "<": lambda n: (0, n - 1),
+    "<=": lambda n: (0, n),
+}
+FORKS = {"true", "only"}
 SCOPES = {"file", "path"}
 
 # The language names and aliases `language:` takes, folded, to linguist's name.
@@ -64,10 +81,18 @@ class CodeQuery:
     paths: list[str] = field(default_factory=list)
     filenames: list[str] = field(default_factory=list)
     extensions: list[str] = field(default_factory=list)
-    scopes: set[str] = field(default_factory=lambda: set(SCOPES))
+    scopes: set[str] = field(default_factory=lambda: {"file"})
+    sizes: tuple[int, int | None] | None = None
+    forks_only: bool = False
 
     def matches(self, file: wire.StoredFile, text: str) -> bool:
         name = file.path.rsplit("/", 1)[-1].lower()
+        if self.forks_only:  # no repository here is a fork (`RepositoryOut.fork`)
+            return False
+        if self.sizes is not None:
+            low, high = self.sizes
+            if file.size < low or (high is not None and file.size > high):
+                return False
         if self.languages and (content.language_of(file.path) or "").lower() not in self.languages:
             return False
         if self.paths and not any(_in_path(file.path, p) for p in self.paths):
@@ -96,26 +121,35 @@ def _holds(seen: list[str], term: list[str]) -> bool:
 
 
 def parse(q: str) -> CodeQuery:
-    """`q` as terms and qualifiers, or GitHub's 422 for what it cannot be read as."""
+    """`q` as terms and qualifiers, GitHub's 422 for what it cannot be read as, or `NotServed` naming what it holds
+    that the legacy syntax does not document."""
     if not q.strip():
         raise wire.validation_failed(SECTION, wire.FieldError(resource="Search", field="q", code="missing"))
     query = CodeQuery()
     for part in _PART.findall(q):
         if part in ("OR", "NOT"):
-            raise _refused(f"The {part} operator is not answered by this GitHub; search for each term separately.")
+            raise NotServed(
+                f"the {part} operator in q: the legacy code search syntax this endpoint takes documents none"
+            )
         if part == "AND":
             continue
         qualifier = _QUALIFIER.match(part)
-        if qualifier is not None and qualifier.group(2).lower() in ANSWERED | REFUSED:
+        if qualifier is not None and qualifier.group(2).lower() in ANSWERED | NEWER_SYNTAX:
             negated, key, value = qualifier.group(1), qualifier.group(2).lower(), qualifier.group(3).strip('"')
-            if negated or key in REFUSED:
-                raise _refused(f"The qualifier {part} is not answered by this GitHub.")
+            if negated:
+                raise NotServed(
+                    f"the negated qualifier {part} in q: the legacy code search syntax documents no negation"
+                )
+            if key in NEWER_SYNTAX:
+                raise NotServed(
+                    f"the qualifier {part} in q: it is the newer code search syntax's, not the legacy one's"
+                )
             _qualify(query, key, value)
             continue
         found = tokens(part.strip('"'))
         if found:
             query.terms.append(found)
-    if not query.terms:
+    if not query.terms and not query.filenames:
         raise _refused("Must include at least one search term.")
     return query
 
@@ -136,11 +170,34 @@ def _qualify(query: CodeQuery, key: str, value: str) -> None:
         query.filenames.append(lowered)
     elif key == "extension":
         query.extensions.append(lowered.lstrip("."))
+    elif key == "size":
+        query.sizes = _size(query, value)
+    elif key == "fork":
+        if lowered not in FORKS:
+            raise NotServed(f"fork:{value} in q: the legacy code search syntax documents only fork:true and fork:only")
+        query.forks_only = lowered == "only"
     else:
         scopes = {s.strip() for s in lowered.split(",")}
         if not scopes or not scopes <= SCOPES:
             raise _refused(f"The in qualifier takes file, path or both, not {value}.")
         query.scopes = scopes
+
+
+def _size(query: CodeQuery, value: str) -> tuple[int, int | None]:
+    """`size:`'s bounds in bytes, both inclusive, with `None` for no upper one."""
+    if query.sizes is not None:
+        raise NotServed(f"a second size qualifier, size:{value}, in q: the legacy syntax documents one")
+    found = _SIZE.match(value)
+    if found is None:
+        raise NotServed(f"size:{value} in q: the legacy syntax documents n, >n, >=n, <n, <=n, n..n, n..* and *..n")
+    above, bound, low, high, upto, exactly = found.groups()
+    if exactly is not None:
+        return int(exactly), int(exactly)
+    if upto is not None:
+        return 0, int(upto)
+    if low is not None:
+        return int(low), None if high == "*" else int(high)
+    return _COMPARED[above](int(bound))
 
 
 @dataclass(frozen=True)

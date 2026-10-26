@@ -30,11 +30,11 @@ async def _paths(hub: Hub, q: str, token: str | None = None) -> list[object]:
         (f"PAYMENT_TIMEOUT {LEDGER}", ["services/billing/config.py"]),
         (f"timeout {LEDGER}", []),  # TIMEOUT_SECONDS is one token: an underscore joins
         (f"retry_limit {LEDGER} path:services/billing", ["services/billing/config.py"]),
-        (f"retry {LEDGER} filename:retry.py", ["services/billing/retry.py"]),
+        (f"retry_with_backoff {LEDGER} filename:retry.py", ["services/billing/retry.py"]),
         (f"restart {LEDGER} extension:md", ["docs/guide.md"]),
         (f"billing {LEDGER} in:path", ["services/billing/config.py", "services/billing/retry.py"]),
-        (f"retry AND attempts {LEDGER}", ["services/billing/retry.py"]),
-        ("retry org:lanternworks", ["services/billing/retry.py", "plan.md"]),
+        (f"retry_with_backoff AND attempts {LEDGER}", ["services/billing/retry.py"]),
+        ("retry org:lanternworks", ["plan.md"]),  # retry.py says it only in its path
         ("billing user:iris-calder", ["README.md"]),
     ],
 )
@@ -60,7 +60,7 @@ async def test_results_are_paged_by_link_header(hub: Hub) -> None:
     async with hub.client() as http:
         first = await http.get("/search/code", params={"q": f"billing {LEDGER}", "per_page": 1})
         second = await http.get("/search/code", params={"q": f"billing {LEDGER}", "per_page": 1, "page": 2})
-    assert body(first)["total_count"] == 4 and len(body(first)["items"]) == 1  # type: ignore[arg-type]
+    assert body(first)["total_count"] == 3 and len(body(first)["items"]) == 1  # type: ignore[arg-type]
     assert 'page=2>; rel="next"' in first.headers["Link"]
     assert body(second)["items"] != body(first)["items"]
 
@@ -70,10 +70,6 @@ async def test_results_are_paged_by_link_header(hub: Hub) -> None:
     [
         "repo:lanternworks/ledger",
         "language:python",
-        "retry OR timeout repo:lanternworks/ledger",
-        "retry NOT timeout repo:lanternworks/ledger",
-        "retry -path:docs repo:lanternworks/ledger",
-        "retry size:>100 repo:lanternworks/ledger",
         "retry in:comments repo:lanternworks/ledger",
         "retry repo:ledger",
     ],
