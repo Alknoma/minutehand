@@ -41,7 +41,7 @@ dependencies = [
     "opentelemetry-proto>=1.27",
     "protobuf>=5",
     "uvicorn>=0.30",
-    "mcp>=1.2,<2",
+    "mcp>=1.2,<3",
     "zstandard>=0.23",
     "jsonschema>=4.20",
     # RFC 5545 recurrence rules, expanded for Google Calendar's recurring events.
@@ -62,7 +62,7 @@ grpc = ["grpcio>=1.60", "google-cloud-tasks>=2.16"]
 openai = ["pydantic-ai-slim[openai]>=2.59"]
 # anthropic 2.x (2026-10-21) turned BetaMessageParam into a union pydantic-ai 2.59 still instantiates; lifted when
 # pydantic-ai does (tests/model/test_pydantic_ai.py, the Anthropic stub, shows it).
-anthropic = ["pydantic-ai-slim[anthropic]>=2.59", "anthropic>=1.12.1,<2"]
+anthropic = ["pydantic-ai-slim[anthropic]>=2.59", "anthropic>=1.12.1,<3"]
 google = ["pydantic-ai-slim[google]>=2.59"]
 bedrock = ["pydantic-ai-slim[bedrock]>=2.59"]
 mistral = ["pydantic-ai-slim[mistral]>=2.59"]
@@ -107,12 +107,12 @@ dev = [
     "python-docx==1.2.0",
     "openpyxl>=3.1",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
-    "playwright==1.55.0",
+    "playwright==1.64.1",
     "youtrack-sdk==1.0.202607080632",
     "firebase-admin>=7.7.0",
     "google-cloud-recaptcha-enterprise>=1.34.0",
     "pydantic-ai-slim[openai,anthropic,google,bedrock,mistral,groq,cohere,xai]>=2.59",
-    "anthropic>=1.12.1,<2",  # as the `anthropic` extra pins it
+    "anthropic>=1.12.1,<3",  # as the `anthropic` extra pins it
     "pytest-split>=0.10",
 ]
 
