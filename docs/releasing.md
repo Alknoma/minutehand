@@ -35,16 +35,22 @@ asked with `--pre`.
    itself: "release it" approves releasing, not a number someone proposed. PyPI never takes a file name twice,
    yanked or deleted, so a number released without that answer is spent: 0.3.0 was released on 20 October 2026
    without it, deleted from PyPI, and the same code released as 0.2.11; the next minor became 0.3.1.
-1. On a branch from `integration-main`, set `version` in `pyproject.toml`, run `uv lock` (the lock records the
-   project's version), and open the pull request. CI's `build` job installs the wheel and runs the example.
-2. After it merges, promote `integration-main` to `main` as usual.
+1. Set `version` in `pyproject.toml`, and minutehand's own `version` line in `uv.lock`, in the pull request of the
+   last change going into the release, once the number is agreed: CI then checks that change and the package at
+   its version in one run. Only when nothing else is going in is the version a pull request of its own. Edit the
+   one line of `uv.lock` rather than running `uv lock`, which rewrites every marker when the local uv is not the
+   one that wrote the lock; `uv lock --check` says the lock still agrees.
+2. After it merges, promote `integration-main` to `main`.
 3. On GitHub, draft a Release: tag `v<version>` on `main`'s head, created by the Release itself; notes saying
    what changed for a user. Publish it.
 4. `release.yml` runs:
    - **build** — checks the tag against `pyproject.toml`; `uv build` (the sdist, then the wheel built from
-     it); `twine check --strict` on both; `pytest -m packaging tests/packaging/test_installed_package.py`, which
-     installs the wheel into a clean environment and runs the example, `--version`, and a pytest suite using the
-     plugin, and checks the sdist holds only tracked files and builds the identical wheel.
+     it); then `pytest -m packaging tests/packaging` on exactly those files (`MINUTEHAND_DIST`): the wheel holds
+     every file git tracks under `src/minutehand` and the sdist nothing git does not track; the wheel built from
+     the sdist is the wheel built from the tree; the metadata names the licence and passes `twine check --strict`;
+     the wheel installed into a clean environment answers `--version` with the version and imports nothing from
+     the dev group; a user's pytest suite finds the plugin by its entry point. CI's `build` job runs the same
+     tests on every pull request.
    - **pypi** — uploads exactly the files `build` checked, by Trusted Publishing from the `pypi` environment.
      No API token exists to leak. Add required reviewers to that environment and this job waits for one.
    - **image** — builds the `runtime` target of `Dockerfile` for `linux/amd64` and `linux/arm64` and pushes it.
