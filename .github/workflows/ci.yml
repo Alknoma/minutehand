@@ -157,11 +157,8 @@ jobs:
       - run: uv sync
       - name: Build the sdist and the wheel
         run: uv build
-      - name: Install the wheel into a clean environment and run the installed command
-        run: |
-          python3 -m venv "$RUNNER_TEMP/wheel"
-          "$RUNNER_TEMP/wheel/bin/python" -m pip install --disable-pip-version-check dist/*.whl
-          "$RUNNER_TEMP/wheel/bin/minutehand" --help
+      - name: The distributions as a user installs them (tests/packaging, as the release workflow runs it)
+        run: MINUTEHAND_DIST="$PWD/dist" uv run pytest -m packaging tests/packaging -p no:randomly
       - name: Build the image and run its entrypoint
         run: |
           docker build -t minutehand:ci .

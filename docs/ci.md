@@ -9,7 +9,7 @@ alknoma-cloud's CI: what held up there is kept, and what cost time there is desi
 |---|---|---|
 | `ci.yml` | every pull request, every push to `main` and `integration-main`, the merge queue | `static` (pyright; `ruff format --check`, `ruff check`; `python -m lints`; actionlint and zizmor over workflows and `.github/actions`), `tests` (the suite once, in four shards at the same time, Linux, Python 3.12), `browser` (the viewer in Chromium), `redirect` (transparent capture in a container), `build` (the package and the image, installed and run), `action` (the setup action by its local path: install, example, image), `sandbox` (the example agent's two worlds and the seal's probe in the real gVisor sandbox), `promotion`, `gate` |
 | `nightly.yml` | 03:17 UTC, and by hand | `repeat` (the suite five times in five orders, on Python 3.13), `newest-clients` (the suite against the newest release of every dependency) |
-| `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, `twine check`, the installed-package tests), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
+| `release.yml` | a GitHub Release being published, and nothing else | `build` (sdist and wheel, then `tests/packaging` on exactly those files, `twine check` among them), `pypi` (Trusted Publishing from the `pypi` environment), `image` (`ghcr.io/alknoma/minutehand`, amd64 and arm64). `docs/releasing.md` |
 
 Test settings, in `pyproject.toml`, apply locally and in CI alike:
 
