@@ -297,8 +297,9 @@ class Orchestrator:
         _refuse_unlanded_happenings(scenario, agent, services)
         self._scenario = scenario
         self._agent = agent
-        self._woken: set[due_records.Woken] = set()
-        """The due records the agent was woken for, with the instant each held: read from the log for a fork."""
+        self._woken: dict[due_records.Woken, due_records.Woke] = {}
+        """The due records the agent was woken for, with the instant each held, the last wake for it and what that
+        wake took: read from the log for a fork."""
         self._limit = wake_limit(scenario, agent)
         self._sandbox = sandbox
         self._store = store
@@ -417,7 +418,7 @@ class Orchestrator:
             raise RunRefused(f"the checkpoint counts {checkpoint.replies} replies; the store holds {held}")
         # a held call is a connection of the process that played the parent: the fork's agent makes its own calls
         self._dues.resume([p for p in checkpoint.pending if not isinstance(p, PendingCall)])
-        self._woken = due_records.woken(self._store)
+        self._woken = due_records.woken(self._store, self._agent.due)
         self._untaken = list(checkpoint.untaken)
         self._seen = self._store.head()
         self._watcher.look()
@@ -539,7 +540,7 @@ class Orchestrator:
             dispatched = self._dues.dispatch(jump.firing)
             for item in dispatched.delivered:
                 if isinstance(item, PendingRecord):
-                    self._woken |= due_records.woken_by(item)
+                    self._woken |= due_records.woken_by(item, self._clock.now())
             for item in dispatched.finished:
                 # a dropped occurrence of a booking is over undelivered: the schedule books its next, or completes
                 await self._services.schedulers[item.provider].advance_booking(item.ref, self._store, self._clock)
@@ -615,6 +616,7 @@ class Orchestrator:
         if not self._agent.due:
             return
         found = due_records.read(self._store, self._agent.due)
+        self._woken = due_records.ended(self._woken, found)
         nxt = due_records.next_due(found, self._agent.due, self._woken, self._clock.now())
         self._dues.replace(lambda p: isinstance(p, PendingRecord), nxt)
 

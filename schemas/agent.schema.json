@@ -710,7 +710,7 @@
     },
     "DueRecords": {
       "additionalProperties": false,
-      "description": "Where the agent keeps due records in its memory: every key of `collection` under `prefix` whose value is an\nobject with each field of `where` equal to the value given there, holding in `field` an ISO 8601 instant with an\noffset. Absent or null in `field` is not due. The agent's own scheduler polls its own records for what has come\ndue; this is the agent's projection of them, which the run reads to know when the next one falls due.",
+      "description": "Where the agent keeps due records in its memory: every key of `collection` under `prefix` whose value is an\nobject with each field of `where` equal to the value given there, holding in `field` an ISO 8601 instant with an\noffset. Absent or null in `field` is not due, and nor is a record one of whose `later` fields holds anything but\nabsent, null or an instant strictly later than the moment it would fall due. The agent's own scheduler polls its\nown records for what has come due; this is the agent's projection of them, which the run reads to know when the\nnext one falls due.",
       "properties": {
         "collection": {
           "default": "default",
@@ -723,6 +723,17 @@
           "pattern": "^[^.\\s]+(\\.[^.\\s]+)*$",
           "title": "Field",
           "type": "string"
+        },
+        "later": {
+          "default": [],
+          "description": "Fields each of which must be absent, null, or an ISO 8601 instant strictly later than the moment the record would fall due (a poller that takes a record only while another of its times has not passed)",
+          "items": {
+            "description": "A field, or a dotted path into nested objects",
+            "pattern": "^[^.\\s]+(\\.[^.\\s]+)*$",
+            "type": "string"
+          },
+          "title": "Later",
+          "type": "array"
         },
         "poll": {
           "default": "PT0S",
