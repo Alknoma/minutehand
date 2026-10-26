@@ -29,6 +29,8 @@ from typing import Concatenate
 import zstandard
 from pydantic import TypeAdapter
 
+from minutehand.adapters.store.sharing import Writing, refuse_written_elsewhere
+from minutehand.application.refusals import RunRefused
 from minutehand.domain.conversation import PersonCall
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import ProviderKey
@@ -209,6 +211,7 @@ _ROW_BYTES = {
 
 class SqliteStore:
     def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
+        refuse_written_elsewhere(path)
         self._attach(path, run_id, clock, sqlite3.connect(path, check_same_thread=False, timeout=_BUSY_SECONDS))
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
@@ -228,6 +231,8 @@ class SqliteStore:
         )
         self._db.commit()
         self._lineage = self._load_lineage()
+        self._wrote = self.head()
+        self._writing = Writing(path, self)
 
     def _attach(self, path: Path, run_id: str, clock: Clock, db: sqlite3.Connection) -> None:
         """What every store holds, however its connection was opened."""
@@ -248,6 +253,7 @@ class SqliteStore:
         with self._lock:
             self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._db.close()
+        self._writing.close()
 
     def _load_lineage(self) -> list[tuple[str, int | None, int | None, int | None]]:
         """This run and its ancestors, each with the highest event seq, the number of recorded calls and the
@@ -339,17 +345,27 @@ class SqliteStore:
     def apply(self, change: Change) -> WorldEvent:
         event = self._write(change)
         self._db.commit()
+        self._wrote = event.seq
         return event
 
     @_locked
     def apply_all(self, changes: Sequence[Change]) -> list[WorldEvent]:
         events = [self._write(change) for change in changes]
         self._db.commit()
+        if events:
+            self._wrote = events[-1].seq
         return events
 
     def _write(self, change: Change) -> WorldEvent:
-        """One change written in the open transaction, under the lock its caller holds."""
+        """One change written in the open transaction, under the lock its caller holds. A head below what this store
+        last committed is a file that lost committed transactions: nothing it holds can be trusted from there on."""
         seq = self.head() + 1
+        if seq <= self._wrote:
+            raise RunRefused(
+                f"the world file {self._path} lost events {seq}..{self._wrote} after they were written: another "
+                "machine opened it while this run wrote it (a container's file opened from its host, through a bind "
+                "mount; docs/containers.md, Reading a run while it is written)"
+            )
         sim = self._clock.now()
         wall = datetime.now(UTC)  # clock-lint: exempt wall_time is the one field that records the machine clock
         ref = change.entity
@@ -642,6 +658,7 @@ class SqliteStore:
         """Every answered person call of the world file at `other` kept here too, as calls of this run marked
         replayed-from-there, so an ask this file has not seen but `other` answered is replayed: a standing world
         reset keeps what its people's model already wrote. Answers how many were taken."""
+        refuse_written_elsewhere(other)
         source = sqlite3.connect(other)
         try:
             rows = source.execute("SELECT call FROM person_call WHERE answered=1 ORDER BY rowid").fetchall()
@@ -914,6 +931,7 @@ def _strings(span: ReceivedSpan, swap: Callable[[int, StringValue], StringValue]
 def truncate_log(path: Path) -> None:
     """Cut a world file's write-ahead log to nothing, once the run writing it is over: the log is a working file,
     not part of the record. Does nothing while another connection is reading the file."""
+    refuse_written_elsewhere(path)
     db = sqlite3.connect(path, timeout=_BUSY_SECONDS)
     try:
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")

@@ -46,6 +46,39 @@ Without `--format compose`, `minutehand env` prints `export` lines with the bund
 Ports already in use on the host make `run` fail with "the proxy could not listen on 0.0.0.0:<port>"; a stack
 that publishes 18080 or 28080 is common, so pick ports nothing else holds.
 
+## Minutehand itself in a container
+
+`minutehand run` can run in a container too (`ghcr.io/alknoma/minutehand:<version>`), its state directory mounted
+from the host (`-v "$PWD/.minutehand-runs:/state" -e MINUTEHAND_STATE=/state`). The runs it writes, and the
+traceback of any internal error (`<state>/internal-errors/`), are then kept on the host when the container is gone.
+
+### Reading a run while it is written
+
+A world file being written is read only from the machine writing it. SQLite's write-ahead log keeps its index in
+memory shared beside the file (`world.db-shm`), and that memory is shared only on one kernel. Docker Desktop's
+containers run in a VM: a host process that opens a container's file through the bind mount rebuilds that index from
+what it sees, and the container's run then writes over transactions it had committed. Observed: a container writing
+3000 events while the Mac opened the same file read-only lost 154 of them; with no reader, or a reader in a second
+container on the same VM, it lost none.
+
+So, while a run writes a world file, every store that writes it says so beside it (`world.db.writing-<token>`,
+naming its kernel, refreshed every 5 seconds), and every other opener on another kernel is refused, naming the file:
+`minutehand view`, `query`, `runs`, `gc` and the rest. A run that lost writes anyway stops at its next write with
+"the world file ... lost events A..B after they were written", not later with an unrelated error. A writer that died
+without closing (a killed container) stops saying so, and is taken as gone 30 seconds after its last refresh.
+
+To watch a run while it is written, run the viewer in a container on the same Docker VM, over the same mount, and
+publish its port:
+
+```bash
+docker run --rm -p 8081:8081 -v "$PWD/.minutehand-runs:/state" -e MINUTEHAND_STATE=/state \
+  ghcr.io/alknoma/minutehand:<version> view --host 0.0.0.0
+```
+
+then open `http://127.0.0.1:8081/`. `minutehand query`, `runs` and `findings` run the same way (`docker run --rm -v ...
+ghcr.io/alknoma/minutehand:<version> query <run> "<SQL>"`), or with `docker exec` in the run's own container. Once
+the run is over, the file is the host's to read.
+
 ## The NO_PROXY trap
 
 Docker Desktop writes this into the Docker client config, `~/.docker/config.json` (or `$DOCKER_CONFIG/config.json`):
