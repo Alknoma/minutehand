@@ -108,7 +108,7 @@ import tempfile
 import textwrap
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -645,6 +645,11 @@ def _parser() -> _Parser:
     migrating.add_argument("--write", action="store_true", help="write it back to the file; default: print it")
     view = commands.add_parser("view", help="serve the run viewer on 127.0.0.1")
     view.add_argument("--port", type=int, default=VIEW_PORT)
+    view.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="the address to listen on (default 127.0.0.1); 0.0.0.0 in a container, so a published port reaches it",
+    )
     priced(view)
     state(view)
     _library_parser(commands.add_parser("scenarios", help="the scenario library: list it, or write scenarios out"))
@@ -707,26 +712,55 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return _main(args_in)
     except Exception as error:
-        return _internal(error, debug=debug)
+        return _internal(error, debug=debug, state=_state_named(ours))
 
 
-def _internal(error: Exception, *, debug: bool) -> int:
-    """Minutehand's own error: its traceback written to a file, one line naming it, and the traceback on screen
-    too with --debug."""
+INTERNAL_ERRORS = "internal-errors"
+"""Where under the state directory each internal error's traceback is kept, beside `runs/`: a run in a container
+whose state directory is mounted from outside keeps it when the container is gone."""
+
+
+def _state_named(args_in: list[str]) -> Path:
+    """The state directory the command was given, or would use: `--state`, else the variable, else the default."""
+    for n, given in enumerate(args_in):
+        if given == "--state" and n + 1 < len(args_in):
+            return Path(args_in[n + 1])
+        if given.startswith("--state="):
+            return Path(given.removeprefix("--state="))
+    return Path(os.environ[STATE_VARIABLE] if STATE_VARIABLE in os.environ else DEFAULT_STATE)
+
+
+def _internal(error: Exception, *, debug: bool, state: Path) -> int:
+    """Minutehand's own error: its traceback written to a file under the state directory, one line naming it, and
+    the traceback on screen too with --debug. A state directory that cannot be written to leaves it in the system's
+    temporary directory instead."""
     written = "".join(traceback.format_exception(error))
-    with tempfile.NamedTemporaryFile(
-        "w", prefix="minutehand-internal-error-", suffix=".txt", delete=False, encoding="utf-8"
-    ) as kept:
-        kept.write(written)
+    kept = _keep_traceback(written, state)
     if debug:
         print(written, file=sys.stderr, end="")
     said = str(error).splitlines()[0] if str(error) else ""
     print(
         f"minutehand: internal error (a bug in minutehand, not in the agent or the scenario): "
-        f"{type(error).__name__}: {said}; the traceback is in {kept.name}",
+        f"{type(error).__name__}: {said}; the traceback is in {kept}",
         file=sys.stderr,
     )
     return INTERNAL_EXIT
+
+
+def _keep_traceback(written: str, state: Path) -> Path:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")  # clock-lint: exempt names the file by when it was written
+    try:
+        directory = state / INTERNAL_ERRORS
+        directory.mkdir(parents=True, exist_ok=True)
+        kept = directory / f"{stamp}-{os.getpid()}.txt"
+        kept.write_text(written, encoding="utf-8")
+        return kept
+    except OSError:
+        with tempfile.NamedTemporaryFile(
+            "w", prefix="minutehand-internal-error-", suffix=".txt", delete=False, encoding="utf-8"
+        ) as temporary:
+            temporary.write(written)
+        return Path(temporary.name)
 
 
 def _main(args_in: list[str]) -> int:
@@ -787,7 +821,7 @@ def _main(args_in: list[str]) -> int:
         if args.command == "mcp":
             return _mcp(state)
         if args.command == "view":
-            return _view(state, args.port, load_prices(args.prices) if args.prices is not None else None)
+            return _view(state, args.port, args.host, load_prices(args.prices) if args.prices is not None else None)
         if args.command == "serve":
             return _serve(args, state)
         if args.command == "checkpoints":
@@ -1447,11 +1481,11 @@ def _serve(args: argparse.Namespace, state: Path) -> int:
     return 0
 
 
-def _view(state: Path, port: int, prices: Prices | None) -> int:
+def _view(state: Path, port: int, host: str, prices: Prices | None) -> int:
     from minutehand.adapters.web import app as viewer  # loaded only for this command
 
-    print(f"minutehand: the viewer is at http://127.0.0.1:{port}/ (state {state})", file=sys.stderr)
-    viewer.serve(state, port=port, prices=prices)
+    print(f"minutehand: the viewer is at http://{host}:{port}/ (state {state})", file=sys.stderr)
+    viewer.serve(state, port=port, host=host, prices=prices)
     return 0
 
 
