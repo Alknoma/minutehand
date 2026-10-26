@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -216,3 +217,23 @@ def test_a_writer_marks_the_file_while_it_is_open_and_refreshes_the_mark(
     assert mark.stat().st_mtime > old + 1, "the mark was not refreshed while the store was open"
     store.close()
     assert not mark.exists(), "a closed store still says it writes the file"
+
+
+def test_a_store_collected_while_its_thread_holds_the_beats_lock_lets_go_of_its_mark(tmp_path: Path) -> None:
+    """A collection runs a store's finalizer in whichever thread it interrupts: inside `_Beat.add`, or the beat's own
+    snapshot, both under the lock. A shard of the suite hung for good on that, a server and its tests waiting."""
+    held = [SqliteStore(tmp_path / "world.db", "r", RunClock(T0))]
+    [mark] = tmp_path.glob("world.db.writing-*")
+
+    def collected_under_the_lock() -> None:
+        with sharing._Beat._lock:
+            held.clear()  # the store's last reference: its finalizer runs here, under the lock
+
+    # Mutation: a finalizer that takes the lock waits on its own thread for ever.
+    thread = threading.Thread(target=collected_under_the_lock, daemon=True)
+    thread.start()
+    thread.join(5)
+    assert not thread.is_alive(), "the store's finalizer waited for a lock its own thread held"
+    assert not mark.exists()
+    SqliteStore(tmp_path / "other.db", "o", RunClock(T0)).close()  # the next holder of the lock forgets it
+    assert mark not in sharing._Beat._marks
