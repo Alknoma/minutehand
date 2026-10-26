@@ -46,12 +46,23 @@ async def test_a_user_search_with_both_query_and_account_id_is_refused_400(site:
     refused(await site.http.get(f"{API}/user/search", params={"query": "iris", "accountId": IRIS}), 400)
 
 
-async def test_an_assignable_search_with_neither_query_nor_account_id_is_refused_400(site: Site) -> None:
-    """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/#api-rest-api-3-user-assignable-search-get — a 400 when `query` or `accountId`
-    is missing; `accountId` alone finds that account."""
-    refused(await site.http.get(f"{API}/user/assignable/search", params={"project": "LAUNCH"}), 400)
+async def test_an_assignable_search_naming_only_the_project_lists_everyone_assignable(site: Site) -> None:
+    """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/#api-rest-api-3-user-assignable-search-get — the reference lists a 400
+    when `query` and `accountId` are both missing, but a real site answers with everyone assignable (CLAIMS.md);
+    `accountId` alone finds that account."""
+    everyone = ok(await site.http.get(f"{API}/user/assignable/search", params={"project": "LAUNCH"}))
+    names = sorted(u["displayName"] for u in everyone)
+    assert names == ["Iris Calder", "Lantern Agent", "Noor Halvorsen", "Quiet Person", "Tomas Brandt"], (
+        "a member is assignable; a deactivated account and an app are not"
+    )
     found = ok(await site.http.get(f"{API}/user/assignable/search", params={"project": "LAUNCH", "accountId": IRIS}))
     assert [u["accountId"] for u in found] == [IRIS]
+
+
+async def test_an_assignable_search_with_both_query_and_account_id_is_refused_400(site: Site) -> None:
+    """Same page: a 400 when `query` and `accountId` are both provided."""
+    both = {"project": "LAUNCH", "query": "iris", "accountId": IRIS}
+    refused(await site.http.get(f"{API}/user/assignable/search", params=both), 400)
 
 
 # --------------------------------------------------------------------------- projects
