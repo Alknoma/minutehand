@@ -169,7 +169,9 @@ async def test_an_unknown_custom_field_or_option_is_refused_400(rich: Workspace,
     assert rich.store.head() == before
 
 
-async def test_a_field_already_on_a_project_or_unknown_is_refused_400(agent: httpx.AsyncClient) -> None:
+async def test_a_field_already_on_a_project_is_refused_by_name_and_one_unknown_is_refused_400(
+    agent: httpx.AsyncClient,
+) -> None:
     again = await agent.post(
         f"/projects/{BACKEND}/addCustomFieldSetting", json={"data": {"custom_field": STATUS_FIELD}}
     )
