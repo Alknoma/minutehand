@@ -253,7 +253,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "`GET`/`POST /rest/api/3/search` answer 410 pointing at `/search/jql` and write nothing",
         "Comments come 100 a page by default; `orderBy` other than `created` is a 400; `-created` is newest first",
         "`user/search` with both `query` and `accountId` is a 400",
-        "`user/assignable/search` naming a project or issue with neither `query` nor `accountId` lists everyone assignable there, paged; with both it is a 400; `accountId` alone finds that account",
+        "`user/assignable/search` naming a project or issue with neither `query` nor `accountId` lists everyone assignable there, paged; with both it is a 400 saying they are mutually exclusive; `accountId` alone finds that account",
         "`users/search` pages 50 by default, at most 1000",
         "`project/search` orders by key by default, takes `orderBy=key` or `name` (`-` reverses), `keys`, `id` and `typeKey`, at most 100 a page, links `nextPage`, and lists description, lead, issue types and keys only when expanded; `GET /project/{key}` always includes the first three",
         "A role read takes `excludeInactiveUsers`; a role's description is the world's (empty unless seeded), not a sentence the fake writes; a group added to a role is refused by name",
