@@ -5,8 +5,9 @@ name: release
 # Release is a deliberate act with notes a reader sees, and a draft is reviewed before it is published; a pushed
 # tag is one `git push --tags` away from publishing by accident.
 #
-#   build   the sdist and the wheel, `twine check`, and the wheel installed into a clean environment running
-#           the example and a pytest suite that uses the plugin
+#   build   the sdist and the wheel, and tests/packaging on exactly those files: what each holds, the wheel
+#           from the sdist equal to the wheel from the tree, `twine check`, the wheel installed into a clean
+#           environment answering `--version` with the tag's version, and a pytest suite that uses the plugin
 #   pypi    those same files uploaded to PyPI by Trusted Publishing (OIDC): no token is stored anywhere; PyPI
 #           trusts this repository, this file and the `pypi` environment, and nothing else
 #   image   ghcr.io/alknoma/minutehand, built from the same commit, tagged with the version and the commit
@@ -56,13 +57,8 @@ jobs:
       - run: uv sync
       - name: Build the sdist, and the wheel from it
         run: uv build
-      - name: The metadata and README as PyPI will read them
-        run: uvx twine==7.0.0 check --strict dist/*
-      - name: The wheel as a user installs it, run from a clean environment
-        run: |
-          python3 -m venv "$RUNNER_TEMP/wheel"
-          "$RUNNER_TEMP/wheel/bin/python" -m pip install --disable-pip-version-check dist/*.whl
-          "$RUNNER_TEMP/wheel/bin/minutehand" --help
+      - name: The files about to be uploaded, as a user installs them (tests/packaging)
+        run: MINUTEHAND_DIST="$PWD/dist" uv run pytest -m packaging tests/packaging -p no:randomly
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist

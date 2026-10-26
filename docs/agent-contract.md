@@ -48,7 +48,7 @@ checkpoint.
 | **deliver a press** (provider) | Minutehand → agent, when a person uses a control | The provider's own interactivity payload → 2xx | `inbound[].interactivity_url` | Only for controls |
 | **deliver a reply** (declared host) | Minutehand → agent, an answer to a captured send | `DeliveredReply` (the default shape, no `body`), or the declared `body` → 2xx | `outbound[].replies` | Only when people answer a send |
 | **deliver a booking** (scheduler) | The faked scheduler → agent, when the clock reaches a booking | The scheduler's own delivery (a Cloud Tasks HTTP request, a message in an SQS queue the agent polls) | Nothing: the agent's own call booked it | No |
-| **due records** | Minutehand reads the agent's memory whenever it decides its next jump; nothing is called | The keys `due[]` names, as they stand; the earliest instant is a wake | `due[]` (`collection`, `prefix`, `where`, `field`, `poll`) | Only for an agent whose own scheduler polls its records |
+| **due records** | Minutehand reads the agent's memory whenever it decides its next jump; nothing is called | The keys `due[]` names, as they stand; the earliest instant is a wake | `due[]` (`collection`, `prefix`, `where`, `field`, `poll`, `later`) | Only for an agent whose own scheduler polls its records |
 | **inbox list** | Minutehand → agent, as each person, after each wake or step and before the clock moves | Declared template or operation (default `listPending`, `PendingPage`) | `inboxes[].pending` | Only with an inbox |
 | **decide** | Minutehand → agent, as the person, when a decision falls due | Declared template or operation (default `decide`, `DecisionMade`) → declared success | `inboxes[].decisions[]` | Only with an inbox |
 | **use** | Minutehand → agent, as the person, when a scenario's `uses` happening falls due | Declared template or operation → declared success | `inboxes[].uses[]` | Only to play people using the product unprompted |
@@ -124,6 +124,7 @@ due:
     where: {state: open}         # equality filters, a field or a dotted path, as `store.query`
     field: run_at                # an ISO 8601 instant with an offset; absent or null is not due
     poll: PT30S                  # how long its poller may take to find it (default PT0S)
+    later: [expires_at]          # fields that must not have passed when it falls due (default none)
 ```
 
 - **Read at every decision.** Whenever the run decides its next jump, beside people's moves, replies and bookings, it
@@ -132,12 +133,51 @@ due:
   followed as it now stands. The earliest record's instant, and `poll` after it, is next due: `planned_wakes`,
   `dispatch.source = recorded`, its `ref` naming each key and instant. The wake is the clock reaching it; Minutehand
   calls nothing, and the agent's own poller finds the work when its own clock passes it.
-- **Once for one instant.** A record wakes the agent at most once while it holds one instant. Woken and still holding
-  that instant when the wake ends, it is not woken again, and the check `due_records` says the agent left it due
-  (`review`): in production a poller whose wait and whose query disagree wakes for it forever with nothing to do. A
-  new instant is new. What has woken is read from the run's log, so a fork knows what its parent was woken for.
-- **A field that is not an instant** with an offset (a date alone, a time without one, a number) is not due, and
-  `due_records` names the key and what it held.
+- **Due late, a poll on.** A record first due at a decision when that moment is not later than now (moved into the
+  past, or let through by its `later` fields or another declaration's wake) falls due `poll` after the decision, not
+  at it. A wake that moved no clock would run none of the agent's own timers, so its poller would not find the work.
+- **Fields that must not have passed (`later`).** A poller that takes a record only while another of its times has
+  not passed names that time in `later`. The record is due by the declaration at the moment it would fall due only
+  while every `later` field is absent, null, or an instant strictly later than that moment; when one is not, it is not
+  due, and is read again at the next decision as it then stands. A `later` field that is also `field`, or is in
+  `where`, is refused when the agent file is read. A request poller that takes a pending request until it expires:
+
+  ```yaml
+  due:
+    - where: {status: pending}
+      field: updatedAt
+      later: [expiresAt]
+      poll: PT30S
+  ```
+
+  A request updated at `T` that expired at `T - 1h` is not due at `T + 30s`; one expiring at `T + 1d` is.
+- **Once for one instant, by each declaration.** A record wakes the agent at most once for one instant by one
+  declaration. Woken and still due by that declaration at that instant when the wake ends, it is not woken again, and
+  the check `due_records` says the agent left it due (`review`): in production a poller whose wait and whose query
+  disagree wakes for it forever with nothing to do. A new instant is new, and so is another declaration holding the
+  same instant on the same record. What has woken, by which declaration, is read from the run's log, so a fork knows
+  what its parent was woken for. Two pollers reading one record:
+
+  ```yaml
+  due:
+    - field: a                   # one poller takes the record when a has passed
+    - field: b                   # a sweep takes it when b has passed and a has not
+      later: [a]
+  ```
+
+  With the record holding `{a: T, b: T}` and a `poll` of `P` on each, the run wakes at `T + P` for `a` alone: the
+  sweep's `a` has passed. The agent moves `a` a day on; at the next decision the sweep's declaration is due, and the
+  run wakes for it at `T + 2P`, a poll on, when the sweep runs.
+- **A backlog taken one record per poll.** No clock in the sandbox moves inside a wake but by the real time the agent
+  works, so a poller that takes only the oldest matching record each time it polls does not poll again before the
+  wake ends, and a second record due at the same instant is left as it was. A record left due by a wake that took
+  another record of the same declaration is due again `poll` after that wake, and is not said to be left due by it.
+  A wake took a record when, as the wake left the memory, the record is no longer read by its declaration (deleted,
+  out of `where`, its field cleared, as a claim that changes `status` leaves it) or holds a later instant than it was
+  woken for (deferred); either counts. A record left due by a wake that took nothing is not woken for again, and is
+  said to be left due: one nobody ever takes wakes the agent once.
+- **A field that is not an instant** with an offset (a date alone, a time without one, a number), in `field` or in
+  `later`, is not due, and `due_records` names the key, the field and what it held.
 - **The price.** The agent's scheduler reads its own database; the projection is a second copy it writes for the run
   to read, and in production it goes to the backend `store` was configured with. Several processes mirroring one
   record after their own commits can send their writes out of order, so a due record is written with a version

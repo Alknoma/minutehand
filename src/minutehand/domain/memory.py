@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Annotated, Literal, Self
 
@@ -155,8 +156,10 @@ Path = Annotated[
 class DueRecords(Model):
     """Where the agent keeps due records in its memory: every key of `collection` under `prefix` whose value is an
     object with each field of `where` equal to the value given there, holding in `field` an ISO 8601 instant with an
-    offset. Absent or null in `field` is not due. The agent's own scheduler polls its own records for what has come
-    due; this is the agent's projection of them, which the run reads to know when the next one falls due."""
+    offset. Absent or null in `field` is not due, and nor is a record one of whose `later` fields holds anything but
+    absent, null or an instant strictly later than the moment it would fall due. The agent's own scheduler polls its
+    own records for what has come due; this is the agent's projection of them, which the run reads to know when the
+    next one falls due."""
 
     collection: Collection = DEFAULT_COLLECTION
     prefix: str = ""
@@ -168,6 +171,11 @@ class DueRecords(Model):
         description="How long the agent's own poller may take to find a record after it falls due: the wake is that "
         "long after the record's instant, the latest moment its poller would have acted",
     )
+    later: list[Path] = Field(
+        default=[],
+        description="Fields each of which must be absent, null, or an ISO 8601 instant strictly later than the moment "
+        "the record would fall due (a poller that takes a record only while another of its times has not passed)",
+    )
 
     @model_validator(mode="after")
     def _field_is_not_filtered(self) -> Self:
@@ -176,6 +184,13 @@ class DueRecords(Model):
                 f"due record field {self.field!r} is also in `where`: a record whose due time must equal one value "
                 "is not a due time; name the field it falls due by in `field` and filter on another"
             )
+        for named in self.later:
+            if named == self.field or named in self.where:
+                said = "`field`" if named == self.field else "in `where`"
+                raise ValueError(
+                    f"due record `later` field {named!r} is also {said}: a field the record must hold later than the "
+                    "moment it falls due is another of its times, not the one it falls due by or one it is filtered on"
+                )
         return self
 
 
@@ -201,6 +216,22 @@ def field_at(value: JsonValue, path: str) -> tuple[bool, JsonValue]:
 def matches(value: JsonValue, where: dict[str, JsonValue]) -> bool:
     """Whether `value` is an object with each field of `where` equal to the value given there (`store.query`)."""
     return isinstance(value, dict) and all(field_at(value, f) == (True, w) for f, w in where.items())
+
+
+def later_bound(value: JsonValue, fields: Sequence[str]) -> tuple[bool, datetime | None]:
+    """What `fields` of `value` say of when it may fall due: (True, the earliest instant any holds, or None when none
+    holds one) while each is absent, null or an instant with an offset; (False, None) when one holds anything else,
+    which is later than no moment."""
+    earliest: datetime | None = None
+    for path in fields:
+        there, written = field_at(value, path)
+        if not there or written is None:
+            continue
+        moment = instant(written)
+        if moment is None:
+            return False, None
+        earliest = moment if earliest is None else min(earliest, moment)
+    return True, earliest
 
 
 _INSTANT = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
