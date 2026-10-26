@@ -84,8 +84,76 @@ async def test_a_language_qualifier_keeps_only_files_in_that_language(hub: Hub) 
     assert (await _search(hub, f"checkout {LEDGER} language:rust"))["total_count"] == 0
 
 
+@pytest.mark.parametrize(
+    ("size", "paths"),
+    [
+        ("84", ["docs/guide.md"]),
+        (">84", ["services/billing/retry.py"]),
+        (">=84", ["docs/guide.md", "services/billing/retry.py"]),
+        ("<373", ["docs/guide.md"]),
+        ("<=373", ["docs/guide.md", "services/billing/retry.py"]),
+        ("85..373", ["services/billing/retry.py"]),
+        ("85..372", []),
+        ("100..*", ["services/billing/retry.py"]),
+        ('"*..100"', ["docs/guide.md"]),
+    ],
+)
+async def test_a_size_qualifier_keeps_files_of_that_many_bytes(hub: Hub, size: str, paths: list[str]) -> None:
+    """Documented: `size:` filters by the byte size of the file, exactly or with greater than, less than and range
+    qualifiers. https://docs.github.com/en/search-github/searching-on-github/searching-code (the guide is 84 bytes,
+    `retry.py` 373), whose forms are https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax"""
+    assert _paths(await _search(hub, f"retry_with_backoff {LEDGER} size:{size}")) == paths
+
+
+async def test_fork_true_adds_forks_and_fork_only_keeps_only_them(hub: Hub) -> None:
+    """Documented: `fork:true` or `fork:only` includes forks in code search, `fork:only` finds only forks.
+    https://docs.github.com/en/search-github/searching-on-github/searching-code,
+    https://docs.github.com/en/search-github/searching-on-github/searching-in-forks. No repository here is a fork."""
+    both = ["docs/guide.md", "services/billing/retry.py"]
+    assert _paths(await _search(hub, f"retry_with_backoff {LEDGER} fork:true")) == both
+    assert (await _search(hub, f"retry_with_backoff {LEDGER} fork:only"))["total_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("q", "named"),
+    [
+        (f"retry OR timeout {LEDGER}", "the OR operator"),
+        (f"retry NOT timeout {LEDGER}", "the NOT operator"),
+        (f"retry -path:docs {LEDGER}", "the negated qualifier -path:docs"),
+        (f"retry -language:python {LEDGER}", "the negated qualifier -language:python"),
+        (f"retry is:fork {LEDGER}", "the qualifier is:fork"),
+        (f"retry symbol:retry_with_backoff {LEDGER}", "the qualifier symbol:retry_with_backoff"),
+        (f"retry size:big {LEDGER}", "size:big"),
+        (f"retry size:>10 size:<500 {LEDGER}", "a second size qualifier"),
+        (f"retry fork:false {LEDGER}", "fork:false"),
+    ],
+)
+async def test_what_the_legacy_syntax_does_not_document_is_refused_501_by_name(hub: Hub, q: str, named: str) -> None:
+    """Documented: the REST endpoint takes the legacy code search syntax, which documents no `OR`, `NOT`, negated
+    qualifier, `is:` or `symbol:` and only the `size:` and `fork:` values above.
+    https://docs.github.com/en/search-github/searching-on-github/searching-code"""
+    async with hub.client() as http:
+        refused = await http.get("/search/code", params={"q": q})
+    assert refused.status_code == 501
+    message = refused.json()["message"]
+    assert "does not implement GET /search/code" in message and named in message
+
+
+async def test_without_in_only_the_file_contents_are_searched(hub: Hub) -> None:
+    """Documented: "When you omit this qualifier, only the file contents are searched."
+    https://docs.github.com/en/search-github/searching-on-github/searching-code"""
+    assert _paths(await _search(hub, f"retry {LEDGER}")) == []  # retry.py says it only in its path
+    assert _paths(await _search(hub, f"retry {LEDGER} in:path")) == ["services/billing/retry.py"]
+
+
+async def test_a_filename_search_needs_no_term(hub: Hub) -> None:
+    """Documented: "Except with filename searches, you must always include at least one search term."
+    https://docs.github.com/en/search-github/searching-on-github/searching-code"""
+    assert _paths(await _search(hub, f"filename:retry.py {LEDGER}")) == ["services/billing/retry.py"]
+
+
 async def test_a_query_of_qualifiers_alone_is_refused_422_invalid(hub: Hub) -> None:
-    """Documented: a code search must include at least one search term.
+    """Documented: a code search must include at least one search term, unless it names a filename.
     https://docs.github.com/en/rest/search/search#search-code"""
     async with hub.client() as http:
         found = refusal(await http.get("/search/code", params={"q": LEDGER}), 422, "Validation Failed")
@@ -104,7 +172,7 @@ async def test_results_are_paged_and_every_page_reports_the_same_total(hub: Hub)
     https://docs.github.com/en/rest/search/search#search-code"""
     first = await _search(hub, f"billing {LEDGER}", per_page=1, page=1)
     second = await _search(hub, f"billing {LEDGER}", per_page=1, page=2)
-    assert first["total_count"] == second["total_count"] == 4
+    assert first["total_count"] == second["total_count"] == 3
     assert len(_paths(first)) == len(_paths(second)) == 1
     assert _paths(first) != _paths(second)
 
@@ -137,6 +205,6 @@ async def test_a_hit_carries_no_score_made_up_by_the_provider(hub: Hub) -> None:
     """The description requires `score` and documents nothing of how it is computed, and recording it needs a
     credential: it is left out rather than invented (CLAIMS.md, "Pending a recording")."""
     async with hub.client() as http:
-        found = body(await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"}))
+        found = body(await http.get("/search/code", params={"q": "retry_with_backoff repo:lanternworks/ledger"}))
     items = found["items"]
     assert isinstance(items, list) and items and all("score" not in item for item in items)

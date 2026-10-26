@@ -23,6 +23,8 @@ REPLY_ALL = "https://learn.microsoft.com/en-us/graph/api/message-replyall"
 RESPONSE_CODES = "https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/responsecode"
 DRIVEITEM_UPDATE = "https://learn.microsoft.com/en-us/graph/api/driveitem-update"
 DRIVEITEM_DELETE = "https://learn.microsoft.com/en-us/graph/api/driveitem-delete"
+CALENDAR_POST_EVENTS = "https://learn.microsoft.com/en-us/graph/api/calendar-post-events"
+EVENT_UPDATE = "https://learn.microsoft.com/en-us/graph/api/event-update"
 
 
 @pytest.fixture
@@ -254,6 +256,41 @@ async def test_outlook_items_carry_their_change_key_as_a_weak_etag_and_both_chan
     assert unread.json()["@odata.etag"] == f'W/"{unread.json()["changeKey"]}"'
     event = (await outlook.http.post(f"{GRAPH}/me/events", json=EVENT, headers=outlook.me)).json()
     assert event["@odata.etag"] == f'W/"{event["changeKey"]}"'
+
+
+async def test_an_events_reminder_is_kept_as_sent_and_one_left_out_answers_as_the_pages_example(
+    outlook: Outlook,
+) -> None:
+    """Documented (CALENDAR_POST_EVENTS, EVENT_UPDATE): `isReminderOn` and `reminderMinutesBeforeStart` are event
+    properties, kept as sent on create and PATCH and read back; an event created without them answers them on and 15,
+    as the create page's example answer does for a request that sent neither."""
+    off = {**EVENT, "attendees": [], "isReminderOn": False, "reminderMinutesBeforeStart": 30}
+    made = await outlook.http.post(f"{GRAPH}/me/events", json=off, headers=outlook.me)
+    assert made.status_code == 201, made.text
+    assert (made.json()["isReminderOn"], made.json()["reminderMinutesBeforeStart"]) == (False, 30)
+    read = (await outlook.http.get(f"{GRAPH}/me/events/{made.json()['id']}", headers=outlook.me)).json()
+    assert (read["isReminderOn"], read["reminderMinutesBeforeStart"]) == (False, 30)
+    patched = await outlook.http.patch(
+        f"{GRAPH}/me/events/{made.json()['id']}", json={"reminderMinutesBeforeStart": 5}, headers=outlook.me
+    )
+    assert (patched.json()["isReminderOn"], patched.json()["reminderMinutesBeforeStart"]) == (False, 5)
+    unsaid = (await outlook.http.post(f"{GRAPH}/me/events", json={**EVENT, "attendees": []}, headers=outlook.me)).json()
+    assert (unsaid["isReminderOn"], unsaid["reminderMinutesBeforeStart"]) == (True, 15)
+
+
+async def test_if_match_on_an_event_is_refused_by_name_and_the_event_is_unchanged(outlook: Outlook) -> None:
+    """No Graph page documents an event honouring `If-Match` (event-update and event-delete name only
+    Authorization) and no recording shows Graph's answer, so the header is refused by name, current, stale or `*`,
+    rather than checked by a guess or ignored."""
+    made = (await outlook.http.post(f"{GRAPH}/me/events", json={**EVENT, "attendees": []}, headers=outlook.me)).json()
+    here = f"{GRAPH}/me/events/{made['id']}"
+    for etag in (made["@odata.etag"], 'W/"stale"', "*"):
+        patched = await outlook.http.patch(here, json={"subject": "Moved"}, headers={**outlook.me, "If-Match": etag})
+        assert patched.status_code == 501 and "if-match" in patched.json()["error"]["message"]
+        deleted = await outlook.http.delete(here, headers={**outlook.me, "If-Match": etag})
+        assert deleted.status_code == 501
+    kept = (await outlook.http.get(here, headers=outlook.me)).json()
+    assert kept["subject"] == "Planning" and kept["changeKey"] == made["changeKey"]
 
 
 async def test_a_folder_the_mailbox_does_not_hold_is_refused_by_name(

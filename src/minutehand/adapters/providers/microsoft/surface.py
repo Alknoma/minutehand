@@ -74,6 +74,14 @@ _USER = [
     ("GET", "/calendarView/delta()"),
     ("GET", "/calendars/{calendar-id}/calendarView/delta()"),
     ("GET", "/calendar/calendarView"),
+    ("POST", "/calendars"),
+    ("POST", "/calendars/{calendar-id}/calendarPermissions"),
+    ("GET", "/calendars/{calendar-id}/calendarView"),
+    ("GET", "/calendars/{calendar-id}/events"),
+    ("POST", "/calendars/{calendar-id}/events"),
+    ("GET", "/calendars/{calendar-id}/events/{event-id}"),
+    ("PATCH", "/calendars/{calendar-id}/events/{event-id}"),
+    ("DELETE", "/calendars/{calendar-id}/events/{event-id}"),
     *(
         operation
         for where in ("", "/calendar")

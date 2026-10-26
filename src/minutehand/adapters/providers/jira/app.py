@@ -717,16 +717,15 @@ class JiraApi:
 
     def assignable(self, call: Call) -> Answer:
         """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/#api-rest-api-3-user-assignable-search-get
-        — a 400 when none of `issueKey`, `issueId` or `project` is present, when `query` and `accountId` are
-        both missing, or both given."""
+        — a 400 when none of `issueKey`, `issueId` or `project` is present, or when `query` and `accountId` are
+        both given. The reference also lists a 400 when both are missing; a real site answers that call with
+        everyone assignable (observed live, CLAIMS.md), so it does."""
         project_ref = _param(call.request, "project")
         issue_ref = _param(call.request, "issueKey") or _param(call.request, "issueId")
         if issue_ref is None and project_ref is None:
             raise wire.bad("No project, issue key or issue ID was provided")
         query = (_param(call.request, "query") or "").strip().lower()
         account = _param(call.request, "accountId")
-        if not query and not account:
-            raise wire.bad("Returned if `query` or `accountId` is missing.")
         if query and account:
             raise wire.bad("Returned if `query` and `accountId` are provided.")
         if issue_ref is not None:
