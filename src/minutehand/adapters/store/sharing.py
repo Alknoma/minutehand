@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import weakref
+from collections import deque
 from functools import cache
 from pathlib import Path
 
@@ -88,15 +89,21 @@ class Writing:
 
 
 class _Beat:
-    """The one thread that refreshes every mark this process holds."""
+    """The one thread that refreshes every mark this process holds.
+
+    `remove` is a store's finalizer, and a collection runs finalizers in whichever thread it interrupts, the one
+    holding `_lock` included, so it never takes the lock: it hands the mark to `_gone` (a deque's append is atomic),
+    and whoever next holds the lock forgets it."""
 
     _lock = threading.Lock()
     _marks: set[Path] = set()
+    _gone: deque[Path] = deque()
     _thread: threading.Thread | None = None
 
     @classmethod
     def add(cls, mark: Path) -> None:
         with cls._lock:
+            cls._forget()
             cls._marks.add(mark)
             if cls._thread is None:
                 cls._thread = threading.Thread(target=cls._run, name="minutehand-writing", daemon=True)
@@ -104,15 +111,20 @@ class _Beat:
 
     @classmethod
     def remove(cls, mark: Path) -> None:
-        with cls._lock:
-            cls._marks.discard(mark)
         mark.unlink(missing_ok=True)
+        cls._gone.append(mark)
+
+    @classmethod
+    def _forget(cls) -> None:
+        while cls._gone:
+            cls._marks.discard(cls._gone.popleft())
 
     @classmethod
     def _run(cls) -> None:
         while True:
             time.sleep(BEAT)
             with cls._lock:
+                cls._forget()
                 marks = list(cls._marks)
             for mark in marks:
                 try:
