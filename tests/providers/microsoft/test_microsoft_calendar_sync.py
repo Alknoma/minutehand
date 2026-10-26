@@ -1,7 +1,8 @@
 """What a calendar-sync client asks of Graph, through the real proxy with plain `httpx`: change notifications on a
 mailbox's events for every change, a deleted event among them, with its `clientState`, renewed and deleted; a
-calendar's own `calendarView/delta`, whose links stay on that calendar; and a subscription to one calendar's events,
-which Graph documents nowhere, refused naming the resources it does document."""
+calendar's own `calendarView/delta`, whose links stay on that calendar; a subscription to one calendar's events,
+which Graph documents nowhere, refused naming the resources it does document; and a calendar made, shared, and
+holding its own events, read, changed and deleted through it."""
 
 from __future__ import annotations
 
@@ -153,3 +154,114 @@ async def test_a_subscription_to_one_calendars_events_is_refused_naming_the_docu
             message
         )
         assert webhook.validations == [], "a refused subscription is never validated"
+
+
+async def test_a_calendar_made_holds_its_own_events_read_changed_and_deleted_through_it(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    """Documented (user-post-calendars, calendar-post-events, event-get, event-update, event-delete,
+    calendar-list-calendarview): a calendar made is listed beside the default one; an event made in it is the same
+    event resource, read, changed and deleted through the calendar's path, in that calendar's view and the
+    mailbox's events, and not in the default calendar's view."""
+    async with microsoft.http() as http:
+        me = bearer(await signed_in(http, tenant, AGENT))
+        made = await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects"}, headers=me)
+        assert made.status_code == 201, made.text
+        assert made.json()["name"] == "Projects" and made.json()["isDefaultCalendar"] is False
+        calendar = made.json()["id"]
+        listed = (await http.get(f"{GRAPH}/me/calendars", headers=me)).json()["value"]
+        assert [(c["name"], c["isDefaultCalendar"]) for c in listed] == [("Calendar", True), ("Projects", False)]
+
+        event = await http.post(f"{GRAPH}/me/calendars/{calendar}/events", json=_event("Kickoff", "15"), headers=me)
+        assert event.status_code == 201, event.text
+        here = f"{GRAPH}/me/calendars/{calendar}/events/{event.json()['id']}"
+        assert (await http.get(here, headers=me)).json()["subject"] == "Kickoff"
+        view = await http.get(f"{GRAPH}/me/calendars/{calendar}/calendarView?{WINDOW}", headers=me)
+        assert [e["subject"] for e in view.json()["value"]] == ["Kickoff"]
+        default_view = (await http.get(f"{GRAPH}/me/calendar/calendarView?{WINDOW}", headers=me)).json()["value"]
+        assert "Kickoff" not in [e["subject"] for e in default_view]
+        mailbox = (await http.get(f"{GRAPH}/me/events", params={"$top": "100"}, headers=me)).json()["value"]
+        assert "Kickoff" in [e["subject"] for e in mailbox]
+        own = (await http.get(f"{GRAPH}/me/calendars/{calendar}/events", headers=me)).json()["value"]
+        assert [e["subject"] for e in own] == ["Kickoff"]
+
+        patched = await http.patch(here, json={"subject": "Kick-off"}, headers=me)
+        assert patched.status_code == 200 and patched.json()["subject"] == "Kick-off"
+        assert (await http.delete(here, headers=me)).status_code == 204
+        assert (await http.get(here, headers=me)).status_code == 404
+
+
+async def test_an_event_through_a_calendar_that_does_not_hold_it_is_refused_by_name(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    async with microsoft.http() as http:
+        me = bearer(await signed_in(http, tenant, AGENT))
+        calendar = (await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects"}, headers=me)).json()["id"]
+        elsewhere = (await http.post(f"{GRAPH}/me/events", json=_event("Standup", "15"), headers=me)).json()["id"]
+        answered = await http.get(f"{GRAPH}/me/calendars/{calendar}/events/{elsewhere}", headers=me)
+        assert answered.status_code == 501
+        assert "which does not hold it" in answered.json()["error"]["message"]
+        unknown = await http.post(f"{GRAPH}/me/calendars/AAMkAnother/events", json=_event("X", "15"), headers=me)
+        assert unknown.status_code == 501
+        assert "'AAMkAnother', which the mailbox does not hold" in unknown.json()["error"]["message"]
+
+
+async def test_a_calendar_made_has_a_view_delta_of_its_own_events(tenant: Tenant, microsoft: Intercepted) -> None:
+    """event-delta: a calendar view's delta is one calendar's; the mailbox's own is its primary calendar's."""
+    async with microsoft.http() as http:
+        me = bearer(await signed_in(http, tenant, AGENT))
+        calendar = (await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects"}, headers=me)).json()["id"]
+        await http.post(f"{GRAPH}/me/calendars/{calendar}/events", json=_event("Kickoff", "15"), headers=me)
+        await http.post(f"{GRAPH}/me/events", json=_event("Standup", "16"), headers=me)
+        own = (await http.get(f"{GRAPH}/me/calendars/{calendar}/calendarView/delta?{WINDOW}", headers=me)).json()
+        assert [e["subject"] for e in own["value"]] == ["Kickoff"]
+        primary = (await http.get(f"{GRAPH}/me/calendarView/delta?{WINDOW}", headers=me)).json()
+        assert "Kickoff" not in [e["subject"] for e in primary["value"]]
+        assert "Standup" in [e["subject"] for e in primary["value"]]
+
+
+async def test_a_calendar_shared_answers_the_permission_as_sent_and_a_second_for_one_person_is_refused_by_name(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    """Documented (calendar-post-calendarpermissions, calendarpermission): 200 with the permission, its role and
+    address as sent and its id as the page's example answer assigns one; the share is kept in the world."""
+    async with microsoft.http() as http:
+        me = bearer(await signed_in(http, tenant, AGENT))
+        calendar = (await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects"}, headers=me)).json()["id"]
+        shared = await http.post(
+            f"{GRAPH}/me/calendars/{calendar}/calendarPermissions",
+            json={"emailAddress": {"address": "sofia@example.com", "name": "Sofia Romano"}, "role": "write"},
+            headers=me,
+        )
+        assert shared.status_code == 200, shared.text
+        answered = shared.json()
+        assert answered["role"] == "write"
+        assert answered["emailAddress"] == {"address": "sofia@example.com", "name": "Sofia Romano"}
+        assert answered["id"] == "RXhjaGFuZ2VQdWJsaXNoZWRVc2VyLnNvZmlhQGV4YW1wbGUuY29t"
+        assert "isInsideOrganization" not in answered and "allowedRoles" not in answered
+        assert [p.emailAddress.address for p in tenant.world.calendar_permissions(calendar)] == ["sofia@example.com"]
+        again = await http.post(
+            f"{GRAPH}/me/calendars/{calendar}/calendarPermissions",
+            json={"emailAddress": {"address": "Sofia@Example.com"}, "role": "read"},
+            headers=me,
+        )
+        assert again.status_code == 501 and "a second permission" in again.json()["error"]["message"]
+
+
+async def test_a_calendar_property_that_would_be_dropped_or_a_name_taken_is_refused_by_name(
+    tenant: Tenant, microsoft: Intercepted
+) -> None:
+    async with microsoft.http() as http:
+        me = bearer(await signed_in(http, tenant, AGENT))
+        coloured = await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects", "color": "lightBlue"}, headers=me)
+        assert coloured.status_code == 501 and "color" in coloured.json()["error"]["message"]
+        taken = await http.post(f"{GRAPH}/me/calendars", json={"name": "calendar"}, headers=me)
+        assert taken.status_code == 501 and "already holds" in taken.json()["error"]["message"]
+        calendar = (await http.post(f"{GRAPH}/me/calendars", json={"name": "Projects"}, headers=me)).json()["id"]
+        allowed = await http.post(
+            f"{GRAPH}/me/calendars/{calendar}/calendarPermissions",
+            json={"emailAddress": {"address": "sofia@example.com"}, "role": "read", "allowedRoles": ["read"]},
+            headers=me,
+        )
+        assert allowed.status_code == 501 and "allowedRoles" in allowed.json()["error"]["message"]
+        assert tenant.world.calendar_permissions(calendar) == []

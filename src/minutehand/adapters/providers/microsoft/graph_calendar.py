@@ -5,6 +5,10 @@ reply's moment.
 - **An event is one item**, in its organizer's calendar, seen with the same id from the calendar of every
   attendee who is a user of the tenant; `isOrganizer` and `responseStatus` are answered for the mailbox that reads
   it. Times are answered in UTC; a `timeZone` sent is UTC or an IANA name.
+- **A mailbox holds calendars**: its default one (`/calendar`) and those made with `POST /calendars`, each with
+  its own events, view and view `delta`; `/events` lists every calendar's events, `/calendarView` the default
+  calendar's. A calendar shared (`calendarPermissions`) is recorded as sent and changes no other mailbox.
+  `If-Match` is refused by name: no page documents an event honouring it.
 - **An invitation is the agent asking each attendee.** An event made with attendees sends a meeting request from
   the organizer (`eventMessageRequest`, in Sent Items and in each attendee's Inbox), in the event's own
   conversation, carrying Accept, Tentative and Decline (`MessageSnapshot.actions`). A change of subject, time or
@@ -157,8 +161,43 @@ class Calendar:
         return next((a for a in stored.event.attendees if a.emailAddress.address.lower() in mine), None)
 
     def visible(self, user: UserRecord) -> list[wire.StoredEvent]:
-        """The events in a user's calendar: those they organize and those they are invited to."""
+        """The events in a user's mailbox, in any of their calendars: those they organize and those they are
+        invited to."""
         return [e for e in self._world.events() if e.organizer_id == user.user.id or self.attends(e, user) is not None]
+
+    @staticmethod
+    def default_calendar(user: UserRecord) -> str:
+        return outlook_id(user.user.id, "calendar")
+
+    def calendar_of(self, stored: wire.StoredEvent, user: UserRecord) -> str:
+        """The calendar of `user`'s that holds the event: the one its organizer made it in, and for an attendee
+        their default calendar, where an invitation lands."""
+        if stored.organizer_id == user.user.id and stored.calendar is not None:
+            return stored.calendar
+        return self.default_calendar(user)
+
+    def held(self, user: UserRecord, calendar: str) -> list[wire.StoredEvent]:
+        """The events in one of `user`'s calendars."""
+        return [e for e in self.visible(user) if self.calendar_of(e, user) == calendar]
+
+    def _default_resource(self, user: UserRecord) -> wire.CalendarResource:
+        return wire.CalendarResource(
+            id=self.default_calendar(user),
+            owner=wire.EmailAddress(name=user.user.displayName, address=address_of(user)),
+        )
+
+    def _calendar(self, user: UserRecord, calendar: str) -> wire.CalendarResource:
+        """One of `user`'s calendars by id: the default, or one they made. Graph's answer for a calendar the mailbox
+        does not hold is not documented or recorded, so it is refused by name."""
+        if calendar == self.default_calendar(user):
+            return self._default_resource(user)
+        made = next((c.calendar for c in self._world.calendars(user.user.id) if c.calendar.id == calendar), None)
+        if made is None:
+            raise NotServed(
+                f"the calendar {calendar!r}, which the mailbox does not hold: Graph's answer is not documented or "
+                "recorded"
+            )
+        return made
 
     def seen_by(self, stored: wire.StoredEvent, user: UserRecord, request: Request | None = None) -> wire.Event:
         organizer = stored.organizer_id == user.user.id
@@ -224,37 +263,49 @@ class Calendar:
     async def answer(self, request: Request, parts: list[str]) -> Response:
         claims = graph_caller(request, self._world)
         refuse_unserved_preferences(request)
+        for condition in ("if-match", "if-none-match"):
+            if condition in request.headers:
+                raise NotServed(
+                    f"the {condition} header on a calendar call: no Graph page documents an event or a calendar "
+                    "honouring it (event-update and event-delete name only Authorization) and no recording shows "
+                    "Graph's answer, so it is neither checked nor ignored"
+                )
         owner, rest = mailbox_owner(self._world, claims, parts)
         method = request.method
-        if rest[:1] == ["calendar"] and rest[1:2] in (["events"], ["calendarView"], ["getSchedule"]):
+        scope: str | None = None  # the calendar the path names (`/calendar/…`, `/calendars/{id}/…`); None: the mailbox
+        prefix = ""
+        if rest[:1] == ["calendar"] and rest[1:2] in (["events"], ["calendarView"]):
+            scope, rest = self.default_calendar(owner), rest[1:]
+        elif rest[:1] == ["calendar"] and rest[1:2] == ["getSchedule"]:
             rest = rest[1:]
+        elif len(rest) >= 3 and rest[0] == "calendars" and rest[2] in ("events", "calendarView", "calendarPermissions"):
+            scope, prefix, rest = self._calendar(owner, rest[1]).id, f"calendars/{rest[1]}/", rest[2:]
         if rest in (["calendar"], ["calendars"]) and method == "GET":
             return self._calendars(owner, single=rest == ["calendar"])
+        if rest == ["calendars"] and method == "POST":
+            return await self._make_calendar(request, owner)
+        if rest == ["calendarPermissions"] and scope is not None and method == "POST":
+            return await self._share(request, owner, self._calendar(owner, scope))
         if rest == ["getSchedule"] and method == "POST":
             return await self._schedule(request, owner)
+        viewed = scope if scope is not None else self.default_calendar(owner)
         if rest == ["calendarView"] and method == "GET":
-            return self._view(request, owner)
+            return self._view(request, owner, viewed, f"{prefix}calendarView")
         if rest in (["calendarView", "delta"], ["calendarView", "delta()"]) and method == "GET":
-            return self._delta(request, owner, f"{GRAPH}/users/{owner.user.id}/calendarView/delta")
-        if (
-            len(rest) == 4
-            and rest[0] == "calendars"
-            and rest[2:] in (["calendarView", "delta"], ["calendarView", "delta()"])
-            and method == "GET"
-        ):
-            calendar = outlook_id(owner.user.id, "calendar")
-            if rest[1] != calendar:
-                raise NotServed(
-                    f"a calendar view delta of the calendar {rest[1]!r}, which the mailbox does not hold: Graph's "
-                    "answer is not documented or recorded"
-                )
-            return self._delta(request, owner, f"{GRAPH}/users/{owner.user.id}/calendars/{calendar}/calendarView/delta")
+            link = f"{GRAPH}/users/{owner.user.id}/{prefix}calendarView/delta"
+            return self._delta(request, owner, link, viewed)
         if rest == ["events"] and method == "GET":
-            return self._listed(request, owner, self.visible(owner), "events")
+            events = self.visible(owner) if scope is None else self.held(owner, scope)
+            return self._listed(request, owner, events, f"{prefix}events")
         if rest == ["events"] and method == "POST":
-            return await self._create(request, owner)
+            return await self._create(request, owner, None if scope == self.default_calendar(owner) else scope)
         if len(rest) >= 2 and rest[0] == "events":
             stored = self._found(owner, rest[1])
+            if scope is not None and self.calendar_of(stored, owner) != scope:
+                raise NotServed(
+                    f"the event {rest[1]!r} through the calendar {scope!r}, which does not hold it: Graph's answer "
+                    "is not documented or recorded"
+                )
             if OCCURRENCE in rest[1] and (
                 method != "GET" or rest[2:3] == ["instances"]
             ):  # enum-lint: exempt HTTP's method name
@@ -312,17 +363,82 @@ class Calendar:
         return Response(body, status_code=status, media_type=GRAPH_JSON, headers=preference_applied(request))
 
     def _calendars(self, owner: UserRecord, *, single: bool) -> Response:
-        calendar = wire.CalendarResource(
-            id=outlook_id(owner.user.id, "calendar"),
-            owner=wire.EmailAddress(name=owner.user.displayName, address=address_of(owner)),
-        )
+        calendar = self._default_resource(owner)
         if single:
             context = f"{GRAPH}/$metadata#users('{owner.user.id}')/calendar/$entity"
             return Response(wire.with_context(wire.dump(calendar), context), media_type=GRAPH_JSON)
+        made = [c.calendar for c in self._world.calendars(owner.user.id)]
         page = wire.Page[wire.CalendarResource](
-            context=f"{GRAPH}/$metadata#users('{owner.user.id}')/calendars", value=[calendar]
+            context=f"{GRAPH}/$metadata#users('{owner.user.id}')/calendars", value=[calendar, *made]
         )
         return Response(wire.dump(page), media_type=GRAPH_JSON)
+
+    async def _make_calendar(self, request: Request, owner: UserRecord) -> Response:
+        """`POST /calendars`: a new calendar of the user's, named as sent, 201 with the calendar
+        (user-post-calendars). It is not the default calendar."""
+        try:
+            asked = wire.read(wire.SentCalendar, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        if asked.model_extra:
+            raise NotServed(
+                f"the calendar properties {', '.join(sorted(asked.model_extra))}: they would not be kept or acted on "
+                "as sent"
+            )
+        if not asked.name.strip():
+            raise NotServed("a calendar with no name: Graph's answer is not documented or recorded")
+        held = [self._default_resource(owner), *(c.calendar for c in self._world.calendars(owner.user.id))]
+        if any(c.name.lower() == asked.name.lower() for c in held):
+            raise NotServed(
+                f"a calendar named {asked.name!r}, as one the mailbox already holds: Graph's answer is not "
+                "documented or recorded"
+            )
+        calendar = wire.CalendarResource(
+            id=outlook_id(owner.user.id, "calendar", str(self._world.next_seq())),
+            name=asked.name,
+            isDefaultCalendar=False,
+            owner=wire.EmailAddress(name=owner.user.displayName, address=address_of(owner)),
+        )
+        self._world.write_calendar(wire.StoredCalendar(calendar=calendar, owner_id=owner.user.id), actor=Actor.AGENT)
+        context = f"{GRAPH}/$metadata#users('{owner.user.id}')/calendars/$entity"
+        return Response(wire.with_context(wire.dump(calendar), context), status_code=201, media_type=GRAPH_JSON)
+
+    async def _share(self, request: Request, owner: UserRecord, calendar: wire.CalendarResource) -> Response:
+        """`POST …/calendarPermissions`: the calendar shared with someone in the role sent, 200 with the
+        calendarPermission (calendar-post-calendarpermissions), its `id` assigned as the page's example answer
+        shows one (`ExchangePublishedUser.<address>` in base64). What it grants the person in their own mailbox is
+        not held: the share is recorded, and nothing else changes."""
+        try:
+            asked = wire.read(wire.SentCalendarPermission, await request.body())
+        except wire.Unreadable as e:
+            raise NotServed(f"a request body that cannot be read ({e.message}): Graph's answer is not recorded") from e
+        if asked.model_extra:
+            raise NotServed(
+                f"the calendarPermission properties {', '.join(sorted(asked.model_extra))}: they would not be kept "
+                "or acted on as sent"
+            )
+        address = asked.emailAddress.address
+        if "@" not in address:
+            raise NotServed(f"a calendar shared with {address!r}, no address: Graph's answer is not documented")
+        if address.lower() in (address_of(owner).lower(), owner.user.userPrincipalName.lower()):
+            raise NotServed("a calendar shared with its own owner: Graph's answer is not documented or recorded")
+        if any(
+            p.emailAddress.address.lower() == address.lower() for p in self._world.calendar_permissions(calendar.id)
+        ):
+            raise NotServed(
+                f"a second permission for {address!r} on one calendar: Graph's answer is not documented or recorded; "
+                "calendarpermission-update changes a role"
+            )
+        permission = wire.CalendarPermission(
+            id=base64.b64encode(f"ExchangePublishedUser.{address}".encode()).decode(),
+            emailAddress=wire.EmailAddress(name=asked.emailAddress.name, address=address),
+            role=asked.role,
+            isInsideOrganization=asked.isInsideOrganization,
+            isRemovable=asked.isRemovable,
+        )
+        self._world.write_calendar_permission(calendar, permission, actor=Actor.AGENT)
+        context = f"{GRAPH}/$metadata#users('{owner.user.id}')/calendars('{calendar.id}')/calendarPermissions/$entity"
+        return Response(wire.with_context(wire.dump(permission), context), media_type=GRAPH_JSON)
 
     # ------------------------------------------------------------------ listing
 
@@ -394,9 +510,10 @@ class Calendar:
             )
         return moment(wire.SentDateTime(dateTime=start)), moment(wire.SentDateTime(dateTime=end))
 
-    def _view(self, request: Request, owner: UserRecord) -> Response:
+    def _view(self, request: Request, owner: UserRecord, calendar: str, where: str) -> Response:
+        """One calendar's view: `/calendarView` is the default calendar's (calendar-list-calendarview)."""
         start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
-        return self._listed(request, owner, self.in_window(self.visible(owner), start, end), "calendarView")
+        return self._listed(request, owner, self.in_window(self.held(owner, calendar), start, end), where)
 
     # ------------------------------------------------------------------ delta
 
@@ -413,11 +530,11 @@ class Calendar:
         except (binascii.Error, ValueError, UnicodeDecodeError) as e:
             raise GraphRefusal(400, "invalidRequest", "The delta or skip token is not valid.") from e
 
-    def _delta(self, request: Request, owner: UserRecord, link: str) -> Response:
-        """`calendarView/delta`: the events in the window, paged by `$skiptoken` to a `@odata.deltaLink`; then the
-        events changed since. An event outside the window that was added, deleted or updated, and one deleted, is
-        `@removed` with the reason `deleted` (event-delta). The mailbox holds one calendar, so its calendar's view
-        (`calendars/{id}/calendarView/delta`) is the mailbox's, and `link` is the one the caller asked through."""
+    def _delta(self, request: Request, owner: UserRecord, link: str, calendar: str) -> Response:
+        """`calendarView/delta` of one calendar (the mailbox's own is its primary calendar's, event-delta): the
+        events in the window, paged by `$skiptoken` to a `@odata.deltaLink`; then the events changed since. An event
+        outside the window that was added, deleted or updated, and one deleted, is `@removed` with the reason
+        `deleted` (event-delta). `link` is the one the caller asked through."""
         for option in ("$select", "$filter", "$orderby", "$search", "$expand", "$top", "$skip", "$count"):
             if option in request.query_params:
                 raise NotServed(f"{option} on a calendar view delta: the page lists it unsupported or documents none")
@@ -429,7 +546,7 @@ class Calendar:
             start, end = self._window(query(request, "startDateTime"), query(request, "endDateTime"))
         changed: list[tuple[int, str]] = []
         for seq, stored in self._world.event_versions():
-            if seq <= since or not self._sees(owner, stored):
+            if seq <= since or not self._sees(owner, stored, calendar):
                 continue
             inside = self.in_window([stored], start, end)
             for one in inside:
@@ -441,7 +558,7 @@ class Calendar:
             changed.extend(
                 (seq, self._removed(stored))
                 for seq, stored in self._world.removed_events(since)
-                if self._sees(owner, stored)
+                if self._sees(owner, stored, calendar)
             )
         changed.sort(key=lambda pair: pair[0])
         prefer = request.headers["prefer"] if "prefer" in request.headers else ""
@@ -464,8 +581,9 @@ class Calendar:
         self._world.saw(user_ref(owner.user.id), Operation.SEARCH)
         return Response(body, media_type=GRAPH_JSON, headers=preference_applied(request))
 
-    def _sees(self, user: UserRecord, stored: wire.StoredEvent) -> bool:
-        return stored.organizer_id == user.user.id or self.attends(stored, user) is not None
+    def _sees(self, user: UserRecord, stored: wire.StoredEvent, calendar: str) -> bool:
+        mine = stored.organizer_id == user.user.id or self.attends(stored, user) is not None
+        return mine and self.calendar_of(stored, user) == calendar
 
     @staticmethod
     def _removed(stored: wire.StoredEvent) -> str:
@@ -499,7 +617,9 @@ class Calendar:
             raise NotServed(f"the body content type {sent.contentType!r}: Graph's bodyType is text or html")
         return wire.ItemBody(contentType=kind, content=sent.content)  # type: ignore[arg-type]
 
-    async def _create(self, request: Request, owner: UserRecord) -> Response:
+    async def _create(self, request: Request, owner: UserRecord, calendar: str | None) -> Response:
+        """`POST …/events`: an event in the calendar the path names (`calendar`, None for the default), 201 with the
+        event (user-post-events, calendar-post-events)."""
         try:
             asked = wire.read(wire.EventRequest, await request.body())
         except wire.Unreadable as e:
@@ -543,6 +663,9 @@ class Calendar:
             recurrence=series.kept(asked.recurrence, starts) if asked.recurrence is not None else None,
             show_as=asked.showAs or "busy",
             all_day=bool(asked.isAllDay),
+            calendar=calendar,
+            reminder_on=asked.isReminderOn if asked.isReminderOn is not None else True,
+            reminder_minutes=asked.reminderMinutesBeforeStart if asked.reminderMinutesBeforeStart is not None else 15,
         )
         if stored.event.attendees:
             stored = await self._invite(stored, owner, stored.event.attendees)
@@ -565,9 +688,14 @@ class Calendar:
         recurrence: wire.Recurrence | None = None,
         show_as: wire.ShowAs = "busy",
         all_day: bool = False,
+        calendar: str | None = None,
+        reminder_on: bool = True,
+        reminder_minutes: int = 15,
     ) -> wire.StoredEvent:
-        """Write a new event in `organizer`'s calendar, inviting nobody yet. `seeded` names an event the scenario
-        seeds, so its id is derived from what it is rather than where the log stands."""
+        """Write a new event in `organizer`'s calendar (`calendar`, None for their default), inviting nobody yet.
+        `seeded` names an event the scenario seeds, so its id is derived from what it is rather than where the log
+        stands. A reminder left unsaid is on, 15 minutes before, as calendar-post-events's example answer shows for
+        an event created without one."""
         now = graph_time(self._clock.now())
         made = ("seeded event", seeded) if seeded is not None else ("event", str(self._world.next_seq()))
         event_id = outlook_id(organizer.user.id, *made)
@@ -593,6 +721,8 @@ class Calendar:
                 recurrence=recurrence,
                 showAs=show_as,
                 isAllDay=all_day,
+                isReminderOn=reminder_on,
+                reminderMinutesBeforeStart=reminder_minutes,
                 responseStatus=wire.ResponseStatus(response=wire.ResponseKind.ORGANIZER, time=now),
                 webLink=f"https://outlook.office365.com/owa/?itemid={event_id}&exvsurl=1&path=/calendar/item",
             ),
@@ -600,6 +730,7 @@ class Calendar:
             starts=starts,
             ends=ends,
             conversation=outlook_id(event_id, "conversation"),
+            calendar=calendar,
         )
         self._world.write_event(
             stored, operation=Operation.CREATE, actor=actor, after=RecordSnapshot(resource="event", text=subject)
@@ -698,6 +829,12 @@ class Calendar:
                         "attendees": attendees,
                         "showAs": asked.showAs if asked.showAs is not None else event.showAs,
                         "isAllDay": all_day,
+                        "isReminderOn": asked.isReminderOn if asked.isReminderOn is not None else event.isReminderOn,
+                        "reminderMinutesBeforeStart": (
+                            asked.reminderMinutesBeforeStart
+                            if asked.reminderMinutesBeforeStart is not None
+                            else event.reminderMinutesBeforeStart
+                        ),
                         "lastModifiedDateTime": now,
                         "changeKey": outlook_id(event.id, now),
                         "odata_etag": weak_etag(outlook_id(event.id, now)),

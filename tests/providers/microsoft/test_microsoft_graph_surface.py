@@ -309,6 +309,13 @@ async def _call(surface: Surface, method: str, template: str) -> tuple[str, http
                     {"roles": ["owner"], "user@odata.bind": f"{GRAPH}/users('{who}')"} for who in surface.people
                 ],
             }
+        if template.endswith("/calendars"):
+            sent = {"name": f"Projects {template.split('/')[1]}"}
+        if template.endswith("/calendarPermissions"):
+            sent = {
+                "emailAddress": {"address": "sofia@example.com" if template.startswith("/me") else "dania@example.com"},
+                "role": "write",
+            }
         if template.startswith("/subscriptions"):
             later = "2026-09-14T09:00:00Z"
             sent = (

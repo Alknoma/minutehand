@@ -24,6 +24,8 @@
 | mail message (one mailbox's copy) | MESSAGE | its message id          | `mailbox:<object id>` |
 | calendar event            | RECORD       | `event:<event id>`             | `calendar:<organizer's object id>` |
 | a response to an event    | RECORD       | `response:<event id>:<seq>`    | `responses:<event id>` |
+| a calendar a user made    | RECORD       | `cal:<calendar id>`            | `calendars:<owner's object id>` |
+| a calendar's permission   | RECORD       | `calperm:<calendar id>:<permission id>` | `calperms:<calendar id>` |
 
 The prefixes keep the external ids of different records apart in one namespace; nothing reads a prefix to learn
 what a record is: every read knows the kind it asked for from the parent it listed under.
@@ -81,6 +83,8 @@ OWED = "owed"
 MAILBOX = "mailbox:{user}"
 CALENDAR = "calendar:{user}"
 RESPONSES = "responses:{event}"
+CALENDARS = "calendars:{user}"
+CALENDAR_PERMISSIONS = "calperms:{calendar}"
 
 SERVICE_URL = "https://smba.trafficmanager.net/teams/"
 """The connector every activity names as its `serviceUrl`; a bot sends its answers there."""
@@ -360,6 +364,14 @@ def event_ref(event: str) -> EntityRef:
 
 def response_ref(event: str, seq: int) -> EntityRef:
     return ref(EntityKind.RECORD, f"response:{event}:{seq}")
+
+
+def calendar_ref(calendar: str) -> EntityRef:
+    return ref(EntityKind.RECORD, f"cal:{calendar}")
+
+
+def calendar_permission_ref(calendar: str, permission: str) -> EntityRef:
+    return ref(EntityKind.RECORD, f"calperm:{calendar}:{permission}")
 
 
 def subscription_ref(subscription: str) -> EntityRef:
@@ -822,4 +834,39 @@ class MicrosoftWorld:
             actor=actor,
             parent=CALENDAR.format(user=stored.organizer_id),
             after=after,
+        )
+
+    def calendars(self, user: str) -> list[wire.StoredCalendar]:
+        """The calendars a user made beside their default one, in the order they were made."""
+        return sorted(
+            self._all(wire.StoredCalendar, EntityKind.RECORD, CALENDARS.format(user=user)),
+            key=lambda c: self.store.versions(calendar_ref(c.calendar.id))[0].seq,
+        )
+
+    def write_calendar(self, stored: wire.StoredCalendar, *, actor: Actor) -> WorldEvent:
+        return self.write(
+            calendar_ref(stored.calendar.id),
+            stored,
+            operation=Operation.CREATE,
+            actor=actor,
+            parent=CALENDARS.format(user=stored.owner_id),
+            after=RecordSnapshot(resource="calendar", text=stored.calendar.name),
+        )
+
+    def calendar_permissions(self, calendar: str) -> list[wire.CalendarPermission]:
+        return self._all(wire.CalendarPermission, EntityKind.RECORD, CALENDAR_PERMISSIONS.format(calendar=calendar))
+
+    def write_calendar_permission(
+        self, calendar: wire.CalendarResource, permission: wire.CalendarPermission, *, actor: Actor
+    ) -> WorldEvent:
+        return self.write(
+            calendar_permission_ref(calendar.id, permission.id),
+            permission,
+            operation=Operation.CREATE,
+            actor=actor,
+            parent=CALENDAR_PERMISSIONS.format(calendar=calendar.id),
+            after=RecordSnapshot(
+                resource="calendarPermission",
+                text=f"{calendar.name} {permission.emailAddress.address} {permission.role.value}",
+            ),
         )
