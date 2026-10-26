@@ -1362,6 +1362,12 @@ class Event(Aliased):
     isAllDay: bool = False
     isCancelled: bool = False
     isOnlineMeeting: bool = False
+    isReminderOn: bool = Field(
+        default=True, description="As sent; when a create leaves it out, true, as calendar-post-events answers"
+    )
+    reminderMinutesBeforeStart: int = Field(
+        default=15, description="As sent; when a create leaves it out, 15, as calendar-post-events answers"
+    )
     showAs: ShowAs = "busy"
     type: Literal["singleInstance", "occurrence", "exception", "seriesMaster"] = "singleInstance"
     seriesMasterId: str | None = None
@@ -1380,10 +1386,13 @@ class StoredEvent(Model):
     conversation: str
     request: str | None = Field(default=None, description="The meeting request message, when it invited anyone")
     attachments: list[StoredAttachment] = []
+    calendar: str | None = Field(
+        default=None, description="The organizer's calendar that holds it, by id; None, their default calendar"
+    )
 
 
 class CalendarResource(Aliased):
-    """A user's one calendar, the default."""
+    """A user's calendar: their default one, or one made with `POST /calendars` (user-post-calendars)."""
 
     id: str
     name: str = "Calendar"
@@ -1393,6 +1402,57 @@ class CalendarResource(Aliased):
     canShare: bool = True
     canViewPrivateItems: bool = True
     owner: EmailAddress
+
+
+class StoredCalendar(Model):
+    """Minutehand's own: a calendar a user made beside their default one, and whose it is."""
+
+    calendar: CalendarResource
+    owner_id: str
+
+
+class SentCalendar(Lenient):
+    """`POST /calendars`: a property other than `name` is refused by name (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    name: str
+
+
+class CalendarRole(StrEnum):
+    """`calendarRoleType` (calendarpermission)."""
+
+    NONE = "none"
+    FREE_BUSY_READ = "freeBusyRead"
+    LIMITED_READ = "limitedRead"
+    READ = "read"
+    WRITE = "write"
+    DELEGATE_WITHOUT_PRIVATE_EVENT_ACCESS = "delegateWithoutPrivateEventAccess"
+    DELEGATE_WITH_PRIVATE_EVENT_ACCESS = "delegateWithPrivateEventAccess"
+    CUSTOM = "custom"
+
+
+class CalendarPermission(Aliased):
+    """Who a calendar is shared with or delegated to, and as what (calendarpermission). `isInsideOrganization` and
+    `isRemovable` are as sent and left out when not sent; `allowedRoles` is left out (no page says how Exchange
+    computes it)."""
+
+    id: str
+    emailAddress: EmailAddress
+    role: CalendarRole
+    isInsideOrganization: bool | None = None
+    isRemovable: bool | None = None
+
+
+class SentCalendarPermission(Lenient):
+    """`POST …/calendarPermissions`: a property other than these is refused by name (`model_extra`)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow", populate_by_name=True)
+
+    emailAddress: SentEmailAddress
+    role: CalendarRole
+    isInsideOrganization: bool | None = None
+    isRemovable: bool | None = None
 
 
 class SentAttendee(Lenient):
@@ -1450,6 +1510,8 @@ class EventRequest(Lenient):
     isOnlineMeeting: bool | None = None
     isAllDay: bool | None = None
     showAs: ShowAs | None = None
+    isReminderOn: bool | None = None
+    reminderMinutesBeforeStart: int | None = None
 
 
 class CancelRequest(Lenient):

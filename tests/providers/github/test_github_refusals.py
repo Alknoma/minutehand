@@ -33,7 +33,7 @@ async def test_a_call_with_no_authorization_acts_as_the_first_user_on_rest_graph
         me = await http.get("/user")
         ledger = await http.get("/repos/lanternworks/ledger")
         viewer = await http.post("/graphql", json={"query": "query { viewer { login } }"})
-        found = await http.get("/search/code", params={"q": "retry repo:lanternworks/ledger"})
+        found = await http.get("/search/code", params={"q": "retry_with_backoff repo:lanternworks/ledger"})
     assert body(me)["login"] == "iris-calder" and me.headers["X-RateLimit-Limit"] == "5000"
     assert body(ledger)["full_name"] == "lanternworks/ledger"
     assert viewer.json() == {"data": {"viewer": {"login": "iris-calder"}}}

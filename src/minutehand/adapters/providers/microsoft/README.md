@@ -12,13 +12,13 @@ manifest, and because the tenant, its bot and its users are one directory every 
 | `login.microsoftonline.com` | `signin.py` | Token endpoint (`client_credentials`, `authorization_code`, `refresh_token`), `authorize` with no browser, OpenID metadata, key set |
 | `login.botframework.com` | `signin.py` | The Bot Framework's OpenID metadata and key set (endorsed `msteams`) |
 | `smba.trafficmanager.net` | `connector.py` | Send, reply, update, delete, create a 1:1 conversation, members, paged members, one member, team details, team channels |
-| `graph.microsoft.com` | `graph_teams.py`, `graph_files.py`, `graph_mail.py`, `graph_calendar.py`, `subscriptions.py` | Users, `/me`, teams, `joinedTeams`, `primaryChannel`, channels, chats (made, one-on-one or group), their messages (posted, replied to, `delta`) and members; sites, drives, items by id and path, children, content, upload (simple and session), folders, move, rename, copy, delete, invite, sharing links, permissions, search, `delta`; `sendMail`, messages and mail folders listed, read, marked read, replied to (`reply`, `replyAll`), drafted (`POST /messages`, changed, `send`, `createReply`, `createReplyAll`, `createForward`), `forward`, `move`, `copy`, attachments (files, up to 3 MB), deleted, `delta`; events made (daily and weekly series too, with `instances`), read, listed, changed, deleted, cancelled and answered (`accept`, `tentativelyAccept`, `decline`), file attachments, `calendarView` and its `delta`, `getSchedule`; subscriptions |
+| `graph.microsoft.com` | `graph_teams.py`, `graph_files.py`, `graph_mail.py`, `graph_calendar.py`, `subscriptions.py` | Users, `/me`, teams, `joinedTeams`, `primaryChannel`, channels, chats (made, one-on-one or group), their messages (posted, replied to, `delta`) and members; sites, drives, items by id and path, children, content, upload (simple and session), folders, move, rename, copy, delete, invite, sharing links, permissions, search, `delta`; `sendMail`, messages and mail folders listed, read, marked read, replied to (`reply`, `replyAll`), drafted (`POST /messages`, changed, `send`, `createReply`, `createReplyAll`, `createForward`), `forward`, `move`, `copy`, attachments (files, up to 3 MB), deleted, `delta`; events made (daily and weekly series too, with `instances`), read, listed, changed, deleted, cancelled and answered (`accept`, `tentativelyAccept`, `decline`), file attachments, `calendarView` and its `delta`, `getSchedule`; calendars made (`POST /calendars`) and shared (`calendarPermissions`), and each one's events and `calendarView`; subscriptions |
 | `*.sharepoint.com` | `app.py` | The pre-authenticated download, upload-session and copy-monitor URLs Graph hands out |
 
 ## How it behaves
 
 - **Graph's surface is Microsoft's.** `surface.SERVED` lists the operations of Graph `v1.0`'s published OpenAPI
-  description this provider answers (200 of the 2,103 in the subset kept under `tests/data/microsoft_graph_v1/`);
+  description this provider answers (224 of the 2,103 in the subset kept under `tests/data/microsoft_graph_v1/`);
   every other call is refused by name, 501 `not_implemented`, before any surface reads it. So is any call whose
   answer Microsoft does not document (CLAIMS.md, "Refused by name"), and any property of a request body that would
   otherwise be dropped: what is sent is kept as sent, and Graph generates only what Graph assigns.
@@ -75,7 +75,12 @@ manifest, and because the tenant, its bot and its users are one directory every 
   reaches only their own mailbox (403 `ErrorAccessDenied`); an application's reaches all.
 - **Calendars** (`graph_calendar.py`): `/events`, `/calendar/events`, `/calendarView` and `/calendar/calendarView`
   (`startDateTime` and `endDateTime` required), `calendarView/delta` of the mailbox or of its calendar
-  (`/calendars/{id}/calendarView/delta`, whose links stay on that calendar), `/calendar`, `/calendars`, `/calendar/getSchedule`. An event is one
+  (`/calendars/{id}/calendarView/delta`, whose links stay on that calendar), `/calendar`, `/calendars`, `/calendar/getSchedule`.
+  A calendar made (`POST /calendars`) is listed after the default one and holds its own events
+  (`/calendars/{id}/events`, `/calendars/{id}/calendarView`, its own view `delta`); `/events` lists every calendar's
+  events, `/calendarView` the default calendar's. Sharing one (`POST /calendars/{id}/calendarPermissions`) is
+  recorded as sent and changes nothing in the sharee's mailbox. An event's reminder (`isReminderOn`,
+  `reminderMinutesBeforeStart`) is kept as sent; `If-Match` on a calendar call is 501. An event is one
   item in its organizer's calendar, seen with the same id from each attendee's; `isOrganizer` and
   `responseStatus` are the reading mailbox's. Times are answered in UTC; a `timeZone` sent is UTC or an IANA name.
   An event made with attendees sends a meeting request (`eventMessageRequest`, `meetingMessageType:
@@ -151,8 +156,8 @@ every pushed activity is.
 
 - Every Graph operation outside `surface.SERVED` is 501 by name: among them `$batch`, sending chat or channel
   messages through Graph (a bot sends through the connector), drafts (`POST /messages`, `createReply`, `send`),
-  `forward`, `move`, `copy`, attachments, child folders, event `delta`, `instances`, `cancel`, `forward`, other
-  calendars, thumbnails, versions, check-in and check-out. `$orderby` beyond a folder's `name`,
+  `forward`, `move`, `copy`, attachments, child folders, event `delta`, `instances`, `cancel`, `forward`, a
+  calendar's update, deletion and permission list, thumbnails, versions, check-in and check-out. `$orderby` beyond a folder's `name`,
   `lastModifiedDateTime` and `size` and what mail and events list above, `$search`, `$count`, `ConsistencyLevel`,
   an unread `$filter` clause or an `or` are 501 too.
 - Mail has no categories or flags (a `PATCH` of anything but `isRead`, or of a draft's subject, body, recipients or importance, is 501), and `sendMail` always saves to Sent

@@ -79,7 +79,10 @@ under "What GitHub would refuse" below, with the tests that hold the provider to
 | `repo:` scopes the search | documented | S `test_a_repo_qualifier_scopes_the_search_and_one_the_token_cannot_see_is_refused_422` | https://docs.github.com/en/search-github/searching-on-github/searching-code |
 | An unreachable `repo:` is 422 "cannot be searched" | documented | (same test) | https://docs.github.com/en/rest/search/search#access-errors-or-missing-search-results |
 | `language:` filters by language | documented | S `test_a_language_qualifier_keeps_only_files_in_that_language` | https://docs.github.com/en/search-github/searching-on-github/searching-code |
-| Qualifiers with no term are 422 `invalid` | documented | S `test_a_query_of_qualifiers_alone_is_refused_422_invalid` | https://docs.github.com/en/rest/search/search#search-code |
+| `size:` keeps files of that many bytes: `n`, `>n`, `>=n`, `<n`, `<=n`, `n..n`, `n..*`, `*..n` | documented | S `test_a_size_qualifier_keeps_files_of_that_many_bytes` | https://docs.github.com/en/search-github/searching-on-github/searching-code, https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax |
+| `fork:true` adds forks, `fork:only` keeps only forks (no repository here is one) | documented | S `test_fork_true_adds_forks_and_fork_only_keeps_only_them` | https://docs.github.com/en/search-github/searching-on-github/searching-in-forks |
+| Qualifiers with no term are 422 `invalid`, unless one is `filename:`, which needs no term | documented | S `test_a_query_of_qualifiers_alone_is_refused_422_invalid`, `test_a_filename_search_needs_no_term` | https://docs.github.com/en/rest/search/search#search-code, https://docs.github.com/en/search-github/searching-on-github/searching-code |
+| Without `in:`, only the file contents are searched, not the path | documented | S `test_without_in_only_the_file_contents_are_searched` | https://docs.github.com/en/search-github/searching-on-github/searching-code |
 | An empty `q` is 422 `missing` | observed, not recorded | S `test_an_empty_query_is_refused_422_missing` | |
 | Results page by `per_page`/`page`, same `total_count` on each page | documented | S `test_results_are_paged_and_every_page_reports_the_same_total` | https://docs.github.com/en/rest/search/search#search-code |
 | `text_matches` only under the text-match media type | documented | S `test_text_matches_come_only_when_the_text_match_media_type_is_asked_for` | https://docs.github.com/en/rest/search/search#text-match-metadata |
@@ -293,6 +296,12 @@ Every operation of `tests/providers/github/openapi/api.github.com.subset.json` t
 169 operations, 48 served, 121 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
 is any other path. `X-GitHub-Api-Version: 2026-03-10`, which GitHub answers (recorded), is refused by name the same
 way (F `test_an_api_version_github_serves_and_this_provider_does_not_is_refused_by_name`).
+
+Code search takes the legacy code search syntax
+(https://docs.github.com/en/search-github/searching-on-github/searching-code), which documents no `OR`, `NOT`,
+negated qualifier (`-path:…`), `is:` or `symbol:` (those are the newer syntax's, or other searches'), and of `size:`
+and `fork:` only the values above. A `q` holding one is answered 501 naming it, not a 422 GitHub was never seen to
+give (S `test_what_the_legacy_syntax_does_not_document_is_refused_501_by_name`).
 
 ## Contradicted by the documentation (the old emulator was wrong)
 
