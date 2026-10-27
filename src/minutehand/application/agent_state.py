@@ -57,8 +57,8 @@ TAKING = "taking"
 """In `AGENT_STATE`: the state being saved, before the checkpoint it belongs to is written."""
 
 
-HELD_EXPORT_PATIENCE = timedelta(seconds=60)
-"""Real time an export may take under a held clock before the clock is released for it. A store whose export waits
+HELD_EXPORT_PATIENCE = timedelta(seconds=15)
+"""Real time an export may take under a held clock before the clock is released for it: an export takes seconds (Ayven's, a direct request to its emulators), and it hung under a hold on two of the four checkpoints of one continued run. A store whose export waits
 on a timer of its own never finishes while the clock stands still (the Firestore emulator's did, an Ayven run,
 2026-10-28: an export begun under a hold sat for 29 minutes and would have sat forever); released, it finishes, and
 the reads around the export judge whether the agent moved while it ran, as without a hold."""
