@@ -32,7 +32,7 @@ from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import FindingKind, RunView
 from minutehand.domain.clock import DueSource
 from minutehand.domain.experiment import Fork
-from minutehand.domain.memory import DueRecords, MemoryPut, MemoryWrite, SeededMemory, instant
+from minutehand.domain.memory import DueRecords, MemoryPut, MemoryWrite, MemoryWriteOne, SeededMemory, instant
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import ProviderKey, Scenario, Silent
 from minutehand.ports.clock import Clock
@@ -655,3 +655,91 @@ async def test_a_backlog_record_moved_later_counts_as_taken(tmp_path: Path) -> N
     record, store = await _with(tmp_path, _tasks(1, 2), [TASKS], step)
     assert _woke_at(record) == [HOUR + P, HOUR + 2 * P, HOUR + timedelta(days=1) + P]
     assert _findings(store, record, [TASKS]) == []
+
+
+WORK = timedelta(seconds=10)
+"""How long one job takes the agent below: real time, which passes on its sandbox's clock while it works."""
+
+
+class _WorkThenSleep(_Poller):
+    """The agent's sandbox, and a poller that runs each job due inline and then sleeps `P` from when its work ended:
+    `while True: run_due(); sleep(P)`, as a scheduler that awaits the work it dispatches is written. Its clock runs on
+    by `WORK` while a job runs, and each job, halfway through, sets the next job's run-at to the moment it writes it
+    (a next check due at once); with `one_per_look`, it runs only the first job due at each look, as a poller that drains a
+    backlog a record at a time. A poll whose timer is not yet due when the clock is moved does not run: no deadline in
+    the sandbox is a wake, and its clock moves after the wake only by the real time between wakes."""
+
+    def __init__(self, *, one_per_look: bool = False) -> None:
+        super().__init__(close)
+        self._looks_at = T0 + P
+        self._one_per_look = one_per_look
+
+    def _now(self) -> datetime:
+        return T0 + timedelta(microseconds=(self._now_ns - int(T0.timestamp()) * SECOND) / 1000)
+
+    async def advance(self, nanoseconds: int) -> None:
+        self._now_ns += nanoseconds
+        assert self._store is not None, "the run moved the sandbox's clock before it mounted its world"
+        if self._now() >= self._looks_at:
+            self._look(self._store)
+            self._looks_at = self._now() + P
+
+    def _look(self, store: Store) -> None:
+        for key, body in held(store, "due", "jobs/"):
+            found = value_of(body)
+            assert isinstance(found, dict)
+            if found["state"] != "open" or not _passed(found, "run_at", self._now()):
+                continue
+            self._now_ns += int(WORK.total_seconds()) * SECOND // 2
+            written = self._now()
+            ran = {**found, "state": "done", "ran_at": written.isoformat()}
+            writes: list[MemoryWriteOne] = [MemoryPut(collection="due", key=key, value=ran)]
+            if key == "jobs/a":
+                writes.append(MemoryPut(collection="due", key="jobs/b", value=job(written - T0)))
+            remember(store, MemoryWrite(writes=writes), Versions())
+            self._now_ns += int(WORK.total_seconds()) * SECOND // 2
+            if self._one_per_look:
+                return
+
+
+async def test_a_record_its_poller_wrote_mid_work_is_woken_for_a_poll_after_that_work_ended(tmp_path: Path) -> None:
+    """The job at `T` sets job b due at the moment it writes it, `WORK / 2` before it ends. The poller sleeps `P` from
+    the end of its work, so it looks for b `P` after the work ended, not `P` after b's instant: a wake at b's instant
+    plus `P` comes `WORK / 2` before the poller's timer and finds the agent idle, and b's job then runs on the real
+    clock after that wake has ended, in no wake at all."""
+    record, store = await _worked(tmp_path, {"jobs/a": job(HOUR)}, _WorkThenSleep())
+    assert _woke_at(record) == [HOUR + P, HOUR + P + WORK + P], "b's wake did not reach its poller's next look"
+    assert _value(store, "jobs/b")["state"] == "done", "b's poller never looked in a wake: b was left due"
+    assert _findings(store, record, [JOBS]) == []
+
+
+async def test_a_backlog_drained_by_a_poller_that_sleeps_after_its_work_is_woken_for_a_poll_after_that_work(
+    tmp_path: Path,
+) -> None:
+    """Two jobs due at `T`, taken one per look by a poller that sleeps `P` from the end of its work: the second is
+    looked for `P` after the first job's work ended, not `P` after the wake that took the first began."""
+    record, store = await _worked(
+        tmp_path, {"jobs/x": job(HOUR), "jobs/y": job(HOUR)}, _WorkThenSleep(one_per_look=True)
+    )
+    assert _woke_at(record) == [HOUR + P, HOUR + P + WORK + P], "the second job's wake did not reach the next look"
+    assert _value(store, "jobs/y")["state"] == "done", "the backlog's second job was left due"
+    assert _findings(store, record, [JOBS]) == []
+
+
+async def _worked(
+    tmp_path: Path, jobs: dict[str, dict[str, JsonValue]], sandbox: _WorkThenSleep
+) -> tuple[RunRecord, SqliteStore]:
+    played = scenario(jobs)
+    clock = RunClock(T0)
+    store = SqliteStore(tmp_path / "world.db", "parent", clock)
+    record = await run_scenario(
+        scenario=played,
+        agent=AGENT.model_copy(update={"due": [JOBS.model_copy(update={"poll": P})]}),
+        sandbox=sandbox,
+        mounts=sandbox,
+        store=store,
+        clock=clock,
+        services=_services(build()),
+        replier=PeopleReplier(played, None, []),
+    )
+    return record, store
