@@ -10,15 +10,19 @@ tickets' fates. Nothing is ever asked of the agent.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from minutehand.application import due_records, memory
+from minutehand.application import agent_state, due_records, memory
 from minutehand.application.checkpoint import (
+    CHECKPOINT,
     Checkpoint,
+    ExportedState,
     Pending,
     PendingBooking,
     PendingCall,
@@ -33,6 +37,7 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_untakeable, refuse_unusable
+from minutehand.application.interruption import Interruption
 from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
@@ -276,7 +281,12 @@ class Orchestrator:
         pins: Sequence[ReplyAt] = (),
         replay: Replay | None = None,
         start: Callable[[], Awaitable[None]] | None = None,
+        agent_state: Path | None = None,
+        interruption: Interruption | None = None,
     ) -> None:
+        """`agent_state` is the run's folder for the agent's own state, saved at each checkpoint after a wake when
+        the agent file names `sandbox.export_state` (`application.agent_state`); `interruption` is a signal asking
+        the run to stop, which ends it `INTERRUPTED` (`application.interruption`)."""
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
         if inboxes is not None:
@@ -317,6 +327,8 @@ class Orchestrator:
         self._environment = environment
         self._replay = replay
         self._start_agent = start
+        self._agent_state = agent_state if agent.sandbox.export_state is not None else None
+        self._interruption = interruption
         self._inboxes = inboxes
         self._outside = outside
         self._desk = desk
@@ -396,11 +408,8 @@ class Orchestrator:
             )
         self._watcher.look()
         self._record_new()
-        self._checkpoint()
-        stop = await self._start()
-        if stop is None:
-            stop = await self._loop()
-        return await self._end(stop, started)
+        await self._checkpoint(export=False)  # setup: the agent's sandbox does not exist yet
+        return await self._end(await self._played_on(start=True), started)
 
     async def resume(self, checkpoint: Checkpoint) -> RunRecord:
         """Carry on from a checkpoint in a store that already holds the world up to it (a fork), with the agent's
@@ -422,10 +431,32 @@ class Orchestrator:
         self._untaken = list(checkpoint.untaken)
         self._seen = self._store.head()
         self._watcher.look()
-        stop = await self._start() if checkpoint.wake == 0 else None
-        if stop is None:
-            stop = await self._loop()
-        return await self._end(stop, started)
+        return await self._end(await self._played_on(start=checkpoint.wake == 0), started)
+
+    async def _played_on(self, *, start: bool) -> StopReason:
+        """The START wake when `start`, then wake after wake until the run stops by itself, or a signal stops it
+        (`application.interruption`): the wake in progress is abandoned where it stood, and the newest checkpoint,
+        written whole before it began, is where a fork carries the run on."""
+        interruption = self._interruption
+        if interruption is None:
+            return await self._wakes_from(start=start)
+        try:
+            with interruption.stopping():
+                return await self._wakes_from(start=start)
+        except asyncio.CancelledError:
+            if not interruption.taken():
+                raise
+            interruption.settled()
+        last = max((v.seq for v in self._store.versions(CHECKPOINT)), default=0)
+        self._failure = (
+            f"stopped by {interruption.received} during wake {self._clock.wake()}, which was abandoned where it stood; "
+            f"the last checkpoint, at seq {last}, is where `minutehand fork --at {last}` carries the run on"
+        )
+        return StopReason.INTERRUPTED
+
+    async def _wakes_from(self, *, start: bool) -> StopReason:
+        stop = await self._start() if start else None
+        return stop if stop is not None else await self._loop()
 
     def mount(self) -> None:
         """Serve the run's providers to the agent, over this run's world, from now on: before the agent is
@@ -629,18 +660,7 @@ class Orchestrator:
             return
         await self._jump(deadline)
         await self._release()
-        write_checkpoint(
-            self._store,
-            Checkpoint(
-                wake=self._clock.wake(),
-                now=self._clock.now(),
-                replies=len(self._store.replies()),
-                untaken=self._untaken,
-                pending=self._dues.items,
-                agent=self._remembered(),
-            ),
-        )
-        self._record_new()
+        await self._checkpoint()
 
     async def _fire(self, fired: list[Pending]) -> None:
         """Change the world for what is due, in a fixed order: people's moves on what is pending on them (an answer
@@ -833,7 +853,7 @@ class Orchestrator:
             self._telemetry.wake_ended(wake)
         if failed:
             return StopReason.AGENT_FAILED
-        self._checkpoint()
+        await self._checkpoint()
         if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
@@ -914,26 +934,36 @@ class Orchestrator:
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )
 
-    def _checkpoint(self) -> None:
-        write_checkpoint(
-            self._store,
-            Checkpoint(
-                wake=self._clock.wake(),
-                now=self._clock.now(),
-                replies=len(self._store.replies()),
-                untaken=self._untaken,
-                pending=self._dues.items,
-                agent=self._remembered(),
-            ),
-        )
-        self._record_new()
+    async def _checkpoint(self, *, export: bool = True) -> None:
+        """Write a checkpoint, with the agent's own state saved first when the agent file says how and `export`
+        (every checkpoint after a wake, while the sandbox is idle): the seq is the log's to give, so what was saved
+        is named for it once the checkpoint is written (`application.agent_state`). A signal that arrives meanwhile
+        waits until both are done, so the newest checkpoint is whole (`Interruption.held`)."""
+        with self._interruption.held() if self._interruption is not None else contextlib.nullcontext():
+            folder = self._agent_state if export else None
+            exported = await agent_state.save(self._sandbox, folder) if folder is not None else None
+            seq = write_checkpoint(
+                self._store,
+                Checkpoint(
+                    wake=self._clock.wake(),
+                    now=self._clock.now(),
+                    replies=len(self._store.replies()),
+                    untaken=self._untaken,
+                    pending=self._dues.items,
+                    agent=self._remembered(exported),
+                ),
+            )
+            if folder is not None and exported is not None and exported.saved:
+                agent_state.keep(folder, seq)
+            self._record_new()
 
-    def _remembered(self) -> Remembered:
-        """The agent's state at this moment as the run holds it: its memory, and what the run can see of state it
-        keeps elsewhere."""
+    def _remembered(self, exported: ExportedState | None) -> Remembered:
+        """The agent's state at this moment as the run holds it: its memory, what the run can see of state it
+        keeps elsewhere, and whether its own state was saved here."""
         return Remembered(
             memory=memory.store_digest(self._store),
             outside=self._outside.outside() if self._outside is not None else [],
+            exported=exported,
         )
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
@@ -1085,13 +1115,16 @@ async def run_scenario(
     desk: ServiceDesk | None = None,
     replay: Replay | None = None,
     start: Callable[[], Awaitable[None]] | None = None,
+    agent_state: Path | None = None,
+    interruption: Interruption | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `start` starts the agent's program (its sandbox), once the world is seeded.
     `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which the sandbox needs to fall idle;
     `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
     beside its memory at each checkpoint; `replay` is the record answering the agent's model calls, when this is a
-    replay of a finished run."""
+    replay of a finished run; `agent_state` is where the agent's own state is saved at each checkpoint after a wake;
+    `interruption` is a signal that ends the run `INTERRUPTED`, kept like any other."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -1115,4 +1148,6 @@ async def run_scenario(
         desk=desk,
         replay=replay,
         start=start,
+        agent_state=agent_state,
+        interruption=interruption,
     ).run()

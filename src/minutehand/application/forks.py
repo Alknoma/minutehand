@@ -352,8 +352,14 @@ def summary(fork: Fork, scenario: Scenario) -> str:
 
 def restore_account(restored: Restored) -> RestoreAccount:
     """How the fork's agent was brought back at its start, in words: its memory is the checkpoint's, and its sandbox
-    was played back to the checkpoint from the agent's recorded inputs."""
-    if restored.verified:
+    was played back to the checkpoint from the agent's recorded inputs, or started from the agent's own state saved
+    there."""
+    if restored.agent_state is not None:
+        words = (
+            "its memory equals the checkpoint's; its program was started from its own state saved at the checkpoint "
+            f"({restored.agent_state}), with nothing played back, so nothing proves it stands where its parent stood"
+        )
+    elif restored.verified:
         words = (
             "verified: its memory equals the checkpoint's, and its sandbox was played back to the checkpoint from "
             f"the agent's recorded inputs ({restored.replayed_calls} calls answered from the record)"

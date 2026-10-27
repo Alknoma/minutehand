@@ -4,9 +4,11 @@ and its clock, and moving its clock with the run's."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from pydantic import ConfigDict, Field
 
@@ -45,7 +47,14 @@ async def _run(argv: list[str]) -> str:
         )
     except OSError as e:
         raise SandboxFailed(f"{argv[0]}: {e}") from e
-    out, err = await process.communicate()
+    try:
+        out, err = await process.communicate()
+    except asyncio.CancelledError:
+        # the run was stopped while the command ran (`application.interruption`): it is not left behind
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise
     if process.returncode != 0:
         raise SandboxFailed(f"{' '.join(argv)} exited {process.returncode}: {err.decode(errors='replace').strip()}")
     return out.decode(errors="replace")
@@ -73,6 +82,23 @@ class SandboxClock:
         if nanoseconds == 0:
             return
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
+
+    @property
+    def exports(self) -> bool:
+        """Whether the agent file names a command that saves the agent's own state (`Sandbox.export_state`)."""
+        return self._source.export_state is not None
+
+    async def export(self, directory: Path) -> str | None:
+        """Save the agent's own state into `directory`, which exists and is empty, by the agent file's
+        `export_state`, run as `deadlines` and `advance` are: None once it exited 0, else what it said. Its failure
+        is the checkpoint's to keep, never the run's: a fork from there plays the agent back instead."""
+        if self._source.export_state is None:
+            raise ValueError("the agent file names no `sandbox.export_state` to save the agent's state with")
+        try:
+            await _run([part.replace("{dir}", str(directory)) for part in self._source.export_state])
+        except SandboxFailed as e:
+            return str(e)
+        return None
 
     async def sync(self, to: datetime) -> None:
         """Bring the sandbox's clock up to the run's, `to`, when it is behind. A sandbox ahead of `to` is left

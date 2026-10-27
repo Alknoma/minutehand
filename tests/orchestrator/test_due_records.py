@@ -243,8 +243,8 @@ class _Program:
 
     command: Sequence[str] = ("agent",)
 
-    async def start(self) -> None:
-        return None
+    async def start(self, environment: Mapping[str, str] | None = None) -> None:
+        del environment
 
     async def stop(self) -> None:
         return None

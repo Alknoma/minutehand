@@ -34,12 +34,15 @@ checkpoint.
 | **declared host** | A host the agent calls that Minutehand captures: acknowledge, pass through, replay, forward | mock |
 | **operation** | An `operationId` in an OpenAPI document that a declaration names instead of a template | endpoint |
 | **playback** | A fork bringing the agent back to a checkpoint by playing its recorded inputs into a fresh sandbox | restore (that is the memory's word), snapshot |
+| **saved state** | What the agent's own `sandbox.export_state` saved at a checkpoint, which a fork from there starts the agent from (`MINUTEHAND_AGENT_STATE`) in place of a playback | snapshot, dump |
+| **interrupted** | A run stopped from outside before it ended by itself: a signal to `minutehand run`, `fork` or `replay`, or `minutehand close` on a run whose process died. Kept like any other run | killed, aborted |
 
 ## Touch points
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
 | **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **saved state** | Minutehand → the agent's `export_state`, at every checkpoint after a wake, with the sandbox idle; a fork from such a checkpoint → the agent's command, as `MINUTEHAND_AGENT_STATE` (the folder) and `MINUTEHAND_STARTS_AT_NS` (the checkpoint's moment) | `export_state` with `{dir}`, an empty folder → exit 0, the folder filled; anything else is kept with the checkpoint as its failure, and a fork from there plays the agent back | `sandbox.export_state` | No |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked, or keeps due records |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
@@ -73,8 +76,10 @@ it waits.
 
 A run ends when nothing is due, the agent has booked nothing and no due record of its is left to wake for
 (`nothing_pending`), at the end of the scenario's
-window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, or when the agent's sandbox
-fails to fall idle. There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
+window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, when the agent's sandbox
+fails to fall idle, or when it is stopped from outside (`interrupted`: SIGTERM or SIGINT to `minutehand run`, `fork` or
+`replay`, which abandons the wake in progress and keeps the run, its last checkpoint whole; `minutehand close` keeps a
+run whose process was killed). There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
 verdict"), never from the agent.
 
 | Field | Default | What it bounds |
@@ -236,6 +241,16 @@ fork is refused where the agent does not do what it did before (a call the recor
 changed program, or something the agent draws from outside the record (a random number, a thread's timing). What
 Minutehand reports besides: the store's reads and writes per wake (`WakeRecord.memory_reads`, `memory_writes`), and a
 database the agent file names under `own_databases`, handed fresh and empty to every run and fork.
+
+**A fork from the agent's own saved state.** Playback refuses an agent whose code changed in any way that changes a
+call, and a database the agent keeps inside its sandbox is in no record of Minutehand's. An agent file that names
+`sandbox.export_state` (`[sh, export_state.sh, "{dir}"]`) has it run at every checkpoint after a wake, while the
+sandbox is idle, into an empty folder that is then kept as `<state>/runs/<run>/agent-state/<seq>/`. A fork from such a
+checkpoint plays nothing back: the agent's command is started with `MINUTEHAND_AGENT_STATE` naming the folder, which
+the agent imports as it starts, and `MINUTEHAND_STARTS_AT_NS` the checkpoint's moment, so its sandbox is born there.
+The agent's program may differ from the one that saved the state; the fork says how, and is kept as not verified,
+since what the agent imports is its own. Without a saved state at the checkpoint (no `export_state`, or a save that
+failed, kept with its checkpoint), a fork plays the agent back as above.
 
 ### Writing an adapter
 

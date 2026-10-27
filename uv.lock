@@ -2282,7 +2282,7 @@ wheels = [
 
 [[package]]
 name = "minutehand"
-version = "0.3.9"
+version = "0.3.10"
 source = { editable = "." }
 dependencies = [
     { name = "asgiref" },
