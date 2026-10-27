@@ -669,6 +669,11 @@ class PushSnapshot(Model):
     attempt: int = Field(default=0, ge=0, description="0 for the first send, then each retry's number")
     retry_reason: str | None = Field(default=None, description="Why it was sent again, in the service's own words")
     seconds: float | None = Field(default=None, ge=0, description="How long the address took to answer, real time")
+    look: bool = Field(
+        default=False,
+        description="A read of what waits on a person (an inbox's pending list), made once the wake settled rather "
+        "than as part of what it fired: a playback sends it again at that point (`application.playback`)",
+    )
 
 
 Snapshot = Annotated[

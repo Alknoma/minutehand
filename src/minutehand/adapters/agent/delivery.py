@@ -52,9 +52,10 @@ class Door:
         attempt: int = 0,
         retry_reason: str | None = None,
         parent: str | None = None,
+        look: bool = False,
     ) -> Sent:
         """One send to the agent, recorded as it ended under `EntityKind.PUSH`, actor SCENARIO, so no check counts
-        it as anyone's work."""
+        it as anyone's work; `look` marks a read of what waits on a person (`PushSnapshot.look`)."""
         began = time.monotonic()
         delivered, answer, timed_out, answer_headers = await self._make(method, url, headers, body, timeout)
         snapshot = PushSnapshot(
@@ -69,6 +70,7 @@ class Door:
             attempt=attempt,
             retry_reason=retry_reason,
             seconds=round(time.monotonic() - began, 3),
+            look=look,
         )
         store.apply(
             Change(

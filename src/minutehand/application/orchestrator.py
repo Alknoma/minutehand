@@ -566,7 +566,10 @@ class Orchestrator:
         deadline = self._scenario.window_end
         ended = StopReason.DEADLINE_PASSED if self._scenario.runs_for is None else StopReason.WINDOW_ENDED
         while True:
-            await self._look()  # what waits on people now, before the clock moves past what they owe
+            if not self._sandbox.holds:
+                # what waits on people now, before the clock moves past what they owe: the agent's clock ran on since
+                # the last wake's look. A held one has not moved since that look, and a held agent cannot be called
+                await self._look()
             await self._schedule(self._record_new())
             if not await self._settle():
                 return StopReason.AGENT_FAILED
@@ -661,9 +664,10 @@ class Orchestrator:
             await self._advance()
 
     async def _hold(self) -> None:
-        """The wake has settled: with a hold, the sandbox's clock is held until the next wake begins, before the run
-        reads inboxes, plays the people, checkpoints or saves the agent's state, so no timer of the agent's starts
-        work meanwhile. The run's clock catches up at the next settle (`_settle`), as without a hold."""
+        """The wake has settled, its inboxes read: with a hold, the sandbox's clock is held until the next wake
+        begins, before the run plays the people, checkpoints or saves the agent's state, so no timer of the agent's
+        starts work meanwhile. From here to the next wake nothing calls the agent: held, it cannot answer. The run's
+        clock catches up at the next settle (`_settle`), as without a hold."""
         if self._sandbox.holds:
             await self._sandbox.hold()
 
@@ -910,15 +914,19 @@ class Orchestrator:
         failed = False
         try:
             await fire()
-            if await self._sandbox.settle(self._traffic) is None:
-                raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
+            await self._settled()
+            if self._inboxes is not None:
+                # Minutehand calls the agent only while its clock runs: a held agent cannot answer (its servers
+                # need timers even to read), so the inboxes are read here, inside the wake, and whatever the reads
+                # set the agent doing is this wake's too
+                await self._look()
+                await self._settled()
             await self._hold()
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
         if not failed:
             self._watcher.record(self._store, Actor.AGENT)
-            await self._look()
         new = self._record_new()
         if not failed:
             await self._schedule(new, retry=True)
@@ -943,6 +951,11 @@ class Orchestrator:
         if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
+
+    async def _settled(self) -> None:
+        """The wake's work is over: its sandbox idle (`SandboxClock.settle`), or the wake failed."""
+        if await self._sandbox.settle(self._traffic) is None:
+            raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
 
     def _record_new(self) -> list[WorldEvent]:
         new = self._store.events(since=self._seen)

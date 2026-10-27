@@ -11,8 +11,9 @@ settled; played back, it ends at the same point: once the agent has written agai
 that wake, and the sandbox has settled. Its poller looks on its own timer while the sandbox's clock runs on, and a
 wake ended at the first idle would leave that look to the next wake, its reads answered as of a later moment. With a
 hold (`Sandbox.hold`), a played wake holds and releases where the run's did: the agent's start runs unheld, its
-clock is held once it has started and once each wake has settled, moved to the next wake's moment while held, and
-released as that wake begins, so no timer of the agent's fires between two played wakes either. At the checkpoint's
+clock is held once it has started and once each wake has settled and its looks (`PushSnapshot.look`, the inboxes
+read once the wake settled) were sent again, moved to the next wake's moment while held, and released as that wake
+begins, so no timer of the agent's fires between two played wakes either. At the checkpoint's
 wake the agent stands where it stood: the same processes, the same timers armed, the same state in its own memory and files. Nothing is written: the
 world the record was made against is the one the fork shares.
 
@@ -118,15 +119,19 @@ class TracePlayback:
                     await self.sandbox.release()
                 keys = picked.get(wake, {})
                 before = {k: self.memory.written(*k) for k in keys}
-                for push in sends.get(wake, []):
+                sent = sends.get(wake, [])
+                for push in [p for p in sent if not p.look]:
                     await self.door.resend(push)
                     resent += 1
                 await self._written_again(wake, at, keys, before)
-                if await self.sandbox.settle(self.traffic) is None:
-                    raise RunRefused(
-                        f"the agent's sandbox did not fall idle within its settle limit while wake {wake} of run "
-                        f"{self.parent.run_id} was played back into it"
-                    )
+                await self._settled(wake)
+                # the wake's looks were made once it settled, before its clock was held: so they are sent again here
+                looks = [p for p in sent if p.look]
+                for push in looks:
+                    await self.door.resend(push)
+                    resent += 1
+                if looks:
+                    await self._settled(wake)
                 await self._hold()
                 if trace.parted is not None:
                     raise PlaybackParted(trace.parted, sent=_sent(trace), held=trace.parted_held)
@@ -147,6 +152,13 @@ class TracePlayback:
             self.proxy.live()
             self.memory.live()
         return Played(calls_answered=trace.answered, deliveries_resent=resent, jumps=jumps)
+
+    async def _settled(self, wake: int) -> None:
+        if await self.sandbox.settle(self.traffic) is None:
+            raise RunRefused(
+                f"the agent's sandbox did not fall idle within its settle limit while wake {wake} of run "
+                f"{self.parent.run_id} was played back into it"
+            )
 
     async def _hold(self) -> None:
         """Hold the sandbox's clock where it stands, when the agent file names a hold: between two played wakes, as

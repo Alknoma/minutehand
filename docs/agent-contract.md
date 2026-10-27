@@ -117,8 +117,10 @@ sandbox:
 ```
 
 With it, the clock is held as soon as a wake settles and released as the next wake begins, after it has been moved
-to that wake's moment, so a timer of the agent's own that comes due while Minutehand reads inboxes, plays the people
-or saves the agent's state fires as the next wake begins, inside it, and the save is never worked through. The
+to that wake's moment, so a timer of the agent's own that comes due while Minutehand plays the people
+or saves the agent's state fires as the next wake begins, inside it, and the save is never worked through. Nothing
+is sent to a held agent: Minutehand reads its inboxes before the hold, inside the wake, and a person's decision or
+answer is sent in the wake it lands in, once that wake has released the clock. The
 agent's start runs unheld (its services need the time), and the run's clock then catches up to the agent's before
 anything is sent to it. Without it, such a timer starts work in no wake, and a save it lands in is discarded.
 

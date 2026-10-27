@@ -267,6 +267,7 @@ class HttpInboxReach:
             headers=built.headers,
             method=built.method,
             timeout=TIMEOUT,
+            look=act is InboxAct.LIST,
         )
         answered: _Answered | None = None
         if sent.snapshot.status is not None:
