@@ -72,8 +72,9 @@ runsc --root <state> debug --hold-clock <name>
 runsc --root <state> debug --release-clock <name>
 ```
 
-`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. These two are all Minutehand reads. `held`: the
-clock is held (`hold-clock`). `waits`:
+`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. `held`: the clock is held (`hold-clock`).
+These three are all Minutehand reads; it calls `hold-clock` and `release-clock` only when the agent file names them as
+`sandbox.hold` and `sandbox.release` (`docs/design.md`, "A held clock between wakes"). `waits`:
 each blocked task's deadline, as nanoseconds from now; `earliest_ns` the smallest, -1 for none. Minutehand no longer
 reads them: no deadline in the sandbox is a wake (`docs/design.md`, "How the clock knows what is next"). `advance-clock` moves both clocks forward by the
 duration and tells every timer the clock was set, so a sleep, futex, poll or epoll timeout past the new time

@@ -9,8 +9,11 @@ to the wake's moment, sends the agent what the world sent it then, and answers e
 played, once the agent had written one of each declaration's (`application.due_records`) and the sandbox had
 settled; played back, it ends at the same point: once the agent has written again each of those records it wrote in
 that wake, and the sandbox has settled. Its poller looks on its own timer while the sandbox's clock runs on, and a
-wake ended at the first idle would leave that look to the next wake, its reads answered as of a later moment. At the checkpoint's wake the agent stands where it stood:
-the same processes, the same timers armed, the same state in its own memory and files. Nothing is written: the
+wake ended at the first idle would leave that look to the next wake, its reads answered as of a later moment. With a
+hold (`Sandbox.hold`), a played wake holds and releases where the run's did: the agent's start runs unheld, its
+clock is held once it has started and once each wake has settled, moved to the next wake's moment while held, and
+released as that wake begins, so no timer of the agent's fires between two played wakes either. At the checkpoint's
+wake the agent stands where it stood: the same processes, the same timers armed, the same state in its own memory and files. Nothing is written: the
 world the record was made against is the one the fork shares.
 
 What parts a playback: a call the record does not hold next, or a recorded call the agent never makes again. Both
@@ -102,6 +105,7 @@ class TracePlayback:
             # seeded: its calls on starting are wake 1's, and its sandbox is born at the run's start
             await start()
             await self.sandbox.sync(self.starts_at)
+            await self._hold()
             for wake in range(1, self.checkpoint.wake + 1):
                 at = moments.get(wake, was)
                 if at > was:
@@ -110,6 +114,8 @@ class TracePlayback:
                     await self.sandbox.sync(at)
                     jumps += 1
                     was = at
+                if self.sandbox.holds:
+                    await self.sandbox.release()
                 keys = picked.get(wake, {})
                 before = {k: self.memory.written(*k) for k in keys}
                 for push in sends.get(wake, []):
@@ -121,6 +127,7 @@ class TracePlayback:
                         f"the agent's sandbox did not fall idle within its settle limit while wake {wake} of run "
                         f"{self.parent.run_id} was played back into it"
                     )
+                await self._hold()
                 if trace.parted is not None:
                     raise PlaybackParted(trace.parted, sent=_sent(trace), held=trace.parted_held)
                 floor = self._seq_ending(wake)
@@ -140,6 +147,12 @@ class TracePlayback:
             self.proxy.live()
             self.memory.live()
         return Played(calls_answered=trace.answered, deliveries_resent=resent, jumps=jumps)
+
+    async def _hold(self) -> None:
+        """Hold the sandbox's clock where it stands, when the agent file names a hold: between two played wakes, as
+        between two of the run's."""
+        if self.sandbox.holds:
+            await self.sandbox.hold()
 
     async def _written_again(
         self, wake: int, at: datetime, keys: dict[tuple[str, str], timedelta], before: dict[tuple[str, str], int]

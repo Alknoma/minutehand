@@ -89,7 +89,13 @@ class Sandbox(Model):
     A third command is the agent's own and optional: `export_state` saves what the agent holds (a database emulator in
     its sandbox, its files) into a folder at each checkpoint after a wake, so a fork from there starts the agent from
     it (`MINUTEHAND_AGENT_STATE`) rather than by playing its recorded inputs back, and an agent whose code changed
-    since can carry the run on (docs/design.md, "The agent's own saved state")."""
+    since can carry the run on (docs/design.md, "The agent's own saved state").
+
+    Two more are optional and named together: `hold` stops the sandbox's clock and `release` lets it run on from the
+    moment held. With them the agent's clock moves only inside a wake: held as soon as a wake has settled, advanced to
+    the next wake's moment while held, and released as that wake begins (docs/design.md, "A held clock between
+    wakes"). Without them it runs at real speed between wakes, and a timer of the agent's that comes due then starts
+    work in no wake."""
 
     deadlines: list[str] = Field(min_length=1)
     advance: list[str] = Field(min_length=1, description="Holds {nanoseconds} where the step forward goes")
@@ -114,6 +120,22 @@ class Sandbox(Model):
         "and a fork from there plays back as without it",
     )
 
+    hold: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Holds the sandbox's clock still: every read of it returns the moment of the hold, and no timer on "
+        "it fires. Run by Minutehand as soon as a wake has settled, so nothing the agent's own timers start (a "
+        "scheduler loop's next cycle) runs while Minutehand reads inboxes, plays the people, writes a checkpoint or "
+        "saves the agent's state; named with `release`, or neither. Without them the sandbox's clock runs at real "
+        "speed between wakes",
+    )
+    release: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="Lets a held clock run on from the moment it was held, so none of the time held passed for the "
+        "agent. Run by Minutehand as a wake begins, once the clock has been advanced to the wake's moment",
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _no_housekeeping(cls, written: object) -> object:
@@ -131,6 +153,11 @@ class Sandbox(Model):
             raise ValueError("`advance` must hold {nanoseconds}, where the step it moves the clock by goes")
         if self.export_state is not None and not any("{dir}" in part for part in self.export_state):
             raise ValueError("`export_state` must hold {dir}, the folder it saves the agent's state into")
+        if (self.hold is None) != (self.release is None):
+            raise ValueError(
+                "`hold` and `release` are named together or not at all: a clock held and never released stops the "
+                "agent for good, and one released and never held was never stopped"
+            )
         return self
 
 

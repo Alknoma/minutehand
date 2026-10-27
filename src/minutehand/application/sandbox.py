@@ -32,6 +32,10 @@ class SandboxReading(Model):
 
     idle: bool
     now_ns: int = Field(description="The sandbox's realtime clock, nanoseconds since the epoch")
+    held: bool = Field(
+        default=False,
+        description="Whether the clock is held (`Sandbox.hold`); a sandbox whose patch has no hold prints none",
+    )
 
     def now(self) -> datetime:
         """The sandbox's realtime clock, as an instant."""
@@ -82,6 +86,28 @@ class SandboxClock:
         if nanoseconds == 0:
             return
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
+
+    @property
+    def holds(self) -> bool:
+        """Whether the agent file names `hold` and `release`: the agent's clock then moves only inside a wake."""
+        return self._source.hold is not None
+
+    async def hold(self) -> SandboxReading:
+        """Stop the sandbox's clock where it stands, and answer its reading then: every later read returns that
+        moment, and no timer on it fires, until `release`. Holding a held clock does nothing."""
+        if self._source.hold is None:
+            raise ValueError("the agent file names no `sandbox.hold` to hold the sandbox's clock with")
+        await _run(self._source.hold)
+        said = await self.read()
+        if not said.held:
+            raise SandboxFailed(f"{' '.join(self._source.hold)} exited 0 and the sandbox's clock reads as not held")
+        return said
+
+    async def release(self) -> None:
+        """Let a held clock run on from the moment it was held. Releasing a running clock does nothing."""
+        if self._source.release is None:
+            raise ValueError("the agent file names no `sandbox.release` to release the sandbox's clock with")
+        await _run(self._source.release)
 
     @property
     def quiet(self) -> timedelta:

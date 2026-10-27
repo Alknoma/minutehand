@@ -19,11 +19,13 @@ whether the agent stirred: the sandbox idle as it began and as it ended, no call
 flight (`Traffic.activity`, `Traffic.waiting`), no read of its memory (`HoldsMemory.memory_reads`) and no event of the
 agent's in the log between the two. Anything moved, and the folder is removed and the checkpoint says the state was
 not saved, and why (`ExportedState.failure`: the agent worked during the export): a fork there plays the agent back,
-as from any checkpoint without one, and never starts it from a mixed state.
+as from any checkpoint without one, and never starts it from a mixed state. With a hold (`Sandbox.hold`) the export
+runs under a clock held since the wake settled, so no timer of the agent's comes due during it, and the reads around
+it are the guard that none did.
 
 A fork at a checkpoint whose state was saved (`saved_at`) starts the agent's program with `MINUTEHAND_AGENT_STATE`
 naming the folder, its sandbox born at the checkpoint's moment (`MINUTEHAND_STARTS_AT_NS`), waits until the sandbox
-is idle, and carries on from the checkpoint (`StateImport`, `application.restore`). Nothing of the parent's record is
+is idle, holds its clock there when the agent file names a hold, and carries on from the checkpoint (`StateImport`, `application.restore`). Nothing of the parent's record is
 played into the agent, so its program may be another than the parent's: the difference is kept with the fork
 (`program_changes`) and refuses nothing. Whatever the agent does as it starts is the fork's, answered by the fork's
 world as it stands at the checkpoint. What the agent imports is the agent's own word: nothing proves it stands where
@@ -122,7 +124,7 @@ def saved_at(store: Store, at_seq: int, checkpoint: Checkpoint, runs: Path) -> P
 @dataclass(frozen=True)
 class StateImport:
     """`application.restore.ImportsState`: the agent's program started from its own state saved at the checkpoint,
-    its sandbox born at the checkpoint's moment `at`, and waited for until it is idle."""
+    its sandbox born at the checkpoint's moment `at`, waited for until it is idle, and held there with a hold."""
 
     directory: Path
     at: datetime
@@ -142,3 +144,7 @@ class StateImport:
                 f"the agent's sandbox did not fall idle within its settle limit after the agent started from its own "
                 f"state saved at the checkpoint ({self.directory})"
             )
+        if self.sandbox.holds:
+            # its start ran unheld, as the parent's did; from here it stands at the checkpoint, held as its parent's
+            # clock stood there, until the fork's first wake begins
+            await self.sandbox.hold()

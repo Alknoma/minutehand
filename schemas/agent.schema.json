@@ -2370,7 +2370,7 @@
     },
     "Sandbox": {
       "additionalProperties": false,
-      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"): every way the agent reads the time reads the run's, with no code of Minutehand's\nin it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, a JSON object holding `\"idle\": bool`\n(whether every task is blocked) and `\"now_ns\": int` (its realtime clock); anything else it prints there is\nthe sandbox's and ignored. `advance` moves the sandbox's clock forward by `{nanoseconds}`, with every jump of\nthe run's clock, so the two agree. The sandbox is born at the run's start (its command reads\n`MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a timer the agent armed before a backward step\nwould fire early. A wake is over when the sandbox is idle on two reads `quiet` apart, no call of the agent's is\nin flight at either, and none was sent or answered between them. No deadline a task in it waits for is a wake:\na timer the agent armed fires when the clock passes it for something else, and work the agent means to come\nback to is a booking with a scheduler, kept in the run's log (docs/design.md, \"How the clock knows what is\nnext\").\n\nA third command is the agent's own and optional: `export_state` saves what the agent holds (a database emulator in\nits sandbox, its files) into a folder at each checkpoint after a wake, so a fork from there starts the agent from\nit (`MINUTEHAND_AGENT_STATE`) rather than by playing its recorded inputs back, and an agent whose code changed\nsince can carry the run on (docs/design.md, \"The agent's own saved state\").",
+      "description": "The sandbox every agent runs in, whose clock Minutehand owns (a patched gVisor; docs/design.md, \"A sandbox\nwhose clock Minutehand owns\"): every way the agent reads the time reads the run's, with no code of Minutehand's\nin it, and nothing the agent calls leaves the sandbox except through the proxy.\n\nTwo commands reach the sandbox: `deadlines` prints, as its last line, a JSON object holding `\"idle\": bool`\n(whether every task is blocked) and `\"now_ns\": int` (its realtime clock); anything else it prints there is\nthe sandbox's and ignored. `advance` moves the sandbox's clock forward by `{nanoseconds}`, with every jump of\nthe run's clock, so the two agree. The sandbox is born at the run's start (its command reads\n`MINUTEHAND_STARTS_AT_NS`) and its clock is never moved back: a timer the agent armed before a backward step\nwould fire early. A wake is over when the sandbox is idle on two reads `quiet` apart, no call of the agent's is\nin flight at either, and none was sent or answered between them. No deadline a task in it waits for is a wake:\na timer the agent armed fires when the clock passes it for something else, and work the agent means to come\nback to is a booking with a scheduler, kept in the run's log (docs/design.md, \"How the clock knows what is\nnext\").\n\nA third command is the agent's own and optional: `export_state` saves what the agent holds (a database emulator in\nits sandbox, its files) into a folder at each checkpoint after a wake, so a fork from there starts the agent from\nit (`MINUTEHAND_AGENT_STATE`) rather than by playing its recorded inputs back, and an agent whose code changed\nsince can carry the run on (docs/design.md, \"The agent's own saved state\").\n\nTwo more are optional and named together: `hold` stops the sandbox's clock and `release` lets it run on from the\nmoment held. With them the agent's clock moves only inside a wake: held as soon as a wake has settled, advanced to\nthe next wake's moment while held, and released as that wake begins (docs/design.md, \"A held clock between\nwakes\"). Without them it runs at real speed between wakes, and a timer of the agent's that comes due then starts\nwork in no wake.",
       "properties": {
         "advance": {
           "description": "Holds {nanoseconds} where the step forward goes",
@@ -2406,12 +2406,46 @@
           "description": "Saves the agent's own state (its databases, its files) into the folder `{dir}` names, run by Minutehand at every checkpoint after a wake, only once the sandbox has settled as idle (`settle`: the same reading that ends a wake), before the checkpoint is written, so what it saves is exactly as consistent as that reading: a fork from that checkpoint starts the agent with `MINUTEHAND_AGENT_STATE` naming the folder, for it to import as it starts, in place of playing its recorded inputs back. Its failure is kept with the checkpoint, and a fork from there plays back as without it",
           "title": "Export State"
         },
+        "hold": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Holds the sandbox's clock still: every read of it returns the moment of the hold, and no timer on it fires. Run by Minutehand as soon as a wake has settled, so nothing the agent's own timers start (a scheduler loop's next cycle) runs while Minutehand reads inboxes, plays the people, writes a checkpoint or saves the agent's state; named with `release`, or neither. Without them the sandbox's clock runs at real speed between wakes",
+          "title": "Hold"
+        },
         "quiet": {
           "default": "PT0.05S",
           "description": "Idle on two reads this far apart, with no call of the agent's in flight at either and none sent or answered between them, is idle",
           "format": "duration",
           "title": "Quiet",
           "type": "string"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lets a held clock run on from the moment it was held, so none of the time held passed for the agent. Run by Minutehand as a wake begins, once the clock has been advanced to the wake's moment",
+          "title": "Release"
         },
         "settle_limit": {
           "default": "PT30S",

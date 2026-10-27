@@ -1,10 +1,11 @@
 """The run loop: one scenario, one agent, a set of providers, played forward on the run's clock.
 
 Flow of one wake (docs/design.md): jump the clock to the earliest pending moment, release the agent's sandbox to
-it, fire what is due there (what reaches the agent does so through the world: a pushed event, a scheduler's
-delivery), wait until the sandbox is idle again, then read what the agent did from the
-world and schedule what the world owes back: what people do about what waits on them (`application.people`), and
-tickets' fates. Nothing is ever asked of the agent.
+it (advanced while held, then let run, when the agent file names a hold), fire what is due there (what reaches the
+agent does so through the world: a pushed event, a scheduler's delivery), wait until the sandbox is idle again, then
+read what the agent did from the world and schedule what the world owes back: what people do about what waits on
+them (`application.people`), and tickets' fates. With a hold the sandbox's clock is held from the moment the wake
+settles until the next one begins, so nothing the agent's own timers start runs outside a wake. Nothing is ever asked of the agent.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.application.sandbox import SandboxClock, SandboxFailed
+from minutehand.application.sandbox import SandboxClock, SandboxFailed, SandboxReading
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
@@ -435,6 +436,9 @@ class Orchestrator:
         self._untaken = list(checkpoint.untaken)
         self._seen = self._store.head()
         self._watcher.look()
+        if self._sandbox.holds:
+            # the agent was brought back to the checkpoint, where its parent's clock stood held: so does the fork's
+            await self._sandbox.hold()
         return await self._end(await self._played_on(start=checkpoint.wake == 0), started)
 
     async def _played_on(self, *, start: bool) -> StopReason:
@@ -535,7 +539,12 @@ class Orchestrator:
     async def _start(self) -> StopReason | None:
         """The START wake: the agent's sandbox is started once the world is seeded, so whatever the agent does on
         starting finds it and is this wake's; its clock is set to the run's before the agent's first instruction; an
-        older scenario's owner then sends the goal, as a message."""
+        older scenario's owner then sends the goal, as a message.
+
+        With a hold, the start runs unheld (the agent's services need real time to come up, and it passes on the
+        sandbox's clock), and the sandbox is then held and the run's clock caught up to it, so the goal is sent at the
+        moment the agent's clock reads, never the boot's length behind it; then released for the rest of the wake. A
+        fork from setup's checkpoint finds its sandbox held, and is released the same way."""
         wake = self._clock.begin_wake()
         provider = self._by_message
 
@@ -543,6 +552,9 @@ class Orchestrator:
             if self._start_agent is not None:
                 await self._start_agent()
             await self._sandbox.sync(self._scenario.starts_at)  # born there; brought up to it when behind
+            if self._sandbox.holds:
+                self._catch_up(await self._sandbox.hold())
+                await self._sandbox.release()
             if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
@@ -587,14 +599,17 @@ class Orchestrator:
             if not fired:
                 continue
             if all(self._unheard(p) for p in fired):
-                await self._release()
+                await self._keep_up()
                 await self._fire(fired)
                 watched = self._watched(fired)
                 if not watched:
                     continue
-                stop = await self._wake(
-                    self._clock.begin_wake(), WakeReason.DUE, lambda watched=watched: self._notify(watched)
-                )
+
+                async def notify(watched: list[NotifiesChanges] = watched) -> None:
+                    await self._release()
+                    await self._notify(watched)
+
+                stop = await self._wake(self._clock.begin_wake(), WakeReason.DUE, notify)
                 if stop is not None:
                     return stop
                 continue
@@ -619,18 +634,49 @@ class Orchestrator:
         if to > was:
             self._sandbox_owed += int((to - was).total_seconds() * 1e9)
 
-    async def _release(self) -> None:
+    async def _advance(self) -> None:
         """Move the sandbox's clock by what the run's has moved since, so the two agree again."""
         if self._sandbox_owed > 0:
             owed, self._sandbox_owed = self._sandbox_owed, 0
             await self._sandbox.advance(owed)
 
+    async def _release(self) -> None:
+        """A wake begins: the sandbox's clock is moved to the run's, and, held, let run. Advanced while still held, so
+        every timer of the agent's the step passes fires at the wake's moment, inside it."""
+        await self._advance()
+        if self._sandbox.holds:
+            await self._sandbox.release()
+
+    async def _keep_up(self) -> None:
+        """The run's clock moved and no wake begins: a sandbox without a hold is moved with it at once, its clock
+        running between wakes anyway; a held one keeps the step owed until the next wake begins, since a step taken
+        now would fire the agent's timers it passes in no wake."""
+        if not self._sandbox.holds:
+            await self._advance()
+
+    async def _hold(self) -> None:
+        """The wake has settled: with a hold, the sandbox's clock is held until the next wake begins, before the run
+        reads inboxes, plays the people, checkpoints or saves the agent's state, so no timer of the agent's starts
+        work meanwhile. The run's clock catches up at the next settle (`_settle`), as without a hold."""
+        if self._sandbox.holds:
+            await self._sandbox.hold()
+
+    def _catch_up(self, found: SandboxReading) -> None:
+        """Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
+        catches up, so it never stands behind the agent's: the agent's own clock is the run's."""
+        at = found.now()
+        if at > self._clock.now():
+            self._clock.jump(at)
+
     async def _settle(self) -> bool:
         """Wait until the sandbox is idle and nothing of the agent's is in flight, before the clock moves on, and
         bring the run's clock up to the sandbox's. No deadline a task there waits for is a wake: what the agent
-        comes back to by itself it books with a scheduler, in the table. False when it never fell idle."""
+        comes back to by itself it books with a scheduler, in the table. False when it never fell idle.
+
+        With a hold the clock has stood held since the wake settled, so no timer of the agent's started work since
+        and this finds it idle at once: kept as the check that nothing did."""
         try:
-            await self._release()  # the sandbox's clock must be the run's before it is read
+            await self._keep_up()  # the sandbox's clock must be the run's before it is read, unless it is held
             found = await self._sandbox.settle(self._traffic)
         except SandboxFailed as e:
             self._failure = str(e)
@@ -638,11 +684,7 @@ class Orchestrator:
         if found is None:
             self._failure = "the agent's sandbox did not fall idle within its settle limit"
             return False
-        # Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
-        # catches up, so it never stands behind the agent's: the agent's own clock is the run's.
-        at = found.now()
-        if at > self._clock.now():
-            self._clock.jump(at)
+        self._catch_up(found)
         return True
 
     def _plan_records(self) -> None:
@@ -665,7 +707,7 @@ class Orchestrator:
         if deadline is None or self._clock.now() >= deadline:
             return
         await self._jump(deadline)
-        await self._release()
+        await self._keep_up()  # a held sandbox stays where its last wake left it: no wake follows to take the step
         await self._checkpoint()
 
     async def _fire(self, fired: list[Pending]) -> None:
@@ -864,6 +906,7 @@ class Orchestrator:
             await fire()
             if await self._sandbox.settle(self._traffic) is None:
                 raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
+            await self._hold()
         except AgentFailed as e:
             failed = True
             self._failure = str(e)

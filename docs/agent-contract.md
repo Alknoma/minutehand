@@ -41,7 +41,8 @@ checkpoint.
 
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
-| **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", "held", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
+| **clock hold** | Minutehand → the sandbox's control calls: `hold` as soon as each wake has settled, `release` as the next wake begins, once `advance` has moved the held clock to the wake's moment | `hold` → exit 0, and `deadlines` then prints `"held": true`; `release` → exit 0 | `sandbox.hold`, `sandbox.release`, both or neither | No; without them the agent's clock runs at real speed between wakes |
 | **saved state** | Minutehand → the agent's `export_state`, at every checkpoint after a wake, with the sandbox idle; a fork from such a checkpoint → the agent's command, as `MINUTEHAND_AGENT_STATE` (the folder) and `MINUTEHAND_STARTS_AT_NS` (the checkpoint's moment) | `export_state` with `{dir}`, an empty folder → exit 0, the folder filled; anything else, or an agent that stirred while it ran, is kept with the checkpoint as its failure, and a fork from there plays the agent back | `sandbox.export_state` | No |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked, or keeps due records |
@@ -106,6 +107,20 @@ instruction reads simulated time; from there the clock moves forward with every 
 so a sleep, a backoff, a scheduler loop's next check and a date the agent reads all follow simulated time with no
 change to the agent. The real time the agent spends in a wake passes on its clock, and the run's clock catches up to
 it when the wake ends. Between wakes Minutehand reads only whether the sandbox is idle and what its clock says.
+
+Between wakes the clock runs at real speed unless the agent file names a hold:
+
+```yaml
+sandbox:
+  hold: [runsc, --root, /tmp/minutehand-sandbox, debug, --hold-clock, agent]
+  release: [runsc, --root, /tmp/minutehand-sandbox, debug, --release-clock, agent]
+```
+
+With it, the clock is held as soon as a wake settles and released as the next wake begins, after it has been moved
+to that wake's moment, so a timer of the agent's own that comes due while Minutehand reads inboxes, plays the people
+or saves the agent's state fires as the next wake begins, inside it, and the save is never worked through. The
+agent's start runs unheld (its services need the time), and the run's clock then catches up to the agent's before
+anything is sent to it. Without it, such a timer starts work in no wake, and a save it lands in is discarded.
 
 No deadline a task in the sandbox waits for is a wake. A timer the agent armed fires when the clock passes it for
 something else (a reply, a pushed event, a booking), and a runtime's own (an HTTP server's poll, a JVM's keepalive, an
