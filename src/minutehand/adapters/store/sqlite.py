@@ -10,6 +10,12 @@ the hash. Entity versions, event snapshots, request and response bodies and the 
 attributes all go through the same door (`_keep`), so the same bytes written by any of them, in any run of the
 file, are one row. Every read puts the text back exactly as it was written.
 
+A body of `PARTS_FROM` bytes or more that holds JSON array elements is kept as its parts, cut just before each
+element that is an object (`Codec.PARTS`): each part is a body of its own in `content`, and the whole body's row,
+under the hash of all its bytes as any other, lists its parts' hashes in order. A model call is sent with the whole
+conversation so far, so one message sent on many turns, or one tool definition sent on every call, is one row,
+and reading the body back is joining its parts.
+
 The agent's memory (`minutehand.agent.store`) is entity versions like any other (`EntityKind.MEMORY`), so it needs
 nothing of its own here: a fork reads it as of its seq as it reads the world.
 """
@@ -18,6 +24,8 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import itertools
+import re
 import sqlite3
 import threading
 from collections.abc import Callable, Sequence
@@ -71,10 +79,12 @@ class _Edge(StrEnum):
 
 
 class Codec(StrEnum):
-    """How a stored body's bytes are held: as written, or zstd-compressed."""
+    """How a stored body's bytes are held: as written, zstd-compressed, or as the concatenated 32-byte hashes of
+    the parts that joined in order are its bytes, each part a `RAW` or `ZSTD` row of its own."""
 
     RAW = "raw"
     ZSTD = "zstd"
+    PARTS = "parts"
 
 
 def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callable[Concatenate[SqliteStore, P], R]:
@@ -94,7 +104,7 @@ def _locked[**P, R](method: Callable[Concatenate[SqliteStore, P], R]) -> Callabl
     return inner
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 """Stamped into the file as SQLite's user_version. A file with another version is refused, not guessed at.
 5: an exchange may carry `captured` and a message `answerable`, which a reader of version 4 would refuse row by
 row; refused here as a whole file instead.
@@ -107,11 +117,30 @@ checkpoints name snapshots this version cannot restore.
 9: the calls made to a model for people (`person_call`), whose answers a rerun or fork replays; a reply carries how
 it was written and how its moment was drawn, which a version 8 reader would refuse row by row.
 10: no deadline in the agent's sandbox is a wake: a version 9 file's checkpoints may hold the agent's own timer
-(`kind: timer`), its table entries the `timer` source and its wakes `counted`, which this version has no such thing as."""
+(`kind: timer`), its table entries the `timer` source and its wakes `counted`, which this version has no such thing as.
+11: a body may be kept as its parts (`Codec.PARTS`), whose row a version 10 reader would read as compressed bytes."""
+
+READS_SCHEMAS = frozenset({10, SCHEMA_VERSION})
+"""The schemas this version opens. A version 10 file holds no body kept as parts and nothing else differs, so it is
+read exactly as written; opened to write, it is stamped `SCHEMA_VERSION`, after which a version 10 reader refuses it
+rather than misreading a part list as compressed bytes."""
 
 _UNKEPT_IN_ROW = {"request_body", "response_body", "request_bytes", "response_bytes"}
 """Kept in columns of their own, not in an exchange's JSON. `inbox_call` is left out of it too when None, so a row
 of a run with no inbox reads as it did before inboxes existed."""
+
+PARTS_FROM = 4096
+"""Bytes from which a body is cut into its parts. Measured on a recorded run of an agent's own model calls
+(docs/design.md, "Bytes kept once"): cutting every body that splits was 83.1 MB stored against 153.5 MB whole, and
+cutting only from 16 KiB was 91.0 MB; below 4 KiB a body is rarely sent again with more appended."""
+
+_PART_START = re.compile(rb'(?<=[\[,])(?=\{")')
+"""Where a body is cut: just before an object that is an element of an array (`[{"` or `,{"`). The decision reads
+two bytes, so the same text is cut the same way wherever it stands in a body, and a conversation sent again with a
+message appended shares every part but the new one."""
+
+_HASH = 32
+"""Bytes of a SHA-256: a `Codec.PARTS` row's stored value is its parts' hashes, this many bytes each."""
 
 INLINE_LIMIT = 512
 """Bytes of UTF-8 below which a body stays in its own row. Measured on a chatty Slack run (docs/design.md, "Storage"):
@@ -218,10 +247,8 @@ class SqliteStore:
         self._db.execute(f"PRAGMA journal_size_limit={LOG_LIMIT}")
         found = self._db.execute("PRAGMA user_version").fetchone()[0]
         tables = self._db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
-        if tables and found != SCHEMA_VERSION:
-            raise RuntimeError(
-                f"{path} was written with store schema {found}; this version reads schema {SCHEMA_VERSION}"
-            )
+        if tables and found not in READS_SCHEMAS:
+            raise RuntimeError(f"{path} was written with store schema {found}; this version reads schema {_schemas()}")
         self._db.executescript(_SCHEMA)
         self._db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._db.execute(
@@ -306,25 +333,54 @@ class SqliteStore:
         return None, self._keep_bytes(raw)
 
     def _keep_bytes(self, raw: bytes) -> bytes:
-        """Bytes in `content`, whatever their size, under the hash of exactly those bytes."""
+        """Bytes in `content`, whatever their size, under the hash of exactly those bytes: as its parts when it
+        has more than one (`PARTS_FROM`, `_PART_START`), else whole."""
         digest = hashlib.sha256(raw).digest()
         if self._db.execute("SELECT 1 FROM content WHERE hash=?", (digest,)).fetchone() is None:
-            packed = self._pack.compress(raw)
-            codec, stored = (Codec.ZSTD, packed) if len(packed) < len(raw) else (Codec.RAW, raw)
-            self._db.execute("INSERT INTO content VALUES(?,?,?,?)", (digest, len(raw), codec.value, stored))
+            parts = _parts(raw) if len(raw) >= PARTS_FROM else [raw]
+            if len(parts) > 1:
+                hashes = b"".join(self._keep_whole(part) for part in parts)
+                self._db.execute("INSERT INTO content VALUES(?,?,?,?)", (digest, len(raw), Codec.PARTS.value, hashes))
+            else:
+                self._insert_whole(digest, raw)
         return digest
+
+    def _keep_whole(self, raw: bytes) -> bytes:
+        """One part in `content`, never itself cut: a part is a `RAW` or `ZSTD` row, so a read is one level deep."""
+        digest = hashlib.sha256(raw).digest()
+        if self._db.execute("SELECT 1 FROM content WHERE hash=?", (digest,)).fetchone() is None:
+            self._insert_whole(digest, raw)
+        return digest
+
+    def _insert_whole(self, digest: bytes, raw: bytes) -> None:
+        packed = self._pack.compress(raw)
+        codec, stored = (Codec.ZSTD, packed) if len(packed) < len(raw) else (Codec.RAW, raw)
+        self._db.execute("INSERT INTO content VALUES(?,?,?,?)", (digest, len(raw), codec.value, stored))
 
     def _bytes(self, codec: str | None, stored: bytes | None) -> bytes | None:
         if stored is None:
             return None
-        return self._unpack.decompress(stored) if Codec(codec) is Codec.ZSTD else stored
+        found = Codec(codec)
+        if found is Codec.ZSTD:
+            return self._unpack.decompress(stored)
+        if found is Codec.PARTS:
+            return b"".join(self._part(stored[i : i + _HASH]) for i in range(0, len(stored), _HASH))
+        return stored
+
+    def _part(self, digest: bytes) -> bytes:
+        row = self._db.execute("SELECT codec, stored FROM content WHERE hash=?", (digest,)).fetchone()
+        if row is None:
+            raise LookupError(f"a part {digest.hex()} of a stored body is missing from {self._path}")
+        if Codec(row[0]) is Codec.PARTS:
+            raise LookupError(f"a part {digest.hex()} of a stored body is itself kept as parts in {self._path}")
+        found = self._bytes(row[0], row[1])
+        assert found is not None
+        return found
 
     def _text(self, inline: str | None, codec: str | None, stored: bytes | None) -> str | None:
         """A body as it was written, from its row or from `content`."""
-        if stored is None:
-            return inline
-        raw = self._unpack.decompress(stored) if Codec(codec) is Codec.ZSTD else stored
-        return raw.decode("utf-8")
+        raw = self._bytes(codec, stored)
+        return inline if raw is None else raw.decode("utf-8")
 
     def _content(self, digest: bytes) -> str:
         row = self._db.execute("SELECT codec, stored FROM content WHERE hash=?", (digest,)).fetchone()
@@ -332,6 +388,14 @@ class SqliteStore:
             raise LookupError(f"the stored body {digest.hex()} is missing from {self._path}")
         found = self._text(None, row[0], row[1])
         assert found is not None
+        return found
+
+    def _with_parts(self, hashes: set[bytes]) -> set[bytes]:
+        """These stored bodies and every part of those kept as parts: what a sweep keeps and a run's size counts."""
+        found = set(hashes)
+        for digest, stored in self._db.execute("SELECT hash, stored FROM content WHERE codec=?", (Codec.PARTS.value,)):
+            if digest in hashes:
+                found.update(stored[i : i + _HASH] for i in range(0, len(stored), _HASH))
         return found
 
     # -- the log --------------------------------------------------------------------------------------------------
@@ -709,12 +773,12 @@ class SqliteStore:
         self._db.commit()
 
     def _sweep_content(self) -> tuple[int, int]:
-        """Delete every stored body no row refers to, inside the caller's transaction; answers how many and their
-        bytes as stored."""
-        unreferenced = f"FROM content WHERE hash NOT IN (SELECT hash FROM ({_REFERENCES}))"
-        count, size = self._db.execute(f"SELECT COUNT(*), COALESCE(SUM(length(stored)), 0) {unreferenced}").fetchone()
-        self._db.execute(f"DELETE {unreferenced}")
-        return count, size
+        """Delete every stored body no row refers to and that is no part of one a row refers to, inside the
+        caller's transaction; answers how many and their bytes as stored."""
+        kept = self._with_parts({r[0] for r in self._db.execute(f"SELECT hash FROM ({_REFERENCES})")})
+        gone = [(h, n) for h, n in self._db.execute("SELECT hash, length(stored) FROM content") if h not in kept]
+        self._db.executemany("DELETE FROM content WHERE hash=?", [(h,) for h, _ in gone])
+        return len(gone), sum(n for _, n in gone)
 
     # -- wakes and spans ------------------------------------------------------------------------------------------
 
@@ -895,13 +959,11 @@ class SqliteStore:
             ]
             for table, size in _ROW_BYTES.items()
         )
-        bodies = self._db.execute(
-            f"""WITH refs AS ({_REFERENCES})
-                SELECT COALESCE(SUM(length(stored)), 0) FROM content
-                WHERE hash IN (SELECT hash FROM refs WHERE run_id=?)
-                  AND hash NOT IN (SELECT hash FROM refs WHERE run_id!=?)""",
-            (self.run_id, self.run_id),
-        ).fetchone()[0]
+        refs = list(self._db.execute(f"SELECT run_id, hash FROM ({_REFERENCES})"))
+        mine = self._with_parts({h for run, h in refs if run == self.run_id})
+        others = self._with_parts({h for run, h in refs if run != self.run_id})
+        only_mine = mine - others
+        bodies = sum(n for h, n in self._db.execute("SELECT hash, length(stored) FROM content") if h in only_mine)
         return RunUsage(run_id=self.run_id, rows=rows, bodies=bodies)
 
 
@@ -937,3 +999,15 @@ def truncate_log(path: Path) -> None:
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         db.close()
+
+
+def _parts(raw: bytes) -> list[bytes]:
+    """`raw` cut just before every object that is an element of an array; joined in order they are `raw`."""
+    starts = [m.start() for m in _PART_START.finditer(raw)]
+    bounds = [0, *(p for p in starts if p > 0), len(raw)]
+    return [raw[a:b] for a, b in itertools.pairwise(bounds) if a < b]
+
+
+def _schemas() -> str:
+    """The schemas this version reads, as a refusal names them."""
+    return " or ".join(str(v) for v in sorted(READS_SCHEMAS))

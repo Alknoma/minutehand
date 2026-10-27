@@ -246,7 +246,7 @@ def test_a_version_5_file_is_refused_since_its_bodies_are_inline(tmp_path: Path)
     with sqlite3.connect(path) as db:
         db.execute("CREATE TABLE entity_version(run_id TEXT, seq INTEGER, body TEXT)")
         db.execute("PRAGMA user_version=5")
-    with pytest.raises(RuntimeError, match="written with store schema 5; this version reads schema 10"):
+    with pytest.raises(RuntimeError, match="written with store schema 5; this version reads schema 10 or 11"):
         SqliteStore(path, "root", RunClock(START))
 
 
@@ -325,3 +325,57 @@ def test_live_lists_the_latest_version_of_every_entity_of_a_kind_across_parents_
     rest = store.live("memory", EntityKind.MEMORY, after="a/x", limit=10)
     assert [(s.entity.external_id, s.body) for s in rest] == [("b/z", "1")], "the deleted key is not live"
     assert store.children("memory", EntityKind.MEMORY, "b") == rest
+
+
+def _version_10_file(path: Path) -> str:
+    """A world file as Minutehand with store schema 10 left it: the same tables, no body kept as parts."""
+    body = "a body long enough to be stored once: " + "v" * 4000
+    store = SqliteStore(path, "root", RunClock(START))
+    store.apply(
+        Change(
+            entity=EntityRef(provider="p", kind=EntityKind.RECORD, external_id="e"),
+            operation=Operation.CREATE,
+            actor=Actor.AGENT,
+            body=body,
+        )
+    )
+    store.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT COUNT(*) FROM content WHERE codec='parts'").fetchone()[0] == 0
+        db.execute("PRAGMA user_version=10")
+    return body
+
+
+def test_a_version_10_file_is_read_as_written_and_stamped_on_open(tmp_path: Path) -> None:
+    """Schema 11 only adds a way to keep a body; a version 10 file has none kept that way, so it opens and reads
+    back exactly, and is stamped 11 so a version 10 reader refuses it once it may hold parts."""
+    path = tmp_path / "v10.db"
+    body = _version_10_file(path)
+    store = SqliteStore(path, "root", RunClock(START))
+    got = store.get(EntityRef(provider="p", kind=EntityKind.RECORD, external_id="e"))
+    assert got is not None and got.body == body
+    store.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
+def test_a_version_10_file_opened_to_read_is_read_and_left_as_it_was(tmp_path: Path) -> None:
+    from minutehand.session import _ReadOnlyStore
+
+    path = tmp_path / "v10.db"
+    body = _version_10_file(path)
+    reader = _ReadOnlyStore(path, "root", RunClock(START))
+    got = reader.get(EntityRef(provider="p", kind=EntityKind.RECORD, external_id="e"))
+    assert got is not None and got.body == body
+    reader.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
+
+
+def test_a_version_9_file_is_still_refused(tmp_path: Path) -> None:
+    path = tmp_path / "v9.db"
+    _version_10_file(path)
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA user_version=9")
+    with pytest.raises(RuntimeError, match="written with store schema 9; this version reads schema 10 or 11"):
+        SqliteStore(path, "root", RunClock(START))
