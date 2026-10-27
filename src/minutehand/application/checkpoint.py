@@ -112,11 +112,16 @@ Pending = Annotated[
 
 class ExportedState(Model):
     """What the agent file's `sandbox.export_state` did at this checkpoint: saved the agent's own state into
-    `agent-state/<seq>/` of the run that wrote the checkpoint (`application.agent_state`), or failed, saying how.
+    `agent-state/<seq>/` of the run that wrote the checkpoint (`application.agent_state`), or did not, saying why: the
+    command failed, or the agent stirred while it ran and what it saved would mix two moments.
     A failure is the checkpoint's, never the run's: a fork from here plays the agent back as without it."""
 
     saved: bool
-    failure: str | None = Field(default=None, description="What the command said when it did not exit 0")
+    failure: str | None = Field(
+        default=None,
+        description="Why nothing was saved: what the command said when it did not exit 0, or that the agent worked "
+        "during the export, and how (`application.agent_state.WORKED`)",
+    )
 
 
 class Remembered(Model):

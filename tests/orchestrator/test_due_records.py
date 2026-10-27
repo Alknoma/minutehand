@@ -22,8 +22,9 @@ from minutehand.application.checkpoint import checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.memory import Versions, held, remember, value_of
 from minutehand.application.orchestrator import Services, run_scenario
+from minutehand.application.playback import TracePlayback
 from minutehand.application.replier import PeopleReplier
-from minutehand.application.restore import Played
+from minutehand.application.restore import PlaybackParted, Played
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
 from minutehand.application.sandbox import SandboxClock, SandboxReading
@@ -35,11 +36,17 @@ from minutehand.domain.experiment import Fork
 from minutehand.domain.memory import DueRecords, MemoryPut, MemoryWrite, MemoryWriteOne, SeededMemory, instant
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import ProviderKey, Scenario, Silent
+from minutehand.domain.world import Actor, EntityKind, MemorySnapshot, Operation
 from minutehand.ports.clock import Clock
 from minutehand.ports.provider import ASGIApp, HeldCalls
+from minutehand.ports.services import Delivered
 from minutehand.ports.store import Store
+from tests.orchestrator.test_wakes_are_bookings import _Booker
 from tests.providers.slack.slack_workspace import SCENARIO as WORKSPACE
 from tests.support.scenarios import SANDBOX
+
+QUICK = SANDBOX.model_copy(update={"quiet": timedelta(milliseconds=2)})
+"""The sandbox, read 2 ms apart: the fakes' clocks run on by the read, not by the machine's clock."""
 
 SECOND = 1_000_000_000
 T0 = WORKSPACE.starts_at
@@ -75,13 +82,20 @@ def scenario(jobs: dict[str, dict[str, JsonValue]]) -> Scenario:
 class _Poller(SandboxClock):
     """The agent's sandbox, and its poller: each time the clock moves, every open job whose run-at has passed is
     run by `act`, and what it writes lands in the run's memory as the agent's. It is also what the run mounts its
-    world on (`Mounts`, as the proxy is), so in a fork it writes to the child's memory, never the parent's."""
+    world on (`Mounts`, as the proxy is), so in a fork it writes to the child's memory, never the parent's.
 
-    def __init__(self, act: Act, *, at: datetime = T0) -> None:
-        super().__init__(SANDBOX)
+    A real sandbox's clock runs on at real speed between the run's moves; this one runs on by `tick` at each read
+    (none by default), so the run's wait for its poller can be played without waiting on the machine's clock."""
+
+    def __init__(self, act: Act, *, at: datetime = T0, tick: timedelta = timedelta(0)) -> None:
+        super().__init__(QUICK)
         self._store: Store | None = None
+        self._clock: Clock | None = None
+        self.reads: list[int] = []
+        """The run's wake at each read of the sandbox."""
         self._act = act
         self._now_ns = int(at.timestamp()) * SECOND
+        self._tick = int(tick.total_seconds() * SECOND)
 
     def mount(
         self,
@@ -92,20 +106,31 @@ class _Poller(SandboxClock):
         scenario: Scenario,
         holds: HeldCalls | None = None,
     ) -> None:
-        del clock, apps, scenario, holds
+        del apps, scenario, holds
         self._store = world
+        self._clock = clock
 
     def flush(self) -> None:
         return None
 
     async def read(self) -> SandboxReading:
+        if self._clock is not None:
+            self.reads.append(self._clock.wake())
+        if self._tick and self._store is not None:
+            self._now_ns += self._tick
+            self._moved(self._store, self._now())
         return SandboxReading.model_validate_json(json.dumps({"idle": True, "now_ns": self._now_ns}))
 
     async def advance(self, nanoseconds: int) -> None:
         self._now_ns += nanoseconds
-        now = T0 + timedelta(microseconds=(self._now_ns - int(T0.timestamp()) * SECOND) / 1000)
         assert self._store is not None, "the run moved the sandbox's clock before it mounted its world"
-        self._poll(self._store, now)
+        self._moved(self._store, self._now())
+
+    def _now(self) -> datetime:
+        return T0 + timedelta(microseconds=(self._now_ns - int(T0.timestamp()) * SECOND) / 1000)
+
+    def _moved(self, store: Store, now: datetime) -> None:
+        self._poll(store, now)
 
     def _poll(self, store: Store, now: datetime) -> None:
         for key, body in held(store, "due", "jobs/"):
@@ -144,6 +169,22 @@ async def _played(
 
 def _woke_at(record: RunRecord) -> list[timedelta]:
     return [w.sim_time - T0 for w in record.wakes[1:]]
+
+
+def _at_once(after: timedelta, woke: timedelta) -> bool:
+    """Whether a wake at `woke` began at the decision after one at `after`, with no jump: the run's clock had moved
+    on only by the seconds the sandbox's clock ran while the run read it, never to a poller's next look `P` on."""
+    return after < woke < after + P
+
+
+def _wake_of_write(store: Store, key: str) -> int:
+    """The wake the agent's last write of `key` landed in."""
+    [*_, last] = [
+        e.wake
+        for e in store.events(kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+        if isinstance(e.after, MemorySnapshot) and e.after.key == key and e.operation is not Operation.READ
+    ]
+    return last
 
 
 async def test_the_earliest_of_several_declared_records_is_the_next_jump(tmp_path: Path) -> None:
@@ -206,7 +247,7 @@ async def test_a_past_record_left_unchanged_wakes_once_and_then_is_a_finding(tmp
     )
     [finding] = DueRecordsCheck().run(view).findings
     assert finding.kind is FindingKind.REVIEW
-    assert f"due/jobs/stuck, due at {(T0 - HOUR).isoformat()}, and left it due" in finding.message
+    assert f"due/jobs/stuck was due at {(T0 - HOUR).isoformat()}, and not picked up within one poll" in finding.message
 
 
 async def test_a_record_with_no_offset_is_not_due_and_is_a_finding(tmp_path: Path) -> None:
@@ -392,14 +433,28 @@ P = timedelta(seconds=30)
 
 
 class _Pollers(_Poller):
-    """The agent's sandbox, running its own pollers (`step`) each time the clock moves, and at no other time."""
+    """The agent's sandbox, running its own pollers (`step`) on a timer: they look the first time the clock moves,
+    and again each time it passes `every` after their last look, as `while True: step(); sleep(every)`. Its clock
+    runs on by `tick` at each read, as a real sandbox's runs on while the run waits for it."""
 
-    def __init__(self, step: Step, *, at: datetime = T0) -> None:
-        super().__init__(close, at=at)
+    def __init__(
+        self,
+        step: Step,
+        *,
+        at: datetime = T0,
+        every: timedelta = P,
+        looks_at: datetime | None = None,
+        tick: timedelta = timedelta(seconds=1),
+    ) -> None:
+        super().__init__(close, at=at, tick=tick)
         self._step = step
+        self._every = every
+        self._looks_at = at if looks_at is None else looks_at
 
-    def _poll(self, store: Store, now: datetime) -> None:
-        self._step(store, now)
+    def _moved(self, store: Store, now: datetime) -> None:
+        if now >= self._looks_at:
+            self._step(store, now)
+            self._looks_at = now + self._every
 
 
 def _value(store: Store, key: str) -> dict[str, JsonValue]:
@@ -418,12 +473,17 @@ def _passed(found: dict[str, JsonValue], field: str, now: datetime) -> bool:
 
 
 async def _with(
-    tmp_path: Path, memory: dict[str, dict[str, JsonValue]], due: list[DueRecords], step: Step
+    tmp_path: Path,
+    memory: dict[str, dict[str, JsonValue]],
+    due: list[DueRecords],
+    step: Step,
+    *,
+    sandbox: _Pollers | None = None,
 ) -> tuple[RunRecord, SqliteStore]:
     played = scenario(memory)
     clock = RunClock(T0)
     store = SqliteStore(tmp_path / "world.db", "parent", clock)
-    sandbox = _Pollers(step)
+    sandbox = sandbox if sandbox is not None else _Pollers(step)
     record = await run_scenario(
         scenario=played,
         agent=AGENT.model_copy(update={"due": due}),
@@ -464,7 +524,9 @@ async def test_a_wake_for_one_declaration_is_not_a_wake_for_another_holding_the_
             _put(store, "rec", {**found, "a": moved})
 
     record, store = await _with(tmp_path, {"rec": {"a": T.isoformat(), "b": T.isoformat()}}, due, step)
-    assert _woke_at(record) == [HOUR + P, HOUR + 2 * P, HOUR + timedelta(days=1) + P]
+    first, sweep, day = _woke_at(record)
+    assert (first, day) == (HOUR + P, HOUR + timedelta(days=1) + P)
+    assert _at_once(first, sweep), "the sweep's record, due at the decision, was woken for by a jump"
     assert _woken_by(store) == [[0], [1], [0]], "the wake for `a` was taken as a wake for the sweep's `b`"
     assert _value(store, "rec")["b"] is None, "the sweep did not run in the wake for `b`"
     assert _findings(store, record, due) == []
@@ -502,42 +564,52 @@ async def test_a_record_is_due_only_while_its_later_fields_have_not_passed(
 
 
 async def test_two_declarations_holding_one_instant_on_one_record_are_each_woken_for_once(tmp_path: Path) -> None:
-    due = [DueRecords(collection="due", field="a"), DueRecords(collection="due", field="b", poll=HOUR)]
+    due = [DueRecords(collection="due", field="a"), DueRecords(collection="due", field="b", poll=P)]
     record, store = await _with(tmp_path, {"rec": {"a": T.isoformat(), "b": T.isoformat()}}, due, lambda s, n: None)
-    assert _woke_at(record) == [HOUR, 2 * HOUR]
+    first, second = _woke_at(record)
+    assert first == HOUR and _at_once(first, second), "b's record, already due at the decision, waited for a jump"
     assert _woken_by(store) == [[0], [1]]
     left = _findings(store, record, due)
-    assert len(left) == 2 and all("due/rec, due at" in m and "left it due" in m for m in left)
+    assert len(left) == 2 and all("due/rec was due at" in m and "not picked up within one poll" in m for m in left)
 
 
 async def test_a_backlog_taken_one_record_per_poll_is_woken_for_until_it_is_drained(tmp_path: Path) -> None:
     """Each poll the agent takes only the oldest open task of each owner; two due at one instant are taken on
     consecutive polls, and nothing of the second changes in between: no clock in the sandbox moves inside a wake."""
     record, store = await _with(tmp_path, _tasks(1, 2), [TASKS], _oldest_per_owner(lambda key: True))
-    assert _woke_at(record) == [HOUR + P, HOUR + 2 * P], "the second task, left due by the first poll, was not polled"
+    first, second = _woke_at(record)
+    assert first == HOUR + P and _at_once(first, second), "the second task, left by the first poll, was not polled"
     assert all(_value(store, key)["state"] == "done" for key in _tasks(1, 2))
+    assert [_wake_of_write(store, key) for key in _tasks(1, 2)] == [w.index for w in record.wakes[1:]], (
+        "each task was not taken in a wake of its own"
+    )
     assert _findings(store, record, [TASKS]) == []
 
 
 async def test_a_record_no_one_ever_takes_is_woken_for_once_and_left_due(tmp_path: Path) -> None:
     record, store = await _with(tmp_path, _tasks(1), [TASKS], _oldest_per_owner(lambda key: False))
     assert _woke_at(record) == [HOUR + P], "a record nobody takes was woken for again"
+    assert record.ended_at >= T + 2 * P, "the wake did not wait one poll of the sandbox's clock for its record"
+    assert record.stop is StopReason.NOTHING_PENDING, "a poller that never looks held the run"
     [left] = _findings(store, record, [TASKS])
-    assert "due/tasks/1, due at" in left and "left it due" in left
+    assert "due/tasks/1 was due at" in left and "not picked up within one poll" in left
 
 
 async def test_a_backlog_record_no_one_takes_is_woken_for_again_once_and_left_due(tmp_path: Path) -> None:
     """The first task is taken, so the second is polled again; nobody takes it, and that wake took nothing."""
     record, store = await _with(tmp_path, _tasks(1, 2), [TASKS], _oldest_per_owner(lambda key: key == "tasks/1"))
-    assert _woke_at(record) == [HOUR + P, HOUR + 2 * P]
+    first, second = _woke_at(record)
+    assert first == HOUR + P and _at_once(first, second)
     [left] = _findings(store, record, [TASKS])
-    assert "due/tasks/2, due at" in left
+    assert "due/tasks/2 was due at" in left
     assert _value(store, "tasks/2")["state"] == "open"
 
 
-async def test_a_record_first_due_after_its_moment_is_woken_for_a_poll_on_and_its_poller_runs(tmp_path: Path) -> None:
-    """Woken for one job, the agent adds another already past: its own timer-driven poller finds it only when its
-    clock next moves, so the wake for it is a poll after the decision that first reads it, never at it."""
+async def test_a_record_first_due_after_its_moment_is_woken_for_at_once_and_its_poller_runs_in_the_wake(
+    tmp_path: Path,
+) -> None:
+    """Woken for one job, the agent adds another already past: the wake for it begins at the decision that first
+    reads it, and lasts until its own timer-driven poller, looking a poll after its last look, has written it."""
     due = [DueRecords(collection="due", prefix="jobs/", field="run_at", poll=P)]
 
     def step(store: Store, now: datetime) -> None:
@@ -550,8 +622,10 @@ async def test_a_record_first_due_after_its_moment_is_woken_for_a_poll_on_and_it
                     _put(store, "jobs/late", {"run_at": (T - HOUR).isoformat()})
 
     record, store = await _with(tmp_path, {"jobs/x": {"run_at": T.isoformat()}}, due, step)
-    assert _woke_at(record) == [HOUR + P, HOUR + 2 * P], "the wake for the late job moved no clock"
-    assert _value(store, "jobs/late")["ran_at"] == (T + 2 * P).isoformat(), "its own poller did not run in its wake"
+    first, late = _woke_at(record)
+    assert first == HOUR + P and _at_once(first, late), "the late job, due at the decision, waited for a jump"
+    assert _value(store, "jobs/late")["ran_at"] == (T + 2 * P).isoformat(), "its poller ran on another timer"
+    assert _wake_of_write(store, "jobs/late") == record.wakes[-1].index, "its own poller did not run in its wake"
     assert _findings(store, record, due) == []
 
 
@@ -618,7 +692,8 @@ async def test_a_fork_after_a_wake_that_took_part_of_a_backlog_polls_for_the_res
 
     played = scenario(_tasks(1, 2))
     agent = AGENT.model_copy(update={"due": [TASKS]})
-    sandbox = _Pollers(step, at=checkpoints(open_parent(RunClock(T0)))[at_seq].now)
+    at = checkpoints(open_parent(RunClock(T0)))[at_seq].now
+    sandbox = _Pollers(step, at=at, looks_at=at + P)  # its poller looked at the checkpoint's moment, and sleeps
     [child] = await fork_run(
         fork=Fork(parent_run="parent", at_seq=at_seq),
         parent=parent,
@@ -635,7 +710,9 @@ async def test_a_fork_after_a_wake_that_took_part_of_a_backlog_polls_for_the_res
         own=_Program(),
     )
     woke = [w.sim_time - T0 for w in child.wakes if w.index > first]
-    assert woke == [HOUR + 2 * P], f"the fork woke at {woke}: the second task, left by a wake that took the first"
+    assert len(woke) == 1 and _at_once(HOUR + P, woke[0]), (
+        f"the fork woke at {woke}: the second task, left by a wake that took the first, is due at once"
+    )
 
 
 async def test_a_backlog_record_moved_later_counts_as_taken(tmp_path: Path) -> None:
@@ -653,7 +730,8 @@ async def test_a_backlog_record_moved_later_counts_as_taken(tmp_path: Path) -> N
                 return
 
     record, store = await _with(tmp_path, _tasks(1, 2), [TASKS], step)
-    assert _woke_at(record) == [HOUR + P, HOUR + 2 * P, HOUR + timedelta(days=1) + P]
+    first, second, deferred = _woke_at(record)
+    assert (first, deferred) == (HOUR + P, HOUR + timedelta(days=1) + P) and _at_once(first, second)
     assert _findings(store, record, [TASKS]) == []
 
 
@@ -670,18 +748,13 @@ class _WorkThenSleep(_Poller):
     the sandbox is a wake, and its clock moves after the wake only by the real time between wakes."""
 
     def __init__(self, *, one_per_look: bool = False) -> None:
-        super().__init__(close)
+        super().__init__(close, tick=timedelta(seconds=1))
         self._looks_at = T0 + P
         self._one_per_look = one_per_look
 
-    def _now(self) -> datetime:
-        return T0 + timedelta(microseconds=(self._now_ns - int(T0.timestamp()) * SECOND) / 1000)
-
-    async def advance(self, nanoseconds: int) -> None:
-        self._now_ns += nanoseconds
-        assert self._store is not None, "the run moved the sandbox's clock before it mounted its world"
-        if self._now() >= self._looks_at:
-            self._look(self._store)
+    def _moved(self, store: Store, now: datetime) -> None:
+        if now >= self._looks_at:
+            self._look(store)
             self._looks_at = self._now() + P
 
     def _look(self, store: Store) -> None:
@@ -702,28 +775,115 @@ class _WorkThenSleep(_Poller):
                 return
 
 
-async def test_a_record_its_poller_wrote_mid_work_is_woken_for_a_poll_after_that_work_ended(tmp_path: Path) -> None:
-    """The job at `T` sets job b due at the moment it writes it, `WORK / 2` before it ends. The poller sleeps `P` from
-    the end of its work, so it looks for b `P` after the work ended, not `P` after b's instant: a wake at b's instant
-    plus `P` comes `WORK / 2` before the poller's timer and finds the agent idle, and b's job then runs on the real
-    clock after that wake has ended, in no wake at all."""
+async def test_a_record_its_poller_wrote_mid_work_is_woken_for_at_once_and_the_wake_holds_its_whole_cycle(
+    tmp_path: Path,
+) -> None:
+    """The job at `T` sets job b due at the moment it writes it, `WORK / 2` before it ends, and the poller sleeps `P`
+    from the end of its work. b is due at the decision after that wake, which begins the next at once, with no jump;
+    the poller's timer comes `P` later on the sandbox's clock, and the wake lasts until b is written: b's whole cycle
+    is in it, and the checkpoint after it."""
     record, store = await _worked(tmp_path, {"jobs/a": job(HOUR)}, _WorkThenSleep())
-    assert _woke_at(record) == [HOUR + P, HOUR + P + WORK + P], "b's wake did not reach its poller's next look"
+    first, second = _woke_at(record)
+    assert first == HOUR + P and _at_once(first, second), "b, due at the decision, waited for a jump"
     assert _value(store, "jobs/b")["state"] == "done", "b's poller never looked in a wake: b was left due"
+    assert _wake_of_write(store, "jobs/b") == record.wakes[-1].index, "b's cycle ran outside the wake for it"
+    _checkpointed_after(store, record.wakes[-1].index, "jobs/b")
     assert _findings(store, record, [JOBS]) == []
 
 
-async def test_a_backlog_drained_by_a_poller_that_sleeps_after_its_work_is_woken_for_a_poll_after_that_work(
+async def test_a_backlog_drained_by_a_poller_that_sleeps_after_its_work_takes_each_record_in_a_wake_of_its_own(
     tmp_path: Path,
 ) -> None:
-    """Two jobs due at `T`, taken one per look by a poller that sleeps `P` from the end of its work: the second is
-    looked for `P` after the first job's work ended, not `P` after the wake that took the first began."""
+    """Two jobs due at `T`, taken one per look by a poller that sleeps `P` from the end of its work: the wake that
+    took the first ends once it is written, and the second is due at once, its wake lasting until the poller's next
+    look has written it."""
     record, store = await _worked(
         tmp_path, {"jobs/x": job(HOUR), "jobs/y": job(HOUR)}, _WorkThenSleep(one_per_look=True)
     )
-    assert _woke_at(record) == [HOUR + P, HOUR + P + WORK + P], "the second job's wake did not reach the next look"
+    first, second = _woke_at(record)
+    assert first == HOUR + P and _at_once(first, second), "the second job's wake waited for a jump"
     assert _value(store, "jobs/y")["state"] == "done", "the backlog's second job was left due"
+    assert [_wake_of_write(store, k) for k in ("jobs/x", "jobs/y")] == [w.index for w in record.wakes[1:]]
     assert _findings(store, record, [JOBS]) == []
+
+
+def _checkpointed_after(store: Store, wake: int, key: str) -> None:
+    """The checkpoint that ended `wake` (and the agent's state saved with it) was taken after the write of `key`."""
+    wrote = max(
+        e.seq
+        for e in store.events(kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+        if isinstance(e.after, MemorySnapshot) and e.after.key == key and e.operation is not Operation.READ
+    )
+    ended = max(seq for seq, c in checkpoints(store).items() if c.wake == wake)
+    assert ended > wrote, f"the checkpoint after wake {wake} came before {key} was written: the wake ended early"
+
+
+async def test_a_wake_lasts_until_its_record_is_written_when_the_poller_looks_after_the_clock_lands(
+    tmp_path: Path,
+) -> None:
+    """The run's jump lands at `T + P`, and the poller's own timer, out of step with it, comes 1.5 s later on the
+    sandbox's clock: the sandbox reads idle at the jump, and a wake ended at that first idle would leave the
+    poller's cycle to run after it, with the checkpoint (and any saved state) taken before the work. The wake lasts
+    until the record is written, then settles."""
+    due = [DueRecords(collection="due", prefix="jobs/", field="run_at", poll=P)]
+
+    def step(store: Store, now: datetime) -> None:
+        if _passed(_value(store, "jobs/a"), "run_at", now):
+            _put(store, "jobs/a", {"run_at": None, "ran_at": now.isoformat()})
+
+    late = T + P + timedelta(milliseconds=1500)
+    sandbox = _Pollers(step, looks_at=late, tick=timedelta(milliseconds=100))
+    record, store = await _with(tmp_path, {"jobs/a": {"run_at": T.isoformat()}}, due, step, sandbox=sandbox)
+    assert _woke_at(record) == [HOUR + P]
+    assert _value(store, "jobs/a")["ran_at"] == late.isoformat()
+    assert _wake_of_write(store, "jobs/a") == record.wakes[-1].index
+    _checkpointed_after(store, record.wakes[-1].index, "jobs/a")
+    assert _findings(store, record, due) == []
+
+
+async def test_a_record_rewritten_to_now_at_the_end_of_each_cycle_is_woken_for_back_to_back(tmp_path: Path) -> None:
+    """A poller that checks again at once leaves its record due: it writes `run_at` as now at the end of each cycle,
+    twice, and then clears it. Each write is a pickup, though the record is still due; the next wake begins at once
+    at the decision after, and each cycle is in a wake of its own, none of them reported as missed."""
+    due = [DueRecords(collection="due", prefix="jobs/", field="run_at", poll=P)]
+    cycles: list[datetime] = []
+
+    def step(store: Store, now: datetime) -> None:
+        found = _value(store, "jobs/a")
+        if not _passed(found, "run_at", now):
+            return
+        cycles.append(now)
+        _put(store, "jobs/a", {"run_at": now.isoformat() if len(cycles) < 3 else None})
+
+    record, store = await _with(tmp_path, {"jobs/a": {"run_at": T.isoformat()}}, due, step)
+    first, *again = _woke_at(record)
+    assert first == HOUR + P and len(again) == 2, f"the run woke at {_woke_at(record)}"
+    assert all(cycle < T0 + woke < cycle + P for cycle, woke in zip(cycles, again, strict=False)), (
+        "a re-check, due as the cycle before it wrote it, waited for a jump"
+    )
+    writes = [
+        e.wake
+        for e in store.events(kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+        if isinstance(e.after, MemorySnapshot) and e.operation is not Operation.READ
+    ]
+    assert writes == [w.index for w in record.wakes[1:]], "a cycle ran outside the wake for it"
+    assert _findings(store, record, due) == []
+
+
+async def test_a_record_rewritten_to_what_it_held_is_picked_up(tmp_path: Path) -> None:
+    """The store keeps every write that lands as a version of its own, whatever it holds: a poller that writes its
+    record back unchanged has picked it up, and the wake does not wait a poll for it, nor is it reported."""
+    due = [DueRecords(collection="due", prefix="jobs/", field="run_at", poll=P)]
+
+    def step(store: Store, now: datetime) -> None:
+        found = _value(store, "jobs/a")
+        if _passed(found, "run_at", now):
+            _put(store, "jobs/a", found)
+
+    record, store = await _with(tmp_path, {"jobs/a": {"run_at": T.isoformat()}}, due, step)
+    assert _woke_at(record) == [HOUR + P]
+    assert record.ended_at < T + 2 * P, "the wake waited a poll for a record the agent had written"
+    assert _findings(store, record, due) == []
 
 
 async def _worked(
@@ -743,3 +903,142 @@ async def _worked(
         replier=PeopleReplier(played, None, []),
     )
     return record, store
+
+
+async def test_a_wake_begun_by_something_else_does_not_wait_for_a_due_record(tmp_path: Path) -> None:
+    """The agent books a message a day on as it starts, and keeps a job due on the third day: the booking's wake is
+    no due record's, and ends at the sandbox's first settle, never a poll of its clock later."""
+    played = scenario({"jobs/a": job(3 * 24 * HOUR)})
+    clock = RunClock(T0)
+    store = SqliteStore(tmp_path / "world.db", "parent", clock)
+    slack = build()
+    sandbox = _Pollers(lambda s, n: _put(s, "jobs/a", job(None)) if _passed(_value(s, "jobs/a"), "run_at", n) else None)
+    record = await run_scenario(
+        scenario=played,
+        agent=AGENT.model_copy(update={"due": [JOBS.model_copy(update={"poll": P})]}),
+        sandbox=sandbox,
+        mounts=sandbox,
+        store=store,
+        clock=clock,
+        services=_services(slack),
+        replier=PeopleReplier(played, None, []),
+        start=_Booker(slack, store, clock),
+    )
+    assert [(w.reason, w.sim_time - T0) for w in record.wakes] == [
+        ("start", timedelta(0)),
+        ("due", 24 * HOUR),
+        ("due", 3 * 24 * HOUR + P),
+    ]
+    booked = record.wakes[1].index
+    assert sandbox.reads.count(booked) < P.total_seconds() / 2, (
+        f"the booking's wake read the sandbox {sandbox.reads.count(booked)} times: it waited on its clock for a due "
+        "record it was not begun for"
+    )
+
+
+class _Answering:
+    """`application.playback` HoldsMemory and PlaysBack for a playback with no calls: it keeps, for each write the
+    agent's poller makes while played back, the seq its memory is answered as of then."""
+
+    def __init__(self) -> None:
+        self.cursor: Callable[[], int] = lambda: 0
+        self.writes: list[tuple[str, int]] = []
+
+    def playing_back(self, parent: Store, cursor: Callable[[], int]) -> None:
+        del parent
+        self.cursor = cursor
+
+    def play_back(self, trace: object) -> None:
+        del trace
+
+    def written(self, collection: str, key: str) -> int:
+        return sum(1 for k, _ in self.writes if collection == "due" and k == key)
+
+    def live(self) -> None:
+        return None
+
+    def write(self, key: str) -> None:
+        self.writes.append((key, self.cursor()))
+
+
+class _Door:
+    async def resend(self, snapshot: object) -> Delivered:
+        raise AssertionError(f"nothing was pushed to the agent in the record, and {snapshot} was sent")
+
+
+class _PlayedPoller(_Poller):
+    """The poller's sandbox while it is played back: its timer looks at `looks_at`, on a clock that runs on by
+    100 ms a read, and its look writes `jobs/a` through the memory being played back, when `writes`."""
+
+    def __init__(self, memory: _Answering, looks_at: datetime, *, writes: bool = True) -> None:
+        super().__init__(close, tick=timedelta(milliseconds=100))
+        self._memory = memory
+        self._looks_at: datetime | None = looks_at
+        self._writes = writes
+
+    async def read(self) -> SandboxReading:
+        self._now_ns += self._tick
+        self._looked()
+        return SandboxReading.model_validate_json(json.dumps({"idle": True, "now_ns": self._now_ns}))
+
+    async def advance(self, nanoseconds: int) -> None:
+        self._now_ns += nanoseconds
+        self._looked()
+
+    def _looked(self) -> None:
+        if self._looks_at is not None and self._now() >= self._looks_at:
+            self._looks_at = None
+            if self._writes:
+                self._memory.write("jobs/a")
+
+
+async def _late_parent(tmp_path: Path) -> tuple[SqliteStore, int, list[DueRecords]]:
+    """A run whose wake for `jobs/a` lasted until its poller, looking 1.5 s after the clock landed, wrote it."""
+    due = [DueRecords(collection="due", prefix="jobs/", field="run_at", poll=P)]
+
+    def step(store: Store, now: datetime) -> None:
+        if _passed(_value(store, "jobs/a"), "run_at", now):
+            _put(store, "jobs/a", {"run_at": None, "ran_at": now.isoformat()})
+
+    sandbox = _Pollers(step, looks_at=T + P + timedelta(milliseconds=1500), tick=timedelta(milliseconds=100))
+    record, store = await _with(tmp_path, {"jobs/a": {"run_at": T.isoformat()}}, due, step, sandbox=sandbox)
+    return store, record.wakes[-1].index, due
+
+
+async def _play_back(store: SqliteStore, wake: int, due: list[DueRecords], *, writes: bool) -> tuple[_Answering, int]:
+    at_seq = max(seq for seq, c in checkpoints(store).items() if c.wake == wake)
+    before = max(seq for seq, c in checkpoints(store).items() if c.wake == wake - 1)
+    memory = _Answering()
+
+    async def start() -> None:
+        return None
+
+    await TracePlayback(
+        parent=store,
+        checkpoint=checkpoints(store)[at_seq],
+        at_seq=at_seq,
+        starts_at=T0,
+        sandbox=_PlayedPoller(memory, T + P + timedelta(milliseconds=1500), writes=writes),
+        proxy=memory,
+        memory=memory,
+        door=_Door(),
+        traffic=None,
+        due=due,
+    ).play(lambda said: None, start=start)
+    return memory, before
+
+
+async def test_a_played_back_wake_for_a_due_record_ends_where_it_ended_when_it_was_played(tmp_path: Path) -> None:
+    """The record wake lasted until the poller wrote its record; played back into a fresh sandbox it lasts until the
+    poller writes it again, inside that wake, its memory answered as of that wake's start, never the next's."""
+    store, wake, due = await _late_parent(tmp_path)
+    memory, before = await _play_back(store, wake, due, writes=True)
+    assert memory.writes == [("jobs/a", before)], (
+        f"the played-back poller wrote {memory.writes}: the wake ended before its look, as it did not when played"
+    )
+
+
+async def test_a_played_back_wake_whose_record_is_not_written_again_parts(tmp_path: Path) -> None:
+    store, wake, due = await _late_parent(tmp_path)
+    with pytest.raises(PlaybackParted, match="has not written it again within one poll"):
+        await _play_back(store, wake, due, writes=False)

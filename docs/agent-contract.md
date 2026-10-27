@@ -42,7 +42,7 @@ checkpoint.
 | Touch point | Who calls whom, when | Request → response | Declared by | Required |
 |---|---|---|---|---|
 | **sandbox** | Minutehand → the sandbox's control calls, at the end of each wake (whether it is idle, and its clock) and at each jump of the clock (its clock advanced); the run's start → the agent's command, as `MINUTEHAND_STARTS_AT_NS`, the moment its sandbox is born at; the transparent listener and the name answerer → the agent's command, as `MINUTEHAND_TRANSPARENT_PORT` and `MINUTEHAND_DNS_PORT`, what `sandbox/seal.sh` sends every connection and lookup from the sandbox to | `deadlines` → `{"idle", "now_ns", ...}` (anything else it prints is ignored); `advance` with `{nanoseconds}` → exit 0 | `sandbox.deadlines`, `sandbox.advance` | Yes |
-| **saved state** | Minutehand → the agent's `export_state`, at every checkpoint after a wake, with the sandbox idle; a fork from such a checkpoint → the agent's command, as `MINUTEHAND_AGENT_STATE` (the folder) and `MINUTEHAND_STARTS_AT_NS` (the checkpoint's moment) | `export_state` with `{dir}`, an empty folder → exit 0, the folder filled; anything else is kept with the checkpoint as its failure, and a fork from there plays the agent back | `sandbox.export_state` | No |
+| **saved state** | Minutehand → the agent's `export_state`, at every checkpoint after a wake, with the sandbox idle; a fork from such a checkpoint → the agent's command, as `MINUTEHAND_AGENT_STATE` (the folder) and `MINUTEHAND_STARTS_AT_NS` (the checkpoint's moment) | `export_state` with `{dir}`, an empty folder → exit 0, the folder filled; anything else, or an agent that stirred while it ran, is kept with the checkpoint as its failure, and a fork from there plays the agent back | `sandbox.export_state` | No |
 | **goal** | An older scenario's owner → agent, as a message on a provider, at the start; directions the same way | The provider's own event | `goal.provider`, with an `inbound[]` target on it | Only for a scenario that hands the agent a `goal` |
 | **memory** | The agent → Minutehand's receiver, each time it reads or writes what it remembers | `minutehand.agent.store` (`POST $MINUTEHAND_AGENT_URL/store`) | Nothing: MINUTEHAND_ON and MINUTEHAND_AGENT_URL are handed out | Only for an agent that remembers across wakes and is forked, or keeps due records |
 | **own database** | Minutehand → the agent's environment, before each run and fork | A fresh empty SQLite file, its path or `sqlite:///` URL | `own_databases[]` (`env`, `form`) | No |
@@ -87,7 +87,7 @@ verdict"), never from the agent.
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
 | `start_limit` | `PT30S` | Real time the agent's command may take, from its launch, before the address the world pushes to accepts connections; nothing is pushed before then. An agent whose front door opens only once everything behind it is up declares how long that takes |
-| `due[].poll` | `PT0S` | How long the agent's own poller may take to find a due record after it falls due: the wake is that long after the record's instant, the latest its poller would have acted, or that long after the decision that reads it once its instant has passed |
+| `due[].poll` | `PT0S` | How long the agent's own poller may take to find a due record after it falls due: the clock jumps that long after a record's instant still to come; a wake for due records lasts until the agent writes one, or until the sandbox's clock has run this long past the wake's start, and then `due_records` says it was not picked up |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 
@@ -128,7 +128,7 @@ due:
     prefix: "jobs/"              # the keys under it
     where: {state: open}         # equality filters, a field or a dotted path, as `store.query`
     field: run_at                # an ISO 8601 instant with an offset; absent or null is not due
-    poll: PT30S                  # how long its poller may take to find it (default PT0S)
+    poll: PT30S                  # the longest its poller sleeps between looks (default PT0S)
     later: [expires_at]          # fields that must not have passed when it falls due (default none)
 ```
 
@@ -136,17 +136,20 @@ due:
   reads every declared record from the memory as it stands then (in a fork, the parent's up to the checkpoint and
   the fork's own after), never from an earlier read. A record moved earlier, moved later, cleared or closed since is
   followed as it now stands. The earliest record's instant, and `poll` after it, is next due: `planned_wakes`,
-  `dispatch.source = recorded`, its `ref` naming each key and instant. The wake is the clock reaching it; Minutehand
-  calls nothing, and the agent's own poller finds the work when its own clock passes it.
-- **Due late, a poll on.** A record whose instant is not later than now at a decision that reads it (written by the
-  work just done, moved into the past, or let through by its `later` fields or another declaration's wake) falls due
-  `poll` after the decision, not at it nor `poll` after its instant. A wake that moved no clock would run none of the
-  agent's own timers, so its poller would not find the work. And a poller that sleeps `poll` from the end of its own
-  work (`while True: run_due(); sleep(poll)`, a scheduler that awaits what it dispatches) looks next `poll` after
-  that work ended: a record the work set due at once (a next check of `now`) falls due before that look, and a wake
-  at its instant plus `poll` would find the agent idle, end, and leave the poller's work to run on the real clock
-  after it, in no wake. Every decision follows a settle, so the work has ended by then and the poller looks within
-  `poll` of it, however it is written.
+  `dispatch.source = recorded`, its `ref` naming each key and instant; Minutehand calls nothing, and the agent's own
+  poller finds the work when its own clock passes it. A record whose instant is not later than now at the decision
+  (written by the work just done, a next check of `now`, moved into the past, or let through by its `later` fields or
+  another declaration's wake) is due at once: the next wake begins with no jump.
+- **A wake lasts until the record is picked up.** The run cannot read the poller's timer and does not guess it: the
+  sandbox's clock runs on at real speed inside a wake, and a wake begun for due records lasts until the agent has
+  written one of each declaration's records it was begun for (a newer write in the run's store than the one the
+  decision read: moved later, rewritten to `now`, rewritten unchanged, or deleted all count, since every write that
+  lands is kept as its own), and then until the sandbox settles. Its checkpoint, and the agent's saved state, come
+  after that. A poller that checks again at once (writes `next_check = now` at the end of its cycle) runs
+  back-to-back wakes, one cycle each. A declaration none of whose records the agent wrote within one `poll` of the
+  sandbox's clock ends the wake all the same, and `due_records` says it was due and not picked up within one poll;
+  a sandbox whose clock does not get there within `settle_limit` more of real time fails the run. Declare `poll` as
+  the longest the poller sleeps between looks.
 - **Fields that must not have passed (`later`).** A poller that takes a record only while another of its times has
   not passed names that time in `later`. The record is due by the declaration at the moment it would fall due only
   while every `later` field is absent, null, or an instant strictly later than that moment; when one is not, it is not
@@ -163,9 +166,10 @@ due:
 
   A request updated at `T` that expired at `T - 1h` is not due at `T + 30s`; one expiring at `T + 1d` is.
 - **Once for one instant, by each declaration.** A record wakes the agent at most once for one instant by one
-  declaration. Woken and still due by that declaration at that instant when the wake ends, it is not woken again, and
-  the check `due_records` says the agent left it due (`review`): in production a poller whose wait and whose query
-  disagree wakes for it forever with nothing to do. A new instant is new, and so is another declaration holding the
+  declaration. Woken and not written in that wake, nor any other record of its declaration, and still due at that
+  instant when the wake ends, it is not woken again, and the check `due_records` says it was due and not picked up
+  within one poll (`review`): in production a poller whose wait and whose query disagree wakes for it forever with
+  nothing to do, and a broken one never looks. A new instant is new, and so is another declaration holding the
   same instant on the same record. What has woken, by which declaration, is read from the run's log, so a fork knows
   what its parent was woken for. Two pollers reading one record:
 
@@ -178,16 +182,15 @@ due:
 
   With the record holding `{a: T, b: T}` and a `poll` of `P` on each, the run wakes at `T + P` for `a` alone: the
   sweep's `a` has passed. The agent moves `a` a day on; at the next decision the sweep's declaration is due, and the
-  run wakes for it at `T + 2P`, a poll on, when the sweep runs.
-- **A backlog taken one record per poll.** No clock in the sandbox moves inside a wake but by the real time the agent
-  works, so a poller that takes only the oldest matching record each time it polls does not poll again before the
-  wake ends, and a second record due at the same instant is left as it was. A record left due by a wake that took
-  another record of the same declaration is due again `poll` after the decision that follows that wake, when its
-  work has ended, and is not said to be left due by it.
-  A wake took a record when, as the wake left the memory, the record is no longer read by its declaration (deleted,
-  out of `where`, its field cleared, as a claim that changes `status` leaves it) or holds a later instant than it was
-  woken for (deferred); either counts. A record left due by a wake that took nothing is not woken for again, and is
-  said to be left due: one nobody ever takes wakes the agent once.
+  run wakes for it at once, the wake lasting until the sweep has run.
+- **A backlog taken one record per poll.** A poller that takes only the oldest matching record each time it polls
+  picks its declaration up with its first write, and the wake ends before it looks again, leaving a second record due
+  at the same instant as it was. A record left due by a wake that took another record of the same declaration is due
+  again at once, at the decision after that wake, and is not said to be left due by it. A wake took a record when, as
+  the wake left the memory, the record is no longer read by its declaration (deleted, out of `where`, its field
+  cleared, as a claim that changes `status` leaves it) or holds a later instant than it was woken for (deferred);
+  either counts. A record left due by a wake that took nothing is not woken for again: one nobody ever takes wakes
+  the agent once.
 - **A field that is not an instant** with an offset (a date alone, a time without one, a number), in `field` or in
   `later`, is not due, and `due_records` names the key, the field and what it held.
 - **The price.** The agent's scheduler reads its own database; the projection is a second copy it writes for the run
@@ -252,12 +255,15 @@ database the agent file names under `own_databases`, handed fresh and empty to e
 **A fork from the agent's own saved state.** Playback refuses an agent whose code changed in any way that changes a
 call, and a database the agent keeps inside its sandbox is in no record of Minutehand's. An agent file that names
 `sandbox.export_state` (`[sh, export_state.sh, "{dir}"]`) has it run at every checkpoint after a wake, while the
-sandbox is idle, into an empty folder that is then kept as `<state>/runs/<run>/agent-state/<seq>/`. A fork from such a
+sandbox is idle, into an empty folder that is then kept as `<state>/runs/<run>/agent-state/<seq>/`. The save must be
+one quiet instant: if the agent stirs while it runs (its sandbox not idle before or after, a call sent or answered, a
+read of its memory, a write of its own), the folder is removed and the checkpoint says the state was not saved
+because the agent worked during the export. A fork from such a
 checkpoint plays nothing back: the agent's command is started with `MINUTEHAND_AGENT_STATE` naming the folder, which
 the agent imports as it starts, and `MINUTEHAND_STARTS_AT_NS` the checkpoint's moment, so its sandbox is born there.
 The agent's program may differ from the one that saved the state; the fork says how, and is kept as not verified,
-since what the agent imports is its own. Without a saved state at the checkpoint (no `export_state`, or a save that
-failed, kept with its checkpoint), a fork plays the agent back as above.
+since what the agent imports is its own. Without a saved state at the checkpoint (no `export_state`, a save that
+failed, or one the agent worked through, kept with its checkpoint), a fork plays the agent back as above.
 
 ### Writing an adapter
 

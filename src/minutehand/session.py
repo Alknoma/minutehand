@@ -664,6 +664,7 @@ async def fork(
                     memory=proxy.receiver,
                     door=Door(),
                     traffic=proxy,
+                    due=agent.due,
                 )
 
             async with _agent_process(command, env, agent, log, state=state, started=False) as own:

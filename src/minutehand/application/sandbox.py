@@ -84,6 +84,16 @@ class SandboxClock:
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
 
     @property
+    def quiet(self) -> timedelta:
+        """How far apart two reads are (`Sandbox.quiet`)."""
+        return self._source.quiet
+
+    @property
+    def settle_limit(self) -> timedelta:
+        """Real time one wake may take to fall idle (`Sandbox.settle_limit`)."""
+        return self._source.settle_limit
+
+    @property
     def exports(self) -> bool:
         """Whether the agent file names a command that saves the agent's own state (`Sandbox.export_state`)."""
         return self._source.export_state is not None
@@ -137,18 +147,18 @@ class SandboxClock:
         give_up = time.monotonic() + self._source.settle_limit.total_seconds()  # clock-lint: exempt real-time limit
         quiet = self._source.quiet.total_seconds()
         while time.monotonic() < give_up:  # clock-lint: exempt real-time limit
-            before = _moving(traffic)
+            before = moving(traffic)
             first = await self.read()
             await asyncio.sleep(quiet)
             second = await self.read()
-            after = _moving(traffic)
+            after = moving(traffic)
             still = before == after and not before[1]
             if first.idle and second.idle and still:
                 return second
         return None
 
 
-def _moving(traffic: Traffic | None) -> tuple[int, bool]:
+def moving(traffic: Traffic | None) -> tuple[int, bool]:
     """What `traffic` reads now: its activity count, and whether any call of the agent's is in flight."""
     if traffic is None:
         return 0, False

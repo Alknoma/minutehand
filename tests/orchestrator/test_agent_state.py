@@ -17,9 +17,10 @@ import pytest
 
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.agent_state import AGENT_STATE, TAKING
+from minutehand.application.agent_state import AGENT_STATE, TAKING, WORKED
 from minutehand.application.checkpoint import Checkpoint, checkpoints
 from minutehand.application.interruption import Interruption
+from minutehand.application.memory import Versions, remember
 from minutehand.application.orchestrator import run_scenario
 from minutehand.application.refusals import RunRefused
 from minutehand.application.replier import PeopleReplier
@@ -29,6 +30,7 @@ from minutehand.application.run_clock import RunClock
 from minutehand.application.sandbox import SandboxReading
 from minutehand.domain.agent import AgentUnderTest, Sandbox
 from minutehand.domain.experiment import Fork
+from minutehand.domain.memory import MemoryPut, MemoryWrite
 from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.templates import AGENT_STATE_VARIABLE, STARTS_AT_VARIABLE
 from minutehand.ports.clock import Clock
@@ -299,3 +301,41 @@ async def test_a_fork_stopped_while_its_agent_is_brought_back_is_refused(tmp_pat
     with sqlite3.connect(tmp_path / "world.db") as db:
         held = [r[0] for r in db.execute("SELECT run_id FROM run")]
     assert held == ["parent"], "the refused fork left a run behind"
+
+
+class _Stirring(_Saving):
+    """The poller's sandbox, whose own timer comes due while save `stirs` runs: the agent's next cycle begins in the
+    middle of the export and writes to its memory."""
+
+    def __init__(self, stirs: int) -> None:
+        super().__init__()
+        self._stirs = stirs
+
+    async def export(self, directory: Path) -> str | None:
+        if self.saves + 1 == self._stirs and self._store is not None:
+            remember(
+                self._store,
+                MemoryWrite(writes=[MemoryPut(collection="due", key="jobs/c", value=job(None))]),
+                Versions(),
+            )
+        return await super().export(directory)
+
+
+async def test_a_save_the_agent_worked_through_is_discarded_and_a_fork_there_plays_the_agent_back(
+    tmp_path: Path,
+) -> None:
+    """What the export saved holds part of one moment and part of the next, beside a world that holds neither: the
+    checkpoint says the state was not saved and why, nothing is left in its folder, and a fork there plays back."""
+    record, store = await _parent(tmp_path, SAVING, _Stirring(stirs=2))
+    at_seq, checkpoint = _after(store, record, HOUR)
+    exported = checkpoint.agent.exported
+    assert exported is not None and not exported.saved, "a save the agent worked through was kept"
+    assert exported.failure == f"{WORKED}: it wrote to the run's log"
+    folder = tmp_path / "state" / "parent" / AGENT_STATE
+    assert not (folder / str(at_seq)).exists() and not (folder / TAKING).exists()
+    others = [c for seq, c in checkpoints(store).items() if c.wake > 0 and seq != at_seq]
+    assert others and all(c.agent.exported is not None and c.agent.exported.saved for c in others)
+    store.close()
+    own, playback = _Program(), _Played()
+    await _fork(tmp_path, record, at_seq, playback, own)
+    assert playback.played == 1, "a fork at a mixed save started the agent from it"
