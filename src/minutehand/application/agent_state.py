@@ -15,7 +15,7 @@ A save is the agent's state at one quiet instant, the one the checkpoint's world
 ended inside the agent's own sleep, and the sandbox's clock runs on at real speed while the export runs: a poller
 whose timer comes due before the export ends starts its next cycle in the middle of it, and the folder would hold
 part of one moment and part of the next, beside a world that holds neither. So the run reads around the export
-whether the agent stirred: the sandbox idle as it began and as it ended, no call of the agent's sent, answered or in
+whether the agent stirred: the sandbox idle as it began and falling idle again after it, no call of the agent's sent, answered or in
 flight (`Traffic.activity`, `Traffic.waiting`), no read of its memory (`HoldsMemory.memory_reads`) and no event of the
 agent's in the log between the two. Anything moved, and the folder is removed and the checkpoint says the state was
 not saved, and why (`ExportedState.failure`: the agent worked during the export): a fork there plays the agent back,
@@ -65,7 +65,7 @@ async def save(
 ) -> ExportedState:
     """Run the agent file's `export_state` into an empty `folder/taking/`: what the checkpoint keeps of it. A
     failure removes what it left there, and so does an agent that stirred while it ran (`WORKED`): its sandbox not
-    idle as the export began or as it ended, a call of its sent, answered or in flight, a read of its memory
+    idle as the export began or not falling idle after it, a call of its sent, answered or in flight, a read of its memory
     (`reads`, every one the agent made, counted), or an event of its in `store`."""
     taking = folder / TAKING
     shutil.rmtree(taking, ignore_errors=True)  # a run stopped while saving left it half filled
@@ -76,12 +76,15 @@ async def save(
     if failed is not None:
         shutil.rmtree(taking, ignore_errors=True)
         return ExportedState(saved=False, failure=failed[-OUTPUT_KEPT:])
-    ended = await sandbox.read()
+    # The export's own work (the agent's store writing it out, the command copying it) leaves the sandbox busy for a
+    # moment after the command returns, so one reading then says nothing about the agent: wait for it to fall idle,
+    # as a wake's end does. What the agent itself did shows in its calls, its memory and the log, read below.
+    ended = await sandbox.settle(traffic)
     stirred = [
         said
         for said, moved in [
             ("its sandbox was not idle as the export began", not began.idle),
-            ("its sandbox was not idle as the export ended", not ended.idle),
+            ("its sandbox did not fall idle after the export", ended is None),
             ("it sent or was answered a call", moving(traffic) != calls or calls[1]),
             ("it read its memory", reads() != read),
             ("it wrote to the run's log", bool(store.events(since=head, actors=[Actor.AGENT]))),

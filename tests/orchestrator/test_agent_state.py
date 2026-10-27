@@ -339,3 +339,32 @@ async def test_a_save_the_agent_worked_through_is_discarded_and_a_fork_there_pla
     own, playback = _Program(), _Played()
     await _fork(tmp_path, record, at_seq, playback, own)
     assert playback.played == 1, "a fork at a mixed save started the agent from it"
+
+
+class _BusyAfterExport(_Saving):
+    """The poller's sandbox, whose export leaves it busy for a few readings after the command returns (a real
+    store still writing its export out), with nothing of the agent's moving."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._busy = 0
+
+    async def export(self, directory: Path) -> str | None:
+        failed = await super().export(directory)
+        self._busy = 3
+        return failed
+
+    async def read(self) -> SandboxReading:
+        reading = await super().read()
+        if self._busy:
+            self._busy -= 1
+            return reading.model_copy(update={"idle": False})
+        return reading
+
+
+async def test_a_save_whose_export_leaves_the_sandbox_busy_for_a_moment_is_kept(tmp_path: Path) -> None:
+    """The sandbox is busy right after the export with the export's own work, not the agent's: the save waits for it
+    to fall idle and keeps the state, where one reading taken as the command returns would discard every save."""
+    record, store = await _parent(tmp_path, SAVING, _BusyAfterExport())
+    _, checkpoint = _after(store, record, HOUR)
+    assert checkpoint.agent.exported is not None and checkpoint.agent.exported.saved, checkpoint.agent.exported
