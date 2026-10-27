@@ -7,19 +7,25 @@ decision reads them afresh, never from an earlier read, so a record moved earlie
 since is followed as it now stands; a booking would have frozen the moment it was taken from.
 
 The wake is the clock reaching the record's instant, or `poll` after it, the latest its own poller would have acted:
-Minutehand calls nothing, and the agent's own poller finds the work when its own clock passes it. A record first due
-at a decision after that moment (moved, or held back until then) falls due `poll` after the decision, not at it: a
-wake that moved no clock would run no poller of the agent's, as no deadline in the sandbox is a wake. A
-declaration's `later` fields hold the record back: it is due only while each is absent, null, or an instant later
-than the moment it would fall due, and one that is not is read again at the next decision, as it then stands.
+Minutehand calls nothing, and the agent's own poller finds the work when its own clock passes it. A record whose
+instant has already passed at a decision that reads it (written by the work just done, moved, or held back until
+then) falls due `poll` after the decision, not at it nor `poll` after its instant. A wake that moved no clock would
+run no poller of the agent's, as no deadline in the sandbox is a wake; and a poller that sleeps `poll` from the end of
+its own work (`while True: run_due(); sleep(poll)`, a scheduler that awaits what it dispatches) looks next `poll` after
+that work ended, which is after the record's instant when the work wrote it. Every decision follows a settle, so the
+agent's work has ended by then and its poller looks within `poll` of it, whichever way the poller is written; a wake
+`poll` after the instant would come before that look, find the agent idle and end, and the poller's work would run
+on the real clock after it, in no wake. A declaration's `later` fields hold the record back: it is due only while
+each is absent, null, or an instant later than the moment it would fall due, and one that is not is read again at
+the next decision, as it then stands.
 
 A record wakes the agent once for one instant by one declaration: woken and left holding the same instant, it is not
 woken again (the check `due_records` says it was left due), and a new instant is new. Another declaration holding
 the same instant on the same record is woken for by itself. The one exception is a backlog its poller takes a record
 at a time: no clock in the sandbox moves inside a wake but by the real time the agent works, so its next poll never
 comes before the wake ends. A record left due by a wake that took another record of the same declaration (one no
-longer read by it, or holding a later instant) is due again `poll` after that wake; one left due by a wake that took
-none is not. Which have woken, and when, and what each wake took, is read from the run loop's table in the log
+longer read by it, or holding a later instant) is due again `poll` after the decision that follows that wake, when
+its work has ended; one left due by a wake that took none is not. Which have woken, and when, and what each wake took, is read from the run loop's table in the log
 (`DueEntry.records`, each naming its declaration) and the memory as each wake left it, so a fork knows what its
 parent woke for up to the checkpoint.
 """
@@ -152,19 +158,19 @@ def ended(already: Mapping[Woken, Woke], now: Sequence[Read]) -> dict[Woken, Wok
 
 
 def _moment(base: datetime, poll: timedelta, now: datetime) -> datetime:
-    """`poll` after `base`; `poll` after now once that is not later, as its poller next looks from now: a wake that
-    moved no clock would run no poller of the agent's."""
-    due = base + poll
-    return due if due > now else now + poll
+    """`poll` after `base` while `base` is still to come; `poll` after now once it is not, as the agent's poller next
+    looks within `poll` of now, its work having ended at the settle before this decision: a wake that moved no clock
+    would run no poller of the agent's, and a poller that sleeps from the end of its work has not looked since."""
+    return max(base, now) + poll
 
 
 def next_due(
     records: Sequence[Read], sources: Sequence[DueRecords], already: Mapping[Woken, Woke], now: datetime
 ) -> PendingRecord | None:
     """What is next due of `records`: the earliest moment any falls due, with every record falling due then. One not
-    yet woken for its instant by its declaration falls due `poll` after that instant; one woken for and left due,
-    only when that wake took another record of its declaration, `poll` after that wake; either, once that has
-    passed, `poll` after now. Either is due only while its `later` fields are later than that moment. None when none
+    yet woken for its instant by its declaration falls due `poll` after that instant while the instant is still to
+    come; one woken for and left due, only when that wake took another record of its declaration; either, once its
+    instant or that wake has passed, `poll` after now. Either is due only while its `later` fields are later than that moment. None when none
     is left to wake for."""
     waiting: list[tuple[datetime, RecordedDue]] = []
     for r, until in records:

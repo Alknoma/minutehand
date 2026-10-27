@@ -82,7 +82,7 @@ verdict"), never from the agent.
 | `sandbox.settle_limit` | `PT30S` | Real time one wake may take to fall idle |
 | `sandbox.quiet` | `PT0.05S` | Idle on two reads this far apart is idle |
 | `start_limit` | `PT30S` | Real time the agent's command may take, from its launch, before the address the world pushes to accepts connections; nothing is pushed before then. An agent whose front door opens only once everything behind it is up declares how long that takes |
-| `due[].poll` | `PT0S` | How long the agent's own poller may take to find a due record after it falls due: the wake is that long after the record's instant, the latest its poller would have acted |
+| `due[].poll` | `PT0S` | How long the agent's own poller may take to find a due record after it falls due: the wake is that long after the record's instant, the latest its poller would have acted, or that long after the decision that reads it once its instant has passed |
 | `take_limit` | `PT30S` | Real time the run waits for the agent to take a booking's delivery from its own queue, when the scheduler can tell (`ConfirmsDelivery`) |
 | `inbound[].push_timeout` | `PT5M` | One push to `url` or `interactivity_url` (a Slack event, a press, a Bot Framework activity) before it counts as unanswered and is sent again, as the vendor retries it (Slack: up to three more times, `X-Slack-Retry-Num`, `X-Slack-Retry-Reason: http_timeout`); still unanswered after the last, the run stops `agent_failed` |
 
@@ -133,9 +133,15 @@ due:
   followed as it now stands. The earliest record's instant, and `poll` after it, is next due: `planned_wakes`,
   `dispatch.source = recorded`, its `ref` naming each key and instant. The wake is the clock reaching it; Minutehand
   calls nothing, and the agent's own poller finds the work when its own clock passes it.
-- **Due late, a poll on.** A record first due at a decision when that moment is not later than now (moved into the
-  past, or let through by its `later` fields or another declaration's wake) falls due `poll` after the decision, not
-  at it. A wake that moved no clock would run none of the agent's own timers, so its poller would not find the work.
+- **Due late, a poll on.** A record whose instant is not later than now at a decision that reads it (written by the
+  work just done, moved into the past, or let through by its `later` fields or another declaration's wake) falls due
+  `poll` after the decision, not at it nor `poll` after its instant. A wake that moved no clock would run none of the
+  agent's own timers, so its poller would not find the work. And a poller that sleeps `poll` from the end of its own
+  work (`while True: run_due(); sleep(poll)`, a scheduler that awaits what it dispatches) looks next `poll` after
+  that work ended: a record the work set due at once (a next check of `now`) falls due before that look, and a wake
+  at its instant plus `poll` would find the agent idle, end, and leave the poller's work to run on the real clock
+  after it, in no wake. Every decision follows a settle, so the work has ended by then and the poller looks within
+  `poll` of it, however it is written.
 - **Fields that must not have passed (`later`).** A poller that takes a record only while another of its times has
   not passed names that time in `later`. The record is due by the declaration at the moment it would fall due only
   while every `later` field is absent, null, or an instant strictly later than that moment; when one is not, it is not
@@ -171,7 +177,8 @@ due:
 - **A backlog taken one record per poll.** No clock in the sandbox moves inside a wake but by the real time the agent
   works, so a poller that takes only the oldest matching record each time it polls does not poll again before the
   wake ends, and a second record due at the same instant is left as it was. A record left due by a wake that took
-  another record of the same declaration is due again `poll` after that wake, and is not said to be left due by it.
+  another record of the same declaration is due again `poll` after the decision that follows that wake, when its
+  work has ended, and is not said to be left due by it.
   A wake took a record when, as the wake left the memory, the record is no longer read by its declaration (deleted,
   out of `where`, its field cleared, as a claim that changes `status` leaves it) or holds a later instant than it was
   woken for (deferred); either counts. A record left due by a wake that took nothing is not woken for again, and is

@@ -169,7 +169,8 @@ class DueRecords(Model):
         default=timedelta(0),
         ge=timedelta(0),
         description="How long the agent's own poller may take to find a record after it falls due: the wake is that "
-        "long after the record's instant, the latest moment its poller would have acted",
+        "long after the record's instant, the latest moment its poller would have acted, or that long after the "
+        "decision that reads it once its instant has passed, as the poller looks within it of its own work ending",
     )
     later: list[Path] = Field(
         default=[],
