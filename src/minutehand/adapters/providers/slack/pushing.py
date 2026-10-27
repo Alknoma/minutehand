@@ -20,6 +20,7 @@ from minutehand.adapters.providers.slack import inbound, wire
 from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.application.refusals import AgentFailed
 from minutehand.domain.people import InboundTarget
+from minutehand.ports.clock import Clock
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,9 @@ class Listener:
 
 
 class Pusher:
-    def __init__(self, listening: Callable[[], Listener | None]) -> None:
+    def __init__(self, listening: Callable[[], Listener | None], clock: Clock) -> None:
         self._listening = listening
+        self._clock = clock
         self._sending: set[asyncio.Task[None]] = set()
         self.refused: list[str] = []
         """The events the agent's own calls set off that it did not take after Slack's retries, in the order sent."""
@@ -51,7 +53,7 @@ class Pusher:
     async def _send(self, slack: SlackWorld, listener: Listener, callbacks: list[wire.EventCallback]) -> None:
         for callback in callbacks:
             try:
-                await inbound.push_event(slack, listener.target, callback, listener.secret)
+                await inbound.push_event(slack, listener.target, callback, listener.secret, self._clock)
             except AgentFailed as failed:
                 logger.error("the agent did not take %s: %s", callback.event_id, failed)
                 self.refused.append(f"{callback.event_id}: {failed}")
