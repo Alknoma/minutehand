@@ -317,6 +317,8 @@ class Orchestrator:
         self._sandbox = sandbox
         self._store = store
         self._clock = clock
+        # what the agent verifies against its own clock is stamped from the sandbox's, read as it is sent
+        clock.reads_agent(self._agent_now)
         self._services = services
         self._replier = replier
         self._telemetry = telemetry
@@ -625,6 +627,10 @@ class Orchestrator:
             stop = await self._wake(wake, self._reason(fired), fire)
             if stop is not None:
                 return stop
+
+    async def _agent_now(self) -> datetime:
+        """The sandbox's clock, read now: the agent's own (`ports.clock.Clock.agent_now`)."""
+        return (await self._sandbox.read()).now()
 
     async def _jump(self, to: datetime) -> None:
         """Move the run's clock. The agent's sandbox is owed the same step, released (`_release`) once the wake it

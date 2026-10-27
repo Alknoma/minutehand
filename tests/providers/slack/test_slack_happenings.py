@@ -373,7 +373,7 @@ async def test_url_verification_wants_the_challenge_back(
     agent.answer = echo
     _, store, _ = seeded
     await inbound.verify_url(
-        store, agent.target(), SECRET, "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P", at=int(START.timestamp())
+        store, agent.target(), SECRET, "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P", clock=RunClock(START)
     )
     assert agent.received[0].json["type"] == "url_verification"
 
@@ -383,7 +383,7 @@ async def test_url_verification_answered_without_the_challenge_is_refused(
 ) -> None:
     _, store, _ = seeded
     with pytest.raises(DeliveryRefused, match="challenge"):
-        await inbound.verify_url(store, agent.target(), SECRET, "abc", at=int(START.timestamp()))
+        await inbound.verify_url(store, agent.target(), SECRET, "abc", clock=RunClock(START))
 
 
 async def test_a_person_inviting_the_bot_to_a_channel_is_told_as_its_own_join_naming_the_inviter(

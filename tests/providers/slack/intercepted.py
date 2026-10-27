@@ -106,8 +106,8 @@ async def _empty(_: Received) -> Response:
 
 
 class SimulatedTime(VerifierClock):
-    """The verifier's replay window read on the run's clock: an agent's own clock is its sandbox's, which Minutehand
-    keeps at the run's time, so a request signed with the simulated send time is fresh to it."""
+    """The verifier's replay window read on a given clock: the agent's own, which is its sandbox's, and the run's
+    where no sandbox stands ahead of it."""
 
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
@@ -118,7 +118,7 @@ class SimulatedTime(VerifierClock):
 
 class _AtTheSend(VerifierClock):
     """The verifier's clock for an endpoint given no run clock: the moment the request says it was sent, which is
-    the sandbox's clock at that instant, since Minutehand releases the sandbox to the moment before it sends."""
+    the sandbox's clock at that instant (`Clock.agent_now`)."""
 
     def __init__(self, headers: dict[str, str]) -> None:
         self._stamp = headers.get("x-slack-request-timestamp", "0")
