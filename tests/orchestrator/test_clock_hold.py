@@ -11,13 +11,17 @@ unless the clock is held.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
+from minutehand.application import agent_state
 from minutehand.application.agent_state import AGENT_STATE, WORKED
 from minutehand.application.checkpoint import checkpoints
 from minutehand.application.memory import Versions, remember
@@ -318,3 +322,44 @@ async def test_a_played_back_wake_is_released_and_held_where_the_runs_was(tmp_pa
         f"a played wake's clock was not moved while held and released as the wake began: {sandbox.calls}"
     )
     assert sandbox.calls.count("hold") == wake + 1, "the start and every played wake end held"
+
+
+class _StuckWhileHeld(_Scheduled):
+    """The scheduled poller's sandbox, whose export waits on a timer of its own: it cannot finish while the clock
+    is held, as the Firestore emulator's could not."""
+
+    async def export(self, directory: Path) -> str | None:
+        while self.held:
+            await asyncio.sleep(0.01)
+        return await super().export(directory)
+
+
+async def test_an_export_that_cannot_finish_under_a_held_clock_has_the_clock_released_and_the_run_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Held, the export would wait forever: after the patience the clock is released until it ends, held again,
+    and every checkpoint after a wake says whether its save was kept."""
+    monkeypatch.setattr(agent_state, "HELD_EXPORT_PATIENCE", timedelta(milliseconds=50))
+    agent = _agent(holds=True, saves=True)
+    played = _scenario()
+    clock = RunClock(T0)
+    store = SqliteStore(tmp_path / "world.db", "parent", clock)
+    sandbox = _StuckWhileHeld(agent)
+    record = await asyncio.wait_for(
+        run_scenario(
+            scenario=played,
+            agent=agent,
+            sandbox=sandbox,
+            mounts=sandbox,
+            store=store,
+            clock=clock,
+            services=_services(build()),
+            replier=PeopleReplier(played, None, []),
+            agent_state=tmp_path / "state" / "parent" / AGENT_STATE,
+        ),
+        timeout=60,
+    )
+    assert record.failure is None, record.failure
+    after = [c for c in checkpoints(store).values() if c.wake > 0]
+    assert after and all(c.agent.exported is not None for c in after)
+    assert sandbox.held, "the clock was left running after the export it was released for"

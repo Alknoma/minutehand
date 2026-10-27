@@ -34,10 +34,11 @@ its parent stood, and the fork says so (`Restored.unverified`).
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState
@@ -56,6 +57,12 @@ TAKING = "taking"
 """In `AGENT_STATE`: the state being saved, before the checkpoint it belongs to is written."""
 
 
+HELD_EXPORT_PATIENCE = timedelta(seconds=60)
+"""Real time an export may take under a held clock before the clock is released for it. A store whose export waits
+on a timer of its own never finishes while the clock stands still (the Firestore emulator's did, an Ayven run,
+2026-10-28: an export begun under a hold sat for 29 minutes and would have sat forever); released, it finishes, and
+the reads around the export judge whether the agent moved while it ran, as without a hold."""
+
 WORKED = "the agent worked during the export"
 """How a checkpoint says its save was discarded: the agent stirred while it ran (`save`)."""
 
@@ -72,7 +79,7 @@ async def save(
     taking.mkdir(parents=True)
     began = await sandbox.read()
     calls, head, read = moving(traffic), store.head(), reads()
-    failed = await sandbox.export(taking.resolve())
+    failed = await _exported(sandbox, taking.resolve(), held=began.held)
     if failed is not None:
         shutil.rmtree(taking, ignore_errors=True)
         return ExportedState(saved=False, failure=failed[-OUTPUT_KEPT:])
@@ -95,6 +102,23 @@ async def save(
         shutil.rmtree(taking, ignore_errors=True)
         return ExportedState(saved=False, failure=f"{WORKED}: {'; '.join(stirred)}")
     return ExportedState(saved=True)
+
+
+async def _exported(sandbox: SandboxClock, taking: Path, *, held: bool) -> str | None:
+    """`SandboxClock.export`, under the held clock it was begun on for at most `HELD_EXPORT_PATIENCE`: an export
+    still running then has the clock released until it ends, and held again after, so a run never waits forever
+    on an export that needs time to pass."""
+    exporting = asyncio.ensure_future(sandbox.export(taking))
+    if not held:
+        return await exporting
+    done, _ = await asyncio.wait({exporting}, timeout=HELD_EXPORT_PATIENCE.total_seconds())
+    if done:
+        return exporting.result()
+    await sandbox.release()
+    try:
+        return await exporting
+    finally:
+        await sandbox.hold()
 
 
 def keep(folder: Path, seq: int) -> None:
