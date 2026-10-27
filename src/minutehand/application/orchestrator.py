@@ -68,6 +68,8 @@ from minutehand.domain.world import (
     EntityRef,
     Operation,
     WorldEvent,
+    unpicked,
+    written,
 )
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
@@ -347,6 +349,8 @@ class Orchestrator:
         self._holding = _Holding(self._dues, clock)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
+        self._read_at = 0
+        """The log's head when the due records were last read: a write of one after it is the agent picking it up."""
         self._watcher = Watcher(agent.watches)
         self._failure: str | None = None
         self._seen = 0
@@ -601,6 +605,7 @@ class Orchestrator:
                 await self._fire(due)
                 await self._notify(self._watched(due))
                 await self._taken(due)
+                await self._picked_up(due)
 
             stop = await self._wake(wake, self._reason(fired), fire)
             if stop is not None:
@@ -646,6 +651,7 @@ class Orchestrator:
         before, and none leaves none there."""
         if not self._agent.due:
             return
+        self._read_at = self._store.head()
         found = due_records.read(self._store, self._agent.due)
         self._woken = due_records.ended(self._woken, found)
         nxt = due_records.next_due(found, self._agent.due, self._woken, self._clock.now())
@@ -747,6 +753,37 @@ class Orchestrator:
             while not scheduler.taken(booking.ref, self._store) and time.monotonic() < give_up:
                 await asyncio.sleep(TAKEN_EVERY)
 
+    async def _picked_up(self, fired: list[Pending]) -> None:
+        """Wait until the agent has picked up the due records just reached, one of each declaration's: a newer write
+        of it in the run's store than the decision read (`domain.world.written`), whatever it holds. Its poller looks
+        on its own timer, which the run cannot read and must not guess, while the sandbox's clock runs on at real
+        speed: a sandbox idle before that look is not done, and a wake ended there leaves the poller's whole cycle to
+        run after it, in none. Once the sandbox's clock has run one `poll` past the wake's moment with nothing of a
+        declaration written, the wake goes on to settle all the same, and the check `due_records` says what was not
+        picked up. A sandbox whose clock does not reach that within `settle_limit` more of real time is refused: its
+        clock is not running."""
+        records = [r for p in fired if isinstance(p, PendingRecord) for r in p.records]
+        if not records:
+            return
+        began = self._clock.now()
+        due = self._agent.due
+        longest = max(due[r.source].poll for r in records) + self._sandbox.settle_limit
+        give_up = time.monotonic() + longest.total_seconds()
+        while True:
+            wrote = self._store.events(since=self._read_at, kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+            left = unpicked(records, written(wrote))
+            if not left:
+                return
+            now = (await self._sandbox.read()).now()
+            if all(now >= began + due[r.source].poll for r in left):
+                return
+            if time.monotonic() >= give_up:
+                raise SandboxFailed(
+                    f"the agent's sandbox clock read {now.isoformat()} {longest.total_seconds():g} s after wake "
+                    f"{self._clock.wake()} began at {began.isoformat()}, short of one poll on: it is not running"
+                )
+            await asyncio.sleep(self._sandbox.quiet.total_seconds())
+
     async def _ready(self, fired: list[Pending]) -> list[Pending]:
         """What is due, without each person's move that is not ready to land (`People.ready`): an answer that, read
         now, needs none is passed and nobody hears of it; one a model failed to write is owed still, and booked again
@@ -845,7 +882,7 @@ class Orchestrator:
                 sim_time=self._clock.now(),
                 reason=reason.value,
                 world_changes=world_changes,
-                memory_reads=self._mounts.memory_reads(wake) if isinstance(self._mounts, HoldsMemory) else 0,
+                memory_reads=self._memory_reads(),
                 memory_writes=memory_writes,
             )
         )
@@ -941,7 +978,11 @@ class Orchestrator:
         waits until both are done, so the newest checkpoint is whole (`Interruption.held`)."""
         with self._interruption.held() if self._interruption is not None else contextlib.nullcontext():
             folder = self._agent_state if export else None
-            exported = await agent_state.save(self._sandbox, folder) if folder is not None else None
+            exported = (
+                await agent_state.save(self._sandbox, folder, self._store, self._traffic, self._memory_reads)
+                if folder is not None
+                else None
+            )
             seq = write_checkpoint(
                 self._store,
                 Checkpoint(
@@ -956,6 +997,10 @@ class Orchestrator:
             if folder is not None and exported is not None and exported.saved:
                 agent_state.keep(folder, seq)
             self._record_new()
+
+    def _memory_reads(self) -> int:
+        """The agent's reads of its memory in the wake in progress, every one, when the mounts answer them."""
+        return self._mounts.memory_reads(self._clock.wake()) if isinstance(self._mounts, HoldsMemory) else 0
 
     def _remembered(self, exported: ExportedState | None) -> Remembered:
         """The agent's state at this moment as the run holds it: its memory, what the run can see of state it

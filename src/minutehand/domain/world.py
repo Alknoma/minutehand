@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence, Set
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field
 
 from minutehand.domain.clock import Drawn
+from minutehand.domain.memory import RecordedDue
 from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
 
 
@@ -765,3 +767,26 @@ class RecordedCall(Model):
             and self.exchange.tunnelled is None
             and self.exchange.inbox_call is None
         )
+
+
+_WRITES = frozenset({Operation.CREATE, Operation.UPDATE, Operation.DELETE})
+
+
+def written(events: Iterable[WorldEvent]) -> set[tuple[str, str]]:
+    """(collection, key) of each of the agent's memory writes among `events` that landed: a put or a delete,
+    whatever it held. The store keeps every landed write as an event of its own, one that leaves the value as it was
+    among them (`application.memory.remember` compares no values), so a record rewritten to what it held is written;
+    a versioned write older than the key's does not land, and is not one."""
+    return {
+        (e.after.collection, e.after.key)
+        for e in events
+        if e.actor is Actor.AGENT and e.operation in _WRITES and isinstance(e.after, MemorySnapshot)
+    }
+
+
+def unpicked(records: Sequence[RecordedDue], wrote: Set[tuple[str, str]]) -> list[RecordedDue]:
+    """Each of `records`, the records one wake was begun for, whose declaration has none of them in `wrote`: not yet
+    picked up. A declaration one of whose records was written is picked up, the rest of it a backlog its poller
+    takes a record per poll, which is due again at the next decision; the wake waits for none of them."""
+    picked = {r.source for r in records if (r.collection, r.key) in wrote}
+    return [r for r in records if r.source not in picked]

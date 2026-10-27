@@ -11,6 +11,16 @@ whether it saved (`Remembered.exported`), and only then names the folder for the
 the log's to give and is known once the checkpoint is in it. A command that fails leaves no folder, and the
 checkpoint keeps what it said; the run goes on. Setup's checkpoint saves nothing: the sandbox does not exist yet.
 
+A save is the agent's state at one quiet instant, the one the checkpoint's world is at, or it is nothing. The wake
+ended inside the agent's own sleep, and the sandbox's clock runs on at real speed while the export runs: a poller
+whose timer comes due before the export ends starts its next cycle in the middle of it, and the folder would hold
+part of one moment and part of the next, beside a world that holds neither. So the run reads around the export
+whether the agent stirred: the sandbox idle as it began and as it ended, no call of the agent's sent, answered or in
+flight (`Traffic.activity`, `Traffic.waiting`), no read of its memory (`HoldsMemory.memory_reads`) and no event of the
+agent's in the log between the two. Anything moved, and the folder is removed and the checkpoint says the state was
+not saved, and why (`ExportedState.failure`: the agent worked during the export): a fork there plays the agent back,
+as from any checkpoint without one, and never starts it from a mixed state.
+
 A fork at a checkpoint whose state was saved (`saved_at`) starts the agent's program with `MINUTEHAND_AGENT_STATE`
 naming the folder, its sandbox born at the checkpoint's moment (`MINUTEHAND_STARTS_AT_NS`), waits until the sandbox
 is idle, and carries on from the checkpoint (`StateImport`, `application.restore`). Nothing of the parent's record is
@@ -23,6 +33,7 @@ its parent stood, and the fork says so (`Restored.unverified`).
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,9 +41,10 @@ from pathlib import Path
 from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OUTPUT_KEPT, OwnProgram
-from minutehand.application.sandbox import SandboxClock
+from minutehand.application.sandbox import SandboxClock, moving
 from minutehand.application.traffic import Traffic
 from minutehand.domain.templates import AGENT_STATE_VARIABLE, STARTS_AT_VARIABLE
+from minutehand.domain.world import Actor
 from minutehand.ports.store import Store
 
 AGENT_STATE = "agent-state"
@@ -42,16 +54,41 @@ TAKING = "taking"
 """In `AGENT_STATE`: the state being saved, before the checkpoint it belongs to is written."""
 
 
-async def save(sandbox: SandboxClock, folder: Path) -> ExportedState:
+WORKED = "the agent worked during the export"
+"""How a checkpoint says its save was discarded: the agent stirred while it ran (`save`)."""
+
+
+async def save(
+    sandbox: SandboxClock, folder: Path, store: Store, traffic: Traffic | None, reads: Callable[[], int]
+) -> ExportedState:
     """Run the agent file's `export_state` into an empty `folder/taking/`: what the checkpoint keeps of it. A
-    failure removes what it left there."""
+    failure removes what it left there, and so does an agent that stirred while it ran (`WORKED`): its sandbox not
+    idle as the export began or as it ended, a call of its sent, answered or in flight, a read of its memory
+    (`reads`, every one the agent made, counted), or an event of its in `store`."""
     taking = folder / TAKING
     shutil.rmtree(taking, ignore_errors=True)  # a run stopped while saving left it half filled
     taking.mkdir(parents=True)
+    began = await sandbox.read()
+    calls, head, read = moving(traffic), store.head(), reads()
     failed = await sandbox.export(taking.resolve())
     if failed is not None:
         shutil.rmtree(taking, ignore_errors=True)
         return ExportedState(saved=False, failure=failed[-OUTPUT_KEPT:])
+    ended = await sandbox.read()
+    stirred = [
+        said
+        for said, moved in [
+            ("its sandbox was not idle as the export began", not began.idle),
+            ("its sandbox was not idle as the export ended", not ended.idle),
+            ("it sent or was answered a call", moving(traffic) != calls or calls[1]),
+            ("it read its memory", reads() != read),
+            ("it wrote to the run's log", bool(store.events(since=head, actors=[Actor.AGENT]))),
+        ]
+        if moved
+    ]
+    if stirred:
+        shutil.rmtree(taking, ignore_errors=True)
+        return ExportedState(saved=False, failure=f"{WORKED}: {'; '.join(stirred)}")
     return ExportedState(saved=True)
 
 
