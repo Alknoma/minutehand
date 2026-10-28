@@ -431,7 +431,10 @@ class GitHubSeed(wire.Wire):
 
 
 def number(text: str) -> int:
-    """A stable positive id from a name: the same name has the same id in every run."""
+    """A stable positive id from a name: the same name has the same id in every run.
+
+    A conversation's comments and reviews count up from their issue's number in the order they were made, because
+    GitHub lists both by ascending id and hands ids out as things are made; one hash each would list them shuffled."""
     return int(hashlib.sha1(text.lower().encode()).hexdigest()[:8], 16)
 
 
@@ -687,7 +690,7 @@ def _tracker(
             github.put_comment(
                 stored,
                 wire.StoredComment(
-                    id=number(f"comment/{full}/{item.number}/{position}"),
+                    id=number(f"comment/{full}/{item.number}") + position,
                     issue=item.number,
                     author=login(comment.author),
                     body=comment.body,
@@ -703,7 +706,7 @@ def _tracker(
                 github.put_review(
                     stored,
                     wire.StoredReview(
-                        id=number(f"review/{full}/{item.number}/{position}"),
+                        id=number(f"review/{full}/{item.number}") + position,
                         pull=item.number,
                         author=login(review.author),
                         state=review.state,

@@ -22,6 +22,7 @@ from minutehand.adapters.providers.github.seed import (
     SeedLineCommit,
     SeedPull,
     SeedRepository,
+    SeedReview,
 )
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
@@ -34,6 +35,7 @@ from tests.providers.github.github_world import (
     github_seed,
     ledger,
     listing,
+    tracker_ledger,
     tracker_seed,
 )
 
@@ -219,3 +221,53 @@ async def test_a_new_issue_takes_the_number_after_the_highest_the_repository_hol
     async with hub.client() as http:
         made = body(await http.post("/repos/iris-calder/notes/issues", json={"title": "After seven"}), 201)
     assert made["number"] == 8
+
+
+LONG = 20
+
+
+def long_conversation() -> GitHubSeed:
+    """Issue 1 with twenty comments and pull request 4 with six reviews, each after the one before."""
+    base = tracker_ledger()
+    talked = base.issues[0].model_copy(
+        update={
+            "before": timedelta(days=9),
+            "comments": [
+                SeedComment(author="iris-calder", body=f"Note {n}", before=timedelta(days=8) - timedelta(minutes=n))
+                for n in range(1, LONG + 1)
+            ],
+        }
+    )
+    reviewed = base.pulls[0].model_copy(
+        update={
+            "reviews": [
+                SeedReview(
+                    author="outsider",
+                    state=wire.ReviewState.COMMENTED,
+                    body=f"Review {n}",
+                    before=timedelta(hours=1) - timedelta(minutes=n),
+                )
+                for n in range(1, 7)
+            ]
+        }
+    )
+    ledger_repo = base.model_copy(update={"issues": [talked, *base.issues[1:]], "pulls": [reviewed]})
+    seed = tracker_seed()
+    return seed.model_copy(update={"repositories": [ledger_repo, *seed.repositories[1:]]})
+
+
+@pytest.mark.parametrize("seeded", [long_conversation()])
+async def test_a_seeded_conversation_lists_oldest_first_and_an_agents_comment_after_it(
+    hub: Hub, seeded: GitHubSeed
+) -> None:
+    """GitHub lists an issue's comments and a pull request's reviews by ascending id, and hands ids out as they are
+    made, so a seeded conversation reads in the order it was had and anything the agent adds comes after it."""
+    async with hub.client() as http:
+        made = body(await http.post(f"{ISSUES}/1/comments", json={"body": "Agent note"}), 201)
+        comments = listing(await http.get(f"{ISSUES}/1/comments", params={"per_page": 100}))
+        reviews = listing(await http.get("/repos/lanternworks/ledger/pulls/4/reviews"))
+    assert [c["body"] for c in comments] == [*(f"Note {n}" for n in range(1, LONG + 1)), "Agent note"]
+    ids = [cast(int, c["id"]) for c in comments]
+    assert ids == sorted(ids)
+    assert made["id"] == comments[-1]["id"]
+    assert [r["body"] for r in reviews] == [f"Review {n}" for n in range(1, 7)]

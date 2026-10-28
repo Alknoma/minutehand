@@ -38,9 +38,9 @@ class Call:
 
 
 LEDGER = "/repos/lanternworks/ledger"
-COMMENT = number("comment/lanternworks/ledger/1/0")
+COMMENT = number("comment/lanternworks/ledger/1")
 """The id the seed derives for the first comment on issue 1."""
-REVIEW = number("review/lanternworks/ledger/4/0")
+REVIEW = number("review/lanternworks/ledger/4")
 """The id the seed derives for the first review of pull request 4."""
 MERGE = Call(f"{LEDGER}/pulls/4/merge", {}, 200)
 SERVED: dict[tuple[str, str], Call] = {
