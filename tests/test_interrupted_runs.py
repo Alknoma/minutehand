@@ -12,11 +12,13 @@ then lands in a wake.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,7 +27,7 @@ import pytest
 
 from minutehand import cli, session
 from minutehand.adapters.store import sharing
-from minutehand.application.agent_state import AGENT_STATE, TAKING
+from minutehand.application.agent_state import AGENT_STATE, BEGUN_AFTER, TAKING
 from minutehand.application.checkpoint import Remembered, checkpoints
 from minutehand.application.restore import RestoreStep
 from minutehand.domain.checks import Severity
@@ -218,6 +220,36 @@ def test_close_keeps_a_killed_run_and_refuses_one_still_running(
 
 
 @pytest.mark.timeout(180)
+def test_two_forks_of_one_dead_run_close_it_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two forks of a dead run started together: the second waits while the first closes it, then reads the run the
+    first kept, rather than closing it again (and settling its `taking/` a second time) or taking the world file the
+    first fork goes on to write for the dead run still running."""
+    world = _World(tmp_path)
+    run = world.run()
+    try:
+        world.on_day_two(run)
+        world.kill(run)
+    finally:
+        run.kill()
+        world.stop_agent()
+    run_id = world.run_id()
+    monkeypatch.setattr(sharing, "STALE", 0.0)
+    found: list[session.Outcome] = []
+    second = threading.Thread(
+        target=lambda: found.append(asyncio.run(session.recovered(world.state, run_id, by="`minutehand replay`")))
+    )
+    with session._closing(world.state, run_id):  # pyright: ignore[reportPrivateUsage]
+        second.start()
+        second.join(timeout=0.5)
+        assert second.is_alive(), "the second fork closed the run while the first held it"
+        first = asyncio.run(session._close(world.state, run_id, by="`minutehand fork`"))  # pyright: ignore[reportPrivateUsage]
+    second.join(timeout=60)
+    [read] = found
+    assert first.record.failure is not None and first.record.failure.startswith("kept by `minutehand fork`")
+    assert read.record == first.record, "the second fork closed the run again"
+
+
+@pytest.mark.timeout(180)
 def test_fork_alone_carries_a_killed_run_on_closing_it_first_and_a_live_one_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -283,12 +315,15 @@ def test_a_run_killed_while_saving_loses_the_half_save_and_replays_on_from_its_l
     folder = session.run_dir(world.state, run_id) / AGENT_STATE
     last = session.checkpoints_of(world.state, run_id)[-1]
     assert last.wake == 2 and isinstance(last.agent, Remembered), "the killed save's checkpoint was written"
-    assert sorted(p.name for p in folder.iterdir()) == sorted([TAKING, *(str(p.seq) for p in _saved(world, run_id))])
+    saved = [str(p.seq) for p in _saved(world, run_id)]
+    assert sorted(p.name for p in folder.iterdir()) == sorted([TAKING, BEGUN_AFTER, *saved])
+    assert int((folder / BEGUN_AFTER).read_text()) >= last.seq, "the half save was begun after the last checkpoint"
     monkeypatch.setattr(sharing, "STALE", 0.0)
     replayed = ["replay", run_id, "--at", str(last.seq), "--state", str(world.state), "--", *world.program("v2")]
     assert cli.main(replayed) == 0, capsys.readouterr()
     world.stop_agent()
     assert not (folder / TAKING).exists(), "the half save was left where a save is taken"
+    assert not (folder / BEGUN_AFTER).exists()
     parent = session.load(world.state, run_id)
     assert parent.record.failure is not None and "kept by `minutehand replay`" in parent.record.failure
     [child] = [d.name for d in (world.state / session.RUNS).iterdir() if d.name != run_id]
@@ -315,11 +350,13 @@ def test_a_run_killed_after_its_checkpoint_before_its_save_was_named_forks_from_
     folder = session.run_dir(world.state, run_id) / AGENT_STATE
     last = session.checkpoints_of(world.state, run_id)[-1]
     (folder / str(last.seq)).rename(folder / TAKING)
+    (folder / BEGUN_AFTER).write_text(str(last.seq - 1))  # begun before its checkpoint was written
     monkeypatch.setattr(sharing, "STALE", 0.0)
     forked = ["fork", run_id, "--at", str(last.seq), "--changes", str(world.changes), "--state", str(world.state)]
     assert cli.main([*forked, "--", *world.program("v2")]) == 0, capsys.readouterr()
     world.stop_agent()
     assert not (folder / TAKING).exists() and (folder / str(last.seq) / "clock").is_file()
+    assert not (folder / BEGUN_AFTER).exists()
     [child] = [d.name for d in (world.state / session.RUNS).iterdir() if d.name != run_id]
     restored = session.restore_of(world.state, child)
     assert restored is not None and restored.agent_state == str((folder / str(last.seq)).resolve()), (

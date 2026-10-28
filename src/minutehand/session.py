@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import os
 import secrets
@@ -724,6 +725,9 @@ async def fork(
 # -- keeping a run whose process died -------------------------------------------------------------------------
 
 
+CLOSING = ".closing"
+"""In a run's directory: the lock one close of the run holds (`_closing`)."""
+
 CLOSED_BY = "`minutehand close`"
 """Who keeps a dead run, as its record says: `close` itself, or a fork or replay of it (`recovered`)."""
 
@@ -737,7 +741,29 @@ async def close(state: Path, run_id: str, *, by: str = CLOSED_BY) -> Outcome:
     (`agent-state/taking/`) is settled first (`agent_state.left_by_death`). `by` is who closes it, as its record says:
     a fork or replay of a dead run closes it first (`recovered`). Refused for a run that kept its record, a standing
     world or a case (`minutehand serve` keeps those), and a run whose world file a process still has open and is
-    writing."""
+    writing. One close of a run at a time (`_closing`)."""
+    find(state, run_id)  # an unknown run is refused before its directory is made for the lock
+    with _closing(state, run_id):
+        return await _close(state, run_id, by=by)
+
+
+@contextmanager
+def _closing(state: Path, run_id: str) -> Iterator[None]:
+    """Hold the run's closing lock: two forks of one dead run started together would otherwise both close it, the
+    second settling an `agent-state/taking/` the first already named, or refused by the world file the first fork
+    went on to write as though the dead run still ran."""
+    directory = run_dir(state, run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / CLOSING).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+async def _close(state: Path, run_id: str, *, by: str) -> Outcome:
+    """`close`, under the run's closing lock."""
     entry = find(state, run_id)
     directory = run_dir(state, run_id)
     if entry.finished:
@@ -808,7 +834,9 @@ async def recovered(state: Path, run_id: str, *, by: str) -> Outcome:
     first (`close`, `by` the command that closed it), so carrying a dead run on needs no step of its own. A run still
     being written is refused as `close` refuses it."""
     if not (run_dir(state, run_id) / RECORD).is_file() and any(e.run_id == run_id for e in logged(state)):
-        return await close(state, run_id, by=by)
+        with _closing(state, run_id):
+            if not (run_dir(state, run_id) / RECORD).is_file():  # another fork of it may have closed it meanwhile
+                return await _close(state, run_id, by=by)
     return load(state, run_id)
 
 

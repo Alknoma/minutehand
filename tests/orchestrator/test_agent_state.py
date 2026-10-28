@@ -18,7 +18,7 @@ import pytest
 
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.agent_state import AGENT_STATE, TAKING, WORKED, left_by_death
+from minutehand.application.agent_state import AGENT_STATE, BEGUN_AFTER, TAKING, WORKED, left_by_death
 from minutehand.application.checkpoint import Checkpoint, checkpoints
 from minutehand.application.interruption import Interruption
 from minutehand.application.memory import Versions, remember
@@ -293,22 +293,35 @@ async def test_a_whole_save_left_in_taking_by_a_death_after_its_checkpoint_is_na
     last, checkpoint = max(checkpoints(store).items())
     assert checkpoint.agent.exported is not None and checkpoint.agent.exported.saved
     (folder / str(last)).rename(folder / TAKING)  # what a kill between the checkpoint and `keep` leaves
+    (folder / BEGUN_AFTER).write_text(str(last - 1))
     left_by_death(folder, store)
-    assert not (folder / TAKING).exists()
+    assert not (folder / TAKING).exists() and not (folder / BEGUN_AFTER).exists()
     assert int((folder / str(last) / "clock").read_text()) == int(checkpoint.now.timestamp()) * 1_000_000_000
 
 
 async def test_a_save_begun_after_the_last_checkpoint_is_removed_even_where_that_checkpoints_folder_is_gone(
     tmp_path: Path,
 ) -> None:
-    """A folder deleted by hand, then a death in the next save: the `taking/` left is a later moment's, made after
-    the checkpoint was written, and never named for it."""
+    """A folder deleted by hand, then a death in the next save: the `taking/` left was begun after the checkpoint
+    was written (the head beside it is the checkpoint's seq), and is never named for it."""
     _, store = await _parent(tmp_path, SAVING, _Saving())
     folder = tmp_path / "state" / "parent" / AGENT_STATE
     last, _ = max(checkpoints(store).items())
     shutil.rmtree(folder / str(last))
     (folder / TAKING).mkdir()
     (folder / TAKING / "clock").write_text("half")
+    (folder / BEGUN_AFTER).write_text(str(last))
+    left_by_death(folder, store)
+    assert not (folder / TAKING).exists() and not (folder / str(last)).exists()
+    assert not (folder / BEGUN_AFTER).exists()
+
+
+async def test_a_save_with_no_head_beside_it_is_removed_not_named(tmp_path: Path) -> None:
+    """Without the head it was begun after, nothing says which checkpoint a `taking/` is for, so it is never named."""
+    _, store = await _parent(tmp_path, SAVING, _Saving())
+    folder = tmp_path / "state" / "parent" / AGENT_STATE
+    last, _ = max(checkpoints(store).items())
+    (folder / str(last)).rename(folder / TAKING)
     left_by_death(folder, store)
     assert not (folder / TAKING).exists() and not (folder / str(last)).exists()
 
