@@ -1,7 +1,7 @@
 """The checks, run on a real captured run of an agent that went wrong in known ways.
 
-`tests/data/partner_pipeline/` is run f431fc97f427 from alknoma-cloud's field observation,
-converted to this package's models: an agent asked to secure three partnerships for "Tyvane"
+`tests/data/partner_pipeline/` is one captured run of an agent, converted to this package's models,
+its company's name replaced by a made-up one: an agent asked to secure three partnerships for "Tyvane"
 researched "Tivane", filed tickets under that name, sent one reminder 33 hours late and never
 filed the legal-review ticket the goal depended on.
 """
