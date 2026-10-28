@@ -269,6 +269,7 @@ _STOPPED = {
     StopReason.ENVIRONMENT_FAILED: "the run stopped because an external emulator it used was unavailable",
     StopReason.REPLAY_PARTED: "the frozen replay stopped where the agent asked its model something the record "
     "does not hold",
+    StopReason.INTERRUPTED: "the run was stopped from outside before it ended by itself",
 }
 
 
@@ -346,6 +347,12 @@ def _verdict(view: RunView, card: Effectiveness, stop: StopReason | None) -> Ver
             f"Not judged: no check failed, but {_count(len(reasons), 'thing')} kept this run from being judged; "
             f"{how}: " + "; ".join(reasons) + "."
         )
+    elif stop is StopReason.INTERRUPTED:
+        kind = VerdictKind.UNFINISHED
+        left_open = [_count(open_waits, "wait")] if open_waits else []
+        left_open += [_count(commitments, "commitment")] if commitments else []
+        left = f", with {' and '.join(left_open)} still open" if left_open else ""
+        words = f"Not finished: no check failed, but {how}{left}; nobody saw the agent finish."
     elif not view.scenario.is_task and stop is StopReason.AGENT_FAILED:
         kind = VerdictKind.FAILED
         words = f"Failed: {how}, so the window was not watched to its end."
@@ -559,6 +566,7 @@ _STOPPED_BY = {
     StopReason.AGENT_FAILED: StoppedBy.AGENT_FAILED,
     StopReason.CLOSED: StoppedBy.CLOSED,
     StopReason.ENVIRONMENT_FAILED: StoppedBy.ENVIRONMENT_FAILED,
+    StopReason.INTERRUPTED: StoppedBy.INTERRUPTED,
 }
 
 

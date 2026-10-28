@@ -5,7 +5,7 @@ Minutehand owns"). Stock gVisor reads the host's clock; this directory holds wha
 
 | File | What it is |
 |---|---|
-| `gvisor-sim-clock.patch` | The patch to gVisor's `go` branch at `c324264` (release 20261012.0): an offset on the sandbox's realtime and monotonic clocks, applied on the syscall path and in the VDSO parameters; every blocked task's deadline recorded; `runsc debug --deadlines` and `runsc debug --advance-clock=<duration>`; `runsc --sim-clock-at=<ns>` (born at a given time); `runsc do --name --state-dir` |
+| `gvisor-sim-clock.patch` | The patch to gVisor's `go` branch at `c324264` (release 20261012.0): an offset on the sandbox's realtime and monotonic clocks, applied on the syscall path and in the VDSO parameters; every blocked task's deadline recorded; `runsc debug --deadlines` and `runsc debug --advance-clock=<duration>`; `runsc --sim-clock-at=<ns>` (born at a given time); `runsc do --name --state-dir`; `runsc debug --hold-clock` and `--release-clock` |
 | `build.sh` | Builds `runsc` with the patch and the sidecars it loads from `gvisor-bin/` beside it, in a `golang:1.27` container, for the machine's own architecture |
 | `seal.sh` | Seals a sandbox's link on its gateway, before `runsc do`: every connection to the proxy's transparent listener, every lookup to Minutehand's name answerer, nothing forwarded. The proxy is then the sandbox's only way out, whatever its clients do with `HTTPS_PROXY` |
 | `lab/Dockerfile`, `lab/run-example.sh` | A Linux container with the tools a run needs (`iproute2`, `iptables`, `uv`, `slack_sdk`) that runs the example agent through Minutehand inside the sealed sandbox, with the offline model stand-in writing the people's words |
@@ -61,19 +61,36 @@ by the proxy (502, no provider claims the host); `api.anthropic.com` tunnelled o
 `8.8.8.8:9999` accepted by the proxy and closed; UDP to `8.8.8.8:4444` unanswered. The run itself ends as the agent
 exiting, which is what the probe does when done.
 
-## What the two control calls print
+## The control calls
 
 ```
 runsc --root <state> debug --deadlines <name>
-{"idle":true,"now_ns":1787562000218621000,"tasks":2,"timed":2,"earliest_ns":86399981379000,"waits":[{"task":1,"ns":86399981379000},{"task":2,"ns":497000000}]}
+{"idle":true,"held":false,"now_ns":1787562000218621000,"tasks":2,"timed":2,"earliest_ns":86399981379000,"waits":[{"task":1,"ns":86399981379000},{"task":2,"ns":497000000}]}
 
 runsc --root <state> debug --advance-clock=86400s <name>
+runsc --root <state> debug --hold-clock <name>
+runsc --root <state> debug --release-clock <name>
 ```
 
-`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. These two are all Minutehand reads. `waits`:
+`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. `held`: the clock is held (`hold-clock`).
+These three are all Minutehand reads; it calls `hold-clock` and `release-clock` only when the agent file names them as
+`sandbox.hold` and `sandbox.release` (`docs/design.md`, "A held clock between wakes"). `waits`:
 each blocked task's deadline, as nanoseconds from now; `earliest_ns` the smallest, -1 for none. Minutehand no longer
 reads them: no deadline in the sandbox is a wake (`docs/design.md`, "How the clock knows what is next"). `advance-clock` moves both clocks forward by the
 duration and tells every timer the clock was set, so a sleep, futex, poll or epoll timeout past the new time
-returns at once. `--sim-clock-at=<ns since the epoch>` on `runsc` births the sandbox at that realtime, with the
+returns at once. `hold-clock` stops the sandbox's realtime and monotonic clocks at their current value: every read returns it, through a
+system call or the VDSO, and no sleep, futex, poll, epoll or timer deadline on them passes, so nothing in the sandbox
+runs by itself. `release-clock` lets them run on from that same value: the time held is taken off every later read,
+so none of it passed for the agent. While held, `advance-clock` moves the held value and every timer it passes fires
+at once, the clock staying held; `deadlines` reports `"held":true` and the held value as `now_ns`. Holding a held
+clock, or releasing a running one, does nothing; one call takes `--hold-clock` or `--release-clock`, not both, and
+applies a hold before `--advance-clock` and a release after it. The network stack's own timers are never held, so a
+call into the sandbox while held is answered. `lab/hold-clock-check.sh` checks all of it on a build:
+
+```bash
+docker run --rm --privileged -v "$PWD:/work" -v "$PWD/sandbox/dist:/opt/gv:ro" minutehand-lab sandbox/lab/hold-clock-check.sh
+```
+
+`--sim-clock-at=<ns since the epoch>` on `runsc` births the sandbox at that realtime, with the
 first application instruction already reading it; Minutehand hands the run's start to the agent's command as
 `MINUTEHAND_STARTS_AT_NS`.

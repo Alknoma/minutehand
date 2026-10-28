@@ -38,7 +38,12 @@ RUN_PORT_VARIABLE = "MINUTEHAND_RUN_PORT"
 RUN_DIR_VARIABLE = "MINUTEHAND_RUN_DIR"
 STARTS_AT_VARIABLE = "MINUTEHAND_STARTS_AT_NS"
 """The run's start, nanoseconds since the epoch, as the agent's command is told: the moment its sandbox is born at,
-so its first instruction already reads the run's clock (`runsc --sim-clock-at`)."""
+so its first instruction already reads the run's clock (`runsc --sim-clock-at`). A fork that starts the agent from
+its own saved state is born at the checkpoint's moment instead (`AGENT_STATE_VARIABLE`)."""
+AGENT_STATE_VARIABLE = "MINUTEHAND_AGENT_STATE"
+"""The folder holding the agent's own state as its `sandbox.export_state` saved it at a checkpoint, as the agent's
+command is told when a fork starts it there: the agent imports it as it starts, in place of being played back. Unset
+for every run that starts from the beginning, and for a fork at a checkpoint where nothing was saved."""
 TRANSPARENT_PORT_VARIABLE = "MINUTEHAND_TRANSPARENT_PORT"
 DNS_PORT_VARIABLE = "MINUTEHAND_DNS_PORT"
 """The proxy's transparent listener and Minutehand's name answerer, on the proxy's host, as the agent's command is

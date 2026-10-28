@@ -116,7 +116,7 @@ async def _deliver(
     secret: str,
     what: str,
     *,
-    at: int,
+    clock: Clock,
 ) -> bytes:
     """An interaction to the agent: a signed form post to its interactivity URL, or an `interactive` envelope on its
     Socket Mode connection. Answers what the agent answered with: the body of the response, or the payload of its
@@ -132,15 +132,15 @@ async def _deliver(
         what,
         target.push_timeout,
         item=payload.trigger_id,
-        at=at,
+        clock=clock,
     )
 
 
 async def _send(
-    store: Store, url: str, body: bytes, secret: str, what: str, timeout: timedelta, *, item: str, at: int
+    store: Store, url: str, body: bytes, secret: str, what: str, timeout: timedelta, *, item: str, clock: Clock
 ) -> bytes:
     made = await inbound.post_signed(
-        store, url, body, "application/x-www-form-urlencoded", secret, item=item, at=at, timeout=timeout
+        store, url, body, "application/x-www-form-urlencoded", secret, item=item, clock=clock, timeout=timeout
     )
     if made.snapshot.status is None:
         raise DeliveryRefused(url, None, made.snapshot.failure or "", what=what)
@@ -228,7 +228,7 @@ async def press(reply: PersonReply, target: InboundTarget, world: Store, clock: 
             )
         ],
     )
-    await _deliver(slack, target, payload, secret, "a block_actions payload", at=int(clock.now().timestamp()))
+    await _deliver(slack, target, payload, secret, "a block_actions payload", clock=clock)
     if pressed.form:
         await _fill(slack, world, pressed, reply.person, author, trigger.id, reply, target, clock, secret)
 
@@ -328,9 +328,7 @@ async def submit(
         team=_team(slack), user=_person(slack, author), api_app_id=slack.team.app_id, trigger_id=trigger.id, view=view
     )
     url = "Socket Mode" if target.delivery is Delivery.SOCKET_MODE else _url(target)
-    answered = await _deliver(
-        slack, target, payload, secret, "a view_submission payload", at=int(clock.now().timestamp())
-    )
+    answered = await _deliver(slack, target, payload, secret, "a view_submission payload", clock=clock)
     try:
         answer = wire.view_answer(answered)
     except (ValueError, ValidationError) as e:
@@ -441,7 +439,7 @@ async def command(happening: PersonCommands, target: InboundTarget, world: Store
         f"the slash command {happening.command}",
         target.push_timeout,
         item=trigger.id,
-        at=int(clock.now().timestamp()),
+        clock=clock,
     )
     if not answered.strip():
         return

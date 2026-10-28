@@ -73,6 +73,7 @@ minutehand replay <run_id> -- ./run_in_sandbox.sh              # the run again, 
 minutehand replay <run_id> --at <seq> --frozen -- ./run_in_sandbox.sh   # from a checkpoint, the agent played back
                                  # to it; nothing sent to a model, exit 7 at the first model call the record lacks
 minutehand fork <run_id> --at <seq> --changes fork.yaml -- ./run_in_sandbox.sh   # the same moment, something changed
+minutehand close <run_id>        # keep a run whose process was killed; a run stopped by SIGTERM keeps itself
 minutehand model-calls <run_id>  # the agent's model calls, as OpenAI Batch API lines
 minutehand view                  # the runs in a browser, at http://127.0.0.1:8081/
 ```

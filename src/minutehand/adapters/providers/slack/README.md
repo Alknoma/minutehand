@@ -91,8 +91,9 @@ not give is written into the status.
 ## What it does not do
 
 - Enterprise Grid: a person in two workspaces is two unrelated users, and no shared channel spans workspaces.
-- `X-Slack-Request-Timestamp` on a push is the machine's time, as an app's verifier needs; `ts` and `event_time` are
-  simulated.
+- `X-Slack-Request-Timestamp` on a push is the agent's own clock as the request is sent (its sandbox's, which runs
+  ahead of the run's by the real time the agent spends starting and working), as an app's verifier needs; `ts` and
+  `event_time` are simulated.
 - Opening the Home tab writes only a read, so `act` with `opens_agent` is pushed and then answered 409 by the control
   API ("recorded nothing").
 - No user tokens of their own: any token acts as the bot, a declared Slack sign-in included.

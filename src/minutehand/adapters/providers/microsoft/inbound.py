@@ -93,7 +93,7 @@ def activity_token(
     lifetime: int = ACTIVITY_TOKEN_LIFETIME_SECONDS,
 ) -> str:
     """The Bot Framework's bearer token on an activity pushed to `app` (or to the app id given), naming the
-    `serviceUrl` it carries, issued `at` (seconds since the epoch: the run's clock, which is the agent's) and valid
+    `serviceUrl` it carries, issued `at` (seconds since the epoch: the agent's own clock, `Clock.agent_now`) and valid
     for `lifetime` seconds from then (negative: already expired)."""
     token, _ = tokens.issued(
         at=at,
@@ -120,10 +120,12 @@ async def push(
 ) -> Sent:
     """One activity from the Bot Framework to the agent, through the one door everything sent the agent goes
     through (`adapters.agent.delivery`): recorded whole, so a fork sends it again, bearer token and all; the token is
-    issued at the run's clock, which the agent's verifier checks it against."""
+    issued at the agent's own clock as it is sent (`Clock.agent_now`), which the agent's verifier checks it
+    against."""
     if target.provider != MANIFEST.key:
         raise ValueError(f"a {target.provider} target is not Microsoft's to deliver to")
     where = url or target.request_url()
+    issued = int((await clock.agent_now()).timestamp())
     sent = await Door().send(
         store,
         service=MANIFEST.key,
@@ -132,7 +134,7 @@ async def push(
         body=wire.dump(activity).encode("utf-8"),
         headers={
             "Content-Type": "application/json; charset=utf-8",
-            "Authorization": f"Bearer {activity_token(app, at=int(clock.now().timestamp()))}",
+            "Authorization": f"Bearer {activity_token(app, at=issued)}",
             "User-Agent": "Microsoft-SkypeBotApi (Microsoft-BotFramework/3.0)",
         },
         timeout=target.push_timeout.total_seconds(),

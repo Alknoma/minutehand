@@ -1,24 +1,29 @@
 """The run loop: one scenario, one agent, a set of providers, played forward on the run's clock.
 
 Flow of one wake (docs/design.md): jump the clock to the earliest pending moment, release the agent's sandbox to
-it, fire what is due there (what reaches the agent does so through the world: a pushed event, a scheduler's
-delivery), wait until the sandbox is idle again, then read what the agent did from the
-world and schedule what the world owes back: what people do about what waits on them (`application.people`), and
-tickets' fates. Nothing is ever asked of the agent.
+it (advanced while held, then let run, when the agent file names a hold), fire what is due there (what reaches the
+agent does so through the world: a pushed event, a scheduler's delivery), wait until the sandbox is idle again, then
+read what the agent did from the world and schedule what the world owes back: what people do about what waits on
+them (`application.people`), and tickets' fates. With a hold the sandbox's clock is held from the moment the wake
+settles until the next one begins, so nothing the agent's own timers start runs outside a wake. Nothing is ever asked of the agent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from minutehand.application import due_records, memory
+from minutehand.application import agent_state, due_records, memory
 from minutehand.application.checkpoint import (
+    CHECKPOINT,
     Checkpoint,
+    ExportedState,
     Pending,
     PendingBooking,
     PendingCall,
@@ -33,12 +38,13 @@ from minutehand.application.checkpoint import (
 )
 from minutehand.application.dues import Dues
 from minutehand.application.inboxes import Inboxes, refuse_clashing, refuse_untakeable, refuse_unusable
+from minutehand.application.interruption import Interruption
 from minutehand.application.machine import record_machine, run_machine
 from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import Booking, People, Ready
 from minutehand.application.refusals import AgentFailed, RunRefused
 from minutehand.application.run_clock import RunClock
-from minutehand.application.sandbox import SandboxClock, SandboxFailed
+from minutehand.application.sandbox import SandboxClock, SandboxFailed, SandboxReading
 from minutehand.application.services import ServiceDesk
 from minutehand.application.traffic import Traffic
 from minutehand.application.watching import Watcher
@@ -63,6 +69,8 @@ from minutehand.domain.world import (
     EntityRef,
     Operation,
     WorldEvent,
+    unpicked,
+    written,
 )
 from minutehand.ports.agent import TakesReplies
 from minutehand.ports.clock import Clock
@@ -276,7 +284,12 @@ class Orchestrator:
         pins: Sequence[ReplyAt] = (),
         replay: Replay | None = None,
         start: Callable[[], Awaitable[None]] | None = None,
+        agent_state: Path | None = None,
+        interruption: Interruption | None = None,
     ) -> None:
+        """`agent_state` is the run's folder for the agent's own state, saved at each checkpoint after a wake when
+        the agent file names `sandbox.export_state` (`application.agent_state`); `interruption` is a signal asking
+        the run to stop, which ends it `INTERRUPTED` (`application.interruption`)."""
         if scenario.services and desk is None:
             raise RunRefused("the scenario declares services, and the run was given no desk to answer them")
         if inboxes is not None:
@@ -304,6 +317,8 @@ class Orchestrator:
         self._sandbox = sandbox
         self._store = store
         self._clock = clock
+        # what the agent verifies against its own clock is stamped from the sandbox's, read as it is sent
+        clock.reads_agent(self._agent_now)
         self._services = services
         self._replier = replier
         self._telemetry = telemetry
@@ -317,6 +332,8 @@ class Orchestrator:
         self._environment = environment
         self._replay = replay
         self._start_agent = start
+        self._agent_state = agent_state if agent.sandbox.export_state is not None else None
+        self._interruption = interruption
         self._inboxes = inboxes
         self._outside = outside
         self._desk = desk
@@ -335,6 +352,8 @@ class Orchestrator:
         self._holding = _Holding(self._dues, clock)
         self._machine_failed: str | None = None
         self._sandbox_owed = 0
+        self._read_at = 0
+        """The log's head when the due records were last read: a write of one after it is the agent picking it up."""
         self._watcher = Watcher(agent.watches)
         self._failure: str | None = None
         self._seen = 0
@@ -396,11 +415,8 @@ class Orchestrator:
             )
         self._watcher.look()
         self._record_new()
-        self._checkpoint()
-        stop = await self._start()
-        if stop is None:
-            stop = await self._loop()
-        return await self._end(stop, started)
+        await self._checkpoint(export=False)  # setup: the agent's sandbox does not exist yet
+        return await self._end(await self._played_on(start=True), started)
 
     async def resume(self, checkpoint: Checkpoint) -> RunRecord:
         """Carry on from a checkpoint in a store that already holds the world up to it (a fork), with the agent's
@@ -422,10 +438,35 @@ class Orchestrator:
         self._untaken = list(checkpoint.untaken)
         self._seen = self._store.head()
         self._watcher.look()
-        stop = await self._start() if checkpoint.wake == 0 else None
-        if stop is None:
-            stop = await self._loop()
-        return await self._end(stop, started)
+        if self._sandbox.holds:
+            # the agent was brought back to the checkpoint, where its parent's clock stood held: so does the fork's
+            await self._sandbox.hold()
+        return await self._end(await self._played_on(start=checkpoint.wake == 0), started)
+
+    async def _played_on(self, *, start: bool) -> StopReason:
+        """The START wake when `start`, then wake after wake until the run stops by itself, or a signal stops it
+        (`application.interruption`): the wake in progress is abandoned where it stood, and the newest checkpoint,
+        written whole before it began, is where a fork carries the run on."""
+        interruption = self._interruption
+        if interruption is None:
+            return await self._wakes_from(start=start)
+        try:
+            with interruption.stopping():
+                return await self._wakes_from(start=start)
+        except asyncio.CancelledError:
+            if not interruption.taken():
+                raise
+            interruption.settled()
+        last = max((v.seq for v in self._store.versions(CHECKPOINT)), default=0)
+        self._failure = (
+            f"stopped by {interruption.received} during wake {self._clock.wake()}, which was abandoned where it stood; "
+            f"the last checkpoint, at seq {last}, is where `minutehand fork --at {last}` carries the run on"
+        )
+        return StopReason.INTERRUPTED
+
+    async def _wakes_from(self, *, start: bool) -> StopReason:
+        stop = await self._start() if start else None
+        return stop if stop is not None else await self._loop()
 
     def mount(self) -> None:
         """Serve the run's providers to the agent, over this run's world, from now on: before the agent is
@@ -500,7 +541,12 @@ class Orchestrator:
     async def _start(self) -> StopReason | None:
         """The START wake: the agent's sandbox is started once the world is seeded, so whatever the agent does on
         starting finds it and is this wake's; its clock is set to the run's before the agent's first instruction; an
-        older scenario's owner then sends the goal, as a message."""
+        older scenario's owner then sends the goal, as a message.
+
+        With a hold, the start runs unheld (the agent's services need real time to come up, and it passes on the
+        sandbox's clock), and the sandbox is then held and the run's clock caught up to it, so the goal is sent at the
+        moment the agent's clock reads, never the boot's length behind it; then released for the rest of the wake. A
+        fork from setup's checkpoint finds its sandbox held, and is released the same way."""
         wake = self._clock.begin_wake()
         provider = self._by_message
 
@@ -508,6 +554,9 @@ class Orchestrator:
             if self._start_agent is not None:
                 await self._start_agent()
             await self._sandbox.sync(self._scenario.starts_at)  # born there; brought up to it when behind
+            if self._sandbox.holds:
+                self._catch_up(await self._sandbox.hold())
+                await self._sandbox.release()
             if provider is not None and self._scenario.goal is not None:
                 await self._say(provider, self._scenario.goal)
 
@@ -517,7 +566,10 @@ class Orchestrator:
         deadline = self._scenario.window_end
         ended = StopReason.DEADLINE_PASSED if self._scenario.runs_for is None else StopReason.WINDOW_ENDED
         while True:
-            await self._look()  # what waits on people now, before the clock moves past what they owe
+            if not self._sandbox.holds:
+                # what waits on people now, before the clock moves past what they owe: the agent's clock ran on since
+                # the last wake's look. A held one has not moved since that look, and a held agent cannot be called
+                await self._look()
             await self._schedule(self._record_new())
             if not await self._settle():
                 return StopReason.AGENT_FAILED
@@ -552,14 +604,17 @@ class Orchestrator:
             if not fired:
                 continue
             if all(self._unheard(p) for p in fired):
-                await self._release()
+                await self._keep_up()
                 await self._fire(fired)
                 watched = self._watched(fired)
                 if not watched:
                     continue
-                stop = await self._wake(
-                    self._clock.begin_wake(), WakeReason.DUE, lambda watched=watched: self._notify(watched)
-                )
+
+                async def notify(watched: list[NotifiesChanges] = watched) -> None:
+                    await self._release()
+                    await self._notify(watched)
+
+                stop = await self._wake(self._clock.begin_wake(), WakeReason.DUE, notify)
                 if stop is not None:
                     return stop
                 continue
@@ -570,10 +625,15 @@ class Orchestrator:
                 await self._fire(due)
                 await self._notify(self._watched(due))
                 await self._taken(due)
+                await self._picked_up(due)
 
             stop = await self._wake(wake, self._reason(fired), fire)
             if stop is not None:
                 return stop
+
+    async def _agent_now(self) -> datetime:
+        """The sandbox's clock, read now: the agent's own (`ports.clock.Clock.agent_now`)."""
+        return (await self._sandbox.read()).now()
 
     async def _jump(self, to: datetime) -> None:
         """Move the run's clock. The agent's sandbox is owed the same step, released (`_release`) once the wake it
@@ -583,18 +643,50 @@ class Orchestrator:
         if to > was:
             self._sandbox_owed += int((to - was).total_seconds() * 1e9)
 
-    async def _release(self) -> None:
+    async def _advance(self) -> None:
         """Move the sandbox's clock by what the run's has moved since, so the two agree again."""
         if self._sandbox_owed > 0:
             owed, self._sandbox_owed = self._sandbox_owed, 0
             await self._sandbox.advance(owed)
 
+    async def _release(self) -> None:
+        """A wake begins: the sandbox's clock is moved to the run's, and, held, let run. Advanced while still held, so
+        every timer of the agent's the step passes fires at the wake's moment, inside it."""
+        await self._advance()
+        if self._sandbox.holds:
+            await self._sandbox.release()
+
+    async def _keep_up(self) -> None:
+        """The run's clock moved and no wake begins: a sandbox without a hold is moved with it at once, its clock
+        running between wakes anyway; a held one keeps the step owed until the next wake begins, since a step taken
+        now would fire the agent's timers it passes in no wake."""
+        if not self._sandbox.holds:
+            await self._advance()
+
+    async def _hold(self) -> None:
+        """The wake has settled, its inboxes read: with a hold, the sandbox's clock is held until the next wake
+        begins, before the run plays the people, checkpoints or saves the agent's state, so no timer of the agent's
+        starts work meanwhile. From here to the next wake nothing calls the agent: held, it cannot answer. The run's
+        clock catches up at the next settle (`_settle`), as without a hold."""
+        if self._sandbox.holds:
+            await self._sandbox.hold()
+
+    def _catch_up(self, found: SandboxReading) -> None:
+        """Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
+        catches up, so it never stands behind the agent's: the agent's own clock is the run's."""
+        at = found.now()
+        if at > self._clock.now():
+            self._clock.jump(at)
+
     async def _settle(self) -> bool:
         """Wait until the sandbox is idle and nothing of the agent's is in flight, before the clock moves on, and
         bring the run's clock up to the sandbox's. No deadline a task there waits for is a wake: what the agent
-        comes back to by itself it books with a scheduler, in the table. False when it never fell idle."""
+        comes back to by itself it books with a scheduler, in the table. False when it never fell idle.
+
+        With a hold the clock has stood held since the wake settled, so no timer of the agent's started work since
+        and this finds it idle at once: kept as the check that nothing did."""
         try:
-            await self._release()  # the sandbox's clock must be the run's before it is read
+            await self._keep_up()  # the sandbox's clock must be the run's before it is read, unless it is held
             found = await self._sandbox.settle(self._traffic)
         except SandboxFailed as e:
             self._failure = str(e)
@@ -602,11 +694,7 @@ class Orchestrator:
         if found is None:
             self._failure = "the agent's sandbox did not fall idle within its settle limit"
             return False
-        # Real time passed in the sandbox while the agent worked, and its clock ran on with it; the run's clock
-        # catches up, so it never stands behind the agent's: the agent's own clock is the run's.
-        at = found.now()
-        if at > self._clock.now():
-            self._clock.jump(at)
+        self._catch_up(found)
         return True
 
     def _plan_records(self) -> None:
@@ -615,6 +703,7 @@ class Orchestrator:
         before, and none leaves none there."""
         if not self._agent.due:
             return
+        self._read_at = self._store.head()
         found = due_records.read(self._store, self._agent.due)
         self._woken = due_records.ended(self._woken, found)
         nxt = due_records.next_due(found, self._agent.due, self._woken, self._clock.now())
@@ -628,19 +717,8 @@ class Orchestrator:
         if deadline is None or self._clock.now() >= deadline:
             return
         await self._jump(deadline)
-        await self._release()
-        write_checkpoint(
-            self._store,
-            Checkpoint(
-                wake=self._clock.wake(),
-                now=self._clock.now(),
-                replies=len(self._store.replies()),
-                untaken=self._untaken,
-                pending=self._dues.items,
-                agent=self._remembered(),
-            ),
-        )
-        self._record_new()
+        await self._keep_up()  # a held sandbox stays where its last wake left it: no wake follows to take the step
+        await self._checkpoint()
 
     async def _fire(self, fired: list[Pending]) -> None:
         """Change the world for what is due, in a fixed order: people's moves on what is pending on them (an answer
@@ -727,6 +805,37 @@ class Orchestrator:
             while not scheduler.taken(booking.ref, self._store) and time.monotonic() < give_up:
                 await asyncio.sleep(TAKEN_EVERY)
 
+    async def _picked_up(self, fired: list[Pending]) -> None:
+        """Wait until the agent has picked up the due records just reached, one of each declaration's: a newer write
+        of it in the run's store than the decision read (`domain.world.written`), whatever it holds. Its poller looks
+        on its own timer, which the run cannot read and must not guess, while the sandbox's clock runs on at real
+        speed: a sandbox idle before that look is not done, and a wake ended there leaves the poller's whole cycle to
+        run after it, in none. Once the sandbox's clock has run one `poll` past the wake's moment with nothing of a
+        declaration written, the wake goes on to settle all the same, and the check `due_records` says what was not
+        picked up. A sandbox whose clock does not reach that within `settle_limit` more of real time is refused: its
+        clock is not running."""
+        records = [r for p in fired if isinstance(p, PendingRecord) for r in p.records]
+        if not records:
+            return
+        began = self._clock.now()
+        due = self._agent.due
+        longest = max(due[r.source].poll for r in records) + self._sandbox.settle_limit
+        give_up = time.monotonic() + longest.total_seconds()
+        while True:
+            wrote = self._store.events(since=self._read_at, kinds=[EntityKind.MEMORY], actors=[Actor.AGENT])
+            left = unpicked(records, written(wrote))
+            if not left:
+                return
+            now = (await self._sandbox.read()).now()
+            if all(now >= began + due[r.source].poll for r in left):
+                return
+            if time.monotonic() >= give_up:
+                raise SandboxFailed(
+                    f"the agent's sandbox clock read {now.isoformat()} {longest.total_seconds():g} s after wake "
+                    f"{self._clock.wake()} began at {began.isoformat()}, short of one poll on: it is not running"
+                )
+            await asyncio.sleep(self._sandbox.quiet.total_seconds())
+
     async def _ready(self, fired: list[Pending]) -> list[Pending]:
         """What is due, without each person's move that is not ready to land (`People.ready`): an answer that, read
         now, needs none is passed and nobody hears of it; one a model failed to write is owed still, and booked again
@@ -805,14 +914,19 @@ class Orchestrator:
         failed = False
         try:
             await fire()
-            if await self._sandbox.settle(self._traffic) is None:
-                raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
+            await self._settled()
+            if self._inboxes is not None:
+                # Minutehand calls the agent only while its clock runs: a held agent cannot answer (its servers
+                # need timers even to read), so the inboxes are read here, inside the wake, and whatever the reads
+                # set the agent doing is this wake's too
+                await self._look()
+                await self._settled()
+            await self._hold()
         except AgentFailed as e:
             failed = True
             self._failure = str(e)
         if not failed:
             self._watcher.record(self._store, Actor.AGENT)
-            await self._look()
         new = self._record_new()
         if not failed:
             await self._schedule(new, retry=True)
@@ -825,7 +939,7 @@ class Orchestrator:
                 sim_time=self._clock.now(),
                 reason=reason.value,
                 world_changes=world_changes,
-                memory_reads=self._mounts.memory_reads(wake) if isinstance(self._mounts, HoldsMemory) else 0,
+                memory_reads=self._memory_reads(),
                 memory_writes=memory_writes,
             )
         )
@@ -833,10 +947,15 @@ class Orchestrator:
             self._telemetry.wake_ended(wake)
         if failed:
             return StopReason.AGENT_FAILED
-        self._checkpoint()
+        await self._checkpoint()
         if len(self._wakes) >= self._limit.wakes:
             return StopReason.WAKE_LIMIT
         return None
+
+    async def _settled(self) -> None:
+        """The wake's work is over: its sandbox idle (`SandboxClock.settle`), or the wake failed."""
+        if await self._sandbox.settle(self._traffic) is None:
+            raise AgentFailed("the agent's sandbox did not fall idle within its settle limit")
 
     def _record_new(self) -> list[WorldEvent]:
         new = self._store.events(since=self._seen)
@@ -914,26 +1033,44 @@ class Orchestrator:
             message, self._inbound(provider), self._store, self._clock, secret=self._secret(provider)
         )
 
-    def _checkpoint(self) -> None:
-        write_checkpoint(
-            self._store,
-            Checkpoint(
-                wake=self._clock.wake(),
-                now=self._clock.now(),
-                replies=len(self._store.replies()),
-                untaken=self._untaken,
-                pending=self._dues.items,
-                agent=self._remembered(),
-            ),
-        )
-        self._record_new()
+    async def _checkpoint(self, *, export: bool = True) -> None:
+        """Write a checkpoint, with the agent's own state saved first when the agent file says how and `export`
+        (every checkpoint after a wake, while the sandbox is idle): the seq is the log's to give, so what was saved
+        is named for it once the checkpoint is written (`application.agent_state`). A signal that arrives meanwhile
+        waits until both are done, so the newest checkpoint is whole (`Interruption.held`)."""
+        with self._interruption.held() if self._interruption is not None else contextlib.nullcontext():
+            folder = self._agent_state if export else None
+            exported = (
+                await agent_state.save(self._sandbox, folder, self._store, self._traffic, self._memory_reads)
+                if folder is not None
+                else None
+            )
+            seq = write_checkpoint(
+                self._store,
+                Checkpoint(
+                    wake=self._clock.wake(),
+                    now=self._clock.now(),
+                    replies=len(self._store.replies()),
+                    untaken=self._untaken,
+                    pending=self._dues.items,
+                    agent=self._remembered(exported),
+                ),
+            )
+            if folder is not None and exported is not None and exported.saved:
+                agent_state.keep(folder, seq)
+            self._record_new()
 
-    def _remembered(self) -> Remembered:
-        """The agent's state at this moment as the run holds it: its memory, and what the run can see of state it
-        keeps elsewhere."""
+    def _memory_reads(self) -> int:
+        """The agent's reads of its memory in the wake in progress, every one, when the mounts answer them."""
+        return self._mounts.memory_reads(self._clock.wake()) if isinstance(self._mounts, HoldsMemory) else 0
+
+    def _remembered(self, exported: ExportedState | None) -> Remembered:
+        """The agent's state at this moment as the run holds it: its memory, what the run can see of state it
+        keeps elsewhere, and whether its own state was saved here."""
         return Remembered(
             memory=memory.store_digest(self._store),
             outside=self._outside.outside() if self._outside is not None else [],
+            exported=exported,
         )
 
     # -- lookups that refuse loudly -------------------------------------------------------------------------
@@ -1085,13 +1222,16 @@ async def run_scenario(
     desk: ServiceDesk | None = None,
     replay: Replay | None = None,
     start: Callable[[], Awaitable[None]] | None = None,
+    agent_state: Path | None = None,
+    interruption: Interruption | None = None,
 ) -> RunRecord:
     """Run one scenario from its start. `start` starts the agent's program (its sandbox), once the world is seeded.
     `signing` holds the secret each provider signs its pushed events with;
     `traffic` sees the agent's outbound calls, which the sandbox needs to fall idle;
     `channels` delivers people's answers to the agent's captured sends; `outside` says what the agent keeps
     beside its memory at each checkpoint; `replay` is the record answering the agent's model calls, when this is a
-    replay of a finished run."""
+    replay of a finished run; `agent_state` is where the agent's own state is saved at each checkpoint after a wake;
+    `interruption` is a signal that ends the run `INTERRUPTED`, kept like any other."""
     if clock.now() != scenario.starts_at or clock.wake() != 0:
         raise RunRefused(f"the clock must start at the scenario's start ({scenario.starts_at}), wake 0")
     return await Orchestrator(
@@ -1115,4 +1255,6 @@ async def run_scenario(
         desk=desk,
         replay=replay,
         start=start,
+        agent_state=agent_state,
+        interruption=interruption,
     ).run()

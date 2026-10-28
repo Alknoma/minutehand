@@ -41,6 +41,7 @@ import importlib.util
 import logging
 import os
 import socket
+from collections import Counter
 from collections.abc import Callable
 from types import TracebackType
 
@@ -170,6 +171,10 @@ class Receiver:
         stood at `cursor()`, and nothing it writes, exports or relays is recorded: the fork's agent is being played
         back to its checkpoint, and the record of all of it is the parent's, which the fork shares."""
         self._playback = _Playback(parent, cursor)
+
+    def written(self, collection: str, key: str) -> int:
+        """`application.playback.HoldsMemory`: the agent's writes of one key that landed while played back."""
+        return self._playback.written[(collection, key)] if self._playback is not None else 0
 
     def live(self) -> None:
         self._playback = None
@@ -485,6 +490,9 @@ class _Playback:
         self._at = -1
         self._memory: dict[tuple[str, str], str] = {}
         self._versions: dict[tuple[str, str], int] = {}
+        self.written: Counter[tuple[str, str]] = Counter()
+        """Each key's writes that landed, though none is recorded: what a played-back wake for a due record waits
+        for (`application.playback`)."""
 
     def answer(self, call: StoreCall) -> Model:
         seq = self._cursor()
@@ -501,4 +509,8 @@ class _Playback:
                 (k, v) for (c, k), v in self._memory.items() if c == call.collection and k.startswith(call.prefix)
             )
             return Listed(items=[Item(key=key, value=memory.value_of(body)) for key, body in found])
-        return Written(seq=seq, applied=memory.landed_in(dict(self._versions), call))
+        applied = memory.landed_in(dict(self._versions), call)
+        for one, lands in zip(call.writes, applied, strict=True):
+            if lands:
+                self.written[(one.collection, one.key)] += 1
+        return Written(seq=seq, applied=applied)

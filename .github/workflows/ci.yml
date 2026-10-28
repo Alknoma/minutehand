@@ -11,7 +11,7 @@ name: ci
 #   redirect   does transparent capture work in a container that ignores proxy variables
 #   build      does the package install clean and does the image run
 #   action     does the setup action install it on a bare runner, by path and as a remote caller unpacks it
-#   sandbox    does the example agent's whole run pass inside the real gVisor sandbox
+#   sandbox    does the example agent's whole run pass inside the real gVisor sandbox, and does its clock hold
 #   promotion  may this pull request merge into main
 #   gate       did everything above succeed (the only required check)
 on:
@@ -250,6 +250,10 @@ jobs:
           grep -q "1.1.1.1/ (by address): HTTP 502" probe.log
           grep -q "api.anthropic.com/v1/models (a model host: tunnelled out): HTTP 401" probe.log
           grep -q "udp 8.8.8.8:4444: no reply" probe.log
+      - name: Hold the sandbox's clock
+        run: |
+          docker run --rm --privileged -v "$PWD:/work" -v "$PWD/sandbox/dist:/opt/gv:ro" minutehand-lab \
+            sandbox/lab/hold-clock-check.sh
 
   # main takes pull requests from integration-main and from nowhere else. A branch rule can
   # only constrain the branch being written to, never the branch a pull request comes from,

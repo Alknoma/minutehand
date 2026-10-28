@@ -1,12 +1,14 @@
-"""The agent's due records (`AgentUnderTest.due`), as the run read them: one it was woken for and left due, and one
-whose due time the run could not read.
+"""The agent's due records (`AgentUnderTest.due`), as the run read them: one it was woken for and did not pick up,
+and one whose due time the run could not read.
 
-A record woken for at its instant and still due by the same declaration at that instant when the wake ended (its
-`later` fields read at that instant) is not woken for again (`application.due_records`): the agent took its wake and
-left the work due. In production a poller whose wait and whose query disagree wakes for such a record without end,
-with nothing to do, and nothing done. A record left due by a wake that took another record of its declaration is a
-backlog taken a record per poll, and is woken for again: it is not left due by that wake. Whether it is a
-fault is a judgement (`review`): the work may have moved to a record the agent file does not name.
+A wake begun for due records lasts until the agent writes one of each declaration's, or one `poll` of the sandbox's
+clock (`application.due_records`). A record the agent did not write in that wake, nor any other record of its
+declaration the wake was for, and still due by the declaration at its instant when the wake ended (its `later`
+fields read at that instant), was due and not picked up within one poll, and is not woken for again. In production a
+poller whose wait and whose query disagree wakes for such a record without end, with nothing to do, and nothing done;
+a poller that is broken never looks. A record left by a wake that wrote another record of its declaration is a
+backlog taken a record per poll: it is not said here. Whether it is a fault is a judgement (`review`): the work may
+have moved to a record the agent file does not name.
 
 A record whose field, or one of whose `later` fields, holds something other than an ISO 8601 instant with an offset
 (a date alone, a time with no offset, a number) is not read as due, so nothing woke the agent for it.
@@ -22,8 +24,8 @@ from pydantic import JsonValue
 from minutehand.checks.facts import blocked
 from minutehand.domain.checks import CheckReport, Finding, FindingKind, Needs, RunView, Severity
 from minutehand.domain.clock import DueClosed, DueEntry, DueSource
-from minutehand.domain.memory import DueRecords, RecordedDue, field_at, instant, later_bound, matches
-from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, WorldEvent
+from minutehand.domain.memory import DueRecords, field_at, instant, later_bound, matches
+from minutehand.domain.world import EntityKind, MemorySnapshot, Operation, WorldEvent, unpicked, written
 
 Memory = dict[tuple[str, str], tuple[str, int]]
 """Each key's value as JSON text, and the seq that wrote it."""
@@ -111,9 +113,9 @@ def _malformed(view: RunView) -> list[Finding]:
 
 
 def _left_due(view: RunView) -> list[Finding]:
-    """Each record the agent was woken for and still held due by its declaration at the same instant when that wake
-    ended, its `later` fields read at that instant; none that wake took another record of the declaration beside,
-    which it is woken for again."""
+    """Each record the agent was woken for and wrote none of its declaration's in that wake (`domain.world.unpicked`),
+    still held due by its declaration at the same instant when the wake ended, its `later` fields read at that
+    instant."""
     findings: list[Finding] = []
     for entry in view.dues or []:
         if entry.source is not DueSource.RECORDED or entry.closed is not DueClosed.FIRED:
@@ -122,15 +124,14 @@ def _left_due(view: RunView) -> list[Finding]:
         if woke is None:
             continue
         memory = _fold(view.events, until_wake=woke)
-        for record in entry.records:
+        wrote = written(e for e in view.events if e.wake == woke)
+        for record in unpicked(entry.records, wrote):
             if record.source >= len(view.due) or (record.collection, record.key) not in memory:
                 continue
             source = view.due[record.source]
-            if _took(source, entry.records, record, memory):
-                continue
             text, seq = memory[(record.collection, record.key)]
-            mine, written, value = _due_at(source, text)
-            still = instant(written) if mine else None
+            mine, held, value = _due_at(source, text)
+            still = instant(held) if mine else None
             if still is None or still != record.at:
                 continue
             readable, until = later_bound(value, source.later)
@@ -141,30 +142,17 @@ def _left_due(view: RunView) -> list[Finding]:
                     check=DueRecordsCheck.id,
                     severity=Severity.WARNING,
                     kind=FindingKind.REVIEW,
-                    message=f"the agent was woken for {record.collection}/{record.key}, due at "
-                    f"{_said(record.at)}, and left it due at that instant: it is not woken for it again. A poller "
-                    "whose wait and whose query disagree wakes for such a record without end, with nothing to do",
+                    message=f"{record.collection}/{record.key} was due at {_said(record.at)}, and not picked up within "
+                    f"one poll ({_named(source)}, poll {source.poll}): the agent was woken for it and wrote no "
+                    "record of that declaration in the wake, and it is not woken for it again. A poller whose wait "
+                    "and whose query disagree wakes for such a record without end, with nothing to do; one that is "
+                    "broken never looks",
                     at=entry.closed_at,
                     wake=woke,
                     evidence=[seq],
                 )
             )
     return findings
-
-
-def _took(source: DueRecords, woke: list[RecordedDue], record: RecordedDue, memory: Memory) -> bool:
-    """Whether the wake took a record of `record`'s declaration other than it: one no longer read by it, or holding
-    a later instant than it was woken for (`application.due_records.took`)."""
-    for other in woke:
-        if other.source != record.source or (other.collection, other.key) == (record.collection, record.key):
-            continue
-        if (other.collection, other.key) not in memory:
-            return True
-        mine, written, value = _due_at(source, memory[(other.collection, other.key)][0])
-        moment = instant(written) if mine else None
-        if moment is None or not later_bound(value, source.later)[0] or moment > other.at:
-            return True
-    return False
 
 
 def _wake_of(view: RunView, entry: DueEntry) -> int | None:
@@ -177,3 +165,9 @@ def _wake_of(view: RunView, entry: DueEntry) -> int | None:
 
 def _said(moment: datetime) -> str:
     return moment.isoformat()
+
+
+def _named(source: DueRecords) -> str:
+    """The declaration as the agent file spells it: its collection, prefix, `where` and field."""
+    where = "".join(f" {k}={json.dumps(v, ensure_ascii=False)}" for k, v in sorted(source.where.items()))
+    return f"due {source.collection}/{source.prefix}*{where} by {source.field}"

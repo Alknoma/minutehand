@@ -74,6 +74,19 @@ def refuse_written_elsewhere(path: Path) -> None:
             )
 
 
+def written_now(path: Path) -> Path | None:
+    """A mark saying a store has `path` open and is writing it, refreshed within `STALE`, from any machine, this one
+    included; None when none is. A run whose process died without closing its store left a mark nobody refreshes."""
+    now = time.time()  # clock-lint: exempt a writer's mark is refreshed on the machine's clock, and read against it
+    for mark in path.parent.glob(f"{path.name}{_MARK}*"):
+        try:
+            if now - mark.stat().st_mtime < STALE:
+                return mark
+        except FileNotFoundError:
+            continue  # its writer closed it as we looked
+    return None
+
+
 class Writing:
     """This process's mark that it writes `path`, refreshed until `close`, and removed then or when the store holding
     it is collected."""

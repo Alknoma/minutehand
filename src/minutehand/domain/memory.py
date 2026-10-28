@@ -168,8 +168,9 @@ class DueRecords(Model):
     poll: timedelta = Field(
         default=timedelta(0),
         ge=timedelta(0),
-        description="How long the agent's own poller may take to find a record after it falls due: the wake is that "
-        "long after the record's instant, the latest moment its poller would have acted",
+        description="The longest the agent's own poller sleeps between looks: the clock jumps that long after a "
+        "record's instant still to come, and a wake for due records lasts until the agent writes one, or until the "
+        "sandbox's clock has run this long past the wake's start, when the record was due and not picked up",
     )
     later: list[Path] = Field(
         default=[],

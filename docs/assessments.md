@@ -223,7 +223,7 @@ rule went unread, so a rule never passes by being skipped unseen.
 |---|---|
 | `open_at: <moment>` | the ask or hand-off was made and still unanswered at that moment |
 | `answered: true` / `false` | it was answered, or the work finished, by the end |
-| `stopped: [agent_done, wake_limit, deadline_passed, nothing_pending, agent_failed, closed, environment_failed, replay_parted]` | the run stopped one of these ways |
+| `stopped: [agent_done, wake_limit, deadline_passed, nothing_pending, agent_failed, closed, environment_failed, replay_parted, interrupted]` | the run stopped one of these ways |
 
 ### `count`: which facts, between which moments
 

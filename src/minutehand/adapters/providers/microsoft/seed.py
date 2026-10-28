@@ -270,6 +270,9 @@ class _At:
     def wake(self) -> int:
         return 0
 
+    async def agent_now(self) -> datetime:
+        return self._at
+
 
 def _graph_user(person: Person, directory: Directory, login: str | None = None) -> wire.GraphUser:
     local = login or (person.email or person.key).split("@")[0]
