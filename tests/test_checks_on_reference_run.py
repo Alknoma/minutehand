@@ -36,7 +36,10 @@ def test_the_name_check_is_clean_once_the_name_is_corrected() -> None:
         after = event.after
         if isinstance(after, TicketSnapshot):
             after = after.model_copy(
-                update={"title": after.title.replace("Tivane", "Tyvane"), "body": after.body.replace("Tivane", "Tyvane")}
+                update={
+                    "title": after.title.replace("Tivane", "Tyvane"),
+                    "body": after.body.replace("Tivane", "Tyvane"),
+                }
             )
         elif isinstance(after, MessageSnapshot):
             after = after.model_copy(update={"text": after.text.replace("Tivane", "Tyvane")})
