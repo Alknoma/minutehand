@@ -1,8 +1,8 @@
 # Lints
 
-`wall_clock`, `import_boundaries`, `enum_string_comparisons` and `boundary_dicts` were agreed and are written; `provider_manifest` was not agreed and does not exist. Each section states the five tests.
+`wall_clock`, `import_boundaries`, `enum_string_comparisons`, `boundary_dicts` and `client_names` were agreed and are written; `provider_manifest` was not agreed and does not exist. Each section states the five tests.
 
-A new repo has no debt, so every lint here is fail-closed with an inline marker that requires a reason: `# <name>-lint: exempt <reason>` (`clock`, `import`, `enum`, `dict`). A bare marker exempts nothing. There are no baselines.
+A new repo has no debt, so every lint here is fail-closed with an inline marker that requires a reason: `# <name>-lint: exempt <reason>` (`clock`, `import`, `enum`, `dict`). `client_names` has no marker: it reads Markdown, JSON and YAML, which have no comment to hold one. A bare marker exempts nothing. There are no baselines.
 
 ## How they run
 
@@ -58,6 +58,21 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | Why the exception | A provider's request and response bodies are someone else's wire format. They enter as text on `Exchange` and leave `wire.py` as a typed `Snapshot`. |
 | 1. Recurred | 699 signatures in the parent repo's baseline. |
 | Cost | Every provider needs a `wire.py`. |
+
+### 5. `client_names` — written, fail-closed, agreed 2026-10-28
+
+| Test | Answer |
+|---|---|
+| The rule | Nothing in the repository names the client that adopts Minutehand, outside `docs/adopting-in-alknoma-cloud.md` and `CLAUDE.md`. |
+| What pyright cannot see | A name is a word in a docstring, a doc or a test's data; nothing types it. |
+| 1. Recurred | Twice: a reference scenario carried the client's company name and goal into `docs/design.md` and five test files; an export's patience in `application/agent_state.py` was documented by the client's runs, by name, through a reviewed and merged PR. |
+| 2. Catches what happened | Both: run over the tree before the rename, it finds every one of those lines. |
+| 3. Seen to fail | Dropping the allowed files, or the hash match, each turns two tests red. |
+| 4. Fires on nothing adjacent | A word of the same length, and the name inside a longer word, are not the name; `.venv`, `.git`, caches, `.claude` and other checkouts under `.worktrees` are not read; a file that is not UTF-8 text is skipped. |
+| How names are held | SHA-256 of each lower-cased name (`NAMES`), so the lint names nobody either; `test_the_real_names_are_the_ones_the_adoption_page_uses` checks the hashes against the page that may name the client. A new name is added as its hash. |
+| Scope | `python -m lints` hands every lint `src/`; this one reads the whole repository holding it. |
+| Cannot see | A name run into a longer word (`NameBot`), split across lines, or spelled another way than the two held. The repository owner's own name in its URLs and copyright is not held: it is where the code lives, not whom it serves. |
+| Cost | About a second per run. |
 
 ## Not agreed
 

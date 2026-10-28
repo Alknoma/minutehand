@@ -18,6 +18,7 @@ planted: the only way to show a lint fails when the violation is present.
 from __future__ import annotations
 
 import ast
+import posixpath
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -66,7 +67,7 @@ class Finding:
     kind: Kind = Kind.FAIL
 
     def render(self, base: str = "") -> str:
-        path = f"{base}/{self.file}" if base else self.file
+        path = posixpath.normpath(f"{base}/{self.file}") if base else self.file
         where = f"{path}:{self.line}" if self.line is not None else path
         return f"{where}: {self.message}"
 

@@ -297,7 +297,7 @@ def finding(evidence: list[int], severity: Severity = Severity.ERROR) -> Finding
         check="near_miss_name",
         severity=severity,
         kind=FindingKind.FAIL,
-        message='wrote "Aiven" where the scenario says "Ayven"',
+        message='wrote "Tivane" where the scenario says "Tyvane"',
         at=START + timedelta(days=1),
         wake=1,
         evidence=evidence,
@@ -318,7 +318,7 @@ def test_a_finding_is_a_log_record_in_the_trace_of_its_first_evidence(exported: 
     assert evidence.context is not None
     assert log.log_record.trace_id == evidence.context.trace_id
     assert log.log_record.span_id == evidence.context.span_id
-    assert log.log_record.body == 'wrote "Aiven" where the scenario says "Ayven"'
+    assert log.log_record.body == 'wrote "Tivane" where the scenario says "Tyvane"'
     assert log.log_record.severity_number == SeverityNumber.ERROR
     assert log.log_record.attributes is not None
     assert log.log_record.attributes["minutehand.check"] == "near_miss_name"
