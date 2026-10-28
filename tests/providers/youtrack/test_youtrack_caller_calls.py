@@ -1,5 +1,5 @@
-"""Every call a production YouTrack client makes, made through the run's proxy with `httpx`, each with the `fields=`
-projection that client sends, asserting the wire shape it reads back: `$type` on every entity, only what was asked,
+"""The served YouTrack operations called as a real YouTrack client calls them, through the run's proxy with `httpx`,
+each with the `fields=` projection such a client sends, asserting the wire shape it reads back: `$type` on every entity, only what was asked,
 database ids where a body references an entity, epoch milliseconds."""
 
 from __future__ import annotations

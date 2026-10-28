@@ -2,7 +2,7 @@
 
 The defect: the fakes stamped everything with the real date while the mission
 clock ran eight days ahead, so a ticket filed on the mission's 30 August showed
-as created on the 24th (run f431fc97f427). Instances: the Slack fake's message
+as created on the 24th. Instances: the Slack fake's message
 `ts`, and the Asana and Drive fakes' created/modified times.
 
 Matched by call: `time.time`, `time.time_ns`, `datetime.now/utcnow/today`,

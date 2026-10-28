@@ -1,9 +1,9 @@
 """What every lint here shares, so that no lint carries its own copy.
 
-Ported from the parent repository's lint core, where fifteen
-lints had grown fifteen ways of walking the tree, printing, and — the one that
-mattered — parsing the escape hatch. Seven documented that the reason is
-required; one enforced it. Here the decisions are made once:
+Lints that each carry their own grow their own ways of walking the tree, printing,
+and — the one that matters — parsing the escape hatch: in one earlier set of
+fifteen, seven documented that the reason is required and one enforced it. Here
+the decisions are made once:
 
   ROOT / SRC                       where the repo is, what a lint scans by default
   sources()                        one walk, one parse, one set of skips
