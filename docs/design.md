@@ -113,11 +113,11 @@ The agent under test declares the sandbox it runs in (`AgentUnderTest.sandbox`) 
 
 ```yaml
 name: partner_pipeline_build
-goal: Ayven has three signed integration partnership agreements.
+goal: Tyvane has three signed integration partnership agreements.
 owner: owner
 starts_at: 2026-08-24T10:50:03Z
 deadline_after: P14D
-protected_names: [Ayven]
+protected_names: [Tyvane]
 people:
   - {key: owner,  name: Test User,      email: owner@example.com, reply: {kind: silent}}
   - {key: sofia,  name: Sofia Romano,   email: sofia@example.com, reply_within: {min: PT2H, max: PT6H},
@@ -202,7 +202,7 @@ The agent went idle after one wake with no booking; the clock ran on to the dead
 
 | Check | Result |
 |---|---|
-| `near_miss_name` | 4 failures, each `wrote "Aiven" where the scenario says "Ayven"`: two tickets and two messages. 0 once the name is corrected. |
+| `near_miss_name` | 4 failures, each `wrote "Tivane" where the scenario says "Tyvane"`: two tickets and two messages. 0 once the name is corrected. |
 | A rule `each: person`, `count: {messages: {to: [person]}}`, `gap_at_least: PT5M`, `severity: review` | 1 review, evidence `[3, 4]`, the two messages 18 seconds apart. The check this replaced also weighed the wording the two shared; a rule weighs only their spacing. |
 | `expectations` | 1 failure: `ticket created for dania: wanted at least 1, found 0`. The legal-review ticket the goal depended on was never filed. |
 
@@ -1031,7 +1031,7 @@ expect:
   - {kind: person_asked,    person: owner}
   - {kind: ticket_created,  assignee: sofia}
   - {kind: ticket_created,  assignee: dania, by: P5D}
-  - {kind: ticket_created,  mentions: [Aiven], at_least: 0, at_most: 0}
+  - {kind: ticket_created,  mentions: [Tivane], at_least: 0, at_most: 0}
   - {kind: ticket_deleted}                      # default: at most 0
   - {kind: ticket_in_state, assignee: sofia, state: done}
 ```

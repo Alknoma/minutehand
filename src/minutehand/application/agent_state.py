@@ -58,10 +58,12 @@ TAKING = "taking"
 
 
 HELD_EXPORT_PATIENCE = timedelta(seconds=15)
-"""Real time an export may take under a held clock before the clock is released for it: an export takes seconds (Ayven's, a direct request to its emulators), and it hung under a hold on two of the four checkpoints of one continued run. A store whose export waits
-on a timer of its own never finishes while the clock stands still (the Firestore emulator's did, an Ayven run,
-2026-10-28: an export begun under a hold sat for 29 minutes and would have sat forever); released, it finishes, and
-the reads around the export judge whether the agent moved while it ran, as without a hold."""
+"""Real time an export may take under a held clock before the clock is released for it: an export takes seconds
+(one agent's, a direct request to the database emulators in its sandbox), and it hung under a hold on two of the
+four checkpoints of one continued run. A store whose export waits on a timer of its own never finishes while the
+clock stands still (the Firestore emulator's did, 2026-10-28: an export begun under a hold sat for 29 minutes and
+would have sat forever); released, it finishes, and the reads around the export judge whether the agent moved while
+it ran, as without a hold."""
 
 WORKED = "the agent worked during the export"
 """How a checkpoint says its save was discarded: the agent stirred while it ran (`save`)."""
