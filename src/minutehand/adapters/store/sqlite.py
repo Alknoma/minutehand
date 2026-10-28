@@ -774,7 +774,13 @@ class SqliteStore:
 
     def _sweep_content(self) -> tuple[int, int]:
         """Delete every stored body no row refers to and that is no part of one a row refers to, inside the
-        caller's transaction; answers how many and their bytes as stored."""
+        caller's transaction; answers how many and their bytes as stored.
+
+        The references, the stored bodies and the delete are three statements, so the file's write lock is taken
+        before the first: a body another connection commits with the row that refers to it lands either before all
+        three, and is kept, or after, and is not seen."""
+        if not self._db.in_transaction:
+            self._db.execute("BEGIN IMMEDIATE")
         kept = self._with_parts({r[0] for r in self._db.execute(f"SELECT hash FROM ({_REFERENCES})")})
         gone = [(h, n) for h, n in self._db.execute("SELECT hash, length(stored) FROM content") if h not in kept]
         self._db.executemany("DELETE FROM content WHERE hash=?", [(h,) for h, _ in gone])

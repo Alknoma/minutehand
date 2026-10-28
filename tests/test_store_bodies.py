@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -377,3 +378,28 @@ def test_a_sweep_keeps_the_parts_of_a_body_a_row_refers_to(world: tuple[SqliteSt
     assert freed.bodies == 0
     [call] = SqliteStore(tmp_path / "world.db", "root", RunClock(START)).calls()
     assert call.exchange.request_body == conversation(5)
+
+
+def test_a_sweep_keeps_a_body_another_connection_writes_while_it_sweeps(tmp_path: Path) -> None:
+    """`minutehand gc` sweeps a world file a run may be writing. The sweep reads the references, then the stored
+    bodies, then deletes: a run that commits a body and its row between the two reads must wait for the sweep, or
+    the sweep sees the body and not the row and deletes a body the run refers to."""
+    path = tmp_path / "world.db"
+    live = SqliteStore(path, "root", RunClock(START))
+    sweeper = SqliteStore(path, "root", RunClock(START))
+    body = "written by the live run while the sweep ran " + "x" * 2000
+    writer = threading.Thread(
+        target=live.apply, args=(Change(entity=entity("a"), operation=Operation.CREATE, actor=Actor.AGENT, body=body),)
+    )
+
+    def between_the_reads(statement: str) -> None:
+        if statement.startswith("SELECT hash, length(stored) FROM content") and not writer.is_alive():
+            writer.start()
+            writer.join(timeout=1.0)
+
+    sweeper._db.set_trace_callback(between_the_reads)  # pyright: ignore[reportPrivateUsage]
+    sweeper.sweep()
+    writer.join(timeout=30)
+    assert not writer.is_alive()
+    got = SqliteStore(path, "root", RunClock(START)).get(entity("a"))
+    assert got is not None and got.body == body
