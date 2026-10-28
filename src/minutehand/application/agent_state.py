@@ -9,7 +9,9 @@ sandbox is idle with nothing of the agent's in flight (the reading that ends the
 run loop runs `export_state` with `{dir}` filled with an empty `taking/`, writes the checkpoint saying
 whether it saved (`Remembered.exported`), and only then names the folder for the checkpoint's seq, since the seq is
 the log's to give and is known once the checkpoint is in it. A command that fails leaves no folder, and the
-checkpoint keeps what it said; the run goes on. Setup's checkpoint saves nothing: the sandbox does not exist yet.
+checkpoint keeps what it said; the run goes on. Setup's checkpoint saves nothing: the sandbox does not exist yet. A
+run whose process died while saving leaves `taking/` behind, which its closing settles (`left_by_death`): half a
+save is removed, and a whole one whose checkpoint was written is named for it.
 
 A save is the agent's state at one quiet instant, the one the checkpoint's world is at, or it is nothing. The wake
 ended inside the agent's own sleep, and the sandbox's clock runs on at real speed while the export runs: a poller
@@ -41,7 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState, checkpoints
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OUTPUT_KEPT, OwnProgram
 from minutehand.application.sandbox import SandboxClock, moving
@@ -124,6 +126,31 @@ async def _exported(sandbox: SandboxClock, taking: Path, *, held: bool) -> str |
 def keep(folder: Path, seq: int) -> None:
     """Name what `save` saved for the checkpoint written at `seq`."""
     (folder / TAKING).rename(folder / str(seq))
+
+
+def left_by_death(folder: Path, store: Store) -> None:
+    """Settle what the run of `store`, whose process died, left in `folder/taking/`, as it is closed.
+
+    A death leaves `taking/` in one of two ways. Killed while the export ran, before its checkpoint was written: the
+    folder is half a save no checkpoint names, and it is removed. Killed after the checkpoint was written and before
+    the folder was named for it (`keep`): the checkpoint says it saved, and `save` had returned whole before it was
+    written, so `taking/` is that checkpoint's state, complete, and it is named for the seq as `keep` would have. The
+    two are told apart by when the folder last changed: the save a checkpoint holds was finished before the checkpoint
+    was written, a later save's folder made after it. A checkpoint that says it saved, whose folder is gone and that
+    left no `taking/`, is left as it is: no death leaves that, so a fork from it is refused (`saved_at`)."""
+    taking = folder / TAKING
+    if not taking.is_dir():
+        return
+    held = checkpoints(store)
+    own = [e for e in store.events() if e.run_id == store.run_id and e.entity == CHECKPOINT and e.seq in held]
+    if own:
+        seq, written = own[-1].seq, own[-1].wall_time
+        exported = held[seq].agent.exported
+        changed = datetime.fromtimestamp(taking.stat().st_mtime, written.tzinfo)
+        if exported is not None and exported.saved and not (folder / str(seq)).exists() and changed <= written:
+            keep(folder, seq)
+            return
+    shutil.rmtree(taking)
 
 
 def saved_at(store: Store, at_seq: int, checkpoint: Checkpoint, runs: Path) -> Path | None:

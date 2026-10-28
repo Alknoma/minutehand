@@ -35,7 +35,7 @@ checkpoint.
 | **operation** | An `operationId` in an OpenAPI document that a declaration names instead of a template | endpoint |
 | **playback** | A fork bringing the agent back to a checkpoint by playing its recorded inputs into a fresh sandbox | restore (that is the memory's word), snapshot |
 | **saved state** | What the agent's own `sandbox.export_state` saved at a checkpoint, which a fork from there starts the agent from (`MINUTEHAND_AGENT_STATE`) in place of a playback | snapshot, dump |
-| **interrupted** | A run stopped from outside before it ended by itself: a signal to `minutehand run`, `fork` or `replay`, or `minutehand close` on a run whose process died. Kept like any other run | killed, aborted |
+| **interrupted** | A run stopped from outside before it ended by itself: a signal to `minutehand run`, `fork` or `replay`, or `minutehand close` (or a `fork` or `replay` of it) on a run whose process died. Kept like any other run | killed, aborted |
 
 ## Touch points
 
@@ -79,7 +79,7 @@ A run ends when nothing is due, the agent has booked nothing and no due record o
 (`nothing_pending`), at the end of the scenario's
 window (`window_ended`, or an older scenario's `deadline_passed`), at the wake limit, when the agent's sandbox
 fails to fall idle, or when it is stopped from outside (`interrupted`: SIGTERM or SIGINT to `minutehand run`, `fork` or
-`replay`, which abandons the wake in progress and keeps the run, its last checkpoint whole; `minutehand close` keeps a
+`replay`, which abandons the wake in progress and keeps the run, its last checkpoint whole; `minutehand close`, or a fork or replay of it, keeps a
 run whose process was killed). There is no `done`: whether the work is finished is read from the world (`docs/design.md`, "The
 verdict"), never from the agent.
 

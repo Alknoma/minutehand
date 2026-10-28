@@ -73,10 +73,10 @@ from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.agent._wire import ON as AGENT_ON
 from minutehand.agent._wire import URL as AGENT_URL
-from minutehand.application.agent_state import AGENT_STATE
+from minutehand.application.agent_state import AGENT_STATE, left_by_death
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
-from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint, checkpoints
+from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint, Remembered, checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -487,7 +487,8 @@ async def replay(
     From its start, or, with `at_seq`, from that checkpoint: the world, the clock, everything pending and the
     agent's memory as they stood there, with nothing changed (a fork with no overrides, `fork`), and the agent's
     program as `command` says it is now, so a change to the agent's code or prompt is played from the moment it
-    matters and nothing before it is played again.
+    matters and nothing before it is played again. A run whose process died without keeping its record is closed
+    first (`recovered`).
 
     The agent's calls to its model are recorded on the wire (`Listen.record_model_calls`) for the replay to answer;
     the first one the recording never saw, or the first from `live_from` on, goes to the model, and so does every
@@ -501,6 +502,7 @@ async def replay(
                 "a replay from a checkpoint is answered from the record from there on: --live-from is "
                 "for a replay from the start"
             )
+        await recovered(state, parent_run, by="`minutehand replay`")
         [outcome] = await fork(
             parent_run,
             Fork(parent_run=parent_run, at_seq=at_seq),
@@ -515,7 +517,7 @@ async def replay(
             interruption=interruption,
         )
         return outcome
-    parent = load(state, parent_run)
+    parent = await recovered(state, parent_run, by="`minutehand replay`")
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
@@ -566,13 +568,14 @@ async def fork(
     there, `REPLAY_PARTED`. At a checkpoint where the agent's own state was saved (`sandbox.export_state`), its
     program is started from that state instead, and nothing is played back (`application.agent_state`).
 
-    A fork that is refused leaves no run behind: no row in the world file and no directory. Each child's scenario and
+    A parent whose process died without keeping its record is closed first (`recovered`), and one still running is
+    refused. A fork that is refused leaves no run behind: no row in the world file and no directory. Each child's scenario and
     agent file are kept in its directory before it plays, so one whose process dies can still be kept (`close`).
     `interruption` is a signal, as `rewind.fork_run` takes it.
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
-    parent = load(state, parent_run)
+    parent = await recovered(state, parent_run, by="`minutehand fork`")
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
@@ -721,13 +724,20 @@ async def fork(
 # -- keeping a run whose process died -------------------------------------------------------------------------
 
 
-async def close(state: Path, run_id: str) -> Outcome:
+CLOSED_BY = "`minutehand close`"
+"""Who keeps a dead run, as its record says: `close` itself, or a fork or replay of it (`recovered`)."""
+
+
+async def close(state: Path, run_id: str, *, by: str = CLOSED_BY) -> Outcome:
     """`minutehand close`: keep a run whose process died without keeping its record (SIGKILL, its container removed),
     from what it left: its world file, and the scenario and agent file kept beside it before it played. It stops
     `INTERRUPTED`, its wakes are the checkpoints in its log, its checks run over everything that happened (a wake it
     died in included), and from then on it is a run like any other: `findings`, `view`, `fork` and `replay` read it,
-    and a fork at its last checkpoint carries it on. Refused for a run that kept its record, a standing world or a
-    case (`minutehand serve` keeps those), and a run whose world file a process still has open and is writing."""
+    and a fork at its last checkpoint carries it on. What the run left of a save of the agent's own state it died in
+    (`agent-state/taking/`) is settled first (`agent_state.left_by_death`). `by` is who closes it, as its record says:
+    a fork or replay of a dead run closes it first (`recovered`). Refused for a run that kept its record, a standing
+    world or a case (`minutehand serve` keeps those), and a run whose world file a process still has open and is
+    writing."""
     entry = find(state, run_id)
     directory = run_dir(state, run_id)
     if entry.finished:
@@ -740,7 +750,7 @@ async def close(state: Path, run_id: str) -> Outcome:
         raise RunRefused(
             f"{world_file} is being written now ({writing.name}, refreshed within the last {STALE_WRITER:.0f} seconds): "
             f"run {run_id}, or another run kept in the same file, is still running. Stop it, which keeps its record, "
-            "or close this one once its writer has been gone that long"
+            "or close or fork this one once its writer has been gone that long"
         )
     scenario = scenario_of(state, run_id)
     agent = agent_of(state, run_id)
@@ -767,7 +777,8 @@ async def close(state: Path, run_id: str) -> Outcome:
         events = world.events()
         calls = world.calls()
         own = [e for e in events if e.run_id == run_id]
-        last = max((v.seq for v in world.versions(CHECKPOINT)), default=0)
+        left_by_death(directory / AGENT_STATE, world)
+        last = _last_restorable(points_in(world))
         died = f" during wake {own[-1].wake}" if own else ""
         record = RunRecord(
             run_id=run_id,
@@ -779,9 +790,8 @@ async def close(state: Path, run_id: str) -> Outcome:
             ended_at=events[-1].sim_time if events else scenario.starts_at,
             wall_seconds=(own[-1].wall_time - own[0].wall_time).total_seconds() if own else 0.0,
             stop=StopReason.INTERRUPTED,
-            failure=f"kept by `minutehand close`: the run's process ended{died} without keeping its record (killed, "
-            f"or its container removed); the last checkpoint, at seq {last}, is where `minutehand fork --at {last}` "
-            "carries the run on",
+            failure=f"kept by {by}: the run's process ended{died} without keeping its record (killed, or its "
+            f"container removed); {_carried_on(run_id, last)}",
             providers=list(dict.fromkeys(c.provider for c in calls if c.provider is not None)),
             outbound=outbound_uses(calls),
             emulators=emulator_uses(calls),
@@ -791,6 +801,50 @@ async def close(state: Path, run_id: str) -> Outcome:
         await judge.score(record, world)
         write_recordings(directory, calls)
     return _keep(directory, record, judge)
+
+
+async def recovered(state: Path, run_id: str, *, by: str) -> Outcome:
+    """A run to fork or replay, as `load` reads it; one whose process died without keeping its record is closed
+    first (`close`, `by` the command that closed it), so carrying a dead run on needs no step of its own. A run still
+    being written is refused as `close` refuses it."""
+    if not (run_dir(state, run_id) / RECORD).is_file() and any(e.run_id == run_id for e in logged(state)):
+        return await close(state, run_id, by=by)
+    return load(state, run_id)
+
+
+def died_without_record(state: Path, run_id: str) -> str | None:
+    """What a run that kept no record is, said plainly: still running (its world file being written now), or dead
+    (killed, its container removed), with where a fork carries it on. None for a run that kept its record, or none
+    any world file holds."""
+    entry = next((e for e in logged(state) if e.run_id == run_id), None)
+    if entry is None or entry.finished:
+        return None
+    if written_now(run_dir(state, entry.root) / WORLD) is not None:
+        return (
+            f"run {run_id} has kept no record yet: its world file is being written now, so it is still running, or "
+            f"its process died within the last {STALE_WRITER:.0f} seconds"
+        )
+    with reading(state, run_id) as world:
+        last = _last_restorable(points_in(world))
+    return (
+        f"run {run_id} died without keeping its record (killed, or its container removed); {_carried_on(run_id, last)}"
+        f", closing it first, and `minutehand close {run_id}` keeps it as it is"
+    )
+
+
+def _last_restorable(points: Sequence[ForkPoint]) -> int | None:
+    """The seq of the last checkpoint a fork can be taken from, or None when none can."""
+    return next((p.seq for p in reversed(points) if isinstance(p.agent, Remembered)), None)
+
+
+def _carried_on(run_id: str, last: int | None) -> str:
+    """Where a run that died is carried on from."""
+    if last is None:
+        return "no checkpoint of it is restorable, so no fork carries it on"
+    return (
+        f"its last restorable checkpoint is at seq {last}, where `minutehand fork {run_id} --at {last}` (or `replay "
+        f"--at {last}`) carries it on"
+    )
 
 
 def _remove_refused(state: Path, world: Path, child_id: str, samples: int) -> None:
@@ -811,12 +865,8 @@ def load(state: Path, run_id: str) -> Outcome:
     directory = run_dir(state, run_id)
     if not (directory / RECORD).is_file():
         held = any(entry.run_id == run_id for entry in logged(state))
-        raise RunRefused(
-            f"run {run_id} under {state / RUNS} has kept no record: it is still running, or its process died before "
-            f"keeping one, which `minutehand close {run_id}` keeps from its world file"
-            if held
-            else f"no finished run {run_id} under {state / RUNS}"
-        )
+        said = died_without_record(state, run_id) if held else None
+        raise RunRefused(said if said is not None else f"no finished run {run_id} under {state / RUNS}")
     return Outcome(
         record=RunRecord.model_validate_json((directory / RECORD).read_text(encoding="utf-8")),
         result=RunResult.model_validate_json((directory / RESULT).read_text(encoding="utf-8")),

@@ -8,6 +8,7 @@ state is its clock: enough to tell which checkpoint a folder belongs to.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -17,7 +18,7 @@ import pytest
 
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.store.sqlite import SqliteStore
-from minutehand.application.agent_state import AGENT_STATE, TAKING, WORKED
+from minutehand.application.agent_state import AGENT_STATE, TAKING, WORKED, left_by_death
 from minutehand.application.checkpoint import Checkpoint, checkpoints
 from minutehand.application.interruption import Interruption
 from minutehand.application.memory import Versions, remember
@@ -282,6 +283,34 @@ async def test_a_fork_whose_saved_state_is_gone_is_refused(tmp_path: Path) -> No
     folder.rmdir()
     with pytest.raises(RunRefused, match=f"saved the agent's own state into {folder}, which is gone"):
         await _fork(tmp_path, record, at_seq, _Played(), _Program())
+
+
+async def test_a_whole_save_left_in_taking_by_a_death_after_its_checkpoint_is_named_for_that_checkpoint(
+    tmp_path: Path,
+) -> None:
+    _, store = await _parent(tmp_path, SAVING, _Saving())
+    folder = tmp_path / "state" / "parent" / AGENT_STATE
+    last, checkpoint = max(checkpoints(store).items())
+    assert checkpoint.agent.exported is not None and checkpoint.agent.exported.saved
+    (folder / str(last)).rename(folder / TAKING)  # what a kill between the checkpoint and `keep` leaves
+    left_by_death(folder, store)
+    assert not (folder / TAKING).exists()
+    assert int((folder / str(last) / "clock").read_text()) == int(checkpoint.now.timestamp()) * 1_000_000_000
+
+
+async def test_a_save_begun_after_the_last_checkpoint_is_removed_even_where_that_checkpoints_folder_is_gone(
+    tmp_path: Path,
+) -> None:
+    """A folder deleted by hand, then a death in the next save: the `taking/` left is a later moment's, made after
+    the checkpoint was written, and never named for it."""
+    _, store = await _parent(tmp_path, SAVING, _Saving())
+    folder = tmp_path / "state" / "parent" / AGENT_STATE
+    last, _ = max(checkpoints(store).items())
+    shutil.rmtree(folder / str(last))
+    (folder / TAKING).mkdir()
+    (folder / TAKING / "clock").write_text("half")
+    left_by_death(folder, store)
+    assert not (folder / TAKING).exists() and not (folder / str(last)).exists()
 
 
 async def test_a_fork_stopped_while_its_agent_is_brought_back_is_refused(tmp_path: Path) -> None:
