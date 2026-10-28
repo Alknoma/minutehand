@@ -28,7 +28,7 @@ manifest, and because the tenant, its bot and its users are one directory every 
   call, the world's bot). No token carries `roles` and no scope is checked. What the world says still refuses: a
   disabled or removed user cannot sign in, a user's token reaches only their own mailbox, calendar and OneDrive, a
   bot only the conversations it is installed in. CLAIMS.md lists every check removed.
-- **Tokens are real RS256 JWTs**, signed with one key derived from a fixed seed (`keys.py`) and published by both
+- **Tokens are real RS256 JWTs**, signed with one fixed key, its primes written in `keys.py` (derived once from a seed; `test_microsoft_key.py` derives them again) and published by both
   metadata documents. Graph and the connector read the tenant, app and user from the bearer token. A pushed
   activity carries a token issued by `https://api.botframework.com` for the bot's app id with the `serviceurl`
   claim; a bot that validates against the published metadata accepts it.
