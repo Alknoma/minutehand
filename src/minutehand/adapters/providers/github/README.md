@@ -99,7 +99,8 @@ A repository's seed may hold `labels` (name, color, description), `issues` and `
 move what the world holds), with their `comments` and, for a pull request, `reviews`, every moment an offset before
 the scenario's start. `diverged_branches` gives branches commits of their own, made at the default branch's head as
 the seed leaves it: each commit names the paths it changes (text, bytes or a delete), and a pull request's `head` is
-one of them. Ids come from names (`seed.number`), so the same seed has the same ids in every run; what the agent makes
+one of them. Ids come from names (`seed.number`), so the same seed has the same ids in every run, and a
+conversation's comments and reviews count up from theirs in the order they were made; what the agent makes
 takes ids from counters kept in the store, from 10,000,000,000, above every id a seed derives.
 
 Authorization is out of scope: no role, scope or permission refuses a call here. What a call is judged by is its shape and

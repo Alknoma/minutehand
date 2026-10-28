@@ -25,7 +25,7 @@ from tests.providers.github.github_world import (
 
 PULL = "/repos/lanternworks/ledger/pulls/4"
 CONFIG = "services/billing/config.py"
-SEEDED_REVIEW = number("review/lanternworks/ledger/4/0")
+SEEDED_REVIEW = number("review/lanternworks/ledger/4")
 
 
 @pytest.fixture
