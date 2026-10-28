@@ -14,7 +14,7 @@ source. Tests are under `tests/providers/youtrack/`; `claims` is `test_youtrack_
   (`https://youtrack.jetbrains.com/api/openapi.json`), version 2026.4, fetched 2026-10-13 (its paths under the resources claimed before agile boards are those of 2026.3, fetched 2026-10-08). Hub publishes no OpenAPI
   description there (that URL answers an HTML page), so Hub rows cite devportal pages.
 - **recorded live**: what a live YouTrack Cloud instance answered on 2026-09-04 and 2026-09-07, written down in prose
-  in the older stand-in's README by the people who ran a production YouTrack client against it. That client calls
+  in the older stand-in's README by the people who ran a YouTrack client against it. That client called
   the REST API with its own plain HTTP code (YouTrack has no client library); no request or response was kept,
   only the prose and, for one call, an operation id. Each such row says what the prose records.
 - **recorded**: what JetBrains' public instance (`https://youtrack.jetbrains.com`) answered on 2026-10-08 (and, for time tracking and agile boards, 2026-10-13) to reads

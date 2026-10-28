@@ -1,4 +1,4 @@
-"""A production client's whole lifecycle of one issue, every id discovered through the API, through the run's proxy."""
+"""A client's whole lifecycle of one issue, every id discovered through the API, through the run's proxy."""
 
 from __future__ import annotations
 

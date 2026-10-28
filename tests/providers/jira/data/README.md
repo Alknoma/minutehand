@@ -7,6 +7,9 @@ Jira Cloud site that lets anonymous callers read (`/rest/api/3/...`; its project
 write refusals are recorded too; `comment_body_not_a_document.http` carries the anonymous caller's refusal beside
 the body's.
 
+The two recordings dated 2026-10-26 were made the same way, to a public Jira Cloud site, less `Set-Cookie` and
+`Www-Authenticate` (which names the site).
+
 These are answers to an anonymous caller. Where a signed-in caller is answered otherwise, the fake answers as the
 signed-in caller is answered, since every caller of the fake is signed in: an invalid query (`jql_field_unknown.http`
 and the other recordings of invalid JQL answered 200 with no issues) is a 400 there, cited in `CLAIMS.md`, and
@@ -42,6 +45,8 @@ these recordings are kept only as the anonymous answer.
 | `user_search_no_query.http` | `GET /rest/api/3/user/search` |
 | `user_search_query_and_account.http` | `GET /rest/api/3/user/search?query=a&accountId=x` |
 | `assignable_no_project.http` | `GET /rest/api/3/user/assignable/search` |
+| `assignable_project_only.http` | `GET /rest/api/3/user/assignable/search?project=PUB&maxResults=200` (2026-10-26) |
+| `assignable_query_and_account.http` | `GET /rest/api/3/user/assignable/search?project=PUB&query=a&accountId=x` (2026-10-26) |
 | `issue_link_unknown.http` | `GET /rest/api/3/issueLink/99999999` |
 | `project_search_order_unknown.http` | `GET /rest/api/3/project/search?orderBy=zz` |
 | `approximate_count_get.http` | `GET /rest/api/3/search/approximate-count` |

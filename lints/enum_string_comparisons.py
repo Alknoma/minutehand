@@ -7,11 +7,11 @@ every branch answers False in silence. Here that means a failed run exits 0.
 Two detections, because a vocabulary alone cannot see the typo:
 
 1. VALUE — the literal is the value of a StrEnum in the tree (`== "fail"` while
-   `FindingKind.FAIL = "fail"` exists). Ported from the parent repository: the vocabulary
+   `FindingKind.FAIL = "fail"` exists). Ported from an earlier repo's lint: the vocabulary
    is derived from every `class X(StrEnum)` / `class X(str, Enum)` under the root,
    and the finding names the member to use. A file that defines an enum may
-   compare against its own values (validators, `_missing_`). Narrowed from the
-   parent: an expression DECLARED to hold any string (`name: str`, a field that is
+   compare against its own values (validators, `_missing_`). Narrowed from that
+   lint: an expression DECLARED to hold any string (`name: str`, a field that is
    `str` on every model declaring it) is not judged, so `person.name == "agent"`
    is a name, not `Actor.AGENT`.
 

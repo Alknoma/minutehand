@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -66,13 +66,14 @@ class Drive:
 
 
 @pytest.fixture
-def drive(tmp_path: Path) -> Drive:
+def drive(tmp_path: Path) -> Iterator[Drive]:
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed(SCENARIO, store)
     issue(store, TOKEN, OWNER)
-    return Drive(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    yield Drive(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    store.close()
 
 
 def issue(store: SqliteStore, token: str, email: str, *, lasts: timedelta = timedelta(days=30)) -> None:

@@ -235,6 +235,9 @@ async def serving(tmp_path: Path, scenario: Scenario) -> AsyncIterator[Google]:
     provider.seed(scenario, store)
     registry = Registry()
     registry.discover("minutehand.adapters.providers")
-    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
-        proxy.mount(store, clock, {"google_workspace": provider.app(store, clock)}, scenario=scenario)
-        yield Google(proxy, store, clock, provider, client_environment(proxy))
+    try:
+        async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+            proxy.mount(store, clock, {"google_workspace": provider.app(store, clock)}, scenario=scenario)
+            yield Google(proxy, store, clock, provider, client_environment(proxy))
+    finally:
+        store.close()

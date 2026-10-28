@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import ssl
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -115,8 +115,10 @@ async def person_does(tenant: Tenant, person: str, document: str, action: Docume
 
 
 @pytest.fixture
-def tenant(tmp_path: Path) -> Tenant:
-    return seeded(tmp_path / "world.db")
+def tenant(tmp_path: Path) -> Iterator[Tenant]:
+    found = seeded(tmp_path / "world.db")
+    yield found
+    found.store.close()
 
 
 @dataclass

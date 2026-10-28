@@ -2,6 +2,29 @@
 
 How this repo moves from ten emulator containers and a welded harness to one Minutehand container, without a day where the suites are red. This is a procedure for alknoma-cloud and belongs in a GitHub issue there once agreed.
 
+## Where Minutehand came from
+
+Minutehand was written to replace alknoma-cloud's field-observation harness for Ayven: ten emulator containers and a runner welded to the agent. The design states the problems in general ("Problem"); this is what that harness measured.
+
+Measured on the field-observation harness, 2026-10-04:
+
+| What | Evidence |
+|---|---|
+| A run reports no pass or fail | The run summary's terminal reason is the only verdict. Run `f431fc97f427` ended "turns exhausted" while the agent had researched the wrong company, filed two tickets under that name, and sent a reminder 33 hours late. |
+| The fakes run on the real clock | `lints/wall_clock.py` finds 72 machine-clock reads across the 9 emulators (Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1). The mission clock reached 1 September; every ticket and message was stamped 24 August. |
+| The harness is welded to one agent | The harness's runner imports the agent's action selection, its scheduling clock and its issue repository, reads the agent's next-check fields from its database, and writes the simulated time there directly. |
+| People's replies skip the world | Replies are posted to an internal bridge endpoint of the agent's own service. No inbound Slack event is ever produced. |
+| Production code carries the test stack | 29 switch sites: 10 base-URL swaps, 12 credential bypasses, 7 parallel fake adapters (the fake Drive service alone is 539 lines). |
+| Ten containers, state in memory | Five fakes (Teams, Graph, Drive, Notion, GitHub) hold the world in process memory; four (Slack, Jira, Asana, YouTrack) reload and rewrite whole JSON files on mutation. The tenth container is Firebase's own emulator. |
+| It cannot gate a change | Field observation is excluded from CI, is manual, and takes 30–90 minutes a run. |
+
+`tests/data/partner_pipeline/` is run `f431fc97f427` of that harness, converted to Minutehand's models; `confirm_names` and `near_miss_name` exist because of it.
+
+- The harness's nine fakes took about 19,400 lines; each now has a provider here, written new over the store and the clock rather than mounted (Jira, Notion and Microsoft, Teams and Graph in one provider since they share a host and a directory, landed on `integrate/providers-2`).
+- The harness's nearest equivalent of a fork restores one captured model step (its inputs and message history) and reruns that step under the current prompt. It restores nothing in Slack or the trackers.
+- Where the Slack emulator answered differently from Slack, the Slack provider follows Slack, and a test written against the emulator changes: it listed ephemeral messages in history; minted DM ids as `D` and the joined member ids; never listed IMs; let any author's message be updated or deleted (Slack: `cant_update_message`, `cant_delete_message`); ran a request with no token as the bot (Slack: `not_authed`, which this fake deliberately does not answer either: no credential is refused); gave every user `tz_offset` 3600; answered missing reaction arguments `invalid_arguments`; served no `response_url` (a 404); and answered `missing_scope` from a per-token scope list, which this fake has not, so `missing_scope` is a declared `Refused` fault.
+- `lints/` ported the harness's lint core, and `domain/checks.py` keeps the shape of its findings.
+
 ## What must keep working
 
 Every item below is depended on today.

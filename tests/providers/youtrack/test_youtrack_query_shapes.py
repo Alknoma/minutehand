@@ -1,4 +1,4 @@
-"""Every query shape a production client builds, and the rest of the language YouTrack users write, each through
+"""The query shapes a real client builds, and the rest of the language YouTrack users write, each through
 the run's proxy against an instance whose answer is known: LAUNCH-1 (Tomas, Open, Critical, Task, due 26 August,
 tagged docs, a comment about the partner call), LAUNCH-2 (Noor, Fixed, Normal, Feature, due 2 September, tagged
 venue and big room), LAUNCH-3 (Iris, In Progress, Show-stopper, Task, no due date, made three days before the

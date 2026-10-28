@@ -3,6 +3,5 @@
 `manifest.MANIFEST` is the only import the proxy makes before Slack's first call; `provider.build()` is the one it
 makes on that call. `app.py` answers what the agent calls; `inbound.py` pushes what people say and do;
 `interactive.py` pushes what they press and submit; `seed.py` writes the workspace a scenario starts in. What is
-covered and what is not, call by call against a production caller: `docs/design.md`, "Slack, against its
-production caller".
+served and what is refused by name, against the methods Slack lists: `docs/design.md`, "Slack: what is served".
 """

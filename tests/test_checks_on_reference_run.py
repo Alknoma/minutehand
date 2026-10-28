@@ -1,8 +1,8 @@
 """The checks, run on a real captured run of an agent that went wrong in known ways.
 
-`tests/data/partner_pipeline/` is run f431fc97f427 from alknoma-cloud's field observation,
-converted to this package's models: an agent asked to secure three partnerships for "Ayven"
-researched "Aiven", filed tickets under that name, sent one reminder 33 hours late and never
+`tests/data/partner_pipeline/` is one captured run of an agent, converted to this package's models,
+its company's name replaced by a made-up one: an agent asked to secure three partnerships for "Tyvane"
+researched "Tivane", filed tickets under that name, sent one reminder 33 hours late and never
 filed the legal-review ticket the goal depended on.
 """
 
@@ -26,7 +26,7 @@ TIMELINE = RunView.model_validate_json((DATA / "timeline.json").read_text())
 def test_the_wrong_company_name_is_found_in_two_tickets_and_two_messages() -> None:
     findings = NearMissName().run(WORLD).findings
     assert len(findings) == 4
-    assert {f.message for f in findings} == {'wrote "Aiven" where the scenario says "Ayven"'}
+    assert {f.message for f in findings} == {'wrote "Tivane" where the scenario says "Tyvane"'}
     assert all(f.kind is FindingKind.FAIL and f.pattern == "confirm_names" for f in findings)
 
 
@@ -36,10 +36,13 @@ def test_the_name_check_is_clean_once_the_name_is_corrected() -> None:
         after = event.after
         if isinstance(after, TicketSnapshot):
             after = after.model_copy(
-                update={"title": after.title.replace("Aiven", "Ayven"), "body": after.body.replace("Aiven", "Ayven")}
+                update={
+                    "title": after.title.replace("Tivane", "Tyvane"),
+                    "body": after.body.replace("Tivane", "Tyvane"),
+                }
             )
         elif isinstance(after, MessageSnapshot):
-            after = after.model_copy(update={"text": after.text.replace("Aiven", "Ayven")})
+            after = after.model_copy(update={"text": after.text.replace("Tivane", "Tyvane")})
         fixed.append(event.model_copy(update={"after": after}))
     assert NearMissName().run(WORLD.model_copy(update={"events": fixed})).findings == []
 

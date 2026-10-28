@@ -217,7 +217,7 @@ def test_a_run_whose_files_declare_no_assessment_is_still_assessed_against_the_d
 
 def test_what_judged_a_run_is_recorded() -> None:
     world = view(
-        scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]).model_copy(update={"protected_names": ["Ayven"]}),
+        scenario(OWNER, SOFIA, expect=[PersonAsked(person="sofia")]).model_copy(update={"protected_names": ["Tyvane"]}),
         _asked_and_waiting(),
         assess=INSTANT,
     )

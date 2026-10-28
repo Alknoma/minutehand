@@ -8,7 +8,7 @@ Hub service that may ask for a token.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import httpx
@@ -163,8 +163,10 @@ def seeded(tmp_path: Path, scenario: Scenario = SCENARIO) -> Instance:
 
 
 @pytest.fixture
-def team(tmp_path: Path) -> Instance:
-    return seeded(tmp_path)
+def team(tmp_path: Path) -> Iterator[Instance]:
+    found = seeded(tmp_path)
+    yield found
+    found.store.close()
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 # CI
 
 What runs, why it is shaped this way, and what is not switched on yet. The shape comes from
-alknoma-cloud's CI: what held up there is kept, and what cost time there is designed out.
+an earlier repository's CI: what held up there is kept, and what cost time there is designed out.
 
 ## What is switched on
 
@@ -19,7 +19,7 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 - **60 seconds per test.** A hang is a failure, not a stuck job.
 - **A warning raised against our own code is an error.** Third-party internals are left alone.
 
-## Kept from alknoma-cloud
+## Kept from the earlier CI
 
 | Practice | Why it held up |
 |---|---|
@@ -31,7 +31,7 @@ Test settings, in `pyproject.toml`, apply locally and in CI alike:
 
 ## Designed out
 
-| What cost time in alknoma-cloud | Evidence | What this repo does instead |
+| What cost time in the earlier CI | Evidence | What this repo does instead |
 |---|---|---|
 | 4,544 lines of workflow across 13 files, 408 of them deciding what to skip | Three job conditions named events their workflow never triggered on; a lint had to be written to catch the class | No change detection. The whole suite takes under a minute, so everything runs every time. |
 | A workflow with a path filter that fed a required check | "A workflow that never starts never reports, and that pull request waits forever" (`ci-tests.yml`) | No path filters. `gate` always reports. |
