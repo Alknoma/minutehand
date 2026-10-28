@@ -4,16 +4,19 @@ the process dies halfway through."""
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from minutehand.adapters.store.sqlite import INLINE_LIMIT, SqliteStore
+from minutehand.adapters.store.sqlite import INLINE_LIMIT, PARTS_FROM, SqliteStore
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.telemetry import ArrayValue, Attribute, MapValue, ReceivedSpan, SpanSource, StringValue
 from minutehand.domain.world import Actor, Change, EntityKind, EntityRef, Exchange, Operation, RecordSnapshot
@@ -31,6 +34,12 @@ AWKWARD = {
     "one byte over the limit": "o" * (INLINE_LIMIT + 1),
     "a NUL and a lone carriage return": "a\x00b\rc" * 200,
     "two megabytes of JSON": '{"rows": [' + ",".join(f'{{"n": {n}, "v": "{n:08x}"}}' for n in range(70_000)) + "]}",
+    "a conversation kept as its parts": '{"model":"m","messages":['
+    + ",".join(f'{{"role":"user","content":"turn {n} {"x" * 300}"}}' for n in range(40))
+    + '],"tools":[{"type":"function","name":"t"}]}',
+    "where a body is cut, inside a string and at its very start": '[{"a":"[{\\"b\\":1},{\\"c\\":2}]"},'
+    + ",".join('{"' + "k" * 200 + f'":{n}}}' for n in range(40))
+    + "]",
 }
 
 
@@ -282,3 +291,115 @@ def test_a_body_that_is_not_text_is_kept_as_its_bytes_and_read_back_identical(
     assert second.exchange.response_bytes is None
     reopened = SqliteStore(tmp_path / "world.db", store.run_id, RunClock(datetime(2026, 8, 24, tzinfo=UTC)))
     assert reopened.calls()[0].exchange.response_bytes == raw
+
+
+def prose(seed: str, size: int) -> str:
+    """Text that compresses like a real message, not like one letter repeated: a run of distinct hashes."""
+    return "".join(hashlib.sha256(f"{seed}{i}".encode()).hexdigest() for i in range(size // 64 + 1))[:size]
+
+
+def conversation(turns: int) -> str:
+    """A model request as an agent sends it: every earlier turn again, then the new one, and its tools."""
+    messages = ",".join(f'{{"role":"user","content":"turn {n}: {prose(str(n), 900)}"}}' for n in range(turns))
+    tools = ",".join(
+        f'{{"type":"function","name":"tool_{n}","description":"{prose("tool" + str(n), 700)}"}}' for n in range(8)
+    )
+    return f'{{"model":"m","messages":[{messages}],"tools":[{tools}]}}'
+
+
+def stored_bytes(path: Path) -> int:
+    with sqlite3.connect(path) as db:
+        return db.execute("SELECT COALESCE(SUM(length(stored)), 0) FROM content").fetchone()[0]
+
+
+def test_a_conversation_sent_again_with_a_turn_appended_stores_only_the_new_turn(
+    world: tuple[SqliteStore, RunClock], tmp_path: Path
+) -> None:
+    """Thirty calls, each the whole conversation so far: stored once per call, the conversation would be kept
+    thirty times over. Kept as parts, each call adds its new turn and the row listing its parts, and nothing else."""
+    store, _ = world
+    path = tmp_path / "world.db"
+    sizes: list[int] = []
+    for turns in range(1, 31):
+        body = conversation(turns)
+        assert len(body.encode()) >= PARTS_FROM
+        store.attach(
+            Exchange(method="POST", host="model.example", path="/v1/chat", status=200, request_body=body),
+            first_seq=1,
+            last_seq=0,
+        )
+        sizes.append(stored_bytes(path))
+    growth = [b - a for a, b in itertools.pairwise(sizes)]
+    turn = len('{"role":"user","content":"turn 9: ' + prose("9", 900) + '"},')
+    # Each call adds its new turn, the turn before it once more (the separator after it changed), and its list of
+    # part hashes, one hash a part.
+    assert all(g < 2 * turn + 32 * 60 for g in growth), growth
+    whole = sum(len(conversation(t).encode()) for t in range(1, 31))
+    # The text compresses about 2x on its own, so every call kept whole would be about whole // 2.
+    assert sizes[-1] < whole // 8
+    reopened = SqliteStore(path, "root", RunClock(START))
+    assert [c.exchange.request_body for c in reopened.calls()] == [conversation(t) for t in range(1, 31)]
+
+
+def test_discarding_a_fork_keeps_every_part_its_parent_still_reads(
+    world: tuple[SqliteStore, RunClock], tmp_path: Path
+) -> None:
+    """The fork's request shares all but its last turn with the parent's: discarding the fork removes that turn and
+    the fork's own body row, and every part of the parent's body is still there to join."""
+    store, _ = world
+    path = tmp_path / "world.db"
+    parents = conversation(6)
+    store.attach(Exchange(method="POST", host="m", path="/", status=200, request_body=parents), first_seq=1, last_seq=0)
+    held = (content_rows(path), stored_bytes(path))
+    fork = store.fork("child", at_seq=store.head(), clock=RunClock(START))
+    fork.attach(
+        Exchange(method="POST", host="m", path="/", status=200, request_body=conversation(7)), first_seq=1, last_seq=0
+    )
+    # The seventh turn, the sixth turn's part (the separator after it is now a comma, not the end of the list), and
+    # the fork's body row.
+    assert content_rows(path) == held[0] + 3
+    # A run's size is the stored bodies only it refers to, its body's parts counted: exactly the three rows it added.
+    assert fork.usage().bodies == stored_bytes(path) - held[1]
+    fork.discard()
+
+    assert (content_rows(path), stored_bytes(path)) == held
+    [call] = SqliteStore(path, "root", RunClock(START)).calls()
+    assert call.exchange.request_body == parents
+
+
+def test_a_sweep_keeps_the_parts_of_a_body_a_row_refers_to(world: tuple[SqliteStore, RunClock], tmp_path: Path) -> None:
+    """A part is referred to by no row, only by the body it is part of: a sweep that counted rows alone would free
+    every part and leave the body unreadable."""
+    store, _ = world
+    store.attach(
+        Exchange(method="POST", host="m", path="/", status=200, request_body=conversation(5)), first_seq=1, last_seq=0
+    )
+    freed = store.sweep()
+    assert freed.bodies == 0
+    [call] = SqliteStore(tmp_path / "world.db", "root", RunClock(START)).calls()
+    assert call.exchange.request_body == conversation(5)
+
+
+def test_a_sweep_keeps_a_body_another_connection_writes_while_it_sweeps(tmp_path: Path) -> None:
+    """`minutehand gc` sweeps a world file a run may be writing. The sweep reads the references, then the stored
+    bodies, then deletes: a run that commits a body and its row between the two reads must wait for the sweep, or
+    the sweep sees the body and not the row and deletes a body the run refers to."""
+    path = tmp_path / "world.db"
+    live = SqliteStore(path, "root", RunClock(START))
+    sweeper = SqliteStore(path, "root", RunClock(START))
+    body = "written by the live run while the sweep ran " + "x" * 2000
+    writer = threading.Thread(
+        target=live.apply, args=(Change(entity=entity("a"), operation=Operation.CREATE, actor=Actor.AGENT, body=body),)
+    )
+
+    def between_the_reads(statement: str) -> None:
+        if statement.startswith("SELECT hash, length(stored) FROM content") and not writer.is_alive():
+            writer.start()
+            writer.join(timeout=1.0)
+
+    sweeper._db.set_trace_callback(between_the_reads)  # pyright: ignore[reportPrivateUsage]
+    sweeper.sweep()
+    writer.join(timeout=30)
+    assert not writer.is_alive()
+    got = SqliteStore(path, "root", RunClock(START)).get(entity("a"))
+    assert got is not None and got.body == body

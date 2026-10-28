@@ -68,7 +68,7 @@ from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
 from minutehand.adapters.store.sharing import STALE as STALE_WRITER
 from minutehand.adapters.store.sharing import refuse_written_elsewhere, written_now
-from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
+from minutehand.adapters.store.sqlite import READS_SCHEMAS, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.agent._wire import ON as AGENT_ON
@@ -1244,9 +1244,12 @@ class _ReadOnlyStore(SqliteStore):
     def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
         self._attach(path, run_id, clock, _read_only(path))
         found = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if found != SCHEMA_VERSION:
+        if found not in READS_SCHEMAS:
             self._db.close()
-            raise RunRefused(f"{path} was written with store schema {found}; this version reads {SCHEMA_VERSION}")
+            raise RunRefused(
+                f"{path} was written with store schema {found}; this version reads "
+                + " or ".join(str(v) for v in sorted(READS_SCHEMAS))
+            )
         self._lineage = self._load_lineage()
 
     def close(self) -> None:
