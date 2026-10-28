@@ -719,8 +719,8 @@ class JiraApi:
         """https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-user-search/#api-rest-api-3-user-assignable-search-get
         — a 400 when none of `issueKey`, `issueId` or `project` is present, or when `query` and `accountId` are
         both given, in the words a real site used (recorded, CLAIMS.md). The reference also lists a 400 when both
-        are missing; a real site passes that call on to its permission check (recorded) and answers a signed-in
-        caller with everyone assignable (observed live), so it does."""
+        are missing; a real site passes that call on to its permission check (recorded), so it answers it as the
+        reference answers a successful call: everyone assignable there."""
         project_ref = _param(call.request, "project")
         issue_ref = _param(call.request, "issueKey") or _param(call.request, "issueId")
         if issue_ref is None and project_ref is None:
