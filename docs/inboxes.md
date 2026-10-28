@@ -179,8 +179,9 @@ rewrites the scripted `decisions:` of an older scenario as takes.
 
 ### `minutehand run`
 
-**When it reads.** Minutehand reads every inbox as each person it can act as at the end of every wake, and again
-before the clock moves. Each read is Minutehand's own call, recorded with `Exchange.inbox_call`. It is never one of
+**When it reads.** Minutehand reads every inbox as each person it can act as at the end of every wake, once the agent
+has settled and while its clock still runs, and waits for it to settle again; without a sandbox hold it reads again
+before the clock moves. With a hold nothing is read between wakes: a held agent's server answers no call. Each read is Minutehand's own call, recorded with `Exchange.inbox_call`. It is never one of
 the agent's calls, never an outbound call, and never unmatched.
 
 **What it records:**

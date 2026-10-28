@@ -24,6 +24,7 @@ class StopReason(StrEnum):
     CLOSED = "closed"  # a standing world (`minutehand serve`) was closed by whoever opened it
     ENVIRONMENT_FAILED = "environment_failed"  # an external emulator the run used was unavailable: not the agent
     REPLAY_PARTED = "replay_parted"  # a frozen replay: the agent asked its model something the record does not hold
+    INTERRUPTED = "interrupted"  # stopped from outside (a signal, or `minutehand close` on a run whose process died)
 
 
 class VerdictKind(StrEnum):
@@ -197,7 +198,11 @@ class RunRecord(Model):
     ended_at: AwareDatetime = Field(description="Simulated")
     wall_seconds: float = Field(ge=0)
     stop: StopReason
-    failure: str | None = Field(default=None, description="Why, when the run stopped AGENT_FAILED")
+    failure: str | None = Field(
+        default=None,
+        description="Why, when the run stopped AGENT_FAILED, ENVIRONMENT_FAILED or REPLAY_PARTED; for INTERRUPTED, what "
+        "stopped it and the last checkpoint a fork carries it on from",
+    )
     reported: AgentReport | None = Field(
         default=None,
         description="A standing world or a case (`minutehand serve`): the agent's own report of its work, as whoever "

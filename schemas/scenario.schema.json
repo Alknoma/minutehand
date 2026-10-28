@@ -3810,7 +3810,8 @@
         "agent_failed",
         "closed",
         "environment_failed",
-        "replay_parted"
+        "replay_parted",
+        "interrupted"
       ],
       "title": "StoppedBy",
       "type": "string"

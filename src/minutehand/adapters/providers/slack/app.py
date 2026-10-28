@@ -166,7 +166,7 @@ class SlackApi(FileCalls):
         booking: Callable[[], Wakes | None] | None = None,
     ) -> None:
         super().__init__(store, clock, booking if booking is not None else lambda: None)
-        self._pusher = pusher if pusher is not None else Pusher(lambda: None)
+        self._pusher = pusher if pusher is not None else Pusher(lambda: None, clock)
         self._methods: dict[str, Handler] = {
             "auth.test": self.auth_test,
             "users.list": self.users_list,
@@ -1250,7 +1250,7 @@ def build_app(
 ) -> SlackApp:
     """`listening` says where the agent takes its events, when it does (`pushing`); `booking`, the dispatch table
     that posts what the agent scheduled when its moment comes."""
-    pusher = Pusher(listening if listening is not None else lambda: None)
+    pusher = Pusher(listening if listening is not None else lambda: None, clock)
     api = SlackApi(store, clock, pusher, booking)
     endpoint: Callable[[Request], Awaitable[Response]] = api.endpoint
     return SlackApp(

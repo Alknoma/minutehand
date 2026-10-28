@@ -192,7 +192,7 @@ class Bot:
 async def validate(
     authorization: str, app_id: str, service_url: str, intercepted: Intercepted, *, now: datetime
 ) -> str | None:
-    """The bot's own check, re-created from its source, at `now`, the bot's clock (the run's, in its sandbox): None
+    """The bot's own check, re-created from its source, at `now`, the bot's own clock (its sandbox's): None
     when it accepts, else why it refuses."""
     if not authorization.startswith("Bearer "):
         return "no bearer token"
@@ -230,7 +230,11 @@ async def bot(tenant: Tenant, microsoft: Intercepted, monkeypatch: pytest.Monkey
         activity = json.loads(await request.body())
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
         refused = await validate(
-            authorization, tenant.directory.bot_app_id, activity["serviceUrl"], microsoft, now=tenant.clock.now()
+            authorization,
+            tenant.directory.bot_app_id,
+            activity["serviceUrl"],
+            microsoft,
+            now=await tenant.clock.agent_now(),
         )
         handle.received.append(Received(activity=activity, accepted=refused is None, reason=refused or ""))
         if refused is not None:

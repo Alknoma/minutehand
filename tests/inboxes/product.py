@@ -55,6 +55,8 @@ class Product:
     """Each note left on an approval, by its id: what an approver writes without deciding."""
     on_decided: Callable[[Approval], None] | None = None
     """What the product does while it handles a decision, before it answers: going ahead with what it approves."""
+    before_answering: Callable[[], None] | None = None
+    """What the product's server waits on before it handles any call: one in a held sandbox answers nothing."""
     base: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -122,6 +124,8 @@ def _handler(product: Product) -> type[BaseHTTPRequestHandler]:
             return {"items": listed, "next": str(following) if following < len(items) else None}
 
         def do_GET(self) -> None:
+            if product.before_answering is not None:
+                product.before_answering()
             parts = urlsplit(self.path)
             query = {k: v[0] for k, v in parse_qs(parts.query).items()}
             product.sent.append(Sent("GET", self.path, self.headers.get("authorization", ""), ""))
@@ -151,6 +155,8 @@ def _handler(product: Product) -> type[BaseHTTPRequestHandler]:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if product.before_answering is not None:
+                product.before_answering()
             raw = self.rfile.read(int(self.headers.get("content-length") or 0)).decode()
             product.sent.append(Sent("POST", self.path, self.headers.get("authorization", ""), raw))
             pieces = urlsplit(self.path).path.strip("/").split("/")

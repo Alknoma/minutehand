@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
 
-from minutehand.adapters.providers.microsoft.inbound import DeliveryRefused, activity_token
+from minutehand.adapters.providers.microsoft.inbound import (
+    ACTIVITY_TOKEN_LIFETIME_SECONDS,
+    DeliveryRefused,
+    activity_token,
+)
 from minutehand.adapters.providers.microsoft.state import APPS, AppRecord, app_ref
 from minutehand.domain.people import PersonMessage, PersonReply, Press
 from minutehand.domain.scenario import (
@@ -19,6 +24,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, EntityKind, EntityRef, MessageSnapshot, Operation
 from tests.providers.microsoft.tenant import CONNECTOR, Bot, Intercepted, Tenant, bearer, token, validate
+from tests.support.tokens import LEEWAY_SECONDS
 
 
 async def _happen(tenant: Tenant, bot: Bot, happening: Any) -> None:
@@ -164,6 +170,21 @@ async def test_a_push_the_bot_refuses_fails_the_delivery(tenant: Tenant, bot: Bo
             tenant.clock,
             secret="unused",
         )
+
+
+async def test_a_pushed_activitys_token_is_issued_at_the_bots_own_clock_ahead_of_the_runs(
+    tenant: Tenant, bot: Bot
+) -> None:
+    # the bot's sandbox ran on in real time past the token's hour and the SDK's 300 s of leeway: a token issued at
+    # the run's clock would have expired by the bot's
+    sandbox_at = tenant.clock.now() + timedelta(seconds=ACTIVITY_TOKEN_LIFETIME_SECONDS + LEEWAY_SECONDS + 1)
+
+    async def sandbox() -> datetime:
+        return sandbox_at
+
+    tenant.clock.reads_agent(sandbox)
+    await _happen(tenant, bot, PersonPosts(provider="microsoft", person="sofia", text="Draft is up"))
+    assert [r.reason for r in bot.received] == [""], "the bot refused a token issued off its own clock"
 
 
 def test_the_provider_holds_to_every_port_its_manifest_claims() -> None:

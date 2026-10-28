@@ -6,10 +6,11 @@ asked for again, except for a person a `PersonChange` changes: each message to t
 (no reply decided, or one decided that had not landed yet) is put to them again under their new behaviour.
 
 The agent's memory (`minutehand.agent.store`) is part of the same log, so the child has its parent's memory as it
-stood at the checkpoint with nothing restored. Everything else the agent is lives in its sandbox, brought back by
-playing the agent's recorded inputs into a fresh one up to the checkpoint (`application.restore`,
-`application.playback`): the agent is asked nothing, and a fork is refused where the agent does not do what it did
-before. A checkpoint the agent went on writing its memory after, in the same wake, is not one a fork can start
+stood at the checkpoint with nothing restored. Everything else the agent is lives in its sandbox, brought back from
+the agent's own state saved at the checkpoint when its agent file says how (`sandbox.export_state`,
+`application.agent_state`: the agent's program, changed or not, starts from it), and otherwise by playing the agent's
+recorded inputs into a fresh one up to the checkpoint (`application.restore`, `application.playback`): the agent is
+asked nothing, and a fork is refused where the agent does not do what it did before. A checkpoint the agent went on writing its memory after, in the same wake, is not one a fork can start
 from. Every refusal that can be decided from the parent is decided before the child run exists, and a child refused
 after it exists is discarded, so no refusal leaves a run behind.
 
@@ -26,13 +27,15 @@ delivers it when its clock reaches it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import ValidationError
 
 from minutehand.application import memory
+from minutehand.application.agent_state import AGENT_STATE, StateImport, saved_at
 from minutehand.application.checkpoint import (
     Checkpoint,
     NotRestorable,
@@ -41,6 +44,7 @@ from minutehand.application.checkpoint import (
     checkpoints,
 )
 from minutehand.application.inboxes import Inboxes
+from minutehand.application.interruption import Interruption
 from minutehand.application.memory import store_digest
 from minutehand.application.orchestrator import (
     Environment,
@@ -179,6 +183,7 @@ async def fork_run(
     outside: OutsideState | None = None,
     replay: Replay | None = None,
     code_changed: Sequence[str] = (),
+    interruption: Interruption | None = None,
 ) -> list[RunRecord]:
     """Run the fork once per `Fork.samples`, each a child of `parent` named `run_id` (suffixed when sampled).
 
@@ -191,8 +196,11 @@ async def fork_run(
     `manifests` are those of every installed provider, beside the run's own `services`: a provider the agent called
     without the scenario or agent file naming it is still one whose state may be outside the log. `replay` is the
     parent's record answering the child's model calls after the checkpoint; frozen, it stops the child where the
-    agent asks something the parent did not. `code_changed` says how the agent's program differs from the parent's,
-    for a refusal to name it.
+    agent asks something the parent did not. `code_changed` says how the agent's program differs from the parent's:
+    kept with a child whose agent starts from its own state saved at the checkpoint (`application.agent_state`),
+    which is then not played back at all (`playback_for` is not asked), and named by a playback that parts.
+    `interruption` is a signal: one that arrives while a child's agent is brought back refuses the fork, leaving no
+    run behind; one that arrives after ends the child `INTERRUPTED`, kept, and starts no further sample.
     """
     if fork.parent_run != parent.run_id:
         raise RunRefused(f"the fork names parent {fork.parent_run}; the record given is {parent.run_id}")
@@ -206,6 +214,8 @@ async def fork_run(
     _refuse_ticket_edits(fork, services, changed)
     records: list[RunRecord] = []
     for sample in range(fork.samples):
+        if interruption is not None and interruption.received is not None:
+            break
         child_id = run_id if fork.samples == 1 else f"{run_id}-{sample + 1}"
         clock = RunClock(scenario.starts_at)
         parent_store = open_parent(clock)
@@ -220,6 +230,7 @@ async def fork_run(
             parent_store, [*manifests, *(p.manifest for p in services.providers)], checkpoint, fork.at_seq
         )
         _refuse_emulated(parent_store, checkpoint, fork.at_seq)
+        saved = saved_at(parent_store, fork.at_seq, checkpoint, state_dir)
         child = parent_store.fork(child_id, at_seq=fork.at_seq, clock=clock)
         try:
             clock.jump(checkpoint.now)
@@ -250,6 +261,8 @@ async def fork_run(
                 desk=desk,
                 pins=[o for o in fork.overrides if isinstance(o, ReplyAt)],
                 replay=replay,
+                agent_state=state_dir / child_id / AGENT_STATE,
+                interruption=interruption,
             )
             orchestrator.mount()
             edits = [o for o in fork.overrides if isinstance(o, MemoryEdit)]
@@ -258,15 +271,20 @@ async def fork_run(
                 for one in edits:
                     memory.edit(child, one.put, [(k.collection, k.key) for k in one.delete])
 
-            restored = await start_fork(
-                checkpoint.agent,
-                memory=store_digest(child),
-                checkpoint_seq=fork.at_seq,
-                playback=playback_for(parent_store, checkpoint),
-                own=own,
-                progress=progress,
-                edit=edit if edits else None,
-                code_changed=code_changed,
+            restored = await _restored(
+                start_fork(
+                    checkpoint.agent,
+                    memory=store_digest(child),
+                    checkpoint_seq=fork.at_seq,
+                    playback=playback_for(parent_store, checkpoint) if saved is None else None,
+                    imported=StateImport(saved, checkpoint.now, sandbox, traffic) if saved is not None else None,
+                    own=own,
+                    progress=progress,
+                    edit=edit if edits else None,
+                    code_changed=code_changed,
+                ),
+                interruption,
+                f"{child_id} at seq {fork.at_seq} of run {parent.run_id}",
             )
             for reply in parent_store.replies()[: checkpoint.replies]:
                 child.remember(reply)
@@ -282,6 +300,23 @@ async def fork_run(
             wire.apply(child_id, on_wire)
         records.append(await orchestrator.resume(checkpoint))
     return records
+
+
+async def _restored(bringing: Awaitable[Restored], interruption: Interruption | None, fork: str) -> Restored:
+    """The fork's agent brought back, which a signal stops: the fork is then refused, and leaves no run behind."""
+    if interruption is None:
+        return await bringing
+    try:
+        with interruption.stopping():
+            return await bringing
+    except asyncio.CancelledError:
+        if not interruption.taken():
+            raise
+        interruption.settled()
+    raise RunRefused(
+        f"the fork {fork} was stopped by {interruption.received} while its agent was being brought back to the "
+        "checkpoint: no run is left behind"
+    )
 
 
 def _checkpoint_at(store: Store, parent: str, at_seq: int) -> Checkpoint:
