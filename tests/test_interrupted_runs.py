@@ -128,9 +128,12 @@ class _World:
         return run_id
 
     def stop_agent(self) -> None:
-        """The agent's program and its group, which a killed Minutehand could not stop."""
+        """The agent's program and its group, which a killed Minutehand could not stop, and its sandbox's clock with
+        it: a real sandbox's clock dies with its process. Left in its file, the next program's sandbox read it
+        before that program had written its own start, as the killed run's later moment, and a fork was refused."""
         with contextlib.suppress(OSError, ValueError):
             os.killpg(int(self.pid.read_text()), signal.SIGKILL)
+        self.clock.unlink(missing_ok=True)
 
 
 @pytest.mark.timeout(180)
