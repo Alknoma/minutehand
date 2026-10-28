@@ -34,7 +34,7 @@ from minutehand.ports.store import Store
 from tests.proxy.support import START, client, exchanges
 
 HOST = "brittle.test"
-MANIFEST = Manifest(key="brittle", tier=Tier.FINISHED, hosts=[HOST])
+MANIFEST = Manifest(key="brittle", title="Test service", tier=Tier.FINISHED, hosts=[HOST])
 CONVERTER = "minutehand.adapters.answering"
 
 
@@ -174,7 +174,7 @@ async def test_each_kind_leaving_a_providers_app_is_answered_logged_and_recorded
 class Unbuildable:
     """A test-only provider whose `build()` fails: what the proxy answered as "failed to load", and re-raised."""
 
-    manifest = Manifest(key="unbuildable", tier=Tier.FINISHED, hosts=["unbuildable.test"])
+    manifest = Manifest(key="unbuildable", title="Test service", tier=Tier.FINISHED, hosts=["unbuildable.test"])
 
     def __init__(self) -> None:
         raise ImportError("the provider's module is missing a dependency")

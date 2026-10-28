@@ -12,6 +12,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="recaptcha_enterprise",
+    title="reCAPTCHA Enterprise",
     tier=Tier.FINISHED,
     hosts=["recaptchaenterprise.googleapis.com"],
     kinds=[EntityKind.RECORD],

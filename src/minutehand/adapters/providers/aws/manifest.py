@@ -20,6 +20,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="aws",
+    title="AWS",
     tier=Tier.FINISHED,
     hosts=["*.amazonaws.com"],
     kinds=[EntityKind.RECORD],

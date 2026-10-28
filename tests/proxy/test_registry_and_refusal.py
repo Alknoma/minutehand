@@ -69,15 +69,15 @@ class Listener:
 def test_two_providers_claiming_one_host_are_rejected(registry: Registry) -> None:
     with pytest.raises(ProviderConflict, match=r"ledger\.example"):
         registry.register(
-            Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"]),
-            lambda: Loopback(Manifest(key="clash", tier=Tier.FINISHED, hosts=["ledger.example"])),
+            Manifest(key="clash", title="Test service", tier=Tier.FINISHED, hosts=["ledger.example"]),
+            lambda: Loopback(Manifest(key="clash", title="Test service", tier=Tier.FINISHED, hosts=["ledger.example"])),
         )
 
 
 def test_a_host_inside_another_providers_wildcard_is_answered_by_the_one_claiming_it_exactly(
     registry: Registry,
 ) -> None:
-    manifest = Manifest(key="inner", tier=Tier.FINISHED, hosts=["eu.ledger.test"])
+    manifest = Manifest(key="inner", title="Test service", tier=Tier.FINISHED, hosts=["eu.ledger.test"])
     registry.register(manifest, lambda: Loopback(manifest))
     found = registry.claimant("eu.ledger.test")
     assert found is not None and found.key == "inner"
@@ -86,13 +86,13 @@ def test_a_host_inside_another_providers_wildcard_is_answered_by_the_one_claimin
 
 
 def test_two_wildcards_over_one_domain_are_rejected(registry: Registry) -> None:
-    manifest = Manifest(key="inner", tier=Tier.FINISHED, hosts=["*.eu.ledger.test"])
+    manifest = Manifest(key="inner", title="Test service", tier=Tier.FINISHED, hosts=["*.eu.ledger.test"])
     with pytest.raises(ProviderConflict, match=r"\*\.ledger\.test"):
         registry.register(manifest, lambda: Loopback(manifest))
 
 
 def test_two_providers_with_one_key_are_rejected(registry: Registry) -> None:
-    manifest = Manifest(key="ledger", tier=Tier.FINISHED, hosts=["elsewhere.example"])
+    manifest = Manifest(key="ledger", title="Test service", tier=Tier.FINISHED, hosts=["elsewhere.example"])
     with pytest.raises(ProviderConflict, match="two providers are named 'ledger'"):
         registry.register(manifest, lambda: Loopback(manifest))
 
@@ -161,7 +161,7 @@ async def test_unclaimed_host_is_refused_and_recorded_without_contacting_it(
 async def test_claimed_host_is_answered_without_contacting_it(
     store: SqliteStore, clock: RunClock, tmp_path: Path
 ) -> None:
-    manifest = Manifest(key="loopback", tier=Tier.FINISHED, hosts=["127.0.0.1"])
+    manifest = Manifest(key="loopback", title="Test service", tier=Tier.FINISHED, hosts=["127.0.0.1"])
     registry = Registry()
     registry.register(manifest, lambda: Loopback(manifest))
     async with Listener() as upstream, Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:

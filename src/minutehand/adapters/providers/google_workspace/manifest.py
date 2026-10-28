@@ -13,6 +13,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="google_workspace",
+    title="Google Workspace",
     sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=[

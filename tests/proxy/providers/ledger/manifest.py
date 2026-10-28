@@ -3,6 +3,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="ledger",
+    title="Ledger",
     tier=Tier.FINISHED,
     hosts=["ledger.example", "*.ledger.test"],
     path_prefix="/api/v2",
