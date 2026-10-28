@@ -1,4 +1,4 @@
-"""Every Slack call a production caller makes, from stock `slack_sdk` clients (the blocking `WebClient` and the
+"""Every Slack method the fake serves, called as a real caller calls it, from stock `slack_sdk` clients (the blocking `WebClient` and the
 `AsyncWebClient`) with no base URL, through the real proxy, answered by the fake in Slack's own wire format."""
 
 from __future__ import annotations

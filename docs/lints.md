@@ -16,9 +16,9 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 |---|---|
 | The rule | A fake never reads the machine's clock; every timestamp comes from the run's clock. |
 | What pyright cannot see | `datetime.now()` type-checks. Which clock a timestamp came from is not in its type. |
-| 1. Recurred | 72 reads across the 9 existing emulators: Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1. |
-| 2. Catches what happened | Run `f431fc97f427`: a ticket filed on the mission's 30 August shows as created 24 August. The Slack `ts` at `docker/slack-emulator/main.py:1361` is one of the 72. |
-| 3. Seen to fail | `python -m lints.wall_clock` over the parent repository's emulator directory → 72 findings, exit 1. On `src/` → 0. |
+| 1. Recurred | 72 reads across the 9 fakes of an earlier harness: Slack 37, Asana 11, Teams 10, Jira 6, YouTrack 3, Graph 2, Drive 1, GitHub 1, Notion 1. |
+| 2. Catches what happened | In a run of that harness, a ticket filed on the simulated 30 August shows as created 24 August; the Slack fake's `ts` that stamped it is one of the 72. |
+| 3. Seen to fail | `python -m lints.wall_clock` over that harness's fakes → 72 findings, exit 1. On `src/` → 0. |
 | 4. Fires on nothing adjacent | Matches `time.time`, `time.time_ns`, `datetime.now/utcnow/today`, `date.today`, however the owner is reached and under whatever name an import gives it (`import time as t; t.time()`, `from datetime import datetime as dt; dt.now()`), and a clock function imported by name and called bare (`from time import time; time()`). A bare name no clock import bound (a local `def time()`, `from time import monotonic as time`) is left alone. `time.monotonic` and `time.perf_counter` (durations) are untouched. |
 | Cannot see | A clock read through a name bound some other way: `now = datetime.now` then `now()`, `getattr(time, "time")()`. |
 | Escape | `# clock-lint: exempt <reason>` on the line. Two lines carry it: `SqliteStore.apply` filling `WorldEvent.wall_time`, and the Slack provider's `X-Slack-Request-Timestamp` (`adapters/providers/slack/inbound.py`), which the agent checks against its own machine clock. |
@@ -29,8 +29,8 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | Test | Answer |
 |---|---|
 | The rule | `domain` imports nothing from `application`, `adapters` or `ports`; `ports` nothing from `application` or `adapters`; `application` nothing from `adapters`; `checks` only `domain` and `ports`; `adapters.providers.<a>` nothing from `adapters.providers.<b>`. |
-| 1. Recurred | The parent repo's lint exists because it did. Not yet in this repo. |
-| 2. Catches what happened | The parent's regex missed package-level `from X.adapters import f` and hid three real violations. This one reads the AST, so `import a.b`, `from a import b`, relative imports and imports inside functions or `TYPE_CHECKING` are all one import. |
+| 1. Recurred | An earlier harness needed the same lint because it did. Not yet in this repo. |
+| 2. Catches what happened | That lint's regex missed package-level `from X.adapters import f` and hid three real violations. This one reads the AST, so `import a.b`, `from a import b`, relative imports and imports inside functions or `TYPE_CHECKING` are all one import. |
 | 3. Seen to fail | One planted file per rule and spelling; removing the provider check, relative-import resolution or the domain→ports rule each turns a test red. |
 | 4. Fires on nothing adjacent | `minutehand.adapters_notes` is not `minutehand.adapters`; `from minutehand.adapters.providers import X` names a provider only when `X` exists under `adapters/providers/`. |
 | Cannot see | An import spelled as a string: `importlib.import_module`, an entry point in `pyproject.toml`. |
@@ -56,7 +56,7 @@ A new repo has no debt, so every lint here is fail-closed with an inline marker 
 | What is read | Every parameter, `*args`, `**kwargs` and return, and every class-level field of a class whose bases reach `BaseModel`, `RootModel` or `Model` through the tree; nested (`list[dict[str, Any]] \| None`) and string annotations included. |
 | Cannot see | A dataclass, `TypedDict` or `Protocol` attribute: only Pydantic fields were agreed. |
 | Why the exception | A provider's request and response bodies are someone else's wire format. They enter as text on `Exchange` and leave `wire.py` as a typed `Snapshot`. |
-| 1. Recurred | 699 signatures in the parent repo's baseline. |
+| 1. Recurred | 699 signatures in an earlier harness's baseline. |
 | Cost | Every provider needs a `wire.py`. |
 
 ### 5. `client_names` — written, fail-closed, agreed 2026-10-28
