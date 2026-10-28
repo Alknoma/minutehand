@@ -532,7 +532,8 @@ def _parser() -> _Parser:
     closing = commands.add_parser(
         "close",
         help="keep a run whose process died without keeping its record (killed, its container removed), from its "
-        "world file: it stops `interrupted`, and `findings`, `view`, `fork` and `replay` read it from then on",
+        "world file: it stops `interrupted`, and `findings`, `view`, `fork` and `replay` read it from then on; `fork` "
+        "and `replay` close a dead run themselves",
     )
     closing.add_argument("run_id")
     closing.add_argument("--json", action="store_true")
@@ -1378,6 +1379,9 @@ def _checkpoints(state: Path, run_id: str, *, as_json: bool = False) -> int:
     if as_json:
         print(session.Checkpoints(run_id=run_id, checkpoints=found).model_dump_json(indent=2))
         return 0
+    unrecorded = session.died_without_record(state, run_id)
+    if unrecorded is not None:
+        print(unrecorded)
     if not found:
         print(f"run {run_id} has no checkpoints")
         return 0

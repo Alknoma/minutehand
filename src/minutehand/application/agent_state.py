@@ -9,7 +9,9 @@ sandbox is idle with nothing of the agent's in flight (the reading that ends the
 run loop runs `export_state` with `{dir}` filled with an empty `taking/`, writes the checkpoint saying
 whether it saved (`Remembered.exported`), and only then names the folder for the checkpoint's seq, since the seq is
 the log's to give and is known once the checkpoint is in it. A command that fails leaves no folder, and the
-checkpoint keeps what it said; the run goes on. Setup's checkpoint saves nothing: the sandbox does not exist yet.
+checkpoint keeps what it said; the run goes on. Setup's checkpoint saves nothing: the sandbox does not exist yet. A
+run whose process died while saving leaves `taking/` behind, which its closing settles (`left_by_death`): half a
+save is removed, and a whole one whose checkpoint was written is named for it.
 
 A save is the agent's state at one quiet instant, the one the checkpoint's world is at, or it is nothing. The wake
 ended inside the agent's own sleep, and the sandbox's clock runs on at real speed while the export runs: a poller
@@ -41,7 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState
+from minutehand.application.checkpoint import CHECKPOINT, Checkpoint, ExportedState, checkpoints
 from minutehand.application.refusals import RunRefused
 from minutehand.application.restore import OUTPUT_KEPT, OwnProgram
 from minutehand.application.sandbox import SandboxClock, moving
@@ -56,12 +58,19 @@ AGENT_STATE = "agent-state"
 TAKING = "taking"
 """In `AGENT_STATE`: the state being saved, before the checkpoint it belongs to is written."""
 
+BEGUN_AFTER = "taking.after"
+"""Beside `taking/`: the head of the run's log as the save into it began, written before the folder is made. The
+checkpoint a save is for is written after it, at a later seq, so a `taking/` a death left is that checkpoint's
+when it was begun below the checkpoint's seq, and a later save's otherwise (`left_by_death`)."""
+
 
 HELD_EXPORT_PATIENCE = timedelta(seconds=15)
-"""Real time an export may take under a held clock before the clock is released for it: an export takes seconds (Ayven's, a direct request to its emulators), and it hung under a hold on two of the four checkpoints of one continued run. A store whose export waits
-on a timer of its own never finishes while the clock stands still (the Firestore emulator's did, an Ayven run,
-2026-10-28: an export begun under a hold sat for 29 minutes and would have sat forever); released, it finishes, and
-the reads around the export judge whether the agent moved while it ran, as without a hold."""
+"""Real time an export may take under a held clock before the clock is released for it: an export takes seconds
+(one agent's, a direct request to the database emulators in its sandbox), and it hung under a hold on two of the
+four checkpoints of one continued run. A store whose export waits on a timer of its own never finishes while the
+clock stands still (the Firestore emulator's did, 2026-10-28: an export begun under a hold sat for 29 minutes and
+would have sat forever); released, it finishes, and the reads around the export judge whether the agent moved while
+it ran, as without a hold."""
 
 WORKED = "the agent worked during the export"
 """How a checkpoint says its save was discarded: the agent stirred while it ran (`save`)."""
@@ -76,12 +85,14 @@ async def save(
     (`reads`, every one the agent made, counted), or an event of its in `store`."""
     taking = folder / TAKING
     shutil.rmtree(taking, ignore_errors=True)  # a run stopped while saving left it half filled
-    taking.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / BEGUN_AFTER).write_text(str(store.head()), encoding="ascii")
+    taking.mkdir()
     began = await sandbox.read()
     calls, head, read = moving(traffic), store.head(), reads()
     failed = await _exported(sandbox, taking.resolve(), held=began.held)
     if failed is not None:
-        shutil.rmtree(taking, ignore_errors=True)
+        _discard(folder)
         return ExportedState(saved=False, failure=failed[-OUTPUT_KEPT:])
     # The export's own work (the agent's store writing it out, the command copying it) leaves the sandbox busy for a
     # moment after the command returns, so one reading then says nothing about the agent: wait for it to fall idle,
@@ -99,7 +110,7 @@ async def save(
         if moved
     ]
     if stirred:
-        shutil.rmtree(taking, ignore_errors=True)
+        _discard(folder)
         return ExportedState(saved=False, failure=f"{WORKED}: {'; '.join(stirred)}")
     return ExportedState(saved=True)
 
@@ -124,6 +135,41 @@ async def _exported(sandbox: SandboxClock, taking: Path, *, held: bool) -> str |
 def keep(folder: Path, seq: int) -> None:
     """Name what `save` saved for the checkpoint written at `seq`."""
     (folder / TAKING).rename(folder / str(seq))
+    (folder / BEGUN_AFTER).unlink(missing_ok=True)
+
+
+def _discard(folder: Path) -> None:
+    """Remove a save no checkpoint keeps, and the head it was begun after."""
+    shutil.rmtree(folder / TAKING, ignore_errors=True)
+    (folder / BEGUN_AFTER).unlink(missing_ok=True)
+
+
+def left_by_death(folder: Path, store: Store) -> None:
+    """Settle what the run of `store`, whose process died, left in `folder/taking/`, as it is closed.
+
+    A death leaves `taking/` in one of two ways. Killed while the export ran, before its checkpoint was written: the
+    folder is half a save no checkpoint names, and it is removed. Killed after the checkpoint was written and before
+    the folder was named for it (`keep`): the checkpoint says it saved, and `save` had returned whole before it was
+    written, so `taking/` is that checkpoint's state, complete, and it is named for the seq as `keep` would have. The
+    two are told apart by the log, never a clock: the head the save was begun after (`BEGUN_AFTER`) is below the
+    last checkpoint's seq only for the save that checkpoint holds. Without that head, the save is removed. A
+    checkpoint that says it saved, whose folder is gone and that left no `taking/`, is left as it is: no death leaves
+    that, so a fork from it is refused (`saved_at`)."""
+    taking = folder / TAKING
+    if not taking.is_dir():
+        (folder / BEGUN_AFTER).unlink(missing_ok=True)
+        return
+    marked = folder / BEGUN_AFTER
+    begun = int(marked.read_text(encoding="ascii")) if marked.is_file() else None
+    held = checkpoints(store)
+    own = [e.seq for e in store.events() if e.run_id == store.run_id and e.entity == CHECKPOINT and e.seq in held]
+    if own and begun is not None:
+        seq = own[-1]
+        exported = held[seq].agent.exported
+        if exported is not None and exported.saved and not (folder / str(seq)).exists() and begun < seq:
+            keep(folder, seq)
+            return
+    _discard(folder)
 
 
 def saved_at(store: Store, at_seq: int, checkpoint: Checkpoint, runs: Path) -> Path | None:
