@@ -45,12 +45,14 @@ asked with `--pre`.
    what changed for a user. Publish it.
 4. `release.yml` runs:
    - **build** — checks the tag against `pyproject.toml`; `uv build` (the sdist, then the wheel built from
-     it); then `pytest -m packaging tests/packaging` on exactly those files (`MINUTEHAND_DIST`): the wheel holds
-     every file git tracks under `src/minutehand` and the sdist nothing git does not track; the wheel built from
-     the sdist is the wheel built from the tree; the metadata names the licence and passes `twine check --strict`;
-     the wheel installed into a clean environment answers `--version` with the version and imports nothing from
-     the dev group; a user's pytest suite finds the plugin by its entry point. CI's `build` job runs the same
-     tests on every pull request.
+     it); then `pytest -m packaging tests/packaging/test_installed_package.py` on exactly those files
+     (`MINUTEHAND_DIST`): the wheel holds every file git tracks under `src/minutehand` and the sdist nothing git
+     does not track; the wheel built from the sdist is the wheel built from the tree; the metadata names the
+     licence and passes `twine check --strict`; the wheel installed into a clean environment answers `--version`
+     with the version and imports nothing from the dev group; a user's pytest suite finds the plugin by its entry
+     point. CI's `build` job runs the same tests on every pull request, and `tests/packaging/test_stack.py`: the
+     image serving in a stack, found by name from a second container, which downloads its CA and has its call
+     recorded.
    - **pypi** — uploads exactly the files `build` checked, by Trusted Publishing from the `pypi` environment.
      No API token exists to leak. Add required reviewers to that environment and this job waits for one.
    - **image** — builds the `runtime` target of `Dockerfile` for `linux/amd64` and `linux/arm64` and pushes it.

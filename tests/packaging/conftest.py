@@ -1,7 +1,7 @@
 """What a user installs, built from this tree: the sdist and the wheel, and clean environments holding the wheel.
 
 Built once per session. These tests run only with `-m packaging`: installing the wheel's dependencies needs a
-package index. With `MINUTEHAND_DIST` naming a directory, the sdist and wheel already built there are the ones
+package index, and the image needs Docker. With `MINUTEHAND_DIST` naming a directory, the sdist and wheel already built there are the ones
 checked, so the release workflow uploads exactly the files these tests passed (docs/releasing.md).
 """
 
@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2]
 VERSION: str = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
 TWINE = "twine==7.0.0"
 """The checker PyPI's own upload docs name; pinned so a release checks what this suite checked."""
+IMAGE = "minutehand-pkg-test"
+"""The image a user runs, built from this tree's `runtime` target."""
 BUILT = "MINUTEHAND_DIST"
 """A directory holding the one sdist and one wheel to check, instead of building them here."""
 
@@ -111,3 +114,14 @@ def installed_with_pytest(dist: Dist, tmp_path_factory: pytest.TempPathFactory) 
     """The wheel and pytest, in an environment of their own: a user's suite, with the plugin found by its entry
     point. Separate from `installed`, which must hold the wheel's dependencies and nothing else."""
     return _installed(dist.wheel, tmp_path_factory.mktemp("installed_with_pytest") / "venv", "pytest")
+
+
+@pytest.fixture(scope="session")
+def image() -> Iterator[str]:
+    """The image a user runs, built from this tree and removed afterwards."""
+    docker = tool("docker")
+    checked(docker, "build", "--target", "runtime", "--tag", IMAGE, ".")
+    try:
+        yield IMAGE
+    finally:
+        run(docker, "image", "rm", "--force", IMAGE)

@@ -58,7 +58,7 @@ jobs:
       - name: Build the sdist, and the wheel from it
         run: uv build
       - name: The files about to be uploaded, as a user installs them (tests/packaging)
-        run: MINUTEHAND_DIST="$PWD/dist" uv run pytest -m packaging tests/packaging -p no:randomly
+        run: MINUTEHAND_DIST="$PWD/dist" uv run pytest -m packaging tests/packaging/test_installed_package.py -p no:randomly
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
