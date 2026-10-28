@@ -208,7 +208,7 @@ PROVIDERS = [
         anthropic_message,
         lambda base: base,
         "/v1/messages",
-        lambda headers: headers["x-api-key"],
+        lambda headers: headers["authorization"],
     ),
     Provided(
         "google:gemini-2.5-pro",
@@ -220,8 +220,13 @@ PROVIDERS = [
         lambda headers: headers["x-goog-api-key"],
     ),
 ]
-BEARER = {"openai:gpt-5-mini": f"Bearer {SENTINEL}", "openai-chat:any-compatible-model": f"Bearer {SENTINEL}"}
-"""How each provider's client sends the key when it is not the bare value in its own header."""
+BEARER = {
+    "openai:gpt-5-mini": f"Bearer {SENTINEL}",
+    "openai-chat:any-compatible-model": f"Bearer {SENTINEL}",
+    "anthropic:claude-sonnet-5-5": f"Bearer {SENTINEL}",
+}
+"""How each provider's client sends the key when it is not the bare value in its own header. The anthropic SDK
+sends it as a bearer token since 2.0 (`X-Api-Key` before)."""
 
 
 @pytest.fixture
