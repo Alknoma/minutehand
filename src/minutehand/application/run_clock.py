@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 
@@ -11,12 +12,21 @@ class RunClock:
             raise ValueError("the clock needs a timezone-aware start")
         self._now = start
         self._wake = 0
+        self._agent: Callable[[], Awaitable[datetime]] | None = None
 
     def now(self) -> datetime:
         return self._now
 
     def wake(self) -> int:
         return self._wake
+
+    async def agent_now(self) -> datetime:
+        """`ports.clock.Clock.agent_now`: the agent's clock as `reads_agent` reads it, else the run's."""
+        return self._now if self._agent is None else await self._agent()
+
+    def reads_agent(self, read: Callable[[], Awaitable[datetime]]) -> None:
+        """Read the agent's own clock by `read` from here on: the sandbox's, for a run whose agent has one."""
+        self._agent = read
 
     def jump(self, to: datetime) -> None:
         if to < self._now:

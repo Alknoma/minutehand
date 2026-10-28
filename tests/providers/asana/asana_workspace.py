@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,12 +63,13 @@ class Workspace:
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> Workspace:
+def workspace(tmp_path: Path) -> Iterator[Workspace]:
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed(SCENARIO, store)
-    return Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    yield Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    store.close()
 
 
 def served(provider: AsanaProvider, store: SqliteStore, clock: RunClock) -> ASGIApp:

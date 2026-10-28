@@ -58,10 +58,10 @@ def test_a_ticket_written_twice_in_the_expected_state_is_one_ticket() -> None:
 
 def test_a_protected_name_misspelled_in_a_record_is_found() -> None:
     log = Log()
-    log.record("invoices", "Invoice for Aiven, net 30", 1)
-    world = view(scenario(OWNER).model_copy(update={"protected_names": ["Ayven"]}), log)
+    log.record("invoices", "Invoice for Tivane, net 30", 1)
+    world = view(scenario(OWNER).model_copy(update={"protected_names": ["Tyvane"]}), log)
     [finding] = NearMissName().run(world).findings
-    assert finding.message == 'wrote "Aiven" where the scenario says "Ayven"' and finding.evidence == [1]
+    assert finding.message == 'wrote "Tivane" where the scenario says "Tyvane"' and finding.evidence == [1]
 
 
 def test_a_met_expectation_quotes_what_met_it_so_a_hollow_pass_shows() -> None:

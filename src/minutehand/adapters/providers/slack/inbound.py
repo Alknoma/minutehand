@@ -7,8 +7,10 @@ recorded as actor PERSON. Every event goes to the agent only where Slack would s
 bot is in, or the bot's own DM and Home tab.
 
 The world stamps from the run's clock: a message's `ts` and the callback's `event_time` are simulated.
-`X-Slack-Request-Timestamp` is not world time. It is the moment the request is sent, and the agent's
-`SignatureVerifier` refuses any timestamp more than five minutes from its own clock, which is the machine's.
+`X-Slack-Request-Timestamp` is not world time. It is the moment the request is sent, read from the agent's own clock
+(`Clock.agent_now`: the sandbox's, which runs on in real time while the agent starts and works, so it can stand
+minutes ahead of the run's), and the agent's `SignatureVerifier` refuses any timestamp more than five minutes from
+that clock.
 
 An event the agent does not answer with 2xx within its target's `push_timeout` is sent again, as Slack does, up to
 three more times with
@@ -80,17 +82,17 @@ async def post_signed(
     secret: str,
     *,
     item: str,
-    at: int,
+    clock: Clock,
     timeout: timedelta,
     retry: int | None = None,
     reason: str | None = None,
 ) -> Sent:
     """One signed request from Slack to the agent, given `timeout` (the target's `push_timeout`) to answer, and
     recorded as it ended (`EntityKind.PUSH`, actor SCENARIO, so no check counts it as anyone's work) through the one
-    door everything sent the agent goes through (`adapters.agent.delivery`). `at` is the request's timestamp, the
-    simulated moment it is sent at: the agent's verifier checks it against its own clock, which is the sandbox's,
-    and a fork sending the request again must send the same signature."""
-    stamp = str(at)
+    door everything sent the agent goes through (`adapters.agent.delivery`). The request's timestamp is the agent's
+    own clock as it is sent (`Clock.agent_now`), which its verifier checks it against; a fork sends the recorded
+    request again, timestamp and signature as they were (`Door.resend`)."""
+    stamp = str(int((await clock.agent_now()).timestamp()))
     headers = {
         "Content-Type": content_type,
         "X-Slack-Request-Timestamp": stamp,
@@ -156,7 +158,9 @@ def sent(
     return snapshot
 
 
-async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.EventCallback, secret: str) -> None:
+async def push_event(
+    slack: SlackWorld, target: InboundTarget, callback: wire.EventCallback, secret: str, clock: Clock
+) -> None:
     """An Events API callback, sent again on failure as Slack sends it, until the agent acknowledges it: a signed
     request to the target's URL, or, for a target in Socket Mode, an envelope on the connection the agent holds open
     (`socket_mode`). Each send is recorded (`sent`)."""
@@ -177,7 +181,7 @@ async def push_event(slack: SlackWorld, target: InboundTarget, callback: wire.Ev
             "application/json",
             secret,
             item=callback.event_id,
-            at=callback.event_time,
+            clock=clock,
             timeout=target.push_timeout,
             retry=attempt or None,
             reason=reason,
@@ -244,14 +248,14 @@ def where(world: Store, channel: str) -> SlackWorld:
     return found
 
 
-async def verify_url(store: Store, target: InboundTarget, secret: str, challenge: str, *, at: int) -> None:
+async def verify_url(store: Store, target: InboundTarget, secret: str, challenge: str, *, clock: Clock) -> None:
     """Slack's `url_verification`, as it is sent when an app's request URL is set: the agent must echo the challenge,
     as JSON or as plain text. Nothing in a run sends it; a check of an agent's endpoint does."""
     refuse_foreign(target)
     url = target.request_url()
     body = wire.event_body(wire.UrlVerification(token=wire.VERIFICATION_TOKEN, challenge=challenge))
     made = await post_signed(
-        store, url, body, "application/json", secret, item="url_verification", at=at, timeout=target.push_timeout
+        store, url, body, "application/json", secret, item="url_verification", clock=clock, timeout=target.push_timeout
     )
     status, text = made.snapshot.status, made.body.decode("utf-8", errors="replace")
     if status is None:
@@ -340,7 +344,7 @@ async def _post(
         files=files or None,
         upload=False if files else None,
     )
-    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
     if mentions and not channel.is_im:
         mention = wire.AppMentionEvent(
             user=author,
@@ -354,7 +358,7 @@ async def _post(
             files=files or None,
         )
         await push_event(
-            slack, target, callback(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret
+            slack, target, callback(slack, mention, seq=slack.next_seq() - 1, clock=clock, second=True), secret, clock
         )
     return ts
 
@@ -481,7 +485,7 @@ async def _edits(
             message=after,
             previous_message=before,
         )
-        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
 
 
 async def _deletes(
@@ -510,7 +514,7 @@ async def _deletes(
             event_ts=stamp,
             previous_message=before,
         )
-        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
 
 
 async def _reacts(
@@ -550,7 +554,7 @@ async def _reacts(
             item=wire.ReactionItem(channel=channel.id, ts=message.ts),
             event_ts=stamp,
         )
-        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
 
 
 async def _joins(
@@ -580,7 +584,7 @@ async def _joins(
             team=slack.team.id,
             event_ts=stamp,
         )
-        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+        await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
 
 
 async def _adds_agent(
@@ -610,7 +614,7 @@ async def _adds_agent(
         inviter=author,
         event_ts=stamp,
     )
-    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)
 
 
 async def _opens_home(
@@ -623,4 +627,4 @@ async def _opens_home(
     event = wire.AppHomeOpenedEvent(
         user=author, channel=dm.id, event_ts=stamp, view=home.view if home is not None else None
     )
-    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret)
+    await push_event(slack, target, callback(slack, event, seq=slack.next_seq() - 1, clock=clock), secret, clock)

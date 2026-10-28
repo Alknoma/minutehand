@@ -1,0 +1,23 @@
+HTTP/1.1 400 Bad Request
+Content-Type: application/json;charset=UTF-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Date: Mon, 26 Oct 2026 21:12:07 GMT
+Server: AtlassianEdge
+Timing-Allow-Origin: *
+X-Arequestid: 5f5aaa6e217fc499c5ef72a47896f3bd
+Cache-Control: no-cache, no-store, no-transform
+X-Content-Type-Options: nosniff
+X-Xss-Protection: 1; mode=block
+Atl-Traceid: 035a0721d33440c49236f299c28b75cd
+Atl-Request-Id: 035a0721-d334-40c4-9236-f299c28b75cd
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Report-To: {"endpoints": [{"url": "https://dz8aopenkvv6s.cloudfront.net"}], "group": "endpoint-1", "include_subdomains": true, "max_age": 600}
+Nel: {"failure_fraction": 0.01, "include_subdomains": true, "max_age": 600, "report_to": "endpoint-1"}
+Server-Timing: atl-edge;dur=34,atl-edge-internal;dur=13,atl-edge-upstream;dur=21,atl-edge-pop;desc="aws-us-east-1"
+X-Cache: Error from cloudfront
+Via: 1.1 ccd114984a49b9c615aad5382a3f2352.cloudfront.net (CloudFront)
+X-Amz-Cf-Pop: TPE53-P3
+X-Amz-Cf-Id: QxtdJFh3U2IKYswtb5YyJ37eF5mpjXBM4nyhjHv0kqk8KrY_dFgz-w==
+
+{"errorMessages":["The query parameters 'query' and 'accountId' are mutually exclusive."],"errors":{}}

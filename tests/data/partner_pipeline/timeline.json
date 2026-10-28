@@ -1,7 +1,7 @@
 {
  "scenario": {
   "name": "partner_pipeline_build",
-  "goal": "Ayven has three signed integration partnership agreements.",
+  "goal": "Tyvane has three signed integration partnership agreements.",
   "owner": "owner",
   "starts_at": "2026-08-24T10:51:00Z",
   "deadline_after": "P14D",

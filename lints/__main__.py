@@ -1,7 +1,7 @@
 """Run every lint in this directory and fail if any one of them fails.
 
 There is no registration: a lint is a module here, not underscore-prefixed, that
-defines `TITLE` and `run(root) -> list[Finding]`. In the parent repo a lint sat in
+defines `TITLE` and `run(root) -> list[Finding]`. In an earlier repo a lint sat in
 the directory for three weeks gating nothing because the workflow named each lint
 by hand. Every lint runs even after one fails, so a change sees the whole list.
 

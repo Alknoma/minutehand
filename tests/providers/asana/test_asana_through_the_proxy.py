@@ -4,7 +4,7 @@ The first test is the discovery a client makes when it holds nothing but a token
 workspace, which team, which project, which sections and custom fields, then a task created with a
 priority and a status, moved three ways and read back. No gid is written into it: each one is read off
 an earlier answer, by name, the way the client's own code does. The query strings and bodies are the ones
-that client sends (every collection with `limit=100`, `opt_fields` as it names them, `addMembers` as one
+a real tracker client sends (every collection with `limit=100`, `opt_fields` as it names them, `addMembers` as one
 comma-separated string).
 
 The second drives the same surface with the official `asana` SDK.

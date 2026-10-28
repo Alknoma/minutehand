@@ -132,14 +132,15 @@ def test_a_service_account_signs_in_and_its_minted_token_is_routed_to_the_same_w
             },
             scopes=["https://www.googleapis.com/auth/drive"],
         )
-        plain = requests.Session()
-        session = AuthorizedSession(credentials, auth_request=Request(plain))
-        for configured in (plain, session):
-            configured.proxies = {"https": served.proxy}
-            configured.verify = served.bundle
-            configured.trust_env = False
-        listed = session.get("https://www.googleapis.com/drive/v3/files")
-        assert listed.status_code == 200, listed.text
+        # Both sessions close with the test: a kept-alive connection left open sits in the proxy's handler
+        # when the proxy stops, as an unclosed transport.
+        with requests.Session() as plain, AuthorizedSession(credentials, auth_request=Request(plain)) as session:
+            for configured in (plain, session):
+                configured.proxies = {"https": served.proxy}
+                configured.verify = served.bundle
+                configured.trust_env = False
+            listed = session.get("https://www.googleapis.com/drive/v3/files")
+            assert listed.status_code == 200, listed.text
         answered = [(c.exchange.host, c.exchange.status) for c in world.calls() if c.provider is not None]
         # google-auth may also ask iamcredentials.googleapis.com in the background, which the Drive provider
         # answers: carrying the minted token, it is this world's, and kept with it.

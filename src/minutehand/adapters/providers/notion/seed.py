@@ -296,6 +296,9 @@ class _At:
     def wake(self) -> int:
         return 0
 
+    async def agent_now(self) -> datetime:
+        return self._at
+
 
 def seed(scenario: Scenario, world: Store) -> None:
     named = [s.person for s in scenario.sign_ins if s.provider == MANIFEST.key and s.person is not None]

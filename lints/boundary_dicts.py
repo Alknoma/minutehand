@@ -1,7 +1,7 @@
 """No `dict[str, Any]`, `Dict[str, Any]` or bare `dict` in a signature or a Pydantic field.
 
 pyright cannot object to these: the annotation SAYS any key is fine, so the type
-system invites the `dict.get` typo the norm forbids. The parent repo's version
+system invites the `dict.get` typo the norm forbids. An earlier repo's version
 of this rule went unenforced until it stood at 699 signatures.
 
 What is read: every function signature (each parameter, `*args`, `**kwargs`, the

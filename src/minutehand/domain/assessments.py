@@ -441,6 +441,7 @@ class StoppedBy(StrEnum):
     CLOSED = "closed"
     ENVIRONMENT_FAILED = "environment_failed"
     REPLAY_PARTED = "replay_parted"
+    INTERRUPTED = "interrupted"
 
 
 class When(Model):

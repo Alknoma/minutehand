@@ -110,11 +110,25 @@ Pending = Annotated[
 ]
 
 
+class ExportedState(Model):
+    """What the agent file's `sandbox.export_state` did at this checkpoint: saved the agent's own state into
+    `agent-state/<seq>/` of the run that wrote the checkpoint (`application.agent_state`), or did not, saying why: the
+    command failed, or the agent stirred while it ran and what it saved would mix two moments.
+    A failure is the checkpoint's, never the run's: a fork from here plays the agent back as without it."""
+
+    saved: bool
+    failure: str | None = Field(
+        default=None,
+        description="Why nothing was saved: what the command said when it did not exit 0, or that the agent worked "
+        "during the export, and how (`application.agent_state.WORKED`)",
+    )
+
+
 class Remembered(Model):
     """The agent's state at this checkpoint, as far as the run holds it: its memory is the run's log up to here
     (`application.memory`), so a fork from here starts from exactly that memory; everything else of it is in its
-    sandbox, which a fork brings back by playing the agent's recorded inputs into a fresh one
-    (`application.restore`)."""
+    sandbox, which a fork brings back by starting the agent from its own state saved here (`exported`), or, when none
+    was, by playing the agent's recorded inputs into a fresh one (`application.restore`)."""
 
     kind: Literal["remembered"] = "remembered"
     memory: str = Field(description="The agent's memory here, as one SHA-256 (`application.memory.digest`)")
@@ -122,6 +136,11 @@ class Remembered(Model):
         default=[],
         description="State the agent kept outside its memory that the run saw here (a database of its own the agent "
         "file names, not empty): a fork does not put it back",
+    )
+    exported: ExportedState | None = Field(
+        default=None,
+        description="What `sandbox.export_state` did here; None when the agent file names none, and at setup, "
+        "before the agent's sandbox exists",
     )
 
 

@@ -1,4 +1,4 @@
-"""The refusals a client's tests rely on: a project the caller cannot see, a free plan, throttling, and custom fields
+"""The refusals Asana answers that a client's own tests rely on: a project the caller cannot see, a free plan, throttling, and custom fields
 and options that do not exist, each with Asana's status and message and none of them recording anything; and the
 credentials that are never refused, because Minutehand does not enforce them."""
 

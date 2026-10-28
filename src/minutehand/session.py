@@ -13,7 +13,14 @@ directory under the state directory, written by the models, so a later process c
     <state>/runs/<run_id>/agent.log      what the agent's own process printed, when Minutehand started it
     <state>/runs/<run_id>/own/           a fresh empty SQLite file per variable the agent file names under
                                          `own_databases`: the agent's state beside its memory, outside forks
-    <state>/runs/<run_id>/restore.json   for a fork: how its agent was brought back (its memory, its playback)
+    <state>/runs/<run_id>/restore.json   for a fork: how its agent was brought back (its memory, its playback or
+                                         the saved state it started from)
+    <state>/runs/<run_id>/agent-state/<seq>/  the agent's own state its `sandbox.export_state` saved at the checkpoint
+                                         at <seq>, which a fork from there starts the agent from
+
+A run, a fork or a replay that a signal stops (SIGTERM, SIGINT: `until_signalled`) ends `INTERRUPTED` and is kept
+like any other, the wake it was in abandoned (`application.interruption`); one whose process died without keeping its
+record is kept by `close`, from its world file and the inputs kept beside it.
 
 One proxy per process: mitmproxy keeps its master in a module global, so `play` and `fork` each start one
 and move it from sample to sample with `Proxy.mount`, and never two at once.
@@ -27,13 +34,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import json
 import os
 import secrets
 import shutil
 import signal
 import sqlite3
-from collections.abc import AsyncIterator, Collection, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -59,15 +67,17 @@ from minutehand.adapters.proxy.registry import ProviderConflict, Registry
 from minutehand.adapters.proxy.replay import ModelReplay
 from minutehand.adapters.proxy.server import Proxy
 from minutehand.adapters.proxy.trust import write_bundle
-from minutehand.adapters.store.sharing import refuse_written_elsewhere
-from minutehand.adapters.store.sqlite import SCHEMA_VERSION, SqliteStore, truncate_log
+from minutehand.adapters.store.sharing import STALE as STALE_WRITER
+from minutehand.adapters.store.sharing import refuse_written_elsewhere, written_now
+from minutehand.adapters.store.sqlite import READS_SCHEMAS, SqliteStore, truncate_log
 from minutehand.adapters.telemetry.forward import Forwarding
 from minutehand.adapters.telemetry.receiver import AGENT_PATH, MCP_PATH, MCP_URL_ENV, Receiver, exporter_environment
 from minutehand.agent._wire import ON as AGENT_ON
 from minutehand.agent._wire import URL as AGENT_URL
+from minutehand.application.agent_state import AGENT_STATE, left_by_death
 from minutehand.application.around_proxy import around_proxy, uncalled_providers
 from minutehand.application.cases import CASE, CaseKept, CaseStore
-from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint, checkpoints
+from minutehand.application.checkpoint import CHECKPOINT, AgentState, Checkpoint, Remembered, checkpoints
 from minutehand.application.dues import due_entries
 from minutehand.application.emulators import findings as emulator_findings
 from minutehand.application.emulators import record_health
@@ -82,11 +92,13 @@ from minutehand.application.forks import (
     summary,
 )
 from minutehand.application.inboxes import Inboxes
+from minutehand.application.interruption import Interruption
 from minutehand.application.items import provided_types, typed_items
 from minutehand.application.items import rhythm as declared_rhythm
 from minutehand.application.kept import KeptModel
 from minutehand.application.model_calls import agent_instructions, is_model_call, model_call, per_wake
 from minutehand.application.orchestrator import Services, run_scenario
+from minutehand.application.outbound import emulator_uses, outbound_uses
 from minutehand.application.people import needs_model
 from minutehand.application.playback import TracePlayback
 from minutehand.application.program import PROGRAM_RECORD, AgentProgram, program_changes, program_of
@@ -141,7 +153,7 @@ from minutehand.domain.memory import DueRecords
 from minutehand.domain.outbound import Acknowledge, DeclaredStore, UnknownHosts
 from minutehand.domain.people import Delivery
 from minutehand.domain.provider import Manifest
-from minutehand.domain.run import ReplayRecord, RunRecord, StopReason
+from minutehand.domain.run import ReplayRecord, RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
 from minutehand.domain.templates import (
@@ -264,6 +276,25 @@ def run_dir(state: Path, run_id: str) -> Path:
 # -- playing a scenario ---------------------------------------------------------------------------------------
 
 
+STOPPING_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+"""What asks `minutehand run`, `fork` and `replay` to stop: `docker stop`'s SIGTERM, a terminal's SIGINT."""
+
+
+async def until_signalled[T](work: Callable[[Interruption], Awaitable[T]]) -> T:
+    """`work`, handed the `Interruption` that SIGTERM and SIGINT arrive at while it runs: the run it plays ends
+    `INTERRUPTED` and is kept (`application.interruption`), where the process would otherwise die under it with no
+    record. A second signal stops whatever is running. The signals are this process's again once `work` returns."""
+    interruption = Interruption(asyncio.current_task())
+    loop = asyncio.get_running_loop()
+    for sig in STOPPING_SIGNALS:
+        loop.add_signal_handler(sig, interruption.receive, sig.name)
+    try:
+        return await work(interruption)
+    finally:
+        for sig in STOPPING_SIGNALS:
+            loop.remove_signal_handler(sig)
+
+
 async def play(
     written: Scenario | WrittenScenario,
     agent: AgentUnderTest,
@@ -278,6 +309,7 @@ async def play(
     progress: Progress | None = None,
     seed: int | None = None,
     replaying: Replaying | None = None,
+    interruption: Interruption | None = None,
 ) -> list[Outcome]:
     """Run the scenario `samples` times from its start, each a run of its own, through one proxy.
 
@@ -298,6 +330,9 @@ async def play(
 
     `replaying` plays a finished run again (`replay`): its people's words, its pass-through hosts' answers and the
     agent's own model calls answered from its record.
+
+    `interruption` is a signal asking the run to stop: the sample it arrives in ends `INTERRUPTED` and is kept, and no
+    further sample starts.
     """
     if samples < 1:
         raise RunRefused(f"a run needs at least one sample, not {samples}")
@@ -329,6 +364,8 @@ async def play(
             first[0].adopt_written(replaying.world)  # the people say what they said, without a model call
             proxy.proxy.addon.model_replay = replaying.model
         for sample in range(samples):
+            if sample > 0 and interruption is not None and interruption.received is not None:
+                break
             store, clock = first if sample == 0 else _open(state, _new_run_id(), scenario)
             if sample > 0:
                 opened.append(store)
@@ -389,6 +426,8 @@ async def play(
                     model=model,
                     desk=desk,
                     replay=replaying.model if replaying is not None else None,
+                    agent_state=directory / AGENT_STATE,
+                    interruption=interruption,
                 )
             write_recordings(directory, store.calls())
             if replaying is not None:
@@ -440,6 +479,7 @@ async def replay(
     live_from: datetime | None = None,
     at_seq: int | None = None,
     frozen: bool = False,
+    interruption: Interruption | None = None,
 ) -> Outcome:
     """Play a finished run again, as a new run: its scenario as it played (start and seed), its people's words as
     they said them, its pass-through hosts' answers, and each of the agent's model calls answered with what the
@@ -448,7 +488,8 @@ async def replay(
     From its start, or, with `at_seq`, from that checkpoint: the world, the clock, everything pending and the
     agent's memory as they stood there, with nothing changed (a fork with no overrides, `fork`), and the agent's
     program as `command` says it is now, so a change to the agent's code or prompt is played from the moment it
-    matters and nothing before it is played again.
+    matters and nothing before it is played again. A run whose process died without keeping its record is closed
+    first (`recovered`).
 
     The agent's calls to its model are recorded on the wire (`Listen.record_model_calls`) for the replay to answer;
     the first one the recording never saw, or the first from `live_from` on, goes to the model, and so does every
@@ -462,6 +503,7 @@ async def replay(
                 "a replay from a checkpoint is answered from the record from there on: --live-from is "
                 "for a replay from the start"
             )
+        await recovered(state, parent_run, by="`minutehand replay`")
         [outcome] = await fork(
             parent_run,
             Fork(parent_run=parent_run, at_seq=at_seq),
@@ -473,9 +515,10 @@ async def replay(
             listen=listen,
             progress=progress,
             frozen=frozen,
+            interruption=interruption,
         )
         return outcome
-    parent = load(state, parent_run)
+    parent = await recovered(state, parent_run, by="`minutehand replay`")
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
@@ -495,6 +538,7 @@ async def replay(
         listen=listen,
         progress=progress,
         replaying=replaying,
+        interruption=interruption,
     )
     return outcome
 
@@ -511,6 +555,7 @@ async def fork(
     listen: Listen | None = None,
     progress: Progress | None = None,
     frozen: bool = False,
+    interruption: Interruption | None = None,
 ) -> list[Outcome]:
     """Rerun a finished run from one of its checkpoints with `changes` applied, once per `Fork.samples`.
 
@@ -521,13 +566,17 @@ async def fork(
     `progress` hears each step.
     The agent's model calls after the checkpoint are answered from the parent's record until the agent asks
     something the parent did not; `frozen` refuses that call instead of sending it to the model and stops the child
-    there, `REPLAY_PARTED`.
+    there, `REPLAY_PARTED`. At a checkpoint where the agent's own state was saved (`sandbox.export_state`), its
+    program is started from that state instead, and nothing is played back (`application.agent_state`).
 
-    A fork that is refused leaves no run behind: no row in the world file and no directory.
+    A parent whose process died without keeping its record is closed first (`recovered`), and one still running is
+    refused. A fork that is refused leaves no run behind: no row in the world file and no directory. Each child's scenario and
+    agent file are kept in its directory before it plays, so one whose process dies can still be kept (`close`).
+    `interruption` is a signal, as `rewind.fork_run` takes it.
     """
     if changes.parent_run != parent_run:
         raise RunRefused(f"the changes are for run {changes.parent_run}, not {parent_run}")
-    parent = load(state, parent_run)
+    parent = await recovered(state, parent_run, by="`minutehand fork`")
     directory = run_dir(state, parent_run)
     scenario = Scenario.model_validate_json((directory / SCENARIO).read_text(encoding="utf-8"))
     agent = stored_agent(directory / AGENT)
@@ -601,6 +650,10 @@ async def fork(
         )
         log = run_dir(state, child_id) / AGENT_LOG
         log.parent.mkdir(parents=True, exist_ok=True)
+        for sample_id in (
+            [child_id] if changes.samples == 1 else [f"{child_id}-{n + 1}" for n in range(changes.samples)]
+        ):
+            _keep_inputs(run_dir(state, sample_id), changed, agent)
         try:
             sandbox = SandboxClock(agent.sandbox)
 
@@ -615,6 +668,7 @@ async def fork(
                     memory=proxy.receiver,
                     door=Door(),
                     traffic=proxy,
+                    due=agent.due,
                 )
 
             async with _agent_process(command, env, agent, log, state=state, started=False) as own:
@@ -649,6 +703,7 @@ async def fork(
                     code_changed=program_changes(
                         program_record(state, parent_run), program_of(command, Path.cwd(), state) if command else None
                     ),
+                    interruption=interruption,
                 )
         except RunRefused:
             _remove_refused(state, world, child_id, changes.samples)
@@ -665,6 +720,159 @@ async def fork(
             write_recordings(child, written.calls())
         outcomes.append(_keep(child, record, scorer))
     return outcomes
+
+
+# -- keeping a run whose process died -------------------------------------------------------------------------
+
+
+CLOSING = ".closing"
+"""In a run's directory: the lock one close of the run holds (`_closing`)."""
+
+CLOSED_BY = "`minutehand close`"
+"""Who keeps a dead run, as its record says: `close` itself, or a fork or replay of it (`recovered`)."""
+
+
+async def close(state: Path, run_id: str, *, by: str = CLOSED_BY) -> Outcome:
+    """`minutehand close`: keep a run whose process died without keeping its record (SIGKILL, its container removed),
+    from what it left: its world file, and the scenario and agent file kept beside it before it played. It stops
+    `INTERRUPTED`, its wakes are the checkpoints in its log, its checks run over everything that happened (a wake it
+    died in included), and from then on it is a run like any other: `findings`, `view`, `fork` and `replay` read it,
+    and a fork at its last checkpoint carries it on. What the run left of a save of the agent's own state it died in
+    (`agent-state/taking/`) is settled first (`agent_state.left_by_death`). `by` is who closes it, as its record says:
+    a fork or replay of a dead run closes it first (`recovered`). Refused for a run that kept its record, a standing
+    world or a case (`minutehand serve` keeps those), and a run whose world file a process still has open and is
+    writing. One close of a run at a time (`_closing`)."""
+    find(state, run_id)  # an unknown run is refused before its directory is made for the lock
+    with _closing(state, run_id):
+        return await _close(state, run_id, by=by)
+
+
+@contextmanager
+def _closing(state: Path, run_id: str) -> Iterator[None]:
+    """Hold the run's closing lock: two forks of one dead run started together would otherwise both close it, the
+    second settling an `agent-state/taking/` the first already named, or refused by the world file the first fork
+    went on to write as though the dead run still ran."""
+    directory = run_dir(state, run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / CLOSING).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+async def _close(state: Path, run_id: str, *, by: str) -> Outcome:
+    """`close`, under the run's closing lock."""
+    entry = find(state, run_id)
+    directory = run_dir(state, run_id)
+    if entry.finished:
+        raise RunRefused(f"run {run_id} has kept its record: there is nothing to close")
+    if driven(state, entry.root) or run_id in case_members(state):
+        raise RunRefused(f"run {run_id} is a standing world or part of a case, which `minutehand serve` closes")
+    world_file = run_dir(state, entry.root) / WORLD
+    writing = written_now(world_file)
+    if writing is not None:
+        raise RunRefused(
+            f"{world_file} is being written now ({writing.name}, refreshed within the last {STALE_WRITER:.0f} seconds): "
+            f"run {run_id}, or another run kept in the same file, is still running. Stop it, which keeps its record, "
+            "or close or fork this one once its writer has been gone that long"
+        )
+    scenario = scenario_of(state, run_id)
+    agent = agent_of(state, run_id)
+    if agent is None:
+        raise RunRefused(f"run {run_id} kept no agent file, so its checks cannot be told what the agent was")
+    if not (directory / SCENARIO).is_file() or not (directory / AGENT).is_file():
+        _keep_inputs(directory, scenario, agent)  # a fork kept before its inputs were: its parent's, unchanged
+    registry = Registry.installed()
+    judge = _Judge(
+        scenario,
+        None,
+        judging=False,
+        own=_own_checks(agent),
+        rules=rules_for(agent, scenario),
+        fail_on_integrity=integrity_fails(agent.fail_on_integrity, scenario.fail_on_integrity),
+        claims=_Claims(registry, frozenset()),
+        rhythm=declared_rhythm(agent),
+        due=agent.due,
+        collections=declared_collections(agent),
+        messengers=declared_messengers(agent),
+        instructions=[i.text for i in agent.instructions if i.text is not None],
+    )
+    with reading(state, run_id) as world:
+        events = world.events()
+        calls = world.calls()
+        own = [e for e in events if e.run_id == run_id]
+        left_by_death(directory / AGENT_STATE, world)
+        last = _last_restorable(points_in(world))
+        died = f" during wake {own[-1].wake}" if own else ""
+        record = RunRecord(
+            run_id=run_id,
+            scenario=scenario.name,
+            seed=scenario.seed,
+            parent_run=entry.parent_run,
+            forked_at=entry.forked_at,
+            started_at=scenario.starts_at,
+            ended_at=events[-1].sim_time if events else scenario.starts_at,
+            wall_seconds=(own[-1].wall_time - own[0].wall_time).total_seconds() if own else 0.0,
+            stop=StopReason.INTERRUPTED,
+            failure=f"kept by {by}: the run's process ended{died} without keeping its record (killed, or its "
+            f"container removed); {_carried_on(run_id, last)}",
+            providers=list(dict.fromkeys(c.provider for c in calls if c.provider is not None)),
+            outbound=outbound_uses(calls),
+            emulators=emulator_uses(calls),
+            wakes=wakes_of(state, run_id, world),
+            wake_limit=wake_limit(scenario, agent),
+        )
+        await judge.score(record, world)
+        write_recordings(directory, calls)
+    return _keep(directory, record, judge)
+
+
+async def recovered(state: Path, run_id: str, *, by: str) -> Outcome:
+    """A run to fork or replay, as `load` reads it; one whose process died without keeping its record is closed
+    first (`close`, `by` the command that closed it), so carrying a dead run on needs no step of its own. A run still
+    being written is refused as `close` refuses it."""
+    if not (run_dir(state, run_id) / RECORD).is_file() and any(e.run_id == run_id for e in logged(state)):
+        with _closing(state, run_id):
+            if not (run_dir(state, run_id) / RECORD).is_file():  # another fork of it may have closed it meanwhile
+                return await _close(state, run_id, by=by)
+    return load(state, run_id)
+
+
+def died_without_record(state: Path, run_id: str) -> str | None:
+    """What a run that kept no record is, said plainly: still running (its world file being written now), or dead
+    (killed, its container removed), with where a fork carries it on. None for a run that kept its record, or none
+    any world file holds."""
+    entry = next((e for e in logged(state) if e.run_id == run_id), None)
+    if entry is None or entry.finished:
+        return None
+    if written_now(run_dir(state, entry.root) / WORLD) is not None:
+        return (
+            f"run {run_id} has kept no record yet: its world file is being written now, so it is still running, or "
+            f"its process died within the last {STALE_WRITER:.0f} seconds"
+        )
+    with reading(state, run_id) as world:
+        last = _last_restorable(points_in(world))
+    return (
+        f"run {run_id} died without keeping its record (killed, or its container removed); {_carried_on(run_id, last)}"
+        f", closing it first, and `minutehand close {run_id}` keeps it as it is"
+    )
+
+
+def _last_restorable(points: Sequence[ForkPoint]) -> int | None:
+    """The seq of the last checkpoint a fork can be taken from, or None when none can."""
+    return next((p.seq for p in reversed(points) if isinstance(p.agent, Remembered)), None)
+
+
+def _carried_on(run_id: str, last: int | None) -> str:
+    """Where a run that died is carried on from."""
+    if last is None:
+        return "no checkpoint of it is restorable, so no fork carries it on"
+    return (
+        f"its last restorable checkpoint is at seq {last}, where `minutehand fork {run_id} --at {last}` (or `replay "
+        f"--at {last}`) carries it on"
+    )
 
 
 def _remove_refused(state: Path, world: Path, child_id: str, samples: int) -> None:
@@ -684,7 +892,9 @@ def load(state: Path, run_id: str) -> Outcome:
     """A finished run as it was persisted."""
     directory = run_dir(state, run_id)
     if not (directory / RECORD).is_file():
-        raise RunRefused(f"no finished run {run_id} under {state / RUNS}")
+        held = any(entry.run_id == run_id for entry in logged(state))
+        said = died_without_record(state, run_id) if held else None
+        raise RunRefused(said if said is not None else f"no finished run {run_id} under {state / RUNS}")
     return Outcome(
         record=RunRecord.model_validate_json((directory / RECORD).read_text(encoding="utf-8")),
         result=RunResult.model_validate_json((directory / RESULT).read_text(encoding="utf-8")),
@@ -1039,8 +1249,8 @@ def reading_file(path: Path, run_id: str) -> Iterator[Store]:
 
 
 def scenario_of(state: Path, run_id: str) -> Scenario:
-    """The scenario as this run played it. A fork still running has not written its own yet, so it answers
-    the scenario of the run it was forked from, before the fork's changes."""
+    """The scenario as this run played it: a fork keeps its own, with its changes, before it plays. One kept before
+    that answers the scenario of the run it was forked from, before the fork's changes."""
     entry = find(state, run_id)
     while True:
         path = run_dir(state, entry.run_id) / SCENARIO
@@ -1112,9 +1322,12 @@ class _ReadOnlyStore(SqliteStore):
     def __init__(self, path: Path, run_id: str, clock: Clock) -> None:
         self._attach(path, run_id, clock, _read_only(path))
         found = self._db.execute("PRAGMA user_version").fetchone()[0]
-        if found != SCHEMA_VERSION:
+        if found not in READS_SCHEMAS:
             self._db.close()
-            raise RunRefused(f"{path} was written with store schema {found}; this version reads {SCHEMA_VERSION}")
+            raise RunRefused(
+                f"{path} was written with store schema {found}; this version reads "
+                + " or ".join(str(v) for v in sorted(READS_SCHEMAS))
+            )
         self._lineage = self._load_lineage()
 
     def close(self) -> None:
@@ -1321,10 +1534,11 @@ class _Judge:
             if self._judging
             else evaluate(view, stop=record.stop, own=self._own)
         )
+        stopped = [record.failure] if record.stop is StopReason.INTERRUPTED and record.failure is not None else []
         result = result.model_copy(
             update={
                 "findings": [*result.findings, *emulator_findings(world)],
-                "notes": [*result.notes, *(self.own_files.notes() if self.own_files is not None else [])],
+                "notes": [*result.notes, *stopped, *(self.own_files.notes() if self.own_files is not None else [])],
             }
         )
         heard = self.receiver.notices if self.receiver is not None else []
@@ -1442,12 +1656,17 @@ def _root_dir(state: Path, record: RunRecord) -> Path:
 
 
 def _write_inputs(directory: Path, scenario: Scenario, agent: AgentUnderTest) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
-    (directory / AGENT).write_text(agent.model_dump_json(indent=2), encoding="utf-8")
+    _keep_inputs(directory, scenario, agent)
     told = {k: os.environ[k] for k in (RUN_PORT_VARIABLE, RUN_DIR_VARIABLE) if k in os.environ}
     if told:
         (directory / RUN_ENVIRONMENT).write_text(json.dumps(told, indent=2), encoding="utf-8")
+
+
+def _keep_inputs(directory: Path, scenario: Scenario, agent: AgentUnderTest) -> None:
+    """The scenario and the agent file as the run plays them, beside its world: what `close` keeps it with."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / SCENARIO).write_text(scenario.model_dump_json(indent=2), encoding="utf-8")
+    (directory / AGENT).write_text(agent.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _as_run_was(state: Path, run_id: str) -> None:
@@ -1987,13 +2206,13 @@ class _Program:
     def command(self) -> Sequence[str]:
         return self._command
 
-    async def start(self) -> None:
+    async def start(self, environment: Mapping[str, str] | None = None) -> None:
         with self._log.open("ab") as out:
             try:
                 # a group of its own, so stopping it stops whatever it started too
                 self._process = await asyncio.create_subprocess_exec(
                     *self._command,
-                    env=self._env,
+                    env={**self._env, **(environment or {})},
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=out,
                     stderr=out,

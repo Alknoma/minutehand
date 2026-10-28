@@ -8,6 +8,7 @@ import json
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -45,10 +46,47 @@ def _said(now: datetime, waits: dict[int, int]) -> dict[str, object]:
     }
 
 
-async def test_the_sandbox_is_read_for_whether_it_is_idle_and_its_clock_and_nothing_else() -> None:
+async def test_the_sandbox_is_read_for_whether_it_is_idle_its_clock_and_whether_it_is_held_and_nothing_else() -> None:
     reading = await SandboxClock(_sandbox(_said(T0, {1: 86_400 * SECOND, 2: SECOND // 2}))).read()
-    assert reading.model_dump() == {"idle": True, "now_ns": int(T0.timestamp() * SECOND)}
+    assert reading.model_dump() == {"idle": True, "now_ns": int(T0.timestamp() * SECOND), "held": False}
     assert reading.now() == T0
+    held = await SandboxClock(_sandbox({**_said(T0, {}), "held": True})).read()
+    assert held.held
+
+
+def _logging(log: Path, word: str) -> list[str]:
+    """A control call that appends `word` to `log`."""
+    return [sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write(sys.argv[2] + '\\n')", str(log), word]
+
+
+async def test_hold_and_release_run_the_agent_files_commands_and_hold_answers_the_held_reading(tmp_path: Path) -> None:
+    log = tmp_path / "called"
+    source = _sandbox({**_said(T0, {}), "held": True}, hold=_logging(log, "hold"), release=_logging(log, "release"))
+    clock = SandboxClock(source)
+    assert clock.holds
+    reading = await clock.hold()
+    await clock.release()
+    assert log.read_text().split() == ["hold", "release"]
+    assert reading.held and reading.now() == T0
+
+
+async def test_a_hold_the_sandbox_does_not_report_is_refused(tmp_path: Path) -> None:
+    """A `runsc` built without the hold that accepts the call and leaves the clock running."""
+    source = _sandbox(_said(T0, {}), hold=_logging(tmp_path / "x", "hold"), release=_logging(tmp_path / "x", "go"))
+    with pytest.raises(SandboxFailed, match="reads as not held"):
+        await SandboxClock(source).hold()
+
+
+def test_a_hold_without_a_release_is_refused() -> None:
+    with pytest.raises(ValueError, match="`hold` and `release` are named together or not at all"):
+        Sandbox.model_validate({"deadlines": ["runsc"], "advance": ["runsc", "{nanoseconds}"], "hold": ["runsc"]})
+
+
+async def test_a_sandbox_without_a_hold_does_not_hold() -> None:
+    clock = SandboxClock(_sandbox(_said(T0, {})))
+    assert not clock.holds
+    with pytest.raises(ValueError, match=r"names no `sandbox\.hold`"):
+        await clock.hold()
 
 
 def test_a_stale_housekeeping_key_is_refused() -> None:

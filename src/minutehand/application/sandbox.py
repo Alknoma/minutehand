@@ -4,9 +4,11 @@ and its clock, and moving its clock with the run's."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from pydantic import ConfigDict, Field
 
@@ -30,6 +32,10 @@ class SandboxReading(Model):
 
     idle: bool
     now_ns: int = Field(description="The sandbox's realtime clock, nanoseconds since the epoch")
+    held: bool = Field(
+        default=False,
+        description="Whether the clock is held (`Sandbox.hold`); a sandbox whose patch has no hold prints none",
+    )
 
     def now(self) -> datetime:
         """The sandbox's realtime clock, as an instant."""
@@ -45,7 +51,14 @@ async def _run(argv: list[str]) -> str:
         )
     except OSError as e:
         raise SandboxFailed(f"{argv[0]}: {e}") from e
-    out, err = await process.communicate()
+    try:
+        out, err = await process.communicate()
+    except asyncio.CancelledError:
+        # the run was stopped while the command ran (`application.interruption`): it is not left behind
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise
     if process.returncode != 0:
         raise SandboxFailed(f"{' '.join(argv)} exited {process.returncode}: {err.decode(errors='replace').strip()}")
     return out.decode(errors="replace")
@@ -73,6 +86,55 @@ class SandboxClock:
         if nanoseconds == 0:
             return
         await _run([part.replace("{nanoseconds}", str(nanoseconds)) for part in self._source.advance])
+
+    @property
+    def holds(self) -> bool:
+        """Whether the agent file names `hold` and `release`: the agent's clock then moves only inside a wake."""
+        return self._source.hold is not None
+
+    async def hold(self) -> SandboxReading:
+        """Stop the sandbox's clock where it stands, and answer its reading then: every later read returns that
+        moment, and no timer on it fires, until `release`. Holding a held clock does nothing."""
+        if self._source.hold is None:
+            raise ValueError("the agent file names no `sandbox.hold` to hold the sandbox's clock with")
+        await _run(self._source.hold)
+        said = await self.read()
+        if not said.held:
+            raise SandboxFailed(f"{' '.join(self._source.hold)} exited 0 and the sandbox's clock reads as not held")
+        return said
+
+    async def release(self) -> None:
+        """Let a held clock run on from the moment it was held. Releasing a running clock does nothing."""
+        if self._source.release is None:
+            raise ValueError("the agent file names no `sandbox.release` to release the sandbox's clock with")
+        await _run(self._source.release)
+
+    @property
+    def quiet(self) -> timedelta:
+        """How far apart two reads are (`Sandbox.quiet`)."""
+        return self._source.quiet
+
+    @property
+    def settle_limit(self) -> timedelta:
+        """Real time one wake may take to fall idle (`Sandbox.settle_limit`)."""
+        return self._source.settle_limit
+
+    @property
+    def exports(self) -> bool:
+        """Whether the agent file names a command that saves the agent's own state (`Sandbox.export_state`)."""
+        return self._source.export_state is not None
+
+    async def export(self, directory: Path) -> str | None:
+        """Save the agent's own state into `directory`, which exists and is empty, by the agent file's
+        `export_state`, run as `deadlines` and `advance` are: None once it exited 0, else what it said. Its failure
+        is the checkpoint's to keep, never the run's: a fork from there plays the agent back instead."""
+        if self._source.export_state is None:
+            raise ValueError("the agent file names no `sandbox.export_state` to save the agent's state with")
+        try:
+            await _run([part.replace("{dir}", str(directory)) for part in self._source.export_state])
+        except SandboxFailed as e:
+            return str(e)
+        return None
 
     async def sync(self, to: datetime) -> None:
         """Bring the sandbox's clock up to the run's, `to`, when it is behind. A sandbox ahead of `to` is left
@@ -111,18 +173,18 @@ class SandboxClock:
         give_up = time.monotonic() + self._source.settle_limit.total_seconds()  # clock-lint: exempt real-time limit
         quiet = self._source.quiet.total_seconds()
         while time.monotonic() < give_up:  # clock-lint: exempt real-time limit
-            before = _moving(traffic)
+            before = moving(traffic)
             first = await self.read()
             await asyncio.sleep(quiet)
             second = await self.read()
-            after = _moving(traffic)
+            after = moving(traffic)
             still = before == after and not before[1]
             if first.idle and second.idle and still:
                 return second
         return None
 
 
-def _moving(traffic: Traffic | None) -> tuple[int, bool]:
+def moving(traffic: Traffic | None) -> tuple[int, bool]:
     """What `traffic` reads now: its activity count, and whether any call of the agent's is in flight."""
     if traffic is None:
         return 0, False

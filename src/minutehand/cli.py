@@ -190,6 +190,8 @@ _STOPPED = {
     StopReason.ENVIRONMENT_FAILED: "an external emulator the run used was unavailable",
     StopReason.REPLAY_PARTED: "the frozen replay's record does not hold a model call the agent made, so nothing "
     "went to a model and the run stopped there",
+    StopReason.INTERRUPTED: "it was stopped from outside (a signal, or `minutehand close` on a run whose process "
+    "died); `fork --at` its last checkpoint carries it on",
 }
 _KIND_ORDER = (FindingKind.FAIL, FindingKind.REVIEW, FindingKind.INFORMATIONAL)
 
@@ -527,6 +529,16 @@ def _parser() -> _Parser:
     listing.add_argument("--json", action="store_true", help="print `session.Runs`")
     state(listing)
 
+    closing = commands.add_parser(
+        "close",
+        help="keep a run whose process died without keeping its record (killed, its container removed), from its "
+        "world file: it stops `interrupted`, and `findings`, `view`, `fork` and `replay` read it from then on; `fork` "
+        "and `replay` close a dead run themselves",
+    )
+    closing.add_argument("run_id")
+    closing.add_argument("--json", action="store_true")
+    state(closing)
+
     kept = commands.add_parser("checkpoints", help="a run's checkpoints, and whether a fork can start at each")
     kept.add_argument("run_id")
     kept.add_argument("--json", action="store_true", help="print `session.Checkpoints`")
@@ -826,6 +838,8 @@ def _main(args_in: list[str]) -> int:
             return _serve(args, state)
         if args.command == "checkpoints":
             return _checkpoints(state, args.run_id, as_json=args.json)
+        if args.command == "close":
+            return _report([asyncio.run(session.close(state, args.run_id))], state, as_json=args.json, sampled=False)
         if args.command == "gc":
             return _gc(state)
         if args.command in ("query", "trace", "explain"):
@@ -1146,18 +1160,21 @@ def _run(args: argparse.Namespace, state: Path, command: list[str] | None) -> in
     telemetry = _telemetry()
     try:
         outcomes = asyncio.run(
-            session.play(
-                scenario,
-                filled.agent,
-                state=state,
-                samples=args.samples,
-                command=filled.command,
-                telemetry=telemetry,
-                model=model_from_environment(),
-                judge=args.judge,
-                listen=_listen(args),
-                progress=_progress("run"),
-                seed=args.seed,
+            session.until_signalled(
+                lambda interruption: session.play(
+                    scenario,
+                    filled.agent,
+                    state=state,
+                    samples=args.samples,
+                    command=filled.command,
+                    telemetry=telemetry,
+                    model=model_from_environment(),
+                    judge=args.judge,
+                    listen=_listen(args),
+                    progress=_progress("run"),
+                    seed=args.seed,
+                    interruption=interruption,
+                )
             )
         )
     finally:
@@ -1215,17 +1232,20 @@ def _fork(args: argparse.Namespace, state: Path, command: list[str] | None) -> i
     telemetry = _telemetry()
     try:
         outcomes = asyncio.run(
-            session.fork(
-                args.run_id,
-                changes,
-                state=state,
-                command=command,
-                telemetry=telemetry,
-                model=model_from_environment(),
-                judge=args.judge,
-                listen=_listen(args),
-                progress=_progress("fork"),
-                frozen=args.frozen,
+            session.until_signalled(
+                lambda interruption: session.fork(
+                    args.run_id,
+                    changes,
+                    state=state,
+                    command=command,
+                    telemetry=telemetry,
+                    model=model_from_environment(),
+                    judge=args.judge,
+                    listen=_listen(args),
+                    progress=_progress("fork"),
+                    frozen=args.frozen,
+                    interruption=interruption,
+                )
             )
         )
     finally:
@@ -1238,18 +1258,21 @@ def _replay(args: argparse.Namespace, state: Path, command: list[str] | None) ->
     telemetry = _telemetry()
     try:
         outcome = asyncio.run(
-            session.replay(
-                args.run_id,
-                state=state,
-                command=command,
-                telemetry=telemetry,
-                model=model_from_environment(),
-                judge=args.judge,
-                listen=_listen(args),
-                progress=_progress("replay"),
-                live_from=args.live_from,
-                at_seq=args.at,
-                frozen=args.frozen,
+            session.until_signalled(
+                lambda interruption: session.replay(
+                    args.run_id,
+                    state=state,
+                    command=command,
+                    telemetry=telemetry,
+                    model=model_from_environment(),
+                    judge=args.judge,
+                    listen=_listen(args),
+                    progress=_progress("replay"),
+                    live_from=args.live_from,
+                    at_seq=args.at,
+                    frozen=args.frozen,
+                    interruption=interruption,
+                )
             )
         )
     finally:
@@ -1356,6 +1379,9 @@ def _checkpoints(state: Path, run_id: str, *, as_json: bool = False) -> int:
     if as_json:
         print(session.Checkpoints(run_id=run_id, checkpoints=found).model_dump_json(indent=2))
         return 0
+    unrecorded = session.died_without_record(state, run_id)
+    if unrecorded is not None:
+        print(unrecorded)
     if not found:
         print(f"run {run_id} has no checkpoints")
         return 0
@@ -1593,6 +1619,12 @@ def _point(point: ForkPoint) -> str:
     if isinstance(agent, NotRestorable):
         return f"not restorable: {agent.reason}"
     said = "restorable"
+    if agent.exported is not None:
+        said += (
+            "; the agent's own state saved here, which a fork starts it from"
+            if agent.exported.saved
+            else f"; the agent's own state not saved here ({agent.exported.failure}), so a fork plays it back"
+        )
     if agent.outside:
         said += f"; outside its memory, which a fork does not get: {'; '.join(agent.outside)}"
     return said

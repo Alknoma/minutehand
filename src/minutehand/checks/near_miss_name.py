@@ -2,7 +2,7 @@
 
 The defect this exists for: an agent given a goal naming one company researched
 a different company whose name is one letter away, then filed two tickets and
-sent two messages under that name (run f431fc97f427, 2026-08-24).
+sent two messages under that name (the captured run in `tests/data/partner_pipeline/`).
 """
 
 from __future__ import annotations

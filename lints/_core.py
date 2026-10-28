@@ -1,9 +1,9 @@
 """What every lint here shares, so that no lint carries its own copy.
 
-Ported from the parent repository's lint core, where fifteen
-lints had grown fifteen ways of walking the tree, printing, and — the one that
-mattered — parsing the escape hatch. Seven documented that the reason is
-required; one enforced it. Here the decisions are made once:
+Lints that each carry their own grow their own ways of walking the tree, printing,
+and — the one that matters — parsing the escape hatch: in one earlier set of
+fifteen, seven documented that the reason is required and one enforced it. Here
+the decisions are made once:
 
   ROOT / SRC                       where the repo is, what a lint scans by default
   sources()                        one walk, one parse, one set of skips
@@ -18,6 +18,7 @@ planted: the only way to show a lint fails when the violation is present.
 from __future__ import annotations
 
 import ast
+import posixpath
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -66,7 +67,7 @@ class Finding:
     kind: Kind = Kind.FAIL
 
     def render(self, base: str = "") -> str:
-        path = f"{base}/{self.file}" if base else self.file
+        path = posixpath.normpath(f"{base}/{self.file}") if base else self.file
         where = f"{path}:{self.line}" if self.line is not None else path
         return f"{where}: {self.message}"
 

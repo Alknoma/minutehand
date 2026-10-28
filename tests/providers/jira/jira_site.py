@@ -189,11 +189,14 @@ async def site(tmp_path: Path) -> AsyncIterator[Site]:
     provider.seed(SCENARIO, store)
     registry = Registry()
     registry.register(MANIFEST, lambda: provider)
-    async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
-        found = Site(provider=provider, store=store, clock=clock, http=httpx.AsyncClient(), proxy=proxy)
-        async with found.client(basic(AGENT_EMAIL, AGENT_TOKEN)) as http:
-            found.http = http
-            yield found
+    try:
+        async with Proxy(Routing(registry), store, clock, confdir=tmp_path / "ca") as proxy:
+            found = Site(provider=provider, store=store, clock=clock, http=httpx.AsyncClient(), proxy=proxy)
+            async with found.client(basic(AGENT_EMAIL, AGENT_TOKEN)) as http:
+                found.http = http
+                yield found
+    finally:
+        store.close()
 
 
 def ok(response: httpx.Response, status: int = 200) -> Any:

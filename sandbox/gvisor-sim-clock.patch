@@ -1,9 +1,9 @@
 diff --git a/pkg/sentry/kernel/deadlines.go b/pkg/sentry/kernel/deadlines.go
 new file mode 100644
-index 0000000..134c677
+index 0000000..829ad3c
 --- /dev/null
 +++ b/pkg/sentry/kernel/deadlines.go
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,90 @@
 +// Copyright 2026 The gVisor Authors.
 +//
 +// Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,6 +37,8 @@ index 0000000..134c677
 +type Deadlines struct {
 +	// Idle is true when no task goroutine is running or runnable.
 +	Idle bool
++	// Held is true while the sandbox's clock is held (HoldClock).
++	Held bool
 +	// NowNs is the sandbox's CLOCK_REALTIME, nanoseconds since the epoch.
 +	NowNs int64
 +	// Tasks is how many tasks there are.
@@ -58,7 +60,7 @@ index 0000000..134c677
 +	if err != nil {
 +		return Deadlines{}, err
 +	}
-+	report := Deadlines{Idle: k.runningTasks.Load() == 0, NowNs: now, EarliestNs: -1}
++	report := Deadlines{Idle: k.runningTasks.Load() == 0, Held: k.timekeeper.ClockHeld(), NowNs: now, EarliestNs: -1}
 +	for _, t := range k.tasks.Root.Tasks() {
 +		report.Tasks++
 +		deadline, clock, ok := t.BlockDeadline()
@@ -81,6 +83,16 @@ index 0000000..134c677
 +// AdvanceClock moves the sandbox's clocks by ns (Timekeeper.AdvanceClock).
 +func (k *Kernel) AdvanceClock(ns int64) {
 +	k.timekeeper.AdvanceClock(ns)
++}
++
++// HoldClock holds the sandbox's clocks at their current value when hold is
++// true (Timekeeper.HoldClock), and lets them run on from it when false
++// (Timekeeper.ReleaseClock).
++func (k *Kernel) HoldClock(hold bool) error {
++	if hold {
++		return k.timekeeper.HoldClock()
++	}
++	return k.timekeeper.ReleaseClock()
 +}
 diff --git a/pkg/sentry/kernel/task.go b/pkg/sentry/kernel/task.go
 index 5245e78..0189602 100644
@@ -151,10 +163,40 @@ index e6fea83..da84440 100644
  //
  // Preconditions: The caller must be running on the task goroutine.
 diff --git a/pkg/sentry/kernel/timekeeper.go b/pkg/sentry/kernel/timekeeper.go
-index 0a22882..7488428 100644
+index 0a22882..f90e7e1 100644
 --- a/pkg/sentry/kernel/timekeeper.go
 +++ b/pkg/sentry/kernel/timekeeper.go
-@@ -79,6 +79,15 @@ type Timekeeper struct {
+@@ -27,6 +27,29 @@ import (
+ 	"gvisor.dev/gvisor/pkg/tcpip"
+ )
+ 
++// Possible values of Timekeeper.vdsoMode: what the VDSO parameters publish
++// for realtime and monotonic.
++const (
++	// vdsoLive publishes the calibrated clocks: the VDSO computes the
++	// time from the cycle counter.
++	vdsoLive int = iota
++
++	// vdsoSyscall publishes them not ready: the VDSO falls back to
++	// clock_gettime, which GetTime answers. A hold and a release pass
++	// through it, so no read the VDSO answers lands on the wrong side of
++	// the held value.
++	vdsoSyscall
++
++	// vdsoHeld publishes the held values as the base, with a base cycle
++	// count no cycle counter reaches: the VDSO projects no cycles past the
++	// base (vdso_time.cc compute_time: now_cycles < base_cycles gives a
++	// delta of 0), so every read returns the held value without a syscall.
++	vdsoHeld
++)
++
++// heldBaseCycles is the base cycle count published while held.
++const heldBaseCycles = math.MaxInt64
++
+ // Possible values of Timekeeper.updaterState
+ const (
+ 	// manually stopped
+@@ -79,6 +102,42 @@ type Timekeeper struct {
  	// monotonicLowerBound is the lowerBound for monotonic time.
  	monotonicLowerBound atomicbitops.Int64 `state:"nosave"`
  
@@ -167,26 +209,144 @@ index 0a22882..7488428 100644
 +	simRealtime  atomicbitops.Int64 `state:"nosave"`
 +	simMonotonic atomicbitops.Int64 `state:"nosave"`
 +
++	// held is true while an outside controller holds the sandbox's clock
++	// (HoldClock): the application's realtime and monotonic clocks read
++	// heldRealtime and heldMonotonic, no timer on them fires, and the VDSO
++	// parameters are published not ready, so every read the application
++	// makes goes through GetTime. holdRealtime and holdMonotonic are how
++	// long the clock has been held in all, taken off every read the
++	// application makes once released (ReleaseClock), so no time passes for
++	// it while held. The network stack's clock (tcpip.Clock, AfterFunc)
++	// is never held: a packet's timers are the machine's, not the agent's.
++	held          atomicbitops.Bool  `state:"nosave"`
++	heldRealtime  atomicbitops.Int64 `state:"nosave"`
++	heldMonotonic atomicbitops.Int64 `state:"nosave"`
++	holdRealtime  atomicbitops.Int64 `state:"nosave"`
++	holdMonotonic atomicbitops.Int64 `state:"nosave"`
++
++	// vdsoMode is what the VDSO parameters publish (vdsoLive, vdsoSyscall,
++	// vdsoHeld).
++	// +checklocks:updateMu
++	vdsoMode int `state:"nosave"`
++
++	// appMonotonicLowerBound is the lowerBound for the application's
++	// monotonic clock, which a hold takes time off.
++	appMonotonicLowerBound atomicbitops.Int64 `state:"nosave"`
++
++	// holdMu serialises HoldClock, ReleaseClock and AdvanceClock.
++	holdMu sync.Mutex `state:"nosave"`
++
  	// restored, if non-nil, indicates that this Timekeeper was restored
  	// from a state file. The clocks are not set until restored is closed.
  	restored chan struct{} `state:"nosave"`
-@@ -280,13 +289,13 @@ func (t *Timekeeper) update(parked bool) {
- 		if res.MonotonicOk {
+@@ -254,7 +313,7 @@ func (t *Timekeeper) SetClocks(c sentrytime.Clocks, params *VDSOParamPage) {
+ 
+ 	// Initialize the pausable clock with the current monotonic time and
+ 	// start the background AfterFunc scheduler goroutine.
+-	nsec, err := t.GetTime(sentrytime.Monotonic)
++	nsec, err := t.machineTime(sentrytime.Monotonic)
+ 	if err != nil {
+ 		panic("Unable to get current monotonic time: " + err.Error())
+ 	}
+@@ -277,17 +336,30 @@ func (t *Timekeeper) update(parked bool) {
+ 		res := t.clocks.Update(parked)
+ 
+ 		var p vdsoParams
+-		if res.MonotonicOk {
++		// Realtime and monotonic as vdsoMode says. (With monotonicRawAlias
++		// the VDSO reads CLOCK_MONOTONIC_RAW from the monotonic parameters,
++		// so it is held with them.)
++		if res.MonotonicOk && t.vdsoMode != vdsoSyscall {
  			p.monotonicReady = 1
- 			p.monotonicBaseCycles = int64(res.Monotonic.BaseCycles)
+-			p.monotonicBaseCycles = int64(res.Monotonic.BaseCycles)
 -			p.monotonicBaseRef = int64(res.Monotonic.BaseRef) + t.monotonicOffset
-+			p.monotonicBaseRef = int64(res.Monotonic.BaseRef) + t.monotonicOffset + t.simMonotonic.Load()
  			p.monotonicFrequency = res.Monotonic.Frequency
++			if t.vdsoMode == vdsoHeld {
++				p.monotonicBaseCycles = heldBaseCycles
++				p.monotonicBaseRef = t.heldMonotonic.Load()
++			} else {
++				p.monotonicBaseCycles = int64(res.Monotonic.BaseCycles)
++				p.monotonicBaseRef = int64(res.Monotonic.BaseRef) + t.monotonicOffset + t.simMonotonic.Load() - t.holdMonotonic.Load()
++			}
  		}
- 		if res.RealtimeOk {
+-		if res.RealtimeOk {
++		if res.RealtimeOk && t.vdsoMode != vdsoSyscall {
  			p.realtimeReady = 1
- 			p.realtimeBaseCycles = int64(res.Realtime.BaseCycles)
+-			p.realtimeBaseCycles = int64(res.Realtime.BaseCycles)
 -			p.realtimeBaseRef = int64(res.Realtime.BaseRef)
-+			p.realtimeBaseRef = int64(res.Realtime.BaseRef) + t.simRealtime.Load()
  			p.realtimeFrequency = res.Realtime.Frequency
++			if t.vdsoMode == vdsoHeld {
++				p.realtimeBaseCycles = heldBaseCycles
++				p.realtimeBaseRef = t.heldRealtime.Load()
++			} else {
++				p.realtimeBaseCycles = int64(res.Realtime.BaseCycles)
++				p.realtimeBaseRef = int64(res.Realtime.BaseRef) + t.simRealtime.Load() - t.holdRealtime.Load()
++			}
  		}
  		if t.monotonicRawClock == nil {
-@@ -504,7 +513,11 @@ func (t *Timekeeper) GetTime(c sentrytime.ClockID) (int64, error) {
+ 			p.monotonicRawAlias = 1
+@@ -465,7 +537,7 @@ func (t *Timekeeper) Resume(params *VDSOParamPage) {
+ 	t.startUpdater(params)
+ 	// Resynchronize the pausable clock with the current monotonic time and
+ 	// restart the background AfterFunc scheduler goroutine.
+-	nsec, err := t.GetTime(sentrytime.Monotonic)
++	nsec, err := t.machineTime(sentrytime.Monotonic)
+ 	if err != nil {
+ 		panic(fmt.Sprintf("timekeeper.GetTime(sentrytime.Monotonic): %v", err))
+ 	}
+@@ -486,8 +558,50 @@ func (t *Timekeeper) TSCSnapshot() (sentrytime.TSCSnapshot, bool) {
+ 	return t.clocks.TSCSnapshot()
+ }
+ 
+-// GetTime returns the current time in nanoseconds.
++// GetTime returns the current time in nanoseconds, as the application reads
++// it: the held value while the clock is held, and less the time it was held
++// for once released.
+ func (t *Timekeeper) GetTime(c sentrytime.ClockID) (int64, error) {
++	if c == sentrytime.MonotonicRaw && t.monotonicRawClock == nil {
++		c = sentrytime.Monotonic
++	}
++	switch c {
++	case sentrytime.Realtime:
++		if t.held.Load() {
++			return t.heldRealtime.Load(), nil
++		}
++		now, err := t.machineTime(c)
++		return now - t.holdRealtime.Load(), err
++	case sentrytime.Monotonic:
++		var now int64
++		if t.held.Load() {
++			now = t.heldMonotonic.Load()
++		} else {
++			machine, err := t.machineTime(c)
++			if err != nil {
++				return machine, err
++			}
++			now = machine - t.holdMonotonic.Load()
++		}
++		for {
++			// A read that raced a hold may have returned a moment past
++			// the held value: never go back from it.
++			oldLowerBound := t.appMonotonicLowerBound.Load()
++			if now < oldLowerBound {
++				return oldLowerBound, nil
++			}
++			if t.appMonotonicLowerBound.CompareAndSwap(oldLowerBound, now) {
++				return now, nil
++			}
++		}
++	}
++	return t.machineTime(c)
++}
++
++// machineTime returns the current time in nanoseconds on the clock the
++// controller moves (AdvanceClock) and never holds: the network stack's, and
++// what a hold is measured against.
++func (t *Timekeeper) machineTime(c sentrytime.ClockID) (int64, error) {
+ 	if t.clocks == nil {
+ 		if t.restored == nil {
+ 			panic("Timekeeper used before initialized with SetClocks")
+@@ -504,7 +618,11 @@ func (t *Timekeeper) GetTime(c sentrytime.ClockID) (int64, error) {
  	defer t.release()
  
  	now, err := t.clocks.GetTime(c)
@@ -198,7 +358,7 @@ index 0a22882..7488428 100644
  		now += t.monotonicOffset
  		for {
  			// It's possible that the clock is shaky. This may be due to
-@@ -530,6 +543,39 @@ func (t *Timekeeper) BootTime() ktime.Time {
+@@ -530,6 +648,129 @@ func (t *Timekeeper) BootTime() ktime.Time {
  	return t.bootTime
  }
  
@@ -207,16 +367,29 @@ index 0a22882..7488428 100644
 +// is a sandbox born before now), publishes the new parameters to the VDSO,
 +// and tells every timer on either clock that the clock was set, so an armed
 +// sleep, futex, poll or epoll timeout re-checks its deadline at once.
++//
++// While the clock is held it moves the held value: every timer it passes
++// fires at once, and the clock stays held at the new value.
 +func (t *Timekeeper) AdvanceClock(ns int64) {
++	t.holdMu.Lock()
++	defer t.holdMu.Unlock()
++	held := t.held.Load()
++	if held {
++		// Through the syscall path while the held value moves, so no read
++		// the VDSO answers lands before one GetTime answered after it.
++		t.publishVDSO(vdsoSyscall)
++	}
 +	t.simRealtime.Add(ns)
++	t.heldRealtime.Add(ns)
 +	if ns > 0 {
 +		t.simMonotonic.Add(ns)
++		t.heldMonotonic.Add(ns)
 +	}
-+	t.updateMu.Lock()
-+	if t.clocks != nil && t.params != nil {
-+		t.update(false)
++	if held {
++		t.publishVDSO(vdsoHeld)
++	} else {
++		t.publishVDSO(vdsoLive)
 +	}
-+	t.updateMu.Unlock()
 +	t.realtimeClock.Notify(ktime.ClockEventSet)
 +	t.monotonicClock.Notify(ktime.ClockEventSet)
 +	if t.monotonicRawClock != nil {
@@ -230,6 +403,83 @@ index 0a22882..7488428 100644
 +	}
 +}
 +
++// HoldClock stops the application's realtime and monotonic clocks at their
++// current value until ReleaseClock: every read returns that value, on the
++// syscall path and through the VDSO, and no sleep, futex, poll, epoll or
++// timer deadline on them passes. Holding a held clock does nothing.
++func (t *Timekeeper) HoldClock() error {
++	t.holdMu.Lock()
++	defer t.holdMu.Unlock()
++	if t.held.Load() {
++		return nil
++	}
++	// Send the VDSO to the syscall path first, so no read it answers from
++	// its parameters can land past the value held.
++	t.publishVDSO(vdsoSyscall)
++	realtime, err := t.GetTime(sentrytime.Realtime)
++	if err != nil {
++		return err
++	}
++	monotonic, err := t.GetTime(sentrytime.Monotonic)
++	if err != nil {
++		return err
++	}
++	t.heldRealtime.Store(realtime)
++	t.heldMonotonic.Store(monotonic)
++	t.held.Store(true)
++	t.publishVDSO(vdsoHeld)
++	return nil
++}
++
++// ReleaseClock lets the application's clocks run again from the value they
++// were held at: the time they were held for is taken off every later read,
++// so none of it passed for the application. Every timer on them re-arms on
++// the released clock. Releasing a clock not held does nothing.
++func (t *Timekeeper) ReleaseClock() error {
++	t.holdMu.Lock()
++	defer t.holdMu.Unlock()
++	if !t.held.Load() {
++		return nil
++	}
++	// Through the syscall path again, so no read the VDSO answers from the
++	// held parameters lands after one GetTime answers on the released clock.
++	t.publishVDSO(vdsoSyscall)
++	realtime, err := t.machineTime(sentrytime.Realtime)
++	if err != nil {
++		return err
++	}
++	monotonic, err := t.machineTime(sentrytime.Monotonic)
++	if err != nil {
++		return err
++	}
++	heldMonotonic := t.heldMonotonic.Load()
++	if lowerBound := t.appMonotonicLowerBound.Load(); lowerBound > heldMonotonic {
++		heldMonotonic = lowerBound
++	}
++	t.holdRealtime.Store(realtime - t.heldRealtime.Load())
++	t.holdMonotonic.Store(monotonic - heldMonotonic)
++	t.held.Store(false)
++	t.publishVDSO(vdsoLive)
++	t.realtimeClock.Notify(ktime.ClockEventSet)
++	t.monotonicClock.Notify(ktime.ClockEventSet)
++	return nil
++}
++
++// publishVDSO sets what the VDSO parameters publish and publishes them.
++func (t *Timekeeper) publishVDSO(mode int) {
++	t.updateMu.Lock()
++	defer t.updateMu.Unlock()
++	t.vdsoMode = mode
++	if t.clocks != nil && t.params != nil {
++		t.update(false)
++	}
++}
++
++// ClockHeld reports whether the application's clocks are held.
++func (t *Timekeeper) ClockHeld() bool {
++	return t.held.Load()
++}
++
 +// SimOffset is how far AdvanceClock has moved the sandbox's realtime clock in all.
 +func (t *Timekeeper) SimOffset() int64 {
 +	return t.simRealtime.Load()
@@ -238,7 +488,7 @@ index 0a22882..7488428 100644
  // timekeeperClock is a ktime.SampledClock that reads time from a
  // kernel.Timekeeper-managed clock.
  //
-@@ -541,9 +587,9 @@ type timekeeperClock struct {
+@@ -541,9 +782,19 @@ type timekeeperClock struct {
  	// Implements ktime.SampledClock.WallTimeUntil.
  	ktime.WallRateClock `state:"nosave"`
  
@@ -248,9 +498,55 @@ index 0a22882..7488428 100644
 +	// Implements waiter.Waitable: AdvanceClock notifies ClockEventSet on
 +	// every move of the sandbox's clocks.
 +	ktime.ClockEventsQueue `state:"nosave"`
++}
++
++// WallTimeUntil implements ktime.SampledClock.WallTimeUntil. While the
++// clock is held no wall time brings it to t, so a timer on it checks again
++// only when ReleaseClock or AdvanceClock tells it the clock was set.
++func (tc *timekeeperClock) WallTimeUntil(t, now ktime.Time) time.Duration {
++	if tc.c != sentrytime.MonotonicRaw && tc.tk.held.Load() {
++		return time.Duration(math.MaxInt64)
++	}
++	return t.Sub(now)
  }
  
  // Now implements ktime.Clock.Now.
+@@ -564,7 +815,7 @@ var _ tcpip.Clock = (*Timekeeper)(nil)
+ 
+ // Now implements tcpip.Clock.
+ func (t *Timekeeper) Now() time.Time {
+-	nsec, err := t.GetTime(sentrytime.Realtime)
++	nsec, err := t.machineTime(sentrytime.Realtime)
+ 	if err != nil {
+ 		panic("timekeeper.GetTime(sentrytime.Realtime): " + err.Error())
+ 	}
+@@ -573,7 +824,7 @@ func (t *Timekeeper) Now() time.Time {
+ 
+ // NowMonotonic implements tcpip.Clock.
+ func (t *Timekeeper) NowMonotonic() tcpip.MonotonicTime {
+-	nsec, err := t.GetTime(sentrytime.Monotonic)
++	nsec, err := t.machineTime(sentrytime.Monotonic)
+ 	if err != nil {
+ 		panic("timekeeper.GetTime(sentrytime.Monotonic): " + err.Error())
+ 	}
+@@ -615,7 +866,7 @@ func (t *Timekeeper) runAfterFuncScheduler(stop <-chan struct{}) {
+ 		t.afterFuncSchedulerTarget.Store(math.MaxInt64)
+ 
+ 		// Set the current time of the pausable clock.
+-		nsec, err := t.GetTime(sentrytime.Monotonic)
++		nsec, err := t.machineTime(sentrytime.Monotonic)
+ 		if err != nil {
+ 			panic(fmt.Sprintf("timekeeper.GetTime(sentrytime.Monotonic), err: %v", err))
+ 		}
+@@ -734,7 +985,7 @@ func (timer *timekeeperTimer) Stop() bool {
+ // Reset implements tcpip.Timer.Reset.
+ func (timer *timekeeperTimer) Reset(d time.Duration) {
+ 	now := timer.tk.pausableClock.Now()
+-	nsec, err := timer.tk.GetTime(sentrytime.Monotonic)
++	nsec, err := timer.tk.machineTime(sentrytime.Monotonic)
+ 	if err != nil {
+ 		panic(fmt.Sprintf("timekeeperTimer.Reset: GetTime(Monotonic): %v", err))
+ 	}
 diff --git a/runsc/boot/controller.go b/runsc/boot/controller.go
 index e90a6e8..021b1ab 100644
 --- a/runsc/boot/controller.go
@@ -265,7 +561,7 @@ index e90a6e8..021b1ab 100644
  	if eps, ok := l.k.RootNetworkNamespace().Stack().(*netstack.Stack); ok {
  		c.srv.Register(&Network{
 diff --git a/runsc/boot/debug.go b/runsc/boot/debug.go
-index 1fb32c5..0947d1b 100644
+index 1fb32c5..dfb21ce 100644
 --- a/runsc/boot/debug.go
 +++ b/runsc/boot/debug.go
 @@ -16,9 +16,12 @@ package boot
@@ -281,7 +577,7 @@ index 1fb32c5..0947d1b 100644
  }
  
  // Stacks collects all sandbox stacks and copies them to 'stacks'.
-@@ -27,3 +30,30 @@ func (*debug) Stacks(_ *struct{}, stacks *string) error {
+@@ -27,3 +30,36 @@ func (*debug) Stacks(_ *struct{}, stacks *string) error {
  	*stacks = string(buf)
  	return nil
  }
@@ -298,6 +594,7 @@ index 1fb32c5..0947d1b 100644
 +	}
 +	*out = sentryapi.Deadlines{
 +		Idle:       found.Idle,
++		Held:       found.Held,
 +		NowNs:      found.NowNs,
 +		Tasks:      found.Tasks,
 +		Timed:      found.Timed,
@@ -311,6 +608,11 @@ index 1fb32c5..0947d1b 100644
 +func (d *debug) AdvanceClock(args *sentryapi.AdvanceClockArgs, _ *struct{}) error {
 +	d.k.AdvanceClock(args.Nanoseconds)
 +	return nil
++}
++
++// HoldClock holds the sandbox's clocks, or lets them run on from where they were held.
++func (d *debug) HoldClock(args *sentryapi.HoldClockArgs, _ *struct{}) error {
++	return d.k.HoldClock(args.Hold)
 +}
 diff --git a/runsc/boot/loader.go b/runsc/boot/loader.go
 index e8c6d4b..7c495e8 100644
@@ -332,10 +634,10 @@ index e8c6d4b..7c495e8 100644
  
  	if err := enableStrace(args.Conf); err != nil {
 diff --git a/runsc/boot/sentryapi/debug.go b/runsc/boot/sentryapi/debug.go
-index 326953d..ffc21c6 100644
+index 326953d..9d5b6bc 100644
 --- a/runsc/boot/sentryapi/debug.go
 +++ b/runsc/boot/sentryapi/debug.go
-@@ -16,3 +16,33 @@ package sentryapi
+@@ -16,3 +16,44 @@ package sentryapi
  
  // DebugStacks collects sandbox stacks for debugging.
  const DebugStacks = "debug.Stacks"
@@ -349,6 +651,11 @@ index 326953d..ffc21c6 100644
 +// signed number of nanoseconds.
 +const DebugAdvanceClock = "debug.AdvanceClock"
 +
++// DebugHoldClock holds the sandbox's realtime and monotonic clocks at their
++// current value, or lets them run on from it: while held no time passes for
++// the application and no timer on them fires.
++const DebugHoldClock = "debug.HoldClock"
++
 +// TaskWait is one blocked task's deadline, as the time until it.
 +type TaskWait struct {
 +	Task int32 `json:"task"`
@@ -358,6 +665,7 @@ index 326953d..ffc21c6 100644
 +// Deadlines is the answer to DebugDeadlines.
 +type Deadlines struct {
 +	Idle       bool       `json:"idle"`
++	Held       bool       `json:"held"`
 +	NowNs      int64      `json:"now_ns"`
 +	Tasks      int        `json:"tasks"`
 +	Timed      int        `json:"timed"`
@@ -369,8 +677,13 @@ index 326953d..ffc21c6 100644
 +type AdvanceClockArgs struct {
 +	Nanoseconds int64 `json:"nanoseconds"`
 +}
++
++// HoldClockArgs is the argument to DebugHoldClock: true holds, false releases.
++type HoldClockArgs struct {
++	Hold bool `json:"hold"`
++}
 diff --git a/runsc/cmd/debug.go b/runsc/cmd/debug.go
-index e85954e..71b1206 100644
+index e85954e..3d5d8cf 100644
 --- a/runsc/cmd/debug.go
 +++ b/runsc/cmd/debug.go
 @@ -16,6 +16,7 @@ package cmd
@@ -381,31 +694,48 @@ index e85954e..71b1206 100644
  	"fmt"
  	"os"
  	"os/signal"
-@@ -53,6 +54,8 @@ type Debug struct {
+@@ -53,6 +54,10 @@ type Debug struct {
  	duration     time.Duration
  	ps           bool
  	mount        string
 +	deadlines    bool
 +	advanceClock time.Duration
++	holdClock    bool
++	releaseClock bool
  }
  
  // Name implements subcommands.Command.
-@@ -87,6 +90,8 @@ func (d *Debug) SetFlags(f *flag.FlagSet) {
+@@ -87,6 +92,10 @@ func (d *Debug) SetFlags(f *flag.FlagSet) {
  	f.StringVar(&d.logPackets, "log-packets", "", "A boolean value to enable or disable packet logging: true or false.")
  	f.BoolVar(&d.ps, "ps", false, "lists processes")
  	f.StringVar(&d.mount, "mount", "", "Mount a filesystem (-mount fstype:source:destination).")
 +	f.BoolVar(&d.deadlines, "deadlines", false, "prints, as one JSON line, whether every task is blocked, the sandbox's clock, and the time until each blocked task's deadline.")
 +	f.DurationVar(&d.advanceClock, "advance-clock", 0, "moves the sandbox's realtime and monotonic clocks by this signed duration, and wakes every timer it passes.")
++	f.BoolVar(&d.holdClock, "hold-clock", false, "holds the sandbox's realtime and monotonic clocks at their current value: no time passes for the application and no timer on them fires until --release-clock. Applied before --advance-clock.")
++	f.BoolVar(&d.releaseClock, "release-clock", false, "lets a held clock run on from the value it was held at, so none of the time it was held passed for the application. Applied after --advance-clock.")
  }
  
  // FetchSpec implements util.SubCommand.FetchSpec.
-@@ -163,6 +168,22 @@ func (d *Debug) Execute(_ context.Context, f *flag.FlagSet, args ...any) subcomm
+@@ -163,6 +172,35 @@ func (d *Debug) Execute(_ context.Context, f *flag.FlagSet, args ...any) subcomm
  			return util.Errorf("failed to send signal %d to process %d", d.signal, pid)
  		}
  	}
++	if d.holdClock && d.releaseClock {
++		return util.Errorf("--hold-clock and --release-clock are exclusive")
++	}
++	if d.holdClock {
++		if err := c.Sandbox.HoldClock(true); err != nil {
++			return util.Errorf("holding clock: %v", err)
++		}
++	}
 +	if d.advanceClock != 0 {
 +		if err := c.Sandbox.AdvanceClock(d.advanceClock.Nanoseconds()); err != nil {
 +			return util.Errorf("advancing clock: %v", err)
++		}
++	}
++	if d.releaseClock {
++		if err := c.Sandbox.HoldClock(false); err != nil {
++			return util.Errorf("releasing clock: %v", err)
 +		}
 +	}
 +	if d.deadlines {
@@ -528,10 +858,10 @@ index ad2c804..155f024 100644
  	flagSet.Var(&XDP{}, "EXPERIMENTAL-xdp", `whether and how to use XDP. Can be one of: "off" (default), "ns", "redirect:<device name>", or "tunnel:<device name>"`)
  	flagSet.Bool("EXPERIMENTAL-xdp-need-wakeup", true, "EXPERIMENTAL. Use XDP_USE_NEED_WAKEUP with XDP sockets.") // TODO(b/240191988): Figure out whether this helps and remove it as a flag.
 diff --git a/runsc/sandbox/sandbox.go b/runsc/sandbox/sandbox.go
-index e8ed83e..5e72ca8 100644
+index e8ed83e..889910d 100644
 --- a/runsc/sandbox/sandbox.go
 +++ b/runsc/sandbox/sandbox.go
-@@ -2706,6 +2706,24 @@ func (s *Sandbox) Stacks() (string, error) {
+@@ -2706,6 +2706,33 @@ func (s *Sandbox) Stacks() (string, error) {
  	return stacks, nil
  }
  
@@ -549,6 +879,15 @@ index e8ed83e..5e72ca8 100644
 +	args := sentryapi.AdvanceClockArgs{Nanoseconds: ns}
 +	if err := s.call(sentryapi.DebugAdvanceClock, &args, nil); err != nil {
 +		return fmt.Errorf("advancing sandbox %q clock: %w", s.ID, err)
++	}
++	return nil
++}
++
++// HoldClock holds the sandbox's clocks when hold is true, and releases them when false.
++func (s *Sandbox) HoldClock(hold bool) error {
++	args := sentryapi.HoldClockArgs{Hold: hold}
++	if err := s.call(sentryapi.DebugHoldClock, &args, nil); err != nil {
++		return fmt.Errorf("holding sandbox %q clock (hold=%t): %w", s.ID, hold, err)
 +	}
 +	return nil
 +}

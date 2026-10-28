@@ -23,8 +23,17 @@ def everything(directory: Path) -> bytes:
     for world in (p for p in found if p.suffix == ".db"):
         db = sqlite3.connect(f"{world.resolve().as_uri()}?mode=ro", uri=True)
         try:
-            for codec, stored in db.execute("SELECT codec, stored FROM content"):
-                kept.append(unpack.decompress(stored) if Codec(codec) is Codec.ZSTD else stored)
+            rows = {h: (Codec(c), s) for h, c, s in db.execute("SELECT hash, codec, stored FROM content")}
+
+            def whole(codec: Codec, stored: bytes) -> bytes:
+                return unpack.decompress(stored) if codec is Codec.ZSTD else stored
+
+            for codec, stored in rows.values():
+                if codec is Codec.PARTS:
+                    # The body as written, its parts joined: a secret cut across two parts is still found.
+                    kept.append(b"".join(whole(*rows[stored[i : i + 32]]) for i in range(0, len(stored), 32)))
+                else:
+                    kept.append(whole(codec, stored))
         finally:
             db.close()
     return b"".join(kept)

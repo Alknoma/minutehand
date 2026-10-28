@@ -11,7 +11,7 @@ the log: the run delivers it at its moment, and a fork from a checkpoint where i
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 
@@ -144,8 +144,8 @@ class _Program:
 
     command: Sequence[str] = ("agent",)
 
-    async def start(self) -> None:
-        return None
+    async def start(self, environment: Mapping[str, str] | None = None) -> None:
+        del environment
 
     async def stop(self) -> None:
         return None

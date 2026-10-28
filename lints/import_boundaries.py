@@ -11,7 +11,7 @@ ports. Python accepts every one of these imports; only the direction is wrong.
 
 Read from the AST, not by regex, so every spelling is one import: `import a.b`,
 `from a import b`, `from a.b import c`, a relative `from ..adapters import x`, an
-import inside a function or under `if TYPE_CHECKING:`. The parent repo's regex
+import inside a function or under `if TYPE_CHECKING:`. An earlier repo's regex
 missed package-level `from X.adapters import f` for months; there is no pattern
 here to miss it with. What this cannot see: an import spelled as a string
 (`importlib.import_module`, an entry point in pyproject.toml).

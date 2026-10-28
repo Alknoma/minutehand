@@ -405,8 +405,11 @@ async def hub(tmp_path: Path, seeded: GitHubSeed) -> AsyncIterator[Hub]:
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed_with(seeded, SCENARIO, store)
-    async with Proxy(Routing(Registry.installed()), store, clock, confdir=tmp_path / "ca") as proxy:
-        yield Hub(provider=provider, store=store, clock=clock, proxy=proxy, path=tmp_path / "world.db")
+    try:
+        async with Proxy(Routing(Registry.installed()), store, clock, confdir=tmp_path / "ca") as proxy:
+            yield Hub(provider=provider, store=store, clock=clock, proxy=proxy, path=tmp_path / "world.db")
+    finally:
+        store.close()
 
 
 Json = dict[str, object]

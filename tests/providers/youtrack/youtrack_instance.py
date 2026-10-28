@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import ssl
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -90,12 +90,13 @@ class Instance:
 
 
 @pytest.fixture
-def instance(tmp_path: Path) -> Instance:
+def instance(tmp_path: Path) -> Iterator[Instance]:
     clock = RunClock(START)
     store = SqliteStore(tmp_path / "world.db", "root", clock)
     provider = build()
     provider.seed(SCENARIO, store)
-    return Instance(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    yield Instance(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
+    store.close()
 
 
 def client_for(
