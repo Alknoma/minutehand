@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -31,9 +32,11 @@ def ticket(title: str, operation: Operation = Operation.UPDATE) -> Change:
 
 
 @pytest.fixture
-def world(tmp_path: Path) -> tuple[SqliteStore, RunClock]:
+def world(tmp_path: Path) -> Iterator[tuple[SqliteStore, RunClock]]:
     clock = RunClock(START)
-    return SqliteStore(tmp_path / "world.db", "root", clock), clock
+    store = SqliteStore(tmp_path / "world.db", "root", clock)
+    yield store, clock
+    store.close()
 
 
 def test_it_satisfies_the_port(world: tuple[SqliteStore, RunClock]) -> None:
@@ -379,3 +382,12 @@ def test_a_version_9_file_is_still_refused(tmp_path: Path) -> None:
         db.execute("PRAGMA user_version=9")
     with pytest.raises(RuntimeError, match="written with store schema 9; this version reads schema 10 or 11"):
         SqliteStore(path, "root", RunClock(START))
+
+
+def test_closing_a_closed_store_does_nothing(world: tuple[SqliteStore, RunClock]) -> None:
+    """A test or a fixture that closes what another already closed is not an error, as with a file."""
+    store, _ = world
+    store.close()
+    store.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        store.events()

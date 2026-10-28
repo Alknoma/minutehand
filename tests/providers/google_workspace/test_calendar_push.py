@@ -450,13 +450,13 @@ say(
         )
         seen = await client.heard()
         await client.finished()
+        assert not DriveWorld(google.store).channels(), "nothing was opened"
     assert seen["plain"] == [
         400,
         {"error": {"code": 400, "message": "WebHook callback must be HTTPS: http://127.0.0.1:1/ok"}},
     ]
     for refused in (seen["past"], seen["ttl"], seen["payload"]):
         assert isinstance(refused, list) and refused[0] == 501, refused
-    assert not DriveWorld(google.store).channels(), "nothing was opened"
 
 
 async def test_a_receiver_whose_certificate_the_run_does_not_trust_is_still_told_sync_then_exists(
@@ -481,9 +481,9 @@ say(done=True)
             await client.heard()
             await client.finished()
             await receiver.until(2)
+        assert all(d.failure is None for d in DriveWorld(google.store).deliveries())
     states = [h.headers["x-goog-resource-state"] for h in receiver.heard]
     assert states[:2] == ["sync", "exists"], states
-    assert all(d.failure is None for d in DriveWorld(google.store).deliveries())
 
 
 async def test_a_watch_on_a_secondary_calendar_is_told_of_its_events_and_names_it_encoded(tmp_path: Path) -> None:

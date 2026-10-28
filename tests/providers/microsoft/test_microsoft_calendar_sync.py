@@ -6,6 +6,7 @@ holding its own events, read, changed and deleted through it."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
 
@@ -18,8 +19,10 @@ WINDOW = "startDateTime=2026-09-14T00:00:00Z&endDateTime=2026-09-21T00:00:00Z"
 
 
 @pytest.fixture
-def tenant(tmp_path: Path) -> Tenant:
-    return seeded(tmp_path / "world.db", OUTLOOK)
+def tenant(tmp_path: Path) -> Iterator[Tenant]:
+    found = seeded(tmp_path / "world.db", OUTLOOK)
+    yield found
+    found.store.close()
 
 
 def _at(tenant: Tenant, later: timedelta) -> str:

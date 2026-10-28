@@ -4,6 +4,7 @@ told, what is done with its answer, and when the answer lands."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
@@ -75,10 +76,24 @@ def answering(received: Received) -> WrittenReply:
     return WrittenReply(replies=False, text=None)
 
 
-def world(tmp_path: Path, at: datetime = T0) -> tuple[SqliteStore, RunClock]:
-    clock = RunClock(at)
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    return SqliteStore(tmp_path / "world.db", "r", clock), clock
+World = Callable[..., tuple[SqliteStore, RunClock]]
+"""Opens the test's world: a real store on a fresh run and its clock, at `T0` unless a time is given."""
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> Iterator[World]:
+    """Every store a test opens is closed when the test ends."""
+    opened: list[SqliteStore] = []
+
+    def opening(at: datetime = T0) -> tuple[SqliteStore, RunClock]:
+        clock = RunClock(at)
+        store = SqliteStore(tmp_path / "world.db", "r", clock)
+        opened.append(store)
+        return store, clock
+
+    yield opening
+    for store in opened:
+        store.close()
 
 
 def say(
@@ -101,7 +116,7 @@ def model(fake: FakeCompletions) -> PydanticAIModel:
 
 @pytest.mark.parametrize("helpfulness", list(Helpfulness))
 async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scripted_one_would(
-    tmp_path: Path, helpfulness: Helpfulness
+    world: World, helpfulness: Helpfulness
 ) -> None:
     written = sofia(helpfulness, voice="terse")
     scripted = written.model_copy(
@@ -111,7 +126,7 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
             )
         }
     )
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = say(store, Actor.AGENT, QUESTION, [email(written)], "m1")
     async with fake_completions(answering) as fake:
         reply = await PeopleReplier(
@@ -136,9 +151,9 @@ async def test_each_helpfulness_reaches_the_model_and_the_reply_lands_when_a_scr
     assert received.temperature == 0.3 and received.schema_name == "WrittenReply"
 
 
-async def test_a_message_that_needs_no_answer_gets_none(tmp_path: Path) -> None:
+async def test_a_message_that_needs_no_answer_gets_none(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     thanks = say(store, Actor.AGENT, "Thanks, that is all I needed.", [email(who)], "m1")
     async with fake_completions(answering) as fake:
         reply = await PeopleReplier(
@@ -148,10 +163,10 @@ async def test_a_message_that_needs_no_answer_gets_none(tmp_path: Path) -> None:
 
 
 async def test_a_person_asked_beyond_their_facts_is_told_to_say_they_do_not_know_and_given_nothing_else(
-    tmp_path: Path,
+    world: World,
 ) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = say(store, Actor.AGENT, "Who signs for legal, and what is the price?", [email(who)], "m1")
     async with fake_completions(answering) as fake:
         await PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), who]), model(fake)).decide(
@@ -166,9 +181,9 @@ async def test_a_person_asked_beyond_their_facts_is_told_to_say_they_do_not_know
     assert STALE[0] not in system and "what you believe" not in system
 
 
-async def test_a_person_with_no_facts_is_told_they_know_nothing(tmp_path: Path) -> None:
+async def test_a_person_with_no_facts_is_told_they_know_nothing(world: World) -> None:
     who = sofia().model_copy(update={"facts": []})
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = say(store, Actor.AGENT, QUESTION, [email(who)], "m1")
     async with fake_completions(answering) as fake:
         await PeopleReplier(scenario(tom_finishes=False, people=[person("owner", Silent()), who]), model(fake)).decide(
@@ -177,9 +192,9 @@ async def test_a_person_with_no_facts_is_told_they_know_nothing(tmp_path: Path) 
     assert "What you know:\n- nothing about this beyond what the messages themselves say" in fake.received[0].system
 
 
-async def test_what_the_person_can_see_is_given_in_order_and_no_one_elses_private_messages(tmp_path: Path) -> None:
+async def test_what_the_person_can_see_is_given_in_order_and_no_one_elses_private_messages(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     say(store, Actor.AGENT, "Hi Sofia, a question soon.", [email(who)], "m1")
     say(store, Actor.AGENT, "Tom, unrelated.", ["tom@example.com"], "m2", channel="dm-tom")
     say(store, Actor.PERSON, "Sure, go ahead.", [], "m3")
@@ -201,9 +216,9 @@ async def test_what_the_person_can_see_is_given_in_order_and_no_one_elses_privat
     assert "Tom, unrelated." not in shown and "Tom here." not in shown
 
 
-async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(tmp_path: Path) -> None:
+async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     say(store, Actor.AGENT, "Thinking...", [email(who)], "m1")
     asked = store.apply(
         Change(
@@ -222,9 +237,9 @@ async def test_an_edited_message_is_put_to_the_model_as_it_reads_after_the_edit(
     assert reply is not None and reply.text == "It is 40k a year."
 
 
-async def test_a_person_may_name_their_own_model(tmp_path: Path) -> None:
+async def test_a_person_may_name_their_own_model(world: World) -> None:
     who = sofia(model="people-large")
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = say(store, Actor.AGENT, QUESTION, [email(who)], "m1")
     async with fake_completions(answering) as fake:
         reply = await PeopleReplier(
@@ -234,7 +249,7 @@ async def test_a_person_may_name_their_own_model(tmp_path: Path) -> None:
     assert reply is not None and reply.written_by is not None and reply.written_by.model == "people-large"
 
 
-async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scripted_one(tmp_path: Path) -> None:
+async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scripted_one(world: World) -> None:
     timing = {
         "working_hours": WorkingHours(timezone="Europe/Lisbon", opens=time(9), closes=time(17)),
         "absences": [
@@ -249,7 +264,7 @@ async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scr
             )
         }
     )
-    store, clock = world(tmp_path, FRIDAY_1630)
+    store, clock = world(FRIDAY_1630)
     asked = say(store, Actor.AGENT, QUESTION, [email(written)], "m1")
     async with fake_completions(answering) as fake:
         reply = await PeopleReplier(
@@ -262,9 +277,9 @@ async def test_absence_and_working_hours_move_a_written_reply_as_they_move_a_scr
     assert reply.at == same.at >= FRIDAY_1630 + timedelta(days=3, hours=1)
 
 
-async def test_an_answer_that_breaks_its_own_rule_is_sent_back_once(tmp_path: Path) -> None:
+async def test_an_answer_that_breaks_its_own_rule_is_sent_back_once(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = say(store, Actor.AGENT, QUESTION, [email(who)], "m1")
 
     def careless(received: Received) -> str | WrittenReply:
@@ -280,13 +295,13 @@ async def test_an_answer_that_breaks_its_own_rule_is_sent_back_once(tmp_path: Pa
     assert len(fake.received) == 2 and "replies is true, so text must be the reply" in fake.received[1].last
 
 
-async def test_the_router_sends_scripted_people_to_the_script_and_written_ones_to_the_model(tmp_path: Path) -> None:
+async def test_the_router_sends_scripted_people_to_the_script_and_written_ones_to_the_model(world: World) -> None:
     written = sofia()
     tom = person(
         "tom",
         Scripted(then=AfterScript.SILENT, delay=DELAY, replies=[ScriptedReply(to_ask=1, verbatim="From the script.")]),
     )
-    store, clock = world(tmp_path)
+    store, clock = world()
     to_tom = say(store, Actor.AGENT, QUESTION, [email(tom)], "m1")
     to_sofia = say(store, Actor.AGENT, QUESTION, [email(written)], "m2")
     async with fake_completions(answering) as fake:
@@ -337,9 +352,9 @@ def card(store: SqliteStore, to: list[str]) -> WorldEvent:
     )
 
 
-async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_back_as_one(tmp_path: Path) -> None:
+async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_back_as_one(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = card(store, [email(who)])
 
     def rejects(received: Received) -> WrittenReply:
@@ -361,9 +376,9 @@ async def test_the_person_is_shown_the_controls_and_a_press_with_a_reason_comes_
     assert received.last.endswith('[Controls: "Accept", "Reject"]'), "a link is not a control a person answers with"
 
 
-async def test_a_press_the_message_does_not_carry_is_refused(tmp_path: Path) -> None:
+async def test_a_press_the_message_does_not_carry_is_refused(world: World) -> None:
     who = sofia()
-    store, clock = world(tmp_path)
+    store, clock = world()
     asked = card(store, [email(who)])
 
     def invents(received: Received) -> WrittenReply:

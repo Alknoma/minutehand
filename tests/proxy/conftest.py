@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -21,8 +22,10 @@ def world_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def store(world_path: Path, clock: RunClock) -> SqliteStore:
-    return SqliteStore(world_path, "run", clock)
+def store(world_path: Path, clock: RunClock) -> Iterator[SqliteStore]:
+    opened = SqliteStore(world_path, "run", clock)
+    yield opened
+    opened.close()
 
 
 @pytest.fixture
