@@ -8,6 +8,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="slack",
+    title="Slack",
     sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["slack.com", "*.slack.com"],

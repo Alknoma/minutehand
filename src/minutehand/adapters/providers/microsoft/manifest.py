@@ -8,6 +8,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="microsoft",
+    title="Microsoft 365",
     sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=[

@@ -97,6 +97,7 @@ class AgentSends(StrEnum):
 
 class Manifest(Model):
     key: ProviderKey
+    title: str = Field(min_length=1, description="The service as the people who use it call it: 'Slack', 'Jira'")
     tier: Tier
     hosts: list[str] = Field(min_length=1, description="Exact hosts or '*.' wildcards this provider answers for")
     path_prefix: str = Field(default="", description="Prefix the real API serves under, e.g. '/api/1.0'")
