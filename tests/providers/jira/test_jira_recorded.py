@@ -52,6 +52,7 @@ CASES: list[Case] = [
     ("user_search_no_query", "GET", "/user/search", None, {}),
     ("user_search_query_and_account", "GET", "/user/search?query=a&accountId=x", None, {}),
     ("assignable_no_project", "GET", "/user/assignable/search", None, {}),
+    ("assignable_query_and_account", "GET", "/user/assignable/search?project=LAUNCH&query=a&accountId=x", None, {}),
     ("project_search_order_unknown", "GET", "/project/search?orderBy=zz", None, {}),
     ("approximate_count_get", "GET", "/search/approximate-count", None, {}),
     ("transitions_unknown_id", "GET", "/issue/LAUNCH-1/transitions?transitionId=999", None, {}),
@@ -95,6 +96,14 @@ async def test_the_fake_answers_as_the_public_site_did(
     if isinstance(expected, dict) and "issues" in expected and expected["issues"]:
         pytest.fail(f"{name}: a recording with issues cannot be compared")
     assert (answer.status_code, got) == (status, expected), name
+
+
+async def test_an_assignable_search_naming_only_the_project_passes_the_sites_checks(site: Site) -> None:
+    """The site refused the anonymous caller (401), not the request (400): with no `query` or `accountId` the call
+    reached its permission check, so a signed-in caller of the fake is answered."""
+    status, _ = recorded("assignable_project_only")
+    answer = await site.http.get(f"{API}/user/assignable/search?project=LAUNCH&maxResults=200")
+    assert (status, answer.status_code) == (401, 200), answer.text
 
 
 async def test_a_comment_body_that_is_not_a_document_is_refused_in_the_sites_words(site: Site) -> None:
