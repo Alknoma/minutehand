@@ -146,6 +146,7 @@ from minutehand.application.files import (
     load_replay_cases,
     load_scenario,
     problems,
+    record_schema,
     schema,
 )
 from minutehand.application.forks import ForkAccount, scorecard_lines
@@ -651,9 +652,11 @@ def _parser() -> _Parser:
     )
     doctor.add_argument("--json", action="store_true")
     schema_of = commands.add_parser(
-        "schema", help="print the JSON Schema of an agent, scenario or seed file, or the agent API's OpenAPI document"
+        "schema",
+        help="print the JSON Schema of an agent, scenario or seed file or of an exported run's record, or the agent "
+        "API's OpenAPI document",
     )
-    schema_of.add_argument("kind", choices=[*(k.value for k in FileKind), AGENT_API])
+    schema_of.add_argument("kind", choices=[*(k.value for k in FileKind), RECORD, AGENT_API])
     checking = commands.add_parser(
         "validate", help="load agent, scenario and seed files with every load-time check, naming each problem"
     )
@@ -868,11 +871,19 @@ def _main(args_in: list[str]) -> int:
 
 
 AGENT_API = "agent-api"
+RECORD = "record"
+"""`minutehand schema record`: the record `minutehand export` writes, an output rather than a `FileKind`."""
 
 
 def _schema(kind: str) -> int:
-    """The JSON Schema of one kind of file, or the OpenAPI document of what an agent may implement, on stdout."""
-    found = agent_api.document() if kind == AGENT_API else schema(FileKind(kind))
+    """The JSON Schema of one kind of file or of an exported record, or the OpenAPI document of what an agent may
+    implement, on stdout."""
+    if kind == AGENT_API:
+        found = agent_api.document()
+    elif kind == RECORD:
+        found = record_schema()
+    else:
+        found = schema(FileKind(kind))
     print(json.dumps(found, indent=2, sort_keys=True))
     return 0
 

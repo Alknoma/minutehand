@@ -27,6 +27,7 @@ from minutehand.application.inboxes import items_in
 from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.checks import Finding, WakeRecord
 from minutehand.domain.presentation import (
+    RECORD_VERSION,
     ApprovalStatus,
     ConversationKind,
     PresentedAuthor,
@@ -150,6 +151,7 @@ def _record(
     assessment = _assessment(*judged, cites, left_out) if judged is not None else None
     return Exported(
         record=ReplayRecord(
+            schema=RECORD_VERSION,
             run=RecordRun(
                 id=run_id,
                 scenario=scenario.name,

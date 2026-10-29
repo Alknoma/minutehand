@@ -11,7 +11,6 @@ import pytest
 from minutehand import session
 from minutehand.adapters.export.record import Exported, export
 from minutehand.adapters.providers.slack import state as slack_state
-from minutehand.checks.runner import evaluate_run
 from minutehand.cli import main
 from minutehand.domain.checks import Finding, FindingKind, Severity
 from minutehand.domain.presentation import (
@@ -22,12 +21,13 @@ from minutehand.domain.presentation import (
     RecordGroup,
     RecordMessage,
 )
-from minutehand.domain.run import RunRecord, StopReason
+from minutehand.domain.run import StopReason
 from minutehand.domain.world import EntityKind, Operation
-from minutehand.session import RECORD, RESULT, RUNS, RunRefused
+from minutehand.session import RUNS, RunRefused
 from tests.export.run import (
     ANSWER,
     DRAFT,
+    ENDED,
     GOAL,
     MADE,
     OLD_POST,
@@ -37,7 +37,7 @@ from tests.export.run import (
     TO_GROUP,
     TO_TEO,
     Written,
-    scenario,
+    finish,
     write_run,
 )
 
@@ -97,31 +97,6 @@ def test_wakes_run_from_one_to_the_next_and_the_last_to_the_run_end(run: Written
     assert _message(exported, TEO_ANSWERS).wake == 2
 
 
-ENDED = T0 + timedelta(days=5)
-
-
-def _finish(run: Written, findings: list[Finding] | None = None) -> None:
-    """Write the run's record and its checks' result, as a run that finished does; `findings` stands in for what its
-    checks found."""
-    record = RunRecord(
-        run_id=run.run_id,
-        scenario="release_checklist",
-        seed=0,
-        started_at=T0,
-        ended_at=ENDED,
-        wall_seconds=1,
-        stop=StopReason.WINDOW_ENDED,
-        wakes=[],
-    )
-    directory = run.state / RUNS / run.run_id
-    with session.reading(run.state, run.run_id) as world:
-        result = evaluate_run(scenario(), world.events(), [], world.replies(), stop=record.stop, ended=ENDED)
-    if findings is not None:
-        result = result.model_copy(update={"findings": findings})
-    (directory / RECORD).write_text(record.model_dump_json(), encoding="utf-8")
-    (directory / RESULT).write_text(result.model_dump_json(), encoding="utf-8")
-
-
 def _seqs(run: Written) -> dict[str, list[int]]:
     """The seq of each event the findings below cite, by what it is."""
     with session.reading(run.state, run.run_id) as world:
@@ -147,7 +122,7 @@ def _finding(check: str, evidence: list[int]) -> Finding:
 
 
 def test_a_finished_run_ends_where_its_record_says(run: Written) -> None:
-    _finish(run)
+    finish(run)
     assert export(run.state, run.run_id).record.run.end == ENDED
 
 
@@ -166,7 +141,7 @@ def test_a_run_with_no_verdict_has_no_assessment(run: Written, tmp_path: Path) -
 def test_a_finished_run_carries_its_verdict_and_each_finding_cites_the_record(run: Written) -> None:
     seqs = _seqs(run)
     evidence = [*seqs["answer"], *seqs["item"], *seqs["made"]]  # the answer twice: sent, then rewritten
-    _finish(run, [_finding("asks_before_it_acts", evidence), _finding("nothing_to_cite", [])])
+    finish(run, [_finding("asks_before_it_acts", evidence), _finding("nothing_to_cite", [])])
     exported = export(run.state, run.run_id)
     assessment = exported.record.assessment
     assert assessment is not None
@@ -189,7 +164,7 @@ def test_a_finished_run_carries_its_verdict_and_each_finding_cites_the_record(ru
 def test_evidence_the_record_does_not_hold_is_dropped_and_counted(run: Written) -> None:
     seqs = _seqs(run)
     assert seqs["seeded_ticket"]
-    _finish(run, [_finding("reads_the_ticket", [*seqs["seeded_ticket"], *seqs["made"]])])
+    finish(run, [_finding("reads_the_ticket", [*seqs["seeded_ticket"], *seqs["made"]])])
     exported = export(run.state, run.run_id)
     assert exported.record.assessment is not None
     (finding,) = exported.record.assessment.findings
@@ -200,7 +175,7 @@ def test_evidence_the_record_does_not_hold_is_dropped_and_counted(run: Written) 
 def test_the_assessment_is_in_the_readers_field_names_and_never_the_verdicts_words(
     run: Written, tmp_path: Path
 ) -> None:
-    _finish(run, [_finding("asks_before_it_acts", _seqs(run)["item"])])
+    finish(run, [_finding("asks_before_it_acts", _seqs(run)["item"])])
     out = tmp_path / "record.json"
     assert main(["export", run.run_id, "--out", str(out), "--state", str(run.state)]) == 0
     assessment = json.loads(out.read_text(encoding="utf-8"))["assessment"]

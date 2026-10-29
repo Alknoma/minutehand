@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
@@ -20,7 +20,7 @@ from minutehand.domain.checks import FindingKind, Severity
 from minutehand.domain.model import Model
 from minutehand.domain.run import StopReason, VerdictKind
 
-RECORD_VERSION = "minutehand-replay-record/2"
+RECORD_VERSION: Final = "minutehand-replay-record/2"
 
 
 class ConversationKind(StrEnum):
@@ -221,7 +221,7 @@ class RecordAssessment(_Out):
 
 
 class ReplayRecord(_Out):
-    version: Literal["minutehand-replay-record/2"] = Field(default=RECORD_VERSION, alias="schema")
+    version: Literal["minutehand-replay-record/2"] = Field(alias="schema")
     run: RecordRun
     agent: RecordAgent
     people: list[RecordPerson]

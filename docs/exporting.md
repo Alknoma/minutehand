@@ -23,6 +23,11 @@ yet a reader of `/1` refuses a `/2` record all the same. Field names
 are the reader's (`replyTo`, `editedUntil`); a field with nothing to say is left out rather than written as `null`.
 Every moment is UTC, ISO 8601.
 
+`schemas/record.schema.json` (`minutehand schema record`) is the record's JSON Schema (2020-12), generated from the
+model the export writes and committed with a drift test (`tests/test_schemas.py`): it pins `schema` to
+`minutehand-replay-record/2` and refuses a field it does not name. A reader validates against it, and generates its
+types from it, rather than copying the table below.
+
 | Field | What it holds |
 |---|---|
 | `schema` | `minutehand-replay-record/2` |
