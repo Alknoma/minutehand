@@ -30,7 +30,8 @@
     minutehand export <run> [--out FILE] [--state DIR]
                                                  a run as a record for a reader outside Minutehand: its people,
                                                  conversations, wakes, what was written down, what waits for
-                                                 approval and what the agent did itself (docs/exporting.md)
+                                                 approval, what the agent did itself and, for a finished
+                                                 run, what the checks found (docs/exporting.md)
     minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--item ID] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what

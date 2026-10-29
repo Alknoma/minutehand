@@ -1,6 +1,6 @@
 """A run written through the real store and the real Slack, Jira and Google Workspace seeds, for `minutehand export`.
 
-A team of three: Mira owns the release and asks the agent for help in her DM; Teo and Una work on it. The workspace
+A team of three: Mira owns the release and asks the agent for help in her DM, by Friday; Teo and Una work on it. The workspace
 already holds #release with a thread from two days before, a group DM with Teo and Una, a Jira ticket in Platform
 and a sheet in the Delivery folder. In wake 1 the agent answers Mira, then rewrites its answer; asks Teo in his DM;
 writes to the group; drafts an item for Mira's approval; and creates a document itself. In wake 2, an hour later,
@@ -63,9 +63,11 @@ MADE = "Release notes, first draft"
 def scenario() -> Scenario:
     return Scenario(
         name="release_checklist",
+        goal=GOAL,
         owner="mira",
         starts_at=T0,
         runs_for=timedelta(days=5),
+        deadline_after=timedelta(days=4),
         people=[
             Person(
                 key="mira",
