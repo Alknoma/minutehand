@@ -151,7 +151,7 @@ def test_the_file_is_in_the_readers_field_names(
     out = tmp_path / "record.json"
     assert main(["export", run.run_id[:8], "--out", str(out), "--state", str(run.state)]) == 0
     written = json.loads(out.read_text(encoding="utf-8"))
-    assert written["schema"] == "minutehand-replay-record/1"
+    assert written["schema"] == "minutehand-replay-record/2"
     assert {"ranOn", "chatId"} <= set(written["run"]) | set(written["agent"])
     answer = next(m for m in written["messages"] if m["text"] == ANSWER)
     assert "editedUntil" in answer and "replyTo" not in answer
