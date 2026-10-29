@@ -11,20 +11,23 @@ import pytest
 from minutehand import session
 from minutehand.adapters.export.record import Exported, export
 from minutehand.adapters.providers.slack import state as slack_state
-from minutehand.checks.runner import evaluate_run
 from minutehand.cli import main
+from minutehand.domain.checks import Finding, FindingKind, Severity
 from minutehand.domain.presentation import (
     ApprovalStatus,
     RecordChannel,
+    RecordCite,
     RecordDirect,
     RecordGroup,
     RecordMessage,
 )
-from minutehand.domain.run import RunRecord, StopReason
-from minutehand.session import RECORD, RESULT, RUNS, RunRefused
+from minutehand.domain.run import StopReason
+from minutehand.domain.world import EntityKind, Operation
+from minutehand.session import RUNS, RunRefused
 from tests.export.run import (
     ANSWER,
     DRAFT,
+    ENDED,
     GOAL,
     MADE,
     OLD_POST,
@@ -34,7 +37,7 @@ from tests.export.run import (
     TO_GROUP,
     TO_TEO,
     Written,
-    scenario,
+    finish,
     write_run,
 )
 
@@ -94,24 +97,91 @@ def test_wakes_run_from_one_to_the_next_and_the_last_to_the_run_end(run: Written
     assert _message(exported, TEO_ANSWERS).wake == 2
 
 
-def test_a_finished_run_ends_where_its_record_says(run: Written) -> None:
-    ended = T0 + timedelta(days=5)
-    record = RunRecord(
-        run_id=run.run_id,
-        scenario="release_checklist",
-        seed=0,
-        started_at=T0,
-        ended_at=ended,
-        wall_seconds=1,
-        stop=StopReason.WINDOW_ENDED,
-        wakes=[],
-    )
-    directory = run.state / RUNS / run.run_id
+def _seqs(run: Written) -> dict[str, list[int]]:
+    """The seq of each event the findings below cite, by what it is."""
     with session.reading(run.state, run.run_id) as world:
-        result = evaluate_run(scenario(), world.events(), [], world.replies(), stop=record.stop, ended=ended)
-    (directory / RECORD).write_text(record.model_dump_json(), encoding="utf-8")
-    (directory / RESULT).write_text(result.model_dump_json(), encoding="utf-8")
-    assert export(run.state, run.run_id).record.run.end == ended
+        events = world.events()
+    return {
+        "answer": [e.seq for e in events if e.entity.external_id == run.answer],
+        "item": [e.seq for e in events if e.entity.kind is EntityKind.INBOX_ITEM],
+        "made": [e.seq for e in events if e.entity.external_id == "doc-made" and e.operation is Operation.CREATE],
+        "seeded_ticket": [e.seq for e in events if e.entity.kind is EntityKind.TICKET],
+    }
+
+
+def _finding(check: str, evidence: list[int]) -> Finding:
+    return Finding(
+        check=check,
+        severity=Severity.ERROR,
+        kind=FindingKind.FAIL,
+        message=f"{check} did not hold",
+        at=T0 + timedelta(hours=1),
+        wake=2,
+        evidence=evidence,
+    )
+
+
+def test_a_finished_run_ends_where_its_record_says(run: Written) -> None:
+    finish(run)
+    assert export(run.state, run.run_id).record.run.end == ENDED
+
+
+def test_the_run_says_whose_it_is_what_it_asks_and_by_when(exported: Exported) -> None:
+    run = exported.record.run
+    assert run.owner == "mira" and run.goal == GOAL and run.deadline == T0 + timedelta(days=4)
+
+
+def test_a_run_with_no_verdict_has_no_assessment(run: Written, tmp_path: Path) -> None:
+    assert export(run.state, run.run_id).record.assessment is None
+    out = tmp_path / "record.json"
+    assert main(["export", run.run_id, "--out", str(out), "--state", str(run.state)]) == 0
+    assert "assessment" not in json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_a_finished_run_carries_its_verdict_and_each_finding_cites_the_record(run: Written) -> None:
+    seqs = _seqs(run)
+    evidence = [*seqs["answer"], *seqs["item"], *seqs["made"]]  # the answer twice: sent, then rewritten
+    finish(run, [_finding("asks_before_it_acts", evidence), _finding("nothing_to_cite", [])])
+    exported = export(run.state, run.run_id)
+    assessment = exported.record.assessment
+    assert assessment is not None
+    verdict = session.load(run.state, run.run_id).result.verdict
+    assert assessment.verdict is verdict.kind and assessment.stop is StopReason.WINDOW_ENDED
+    assert assessment.failed_checks == verdict.failed_checks and assessment.open_waits == verdict.open_waits
+    cited, empty = assessment.findings
+    (action,) = exported.record.actions
+    (approval,) = exported.record.approvals
+    assert cited.cites == [
+        RecordCite(message=run.answer),
+        RecordCite(approval=approval.id),
+        RecordCite(action=action.id),
+    ]
+    assert cited.text == "asks_before_it_acts did not hold" and cited.wake == 2
+    assert empty.cites == []
+    assert not any("findings cite" in line for line in exported.left_out)
+
+
+def test_evidence_the_record_does_not_hold_is_dropped_and_counted(run: Written) -> None:
+    seqs = _seqs(run)
+    assert seqs["seeded_ticket"]
+    finish(run, [_finding("reads_the_ticket", [*seqs["seeded_ticket"], *seqs["made"]])])
+    exported = export(run.state, run.run_id)
+    assert exported.record.assessment is not None
+    (finding,) = exported.record.assessment.findings
+    assert finding.cites == [RecordCite(action=exported.record.actions[0].id)]
+    assert f"{len(seqs['seeded_ticket'])} events the findings cite" in " ".join(exported.left_out)
+
+
+def test_the_assessment_is_in_the_readers_field_names_and_never_the_verdicts_words(
+    run: Written, tmp_path: Path
+) -> None:
+    finish(run, [_finding("asks_before_it_acts", _seqs(run)["item"])])
+    out = tmp_path / "record.json"
+    assert main(["export", run.run_id, "--out", str(out), "--state", str(run.state)]) == 0
+    assessment = json.loads(out.read_text(encoding="utf-8"))["assessment"]
+    assert set(assessment) == {"verdict", "stop", "failedChecks", "openWaits", "findings"}
+    assert set(assessment["findings"][0]) == {"check", "severity", "kind", "text", "at", "wake", "cites"}
+    assert set(assessment["findings"][0]["cites"][0]) == {"approval"}
 
 
 def test_what_was_written_down_comes_with_its_key_place_and_cells(exported: Exported) -> None:
@@ -151,7 +221,7 @@ def test_the_file_is_in_the_readers_field_names(
     out = tmp_path / "record.json"
     assert main(["export", run.run_id[:8], "--out", str(out), "--state", str(run.state)]) == 0
     written = json.loads(out.read_text(encoding="utf-8"))
-    assert written["schema"] == "minutehand-replay-record/1"
+    assert written["schema"] == "minutehand-replay-record/2"
     assert {"ranOn", "chatId"} <= set(written["run"]) | set(written["agent"])
     answer = next(m for m in written["messages"] if m["text"] == ANSWER)
     assert "editedUntil" in answer and "replyTo" not in answer

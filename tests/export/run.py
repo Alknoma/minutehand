@@ -1,6 +1,6 @@
 """A run written through the real store and the real Slack, Jira and Google Workspace seeds, for `minutehand export`.
 
-A team of three: Mira owns the release and asks the agent for help in her DM; Teo and Una work on it. The workspace
+A team of three: Mira owns the release and asks the agent for help in her DM, by Friday; Teo and Una work on it. The workspace
 already holds #release with a thread from two days before, a group DM with Teo and Una, a Jira ticket in Platform
 and a sheet in the Delivery folder. In wake 1 the agent answers Mira, then rewrites its answer; asks Teo in his DM;
 writes to the group; drafts an item for Mira's approval; and creates a document itself. In wake 2, an hour later,
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
+from minutehand import session
 from minutehand.adapters.providers.google_workspace.provider import build as build_google
 from minutehand.adapters.providers.jira.provider import build as build_jira
 from minutehand.adapters.providers.slack import seed as slack_seed
@@ -23,6 +24,9 @@ from minutehand.adapters.providers.slack.state import SlackWorld
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.checkpoint import Checkpoint, Remembered, write_checkpoint
 from minutehand.application.run_clock import RunClock
+from minutehand.checks.runner import evaluate_run
+from minutehand.domain.checks import Finding
+from minutehand.domain.run import RunRecord, StopReason
 from minutehand.domain.scenario import (
     DocumentKind,
     Person,
@@ -44,7 +48,7 @@ from minutehand.domain.world import (
     MessageSnapshot,
     Operation,
 )
-from minutehand.session import RUNS, SCENARIO, WORLD
+from minutehand.session import RECORD, RESULT, RUNS, SCENARIO, WORLD
 
 T0 = datetime(2026, 9, 7, 9, 0, tzinfo=UTC)  # a Monday
 RUN = "export000001"
@@ -63,9 +67,11 @@ MADE = "Release notes, first draft"
 def scenario() -> Scenario:
     return Scenario(
         name="release_checklist",
+        goal=GOAL,
         owner="mira",
         starts_at=T0,
         runs_for=timedelta(days=5),
+        deadline_after=timedelta(days=4),
         people=[
             Person(
                 key="mira",
@@ -235,3 +241,28 @@ def write_run(state: Path) -> Written:
         wake_two=wake_two,
         ended=T0 + timedelta(hours=1, minutes=5),
     )
+
+
+ENDED = T0 + timedelta(days=5)
+
+
+def finish(run: Written, findings: list[Finding] | None = None) -> None:
+    """Write the run's record and its checks' result, as a run that finished does; `findings` stands in for what its
+    checks found."""
+    record = RunRecord(
+        run_id=run.run_id,
+        scenario="release_checklist",
+        seed=0,
+        started_at=T0,
+        ended_at=ENDED,
+        wall_seconds=1,
+        stop=StopReason.WINDOW_ENDED,
+        wakes=[],
+    )
+    directory = run.state / RUNS / run.run_id
+    with session.reading(run.state, run.run_id) as world:
+        result = evaluate_run(scenario(), world.events(), [], world.replies(), stop=record.stop, ended=ENDED)
+    if findings is not None:
+        result = result.model_copy(update={"findings": findings})
+    (directory / RECORD).write_text(record.model_dump_json(), encoding="utf-8")
+    (directory / RESULT).write_text(result.model_dump_json(), encoding="utf-8")

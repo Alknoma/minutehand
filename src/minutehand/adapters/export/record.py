@@ -1,9 +1,11 @@
 """`minutehand export`: one run as a record a reader outside Minutehand can tell its story from (docs/exporting.md).
 
-The record holds facts only, in the run's own ids: who was in it, every conversation and message, the agent's wakes,
+The record holds the run's facts in its own ids: who was in it, every conversation and message, the agent's wakes,
 what was already written down, what the agent drafted for a person's approval and what it did itself. It is read
 from the run's world as it stood at its end and from its scenario; what only a provider can read from its own JSON
-(a channel's name, a message's author, an issue's key) the provider says (`slack.present`, `jira.present`).
+(a channel's name, a message's author, an issue's key) the provider says (`slack.present`, `jira.present`). For a
+finished run it adds what Minutehand's checks said, as `minutehand findings` reads it from the run's stored result:
+nothing is judged again.
 
 Conversations are Slack's: a run whose people talk with the agent anywhere else is refused, never shown in part.
 """
@@ -23,8 +25,9 @@ from minutehand.adapters.providers.slack.manifest import MANIFEST as SLACK
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.application.inboxes import items_in
 from minutehand.domain.agent import AgentUnderTest
-from minutehand.domain.checks import WakeRecord
+from minutehand.domain.checks import Finding, WakeRecord
 from minutehand.domain.presentation import (
+    RECORD_VERSION,
     ApprovalStatus,
     ConversationKind,
     PresentedAuthor,
@@ -32,9 +35,12 @@ from minutehand.domain.presentation import (
     RecordAction,
     RecordAgent,
     RecordApproval,
+    RecordAssessment,
     RecordChannel,
+    RecordCite,
     RecordConversation,
     RecordDirect,
+    RecordFinding,
     RecordGroup,
     RecordItem,
     RecordMessage,
@@ -43,6 +49,7 @@ from minutehand.domain.presentation import (
     RecordWake,
     ReplayRecord,
 )
+from minutehand.domain.run import Verdict
 from minutehand.domain.scenario import Person, Scenario, TicketState
 from minutehand.domain.world import (
     Actor,
@@ -86,8 +93,10 @@ def export(state: Path, run_id: str) -> Exported:
             ]
         )
         wakes = session.wakes_of(state, run_id, world)
-        ended = session.load(state, run_id).record.ended_at if entry.finished else _last(world, scenario)
-        return _record(run_id, scenario, agent, world, events, wakes, ended, _ran_on(world))
+        outcome = session.load(state, run_id) if entry.finished else None
+        ended = outcome.record.ended_at if outcome is not None else _last(world, scenario)
+        judged = (outcome.result.verdict, outcome.result.findings) if outcome is not None else None
+        return _record(run_id, scenario, agent, world, events, wakes, ended, _ran_on(world), judged)
 
 
 def _last(world: Store, scenario: Scenario) -> datetime:
@@ -114,6 +123,7 @@ def _record(
     wakes: list[WakeRecord],
     ended: datetime,
     ran_on: datetime,
+    judged: tuple[Verdict, list[Finding]] | None,
 ) -> Exported:
     left_out: list[str] = []
     titles = {m.key: m.title for m in Registry.installed().manifests}
@@ -135,8 +145,13 @@ def _record(
     accounts = dict(slack_present.accounts(world, keys)) if on_slack else {}
 
     messages, conversations = _messages(world, events, keys, agent_key, on_slack, left_out)
+    actions = _actions(events, titles, world, left_out)
+    approvals = _approvals(events, left_out)
+    cites = _cites(events, messages, actions, approvals)
+    assessment = _assessment(*judged, cites, left_out) if judged is not None else None
     return Exported(
         record=ReplayRecord(
+            schema=RECORD_VERSION,
             run=RecordRun(
                 id=run_id,
                 scenario=scenario.name,
@@ -146,6 +161,9 @@ def _record(
                 ranOn=ran_on.date(),
                 chat=titles[SLACK.key],
                 markup="slack",
+                owner=scenario.owner,
+                goal=scenario.goal,
+                deadline=scenario.deadline,
             ),
             agent=RecordAgent(key=agent_key, name=named, chatId=shown_as.account if shown_as is not None else None),
             people=[
@@ -157,9 +175,10 @@ def _record(
             conversations=conversations,
             messages=messages,
             wakes=_wakes(wakes, ended),
-            actions=_actions(events, titles, world, left_out),
+            actions=actions,
             items=_items(events, titles, world, by_email),
-            approvals=_approvals(events, left_out),
+            approvals=approvals,
+            assessment=assessment,
         ),
         left_out=left_out,
     )
@@ -432,3 +451,64 @@ def _actions(events: list[WorldEvent], titles: dict[str, str], world: Store, lef
     if untitled:
         left_out.append(f"{untitled} changes by the agent to things the run names no title for")
     return found
+
+
+def _cites(
+    events: list[WorldEvent],
+    messages: list[RecordMessage],
+    actions: list[RecordAction],
+    approvals: list[RecordApproval],
+) -> dict[int, RecordCite]:
+    """What each event is in the record: the action it is, else the message or the approval it is a version of."""
+    said = {m.id for m in messages}
+    did = {a.id for a in actions}
+    waiting = {a.id for a in approvals}
+    item_of = {e.entity: e.after.item_id for e in events if isinstance(e.after, InboxItemSnapshot)}
+    found: dict[int, RecordCite] = {}
+    for event in events:
+        ref = event.entity
+        item = item_of[ref] if ref.kind is EntityKind.INBOX_ITEM and ref in item_of else None
+        if str(event.seq) in did:
+            found[event.seq] = RecordCite(action=str(event.seq))
+        elif ref.kind is EntityKind.MESSAGE and ref.provider == SLACK.key and ref.external_id in said:
+            found[event.seq] = RecordCite(message=ref.external_id)
+        elif item is not None and item in waiting:
+            found[event.seq] = RecordCite(approval=item)
+    return found
+
+
+def _assessment(
+    verdict: Verdict, findings: list[Finding], cites: dict[int, RecordCite], left_out: list[str]
+) -> RecordAssessment:
+    """The verdict `minutehand findings` reads, and each finding with the evidence of it the record holds."""
+    unplaced: set[int] = set()
+    found: list[RecordFinding] = []
+    for finding in findings:
+        cited: list[RecordCite] = []
+        for seq in finding.evidence:
+            if seq not in cites:
+                unplaced.add(seq)
+            elif cites[seq] not in cited:
+                cited.append(cites[seq])
+        found.append(
+            RecordFinding(
+                check=finding.check,
+                severity=finding.severity,
+                kind=finding.kind,
+                text=finding.message,
+                at=finding.at,
+                wake=finding.wake,
+                cites=cited,
+            )
+        )
+    if unplaced:
+        left_out.append(
+            f"{len(unplaced)} events the findings cite that are no message, action or approval in the record"
+        )
+    return RecordAssessment(
+        verdict=verdict.kind,
+        stop=verdict.stop,
+        failedChecks=verdict.failed_checks,
+        openWaits=verdict.open_waits,
+        findings=found,
+    )

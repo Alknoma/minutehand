@@ -1,9 +1,10 @@
 """A run told for someone who will never open Minutehand: who was in it, what was said where, what was already
-written down, what the agent drafted for approval and what it did itself (`minutehand export`, docs/exporting.md).
+written down, what the agent drafted for approval and what it did itself, and what Minutehand's checks said of it
+(`minutehand export`, docs/exporting.md).
 
 Two kinds of model live here. What a provider tells the exporter about its own things, which only it can read
 from its own JSON: what a conversation is called and who is in it, who wrote a message, the reference a ticket
-shows. And the record the exporter writes, `minutehand-replay-record/1`, in the shape a reader of it validates:
+shows. And the record the exporter writes, `minutehand-replay-record/2`, in the shape a reader of it validates:
 its field names are that reader's (`replyTo`, `with`), so the models serialize by alias.
 """
 
@@ -11,13 +12,15 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import AwareDatetime, ConfigDict, Field
+from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
+from minutehand.domain.checks import FindingKind, Severity
 from minutehand.domain.model import Model
+from minutehand.domain.run import StopReason, VerdictKind
 
-RECORD_VERSION = "minutehand-replay-record/1"
+RECORD_VERSION: Final = "minutehand-replay-record/2"
 
 
 class ConversationKind(StrEnum):
@@ -82,6 +85,11 @@ class RecordRun(_Out):
     ran_on: date = Field(alias="ranOn", description="The day the run was performed, by the machine's clock")
     chat: str = Field(description="The chat service the conversations are in, as its users call it")
     markup: Literal["slack", "markdown", "plain"]
+    owner: str | None = Field(default=None, description="Person.key of the scenario's owner, when it names one")
+    goal: str | None = Field(default=None, description="The scenario's goal, verbatim, when it has one")
+    deadline: AwareDatetime | None = Field(
+        default=None, description="The run's start plus the scenario's deadline_after, when it gives one"
+    )
 
 
 class RecordAgent(_Out):
@@ -177,8 +185,43 @@ class RecordApproval(_Out):
     decision: str | None = None
 
 
+class RecordCite(_Out):
+    """What a finding points at, as the record names it: exactly one of a message, an action or an approval."""
+
+    message: str | None = Field(default=None, description="RecordMessage.id")
+    action: str | None = Field(default=None, description="RecordAction.id")
+    approval: str | None = Field(default=None, description="RecordApproval.id")
+
+    @model_validator(mode="after")
+    def _one(self) -> RecordCite:
+        named = [n for n in (self.message, self.action, self.approval) if n is not None]
+        if len(named) != 1:
+            raise ValueError("a cite names exactly one of message, action or approval")
+        return self
+
+
+class RecordFinding(_Out):
+    check: str
+    severity: Severity
+    kind: FindingKind
+    text: str = Field(description="Finding.message")
+    at: AwareDatetime | None = None
+    wake: int | None = None
+    cites: list[RecordCite] = Field(description="Its evidence that is in the record, in order, each once")
+
+
+class RecordAssessment(_Out):
+    """Minutehand's verdict on a finished run and its checks' findings; never the verdict's words, which name hosts."""
+
+    verdict: VerdictKind
+    stop: StopReason | None = None
+    failed_checks: int = Field(ge=0, alias="failedChecks")
+    open_waits: int = Field(ge=0, alias="openWaits")
+    findings: list[RecordFinding]
+
+
 class ReplayRecord(_Out):
-    version: Literal["minutehand-replay-record/1"] = Field(default=RECORD_VERSION, alias="schema")
+    version: Literal["minutehand-replay-record/2"] = Field(alias="schema")
     run: RecordRun
     agent: RecordAgent
     people: list[RecordPerson]
@@ -188,3 +231,6 @@ class ReplayRecord(_Out):
     actions: list[RecordAction]
     items: list[RecordItem]
     approvals: list[RecordApproval]
+    assessment: RecordAssessment | None = Field(
+        default=None, description="None for a run with no verdict: still being written, or died before its record"
+    )
