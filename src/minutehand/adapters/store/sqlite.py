@@ -874,7 +874,14 @@ class SqliteStore:
         return stored
 
     @_locked
-    def spans(self, *, trace_id: str | None = None, wake: int | None = None) -> list[StoredSpan]:
+    def spans(
+        self,
+        *,
+        trace_id: str | None = None,
+        wake: int | None = None,
+        source: SpanSource | None = None,
+        after_wake: int | None = None,
+    ) -> list[StoredSpan]:
         where, args = self._spans_visible()
         query = (
             "SELECT run_id, after_seq, wake, sim_time, source, span, position, arrived_wake, placed_by"
@@ -886,6 +893,12 @@ class SqliteStore:
         if wake is not None:
             query += " AND wake=?"
             args.append(wake)
+        if source is not None:
+            query += " AND source=?"
+            args.append(source.value)
+        if after_wake is not None:
+            query += " AND wake>?"
+            args.append(after_wake)
         depth = {run: d for d, (run, _, _, _) in enumerate(self._lineage)}
         # Oldest ancestor first, and in each run the order they arrived.
         rows = sorted(self._db.execute(query, args).fetchall(), key=lambda r: (-depth[r[0]], r[6]))
