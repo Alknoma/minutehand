@@ -98,7 +98,9 @@ jobs:
   # VIEWER_BROWSER_REQUIRED turns a missing browser from a skip into a failure.
   browser:
     name: Viewer in a browser
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is now 26.04, where Playwright 1.55 cannot install its browsers' system dependencies
+    # ("Cannot install dependencies for ubuntu26.04-x64"). Move with the Playwright that supports it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
