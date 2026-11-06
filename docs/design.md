@@ -1083,7 +1083,7 @@ people:
       kind: scripted
       voice: brief and friendly
       helpfulness: full
-      history_turns: 30                                    # messages shown word for word; older ones as a summary
+      history_turns: 500                                   # messages shown word for word; older ones as a summary
       replies:                                             # a one-time plan of facts, not strings
         - {to_ask: 1, intent: ask_back, facts: ["she needs the headcount first"]}
         - {to_ask: 2, facts: ["the lakeside hall is booked for the 14th"], within: {min: PT1H, max: PT1H}}
@@ -1135,11 +1135,13 @@ ask's thread, and the follow-up changes nothing, unless the person declares `rem
 again from `sooner_within` after the follow-up, and the answer moves there when that is sooner, never later. A new
 ask in another conversation draws its own moment. Follow-ups are not counted as asks by a script's `to_ask`.
 
-**What the model is shown.** Only what the person can see in the world (`replier.seen_by`): the conversation they are
+**What the model is shown.** Only what the person can see in the world (`replier.seen_by`), at the moment they answer: an
+answer's words are written when it lands, not when the ask arrives, so a follow-up that came while it was owed is in
+front of them, and the newest message of the conversation is the one they answer. Then: the conversation they are
 answering, in full and in order, with times, the agent's messages and their own; then the other conversations they
 take part in (direct messages, channels they are in, threads they are on), most recent first. A message is theirs
 to see when it was addressed to them or is their own; another person's private messages never are. Beyond
-`history_turns` messages (30 by default), the oldest reach the model as one summary, written by a model once
+`history_turns` messages (500 by default), the oldest reach the model as one summary, written by a model once
 (`person-summary/1`), kept and replayed. The prompt tells the person to stay consistent with what they said; what
 they know changes only where the scenario says (`fact_changes`, or a later step's facts), never by drift.
 

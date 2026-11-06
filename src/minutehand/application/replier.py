@@ -523,7 +523,7 @@ class PeopleReplier:
         *,
         answers: bool = True,
     ) -> list[ModelMessage]:
-        """Everything the person can see, up to `asked`, as one message to the model: the conversation they answer
+        """Everything the person can see in `history`, as one message to the model: the conversation they answer
         in order, the others they are in most recent first, and the oldest beyond their budget as a summary. With
         `answers` False they answer no message: every conversation is one they are in."""
         turns, answering = seen_by(self._scenario, person, asked, history, world.replies())
@@ -760,11 +760,12 @@ def seen_by(
     history: Sequence[WorldEvent],
     replies: Sequence[PersonReply],
 ) -> tuple[list[_Turn], tuple[str, str] | None]:
-    """Every message `person` can see up to `asked`, oldest first, each as it last read by then, and the
-    conversation (provider, channel) `asked` is in. A message is theirs to see when it was addressed to them, or is
-    their own: a person's message not addressed to them in a conversation they were written to in. Nobody sees
-    another person's private messages."""
-    upto = [e for e in history if e.seq <= asked.seq]
+    """Every message `person` can see in `history`, oldest first, each as it last read by its end, and the
+    conversation (provider, channel) `asked` is in. `history` is what has happened by the moment they read: a reply
+    written as it lands sees every message sent before it, follow-ups after the ask included. A message is theirs to
+    see when it was addressed to them, or is their own: a person's message not addressed to them in a conversation they
+    were written to in. Nobody sees another person's private messages."""
+    upto = list(history)
     reads: dict[EntityRef, str] = {}
     gone: set[EntityRef] = set()
     for e in upto:
