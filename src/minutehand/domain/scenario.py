@@ -134,8 +134,9 @@ class Helpfulness(StrEnum):
     MISTAKEN = "mistaken"  # answers confidently from an out-of-date fact
 
 
-HISTORY_TURNS = 30
-"""The messages a model is shown word for word when a person declares no `history_turns`."""
+HISTORY_TURNS = 500
+"""The messages a model is shown word for word when a person declares no `history_turns`: the cap on a long history,
+set so a person reads the conversations they are in as they are, not from a summary."""
 
 
 class Speaks(Model):

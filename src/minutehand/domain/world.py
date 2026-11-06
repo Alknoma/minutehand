@@ -591,8 +591,8 @@ class PendingSnapshot(Model):
     )
     answer: str | None = Field(
         default=None,
-        description="For a conversation, the answer's words as written when it was planned (`domain.people."
-        "PersonReply` as JSON), kept until it lands; None while a model has yet to write them",
+        description="For a conversation, the answer's words as written at its moment, from all the person could see then (`domain.people."
+        "PersonReply` as JSON), kept until it lands; None until that moment, or while a model has yet to write them",
     )
 
 
