@@ -21,7 +21,7 @@ and every other item (a ticket, a declared service's request) on the providers t
 **Conversations** (decision 2: one item per conversation) are planned and worded by the person's script and voice
 (`application.replier`): a new message to them is an ask (`replier.plan`: whether and when they answer it, from
 their script's steps, or conversing), unless it follows up an answer they already owe in the same conversation, which
-then moves sooner when they are `reminded`; an ask edited before its answer is planned again from its new words; a
+then moves sooner when they are `reminded`; an ask edited before its answer is planned again from its new words, at the moment already drawn; a
 person away while a delegate covers sends their automatic reply at once (a record of its own, due then). The answer's
 words are written at its moment (`ready`), from everything the person can see by then — the whole conversation,
 every follow-up that arrived while the answer was owed included — as a person writes when they sit down to reply, not
@@ -409,7 +409,8 @@ class People:
             now = latest[p.item] if p.item in latest else None
             if now is None or now.seq <= p.asked or not _reworded(events, p.item, p.asked, now):
                 continue
-            moved.append(await self._replanned(person, h, now, [e for e in events if e.seq <= now.seq], world, clock))
+            history = [e for e in events if e.seq <= now.seq]
+            moved.append(await self._replanned(person, h, now, history, world, clock, keep_moment=True))
 
     def _owed(self, world: Store) -> list[tuple[EntityRef, datetime]]:
         """Every answer people gave or owe, by the ask it answers: what tells a follow-up from a new ask. An
@@ -554,13 +555,27 @@ class People:
         return found
 
     async def _replanned(
-        self, person: Person, held: Held, asked: WorldEvent, history: list[WorldEvent], world: Store, clock: Clock
+        self,
+        person: Person,
+        held: Held,
+        asked: WorldEvent,
+        history: list[WorldEvent],
+        world: Store,
+        clock: Clock,
+        *,
+        keep_moment: bool = False,
     ) -> Booking:
         """An ask whose words changed before its answer, or whose person changed: planned again from the message as
         it reads now, with nothing it was owed before counted; any words already written are dropped, and written
-        afresh at its moment (`ready`)."""
+        afresh at its moment (`ready`). An edit (`keep_moment`) keeps the moment already drawn: the person answers
+        when they were going to, and reads the message as it is then. Drawing again from the edit put every reply
+        behind each rewrite of the message, and an agent that edits as it works pushed a reply due inside the working
+        day into the evening."""
         owed = [(ref, at) for ref, at in self._owed(world) if ref != held.pending.item]
         plan = self._replier.plan(person, asked, history, owed)
+        kept = held.pending.drawn
+        if keep_moment and plan is not None and kept is not None:
+            plan = plan.model_copy(update={"drawn": kept})
         changed = held.pending.model_copy(
             update={
                 "status": PendingStatus.PENDING,
