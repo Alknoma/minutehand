@@ -35,7 +35,7 @@ index 0000000..829ad3c
 +// next wants to run by itself: whether every task is blocked, the sandbox's
 +// realtime clock, and how long until each blocked task's deadline.
 +type Deadlines struct {
-+	// Idle is true when no task goroutine is running or runnable.
++	// Idle is true when no task goroutine is running, runnable or in uninterruptible sleep (a file read through the gofer).
 +	Idle bool
 +	// Held is true while the sandbox's clock is held (HoldClock).
 +	Held bool
@@ -60,7 +60,7 @@ index 0000000..829ad3c
 +	if err != nil {
 +		return Deadlines{}, err
 +	}
-+	report := Deadlines{Idle: k.runningTasks.Load() == 0, Held: k.timekeeper.ClockHeld(), NowNs: now, EarliestNs: -1}
++	report := Deadlines{Idle: k.runningTasks.Load() == 0 && k.blockedTasks.Load() == 0, Held: k.timekeeper.ClockHeld(), NowNs: now, EarliestNs: -1}
 +	for _, t := range k.tasks.Root.Tasks() {
 +		report.Tasks++
 +		deadline, clock, ok := t.BlockDeadline()
