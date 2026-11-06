@@ -226,7 +226,7 @@ host nobody declared as a service with no description; the separate stand-in (`a
   among the offers (`person-transition/1`); otherwise the person's script and voice plan and word the answer as they
   always did (`application/replier.py`); the engine holds the plan on its record (`PendingSnapshot.plan`) and writes
   the words at the answer's moment (`.answer`), from everything the person can see by then. A follow-up on an answer
-  owed is no new ask: it moves the answer sooner when the person is `reminded`, and is read when the words are written. An ask edited before its answer is planned and worded again; one
+  owed is no new ask: it moves the answer sooner when the person is `reminded`, and is read when the words are written. An ask edited before its answer is planned again, at the moment already drawn (its words are written then anyway); one
   that, so read, needs no answer passes (`PendingStatus.PASSED`) and nobody hears of anything. A person away while a
   delegate covers sends their automatic reply at once, and the ask stays theirs. A fork that changes a person, or
   pins a moment, plans their open asks again (`People.replan`).
