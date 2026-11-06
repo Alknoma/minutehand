@@ -100,6 +100,35 @@ async def test_a_blocks_only_message_is_recorded_with_the_text_its_reader_sees(
     assert isinstance(after, MessageSnapshot) and after.text == "sign-off needed"
 
 
+async def test_a_message_with_text_and_blocks_is_recorded_with_its_blocks_not_its_notification_text(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "Here is the comparison."}},
+        {
+            "type": "table",
+            "rows": [
+                [{"type": "raw_text", "text": "Work"}, {"type": "raw_text", "text": "Owner"}],
+                [{"type": "raw_text", "text": "Portal field"}, {"type": "raw_text", "text": "Kwame, 3 days"}],
+            ],
+        },
+    ]
+    await body(client, "chat.postMessage", channel=GENERAL, text="Here is the comparison.", blocks=blocks)
+    after = workspace.store.events()[-1].after
+    assert isinstance(after, MessageSnapshot)
+    assert after.text == "Here is the comparison.\nWork | Owner\nPortal field | Kwame, 3 days"
+
+
+async def test_an_update_with_text_and_blocks_is_recorded_with_its_blocks(
+    workspace: Workspace, client: httpx.AsyncClient
+) -> None:
+    posted = await body(client, "chat.postMessage", channel=GENERAL, text="draft")
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "the full update, with every figure"}}]
+    await body(client, "chat.update", channel=GENERAL, ts=posted["ts"], text="update", blocks=blocks)
+    after = workspace.store.events()[-1].after
+    assert isinstance(after, MessageSnapshot) and after.text == "the full update, with every figure"
+
+
 async def test_reads_are_recorded_as_reads_and_listings_as_searches(
     workspace: Workspace, client: httpx.AsyncClient
 ) -> None:

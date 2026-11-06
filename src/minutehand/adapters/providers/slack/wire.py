@@ -1129,23 +1129,32 @@ def _short(*parts: str) -> str:
 
 
 def visible_text(text: str, blocks: list[JsonValue] | None) -> str:
-    """What a reader sees: the message's text, or the text inside its blocks when it has none."""
-    if text or not blocks:
+    """What a reader sees: the text inside a message's blocks when it has any, else its text. With blocks, Slack
+    draws the blocks and `text` is only "a fallback string to display in notifications"
+    (https://docs.slack.dev/reference/methods/chat.postMessage). A table reads row by row, its cells in order."""
+    if not blocks:
         return text
     found: list[str] = []
 
-    def walk(node: JsonValue) -> None:
+    def texts_in(node: JsonValue, into: list[str]) -> None:
         if isinstance(node, dict):
+            rows = node.get("rows") if node.get("type") == "table" else None
+            if isinstance(rows, list):
+                for row in rows:
+                    cells: list[str] = []
+                    texts_in(row, cells)
+                    into.append(" | ".join(cells))
+                return
             for key, value in node.items():
                 if key == "text" and isinstance(value, str):
-                    found.append(value)
+                    into.append(value)
                 else:
-                    walk(value)
+                    texts_in(value, into)
         elif isinstance(node, list):
             for item in node:
-                walk(item)
+                texts_in(item, into)
 
-    walk(blocks)
+    texts_in(blocks, found)
     return "\n".join(found)
 
 
