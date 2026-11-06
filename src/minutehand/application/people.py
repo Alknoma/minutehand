@@ -23,9 +23,11 @@ and every other item (a ticket, a declared service's request) on the providers t
 their script's steps, or conversing), unless it follows up an answer they already owe in the same conversation, which
 then moves sooner when they are `reminded`; an ask edited before its answer is planned again from its new words; a
 person away while a delegate covers sends their automatic reply at once (a record of its own, due then). The answer's
-words are written as it is planned (`replier.write`, again on the next look or at its moment if a model fails) and
-kept on the record (`PendingSnapshot.answer`), so a fork replays them; at its moment the provider delivers it, and it
-is kept as said. An ask that, read so, needs no answer passes (`PendingStatus.PASSED`): nobody hears of anything. A
+words are written at its moment (`ready`), from everything the person can see by then — the whole conversation,
+every follow-up that arrived while the answer was owed included — as a person writes when they sit down to reply, not
+when the message lands; they are kept on the record (`PendingSnapshot.answer`), so a fork replays them, delivered by
+the provider and kept as said. An ask that, read so, needs no answer passes (`PendingStatus.PASSED`): nobody hears of
+anything. A
 pinned take (`Person.takes`) wins over the script for the nth item it names, and on a provider the scenario names in
 `transitions_on` the model picks among the message's offers (step 3).
 """
@@ -457,8 +459,8 @@ class People:
         world: Store,
         clock: Clock,
     ) -> Booking | None:
-        """An ask of its own: what the person's script makes of it (`replier.plan`) and, when they answer, its words
-        (`_worded`), held with its plan."""
+        """An ask of its own: what the person's script makes of it (`replier.plan`), held with its plan; its words
+        are written at its moment (`ready`)."""
         plan = self._replier.plan(person, asked, history, owed)
         pending = PendingSnapshot(
             person=person.key,
@@ -473,8 +475,6 @@ class People:
             plan=plan.model_dump_json() if plan is not None else None,
             asked=asked.seq,
         )
-        if plan is not None:
-            pending = await self._worded(person, pending, asked, world, clock)
         ref = self._ref(person, ask.item, world)
         self._write(world, ref, pending, Operation.CREATE)
         if pending.due_at is None or pending.status is not PendingStatus.PENDING:
@@ -556,8 +556,9 @@ class People:
     async def _replanned(
         self, person: Person, held: Held, asked: WorldEvent, history: list[WorldEvent], world: Store, clock: Clock
     ) -> Booking:
-        """An ask whose words changed before its answer, or whose person changed: planned and worded again from the
-        message as it reads now, with nothing it was owed before counted."""
+        """An ask whose words changed before its answer, or whose person changed: planned again from the message as
+        it reads now, with nothing it was owed before counted; any words already written are dropped, and written
+        afresh at its moment (`ready`)."""
         owed = [(ref, at) for ref, at in self._owed(world) if ref != held.pending.item]
         plan = self._replier.plan(person, asked, history, owed)
         changed = held.pending.model_copy(
@@ -571,8 +572,6 @@ class People:
                 "failure": None,
             }
         )
-        if plan is not None:
-            changed = await self._worded(person, changed, asked, world, clock)
         self._write(world, held.ref, changed, Operation.UPDATE)
         at = changed.due_at if changed.status is PendingStatus.PENDING else None
         return Booking(
@@ -851,20 +850,44 @@ class People:
     async def _worded(
         self, person: Person, pending: PendingSnapshot, asked: WorldEvent, world: Store, clock: Clock
     ) -> PendingSnapshot:
-        """The answer's words, written now from the ask as it reads (`replier.write`) and kept with the record until
-        it lands, so a fork replays them: an ask that needs no answer passes; a model that fails leaves it owed, its
-        failure kept, and it is written again on the next look or at its moment."""
+        """The answer's words, written now (`replier.write`) from everything the person can see by now, and kept with
+        the record until it lands, so a fork replays them. What they answer is the newest message of the conversation
+        they owe an answer in — the ask, or the latest follow-up that arrived while it was owed — so a follow-up that
+        brought news is read as such, not answered as though it never came; the answer still lands on the ask
+        (`in_reply_to`). An ask that, read so, needs no answer passes; a model that fails leaves it owed, its failure
+        kept, and it is written again on the next look or at its moment."""
         assert pending.plan is not None
-        history = [e for e in world.events() if e.seq <= asked.seq]
+        history = world.events()
+        item = pending.item
+        newest = max(
+            (
+                e
+                for e in history
+                if e.entity.provider == item.provider
+                and e.entity.kind is item.kind
+                and e.entity.external_id in pending.follow_ups
+                and isinstance(e.after, MessageSnapshot)
+            ),
+            key=lambda e: e.seq,
+            default=asked,
+        )
         try:
             reply = await self._replier.write(
-                person, asked, Plan.model_validate_json(pending.plan), history, world, clock
+                person,
+                max(asked, newest, key=lambda e: e.seq),
+                Plan.model_validate_json(pending.plan),
+                history,
+                world,
+                clock,
             )
         except ModelFailed as e:
             return pending.model_copy(update={"failure": str(e)})
         if reply is None:
             return pending.model_copy(update={"status": PendingStatus.PASSED, "failure": None, "answer": None})
-        return pending.model_copy(update={"answer": reply.model_dump_json(), "failure": None, "worded_at": clock.now()})
+        on_ask = reply.model_copy(update={"in_reply_to": pending.item})
+        return pending.model_copy(
+            update={"answer": on_ask.model_dump_json(), "failure": None, "worded_at": clock.now()}
+        )
 
     async def _choose(
         self,

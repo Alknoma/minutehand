@@ -28,11 +28,17 @@ def test_a_failed_model_call_leaves_the_answer_owed_and_its_moment_writes_it(fai
             channel = dm(failing, "xoxb-fails", "sofia@example.com")
             failing.slack("xoxb-fails").chat_postMessage(channel=channel, text="Does Thursday work?")
 
-            # Her words are written as the world first sees the message, and the model fails: still owed, the
-            # failure kept. Mutation: dropping an answer whose words failed leaves nothing owed and nothing said.
+            # Nothing is written as the message lands: her words wait for the moment she sits down to answer.
+            # Mutation: writing them on arrival makes a model call here.
             world.advance(timedelta(minutes=1))
             assert receiver.texts() == []
+            assert failing.client.world(world.world_id).person_calls == []
+
+            # At her moment the model fails: still owed, the failure kept, nothing said. Mutation: dropping an answer
+            # whose words failed leaves nothing owed.
+            world.advance(timedelta(hours=2))
             view = failing.client.world(world.world_id)
+            assert receiver.texts() == []
             [owed] = view.people_owe
             assert owed.failed is not None and "400" in owed.failed
             [failed] = view.person_calls
