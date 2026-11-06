@@ -339,6 +339,9 @@ def test_what_is_served_is_on_graphs_published_surface() -> None:
     assert set(SERVED) - set(OPERATIONS) == set()
 
 
+# 2,103 operations, each a request through the proxy: about 45 s on an idle machine, past the suite's 60 s default on a
+# loaded one (91 s at a load average of 80), where every other test in the file takes a few seconds.
+@pytest.mark.timeout(240)
 async def test_every_published_operation_is_served_or_refused_by_name(surface: Surface) -> None:
     wrong: list[str] = []
     counts: Counter[str] = Counter()
