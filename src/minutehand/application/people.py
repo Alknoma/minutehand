@@ -569,8 +569,7 @@ class People:
         it reads now, with nothing it was owed before counted; any words already written are dropped, and written
         afresh at its moment (`ready`). An edit (`keep_moment`) keeps the moment already drawn: the person answers
         when they were going to, and reads the message as it is then. Drawing again from the edit put every reply
-        behind each rewrite of the message, and an agent that edits as it works pushed a reply due inside the working
-        day into the evening."""
+        behind each rewrite of the message, so an agent that edits as it works pushed its answers ever later."""
         owed = [(ref, at) for ref, at in self._owed(world) if ref != held.pending.item]
         plan = self._replier.plan(person, asked, history, owed)
         kept = held.pending.drawn

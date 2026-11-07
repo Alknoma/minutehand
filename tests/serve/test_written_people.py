@@ -98,8 +98,8 @@ def test_a_person_a_model_writes_for_answers_only_once_advance_passes_their_mome
 def test_a_reply_owed_is_written_when_it_is_sent_from_every_message_that_arrived_before_it(written: Served) -> None:
     """A follow-up that brings news while a reply is owed is in front of the person when they write: the reply is
     written at its moment from the whole conversation, the latest message as the one answered. Written on arrival,
-    a reply answers the first message as though nothing followed it — in a day-long run, a lead asked twice for a
-    confirmation the agent had sent in between."""
+    a reply answers the first message as though nothing followed it, and asks again for what a follow-up already
+    said."""
     with event_receiver() as receiver:
         world = OpenWorld(written.client, written.client.create_world(spec("xoxb-followed", receiver.url, sofia())))
         try:
@@ -124,8 +124,8 @@ def test_a_reply_owed_is_written_when_it_is_sent_from_every_message_that_arrived
 
 def test_an_ask_edited_before_its_answer_is_answered_when_it_was_going_to_be(written: Served) -> None:
     """An edit is not a new ask: the person answers at the moment already drawn, reading the message as it is then.
-    Drawing again from each edit put a reply behind every rewrite, and an agent that edits a message as it works
-    pushed an answer due inside the working day into the evening."""
+    Drawing again from each edit put a reply behind every rewrite, so an agent that edits a message as it works
+    pushed its answer ever later."""
     with event_receiver() as receiver:
         world = OpenWorld(written.client, written.client.create_world(spec("xoxb-edited", receiver.url, sofia())))
         try:

@@ -96,8 +96,8 @@ def test_spans_are_read_by_trace_and_by_wake_in_the_order_they_arrived(world: tu
 
 def test_spans_are_read_by_source_and_after_a_wake_by_the_store(world: tuple[SqliteStore, RunClock]) -> None:
     """A fork keeps only the model calls recorded on the wire after its checkpoint; the store narrows to them, so
-    the run's other spans are never read. Reading them all to filter in Python held gigabytes (a day-long run's fork:
-    242,173 received spans beside 16,454 recorded calls)."""
+    the run's other spans are never read. Reading them all to filter in Python held gigabytes on a long run, whose
+    received spans outnumber its model calls many times over."""
     store, clock = world
     store.receive([span(TRACE_A, "1" * 16)], source=SpanSource.WIRE)
     clock.begin_wake()

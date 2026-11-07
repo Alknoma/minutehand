@@ -109,14 +109,14 @@ async def test_a_message_with_text_and_blocks_is_recorded_with_its_blocks_not_it
             "type": "table",
             "rows": [
                 [{"type": "raw_text", "text": "Work"}, {"type": "raw_text", "text": "Owner"}],
-                [{"type": "raw_text", "text": "Portal field"}, {"type": "raw_text", "text": "Kwame, 3 days"}],
+                [{"type": "raw_text", "text": "Venue booking"}, {"type": "raw_text", "text": "Sofia, 2 days"}],
             ],
         },
     ]
     await body(client, "chat.postMessage", channel=GENERAL, text="Here is the comparison.", blocks=blocks)
     after = workspace.store.events()[-1].after
     assert isinstance(after, MessageSnapshot)
-    assert after.text == "Here is the comparison.\nWork | Owner\nPortal field | Kwame, 3 days"
+    assert after.text == "Here is the comparison.\nWork | Owner\nVenue booking | Sofia, 2 days"
 
 
 async def test_an_update_with_text_and_blocks_is_recorded_with_its_blocks(
