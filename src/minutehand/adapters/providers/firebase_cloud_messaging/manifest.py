@@ -12,6 +12,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="firebase_cloud_messaging",
+    title="Firebase Cloud Messaging",
     tier=Tier.FINISHED,
     hosts=["fcm.googleapis.com"],
     kinds=[EntityKind.RECORD],

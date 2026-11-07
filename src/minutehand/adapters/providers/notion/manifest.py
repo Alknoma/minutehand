@@ -8,6 +8,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="notion",
+    title="Notion",
     sends=AgentSends.RECORDED,
     tier=Tier.FINISHED,
     hosts=["api.notion.com", "prod-files-secure.s3.us-west-2.amazonaws.com"],

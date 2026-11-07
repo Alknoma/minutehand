@@ -19,6 +19,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from minutehand.domain.agent import AgentUnderTest, Instructions
 from minutehand.domain.experiment import Fork, ReplayCases
+from minutehand.domain.presentation import ReplayRecord
 from minutehand.domain.prices import Prices
 from minutehand.domain.scenario import Seed, WrittenScenario
 from minutehand.domain.templates import RUN_DIR, RUN_FILLED, RUN_PORT
@@ -240,6 +241,17 @@ def schema(kind: FileKind) -> dict[str, object]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": f"{SCHEMA_BASE}/{kind.value}.schema.json",
+        **found,
+    }
+
+
+def record_schema() -> dict[str, object]:
+    """The JSON Schema (2020-12) of the record `minutehand export` writes (docs/exporting.md): an output, so not a
+    `FileKind`, read as written, by its aliases."""
+    found = ReplayRecord.model_json_schema(mode="serialization")
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"{SCHEMA_BASE}/record.schema.json",
         **found,
     }
 

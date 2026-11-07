@@ -14,6 +14,7 @@ from minutehand.domain.world import EntityKind
 
 MANIFEST = Manifest(
     key="youtrack",
+    title="YouTrack",
     tier=Tier.FINISHED,
     hosts=["*.youtrack.cloud", "*.myjetbrains.com"],
     kinds=[EntityKind.TICKET, EntityKind.COMMENT],

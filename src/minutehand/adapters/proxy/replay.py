@@ -113,16 +113,24 @@ class ModelReplay:
             return self._refusal() if self.frozen else None
         if self.live_from is not None and now >= self.live_from:
             self.parted = f"live from {self.live_from.isoformat()}"
+            self._forget()
             return None
         key = _key(host, path, kept_body(body, content_type))
         waiting = self._answers.get(key)
         if not waiting:
             self.parted = f"{host}{path.split('?', 1)[0]}: a call {self.source} never made, at {now.isoformat()}"
             self.parted_at = PartedCalls(sent=_call(key), expected=_call(self._pending[0]) if self._pending else None)
+            self._forget()
             return self._refusal() if self.frozen else None
         self.answered += 1
         self._pending.remove(key)
         return waiting.popleft()
+
+    def _forget(self) -> None:
+        """Drop the recorded answers once the runs have parted: nothing is answered from them again, and a long
+        run's model answers are gigabytes held for the rest of the fork."""
+        self._answers.clear()
+        self._pending.clear()
 
     def _refusal(self) -> Parted:
         said = {

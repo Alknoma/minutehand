@@ -138,9 +138,18 @@ class Store(Protocol):
         when none does, the wake it arrived in."""
         ...
 
-    def spans(self, *, trace_id: str | None = None, wake: int | None = None) -> list[StoredSpan]:
-        """The spans this run can see, in the order they arrived, of one trace and placed in one wake when
-        either is given. A fork sees its parent's spans placed in the wakes up to the one it was forked after."""
+    def spans(
+        self,
+        *,
+        trace_id: str | None = None,
+        wake: int | None = None,
+        source: SpanSource | None = None,
+        after_wake: int | None = None,
+    ) -> list[StoredSpan]:
+        """The spans this run can see, in the order they arrived, of one trace, placed in one wake, of one source
+        and placed after one wake when any is given. A fork sees its parent's spans placed in the wakes up to the
+        one it was forked after. Narrowed here rather than by the caller: a long run holds hundreds of thousands
+        of spans, and a fork that read them all to keep its model calls held gigabytes."""
         ...
 
     def forward_failed(self, signal: Signal, endpoint: str, reason: str) -> ForwardFailure:

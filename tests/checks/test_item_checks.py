@@ -53,7 +53,7 @@ OWNER, SOFIA, TOM = person("owner"), person("sofia"), person("tom")
 
 def _manifests(**types: list[ItemType]) -> dict[str, Manifest]:
     return {
-        key: Manifest(key=key, tier=Tier.FINISHED, hosts=[f"{key}.test"], item_types=declared)
+        key: Manifest(key=key, title="Test service", tier=Tier.FINISHED, hosts=[f"{key}.test"], item_types=declared)
         for key, declared in types.items()
     }
 

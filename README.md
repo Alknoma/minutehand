@@ -186,6 +186,7 @@ emulator of your own (`docs/capture.md`, `docs/external-emulators.md`).
 | `docs/scenarios.md` | The scenario library: ready-made worlds with your people in them |
 | `docs/assessments.md` | The rules a team judges its agent by |
 | `docs/querying.md` | Reading a run with SQL: the views, their columns, the stability guarantee, ready-made queries |
+| `docs/exporting.md` | `minutehand export`: a run as one JSON record, for telling its story outside Minutehand |
 | `docs/capture.md` | Hosts no fake answers: acknowledge, pass through, replay, `--capture-unknown` |
 | `docs/external-emulators.md` | Forwarding a host to a fake of your own |
 | `docs/containers.md` | An agent in a container, and the Docker `NO_PROXY` trap |

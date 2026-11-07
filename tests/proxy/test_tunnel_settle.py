@@ -84,10 +84,19 @@ async def test_the_first_request_on_a_new_tunnel_is_awaited_past_the_server_s_se
         Proxy(routing, store, clock, confdir=tmp_path / "ca") as proxy,
         client(proxy, authority.ca_cert) as http,
     ):
+        expected = [
+            f"a request on the new TLS 1.3 tunnel to {MODEL_HOST}, unanswered since the server's session tickets"
+            if version is ssl.TLSVersion.TLSv1_3
+            else f"a request on the open tunnel to {MODEL_HOST}"
+        ]
         asked = time.monotonic()
         before = proxy.activity()
         call = asyncio.create_task(http.post(f"https://{MODEL_HOST}:{port}/v1/chat/completions", content=b"{}"))
-        await asyncio.sleep(0.3)  # the handshake, the request and the tickets have all moved by now
+        # Until the handshake, the request and the tickets have all moved: a fixed 0.3 s was not always enough on a
+        # loaded machine, and the loop below then read a request the proxy had not yet seen as one already answered.
+        settled_by = asked + ANSWER_AFTER / 2
+        while proxy.waiting() != expected and time.monotonic() < settled_by:
+            await asyncio.sleep(0.02)
         assert not call.done()
         waiting = proxy.waiting()
         sent = proxy.activity()
@@ -100,8 +109,4 @@ async def test_the_first_request_on_a_new_tunnel_is_awaited_past_the_server_s_se
     assert response.status_code == 200 and response.content == REPLY
     assert quiet_after >= ANSWER_AFTER, f"quiet {quiet_after:.2f} s after the request, before its answer"
     assert before < sent < answered, f"activity {before} -> {sent} -> {answered}: the tunnel turned unseen"
-    assert waiting == [
-        f"a request on the new TLS 1.3 tunnel to {MODEL_HOST}, unanswered since the server's session tickets"
-        if version is ssl.TLSVersion.TLSv1_3
-        else f"a request on the open tunnel to {MODEL_HOST}"
-    ]
+    assert waiting == expected

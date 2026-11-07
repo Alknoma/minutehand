@@ -27,6 +27,11 @@
     minutehand gc [--state DIR]                  remove stored bodies nothing refers to
     minutehand query <run> "SELECT ..." [--format table|json|csv] [--prices FILE] [--export FILE] [--state DIR]
     minutehand query --schema                    read-only SQL over a run's read model, and its views (docs/querying.md)
+    minutehand export <run> [--out FILE] [--state DIR]
+                                                 a run as a record for a reader outside Minutehand: its people,
+                                                 conversations, wakes, what was written down, what waits for
+                                                 approval, what the agent did itself and, for a finished
+                                                 run, what the checks found (docs/exporting.md)
     minutehand trace <run> [--person KEY] [--provider P] [--kind K] [--from T] [--to T] [--wake N] [--item ID] [--json]
                                                  the agent's actions in order
     minutehand explain <run> <seq> [--json]      one event: the wake, what woke it, what the agent read first, what
@@ -120,6 +125,7 @@ from minutehand import agent_api, mcp_relay, replay_all, run_all, session
 from minutehand import serve as standing
 from minutehand.adapters.agent.inboxes import HttpInboxReach
 from minutehand.adapters.agent.openapi import OperationUnresolved
+from minutehand.adapters.export.record import export as export_record
 from minutehand.adapters.model.pydantic_ai import from_environment as model_from_environment
 from minutehand.adapters.proxy.policy import DEFAULT_MODEL_HOSTS
 from minutehand.adapters.proxy.trust import BUNDLE
@@ -140,6 +146,7 @@ from minutehand.application.files import (
     load_replay_cases,
     load_scenario,
     problems,
+    record_schema,
     schema,
 )
 from minutehand.application.forks import ForkAccount, scorecard_lines
@@ -569,6 +576,13 @@ def _parser() -> _Parser:
     priced(asked)
     state(asked)
 
+    exported = commands.add_parser(
+        "export", help="a run as a record a reader outside Minutehand can tell its story from (docs/exporting.md)"
+    )
+    exported.add_argument("run", help="a run's or a fork's id, or the start of one")
+    exported.add_argument("--out", type=Path, default=None, metavar="FILE", help="write it here; default: stdout")
+    state(exported)
+
     traced = commands.add_parser("trace", help="the agent's actions in a run, in order")
     traced.add_argument("run", help="a run's or a fork's id, or the start of one")
     traced.add_argument("--person", default=None, help="only messages to this person (their key)")
@@ -638,9 +652,11 @@ def _parser() -> _Parser:
     )
     doctor.add_argument("--json", action="store_true")
     schema_of = commands.add_parser(
-        "schema", help="print the JSON Schema of an agent, scenario or seed file, or the agent API's OpenAPI document"
+        "schema",
+        help="print the JSON Schema of an agent, scenario or seed file or of an exported run's record, or the agent "
+        "API's OpenAPI document",
     )
-    schema_of.add_argument("kind", choices=[*(k.value for k in FileKind), AGENT_API])
+    schema_of.add_argument("kind", choices=[*(k.value for k in FileKind), RECORD, AGENT_API])
     checking = commands.add_parser(
         "validate", help="load agent, scenario and seed files with every load-time check, naming each problem"
     )
@@ -844,6 +860,8 @@ def _main(args_in: list[str]) -> int:
             return _gc(state)
         if args.command in ("query", "trace", "explain"):
             return _read(args, state)
+        if args.command == "export":
+            return _export(state, args.run, args.out)
         if args.command == "rm":
             return _rm(state, args.run_ids)
         return _runs(state, as_json=args.json)
@@ -853,11 +871,19 @@ def _main(args_in: list[str]) -> int:
 
 
 AGENT_API = "agent-api"
+RECORD = "record"
+"""`minutehand schema record`: the record `minutehand export` writes, an output rather than a `FileKind`."""
 
 
 def _schema(kind: str) -> int:
-    """The JSON Schema of one kind of file, or the OpenAPI document of what an agent may implement, on stdout."""
-    found = agent_api.document() if kind == AGENT_API else schema(FileKind(kind))
+    """The JSON Schema of one kind of file or of an exported record, or the OpenAPI document of what an agent may
+    implement, on stdout."""
+    if kind == AGENT_API:
+        found = agent_api.document()
+    elif kind == RECORD:
+        found = record_schema()
+    else:
+        found = schema(FileKind(kind))
     print(json.dumps(found, indent=2, sort_keys=True))
     return 0
 
@@ -1402,6 +1428,27 @@ def _gc(state: Path) -> int:
 def _rm(state: Path, run_ids: list[str]) -> int:
     collected = session.remove(state, run_ids)
     print(f"removed {len(collected.removed)} runs ({_size(collected.removed_bytes)}): {', '.join(collected.removed)}")
+    return 0
+
+
+def _export(state: Path, run: str, out: Path | None) -> int:
+    """`export`: the run's record (docs/exporting.md), to a file or stdout; what it leaves out, on stderr."""
+    run_id = read_model.resolve(state, run)
+    exported = export_record(state, run_id)
+    text = exported.record.model_dump_json(indent=1, exclude_none=True)
+    if out is None:
+        print(text)
+    else:
+        out.write_text(text + "\n", encoding="utf-8")
+    record = exported.record
+    print(
+        f"run {run_id}: {len(record.messages)} messages in {len(record.conversations)} conversations, "
+        f"{len(record.items)} things written down, {len(record.approvals)} items for approval, "
+        f"{len(record.actions)} things the agent did itself" + (f"; written to {out}" if out is not None else ""),
+        file=sys.stderr,
+    )
+    for line in exported.left_out:
+        print(f"  left out: {line}", file=sys.stderr)
     return 0
 
 

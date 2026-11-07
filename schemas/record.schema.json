@@ -1,0 +1,897 @@
+{
+  "$defs": {
+    "ApprovalStatus": {
+      "enum": [
+        "pending",
+        "approved",
+        "rejected",
+        "decided",
+        "withdrawn"
+      ],
+      "title": "ApprovalStatus",
+      "type": "string"
+    },
+    "FindingKind": {
+      "enum": [
+        "fail",
+        "review",
+        "informational"
+      ],
+      "title": "FindingKind",
+      "type": "string"
+    },
+    "RecordAction": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "title": "At",
+          "type": "string"
+        },
+        "did": {
+          "description": "What the agent did, as a reader would say it: 'Created a ticket'",
+          "title": "Did",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "place": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Place"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "wake": {
+          "minimum": 1,
+          "title": "Wake",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "wake",
+        "did",
+        "title",
+        "tool"
+      ],
+      "title": "RecordAction",
+      "type": "object"
+    },
+    "RecordAgent": {
+      "additionalProperties": false,
+      "properties": {
+        "chatId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chatid"
+        },
+        "key": {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "title": "RecordAgent",
+      "type": "object"
+    },
+    "RecordApproval": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "description": "When it was first seen waiting",
+          "format": "date-time",
+          "title": "At",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decision"
+        },
+        "for": {
+          "title": "For",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "for",
+        "status",
+        "summary"
+      ],
+      "title": "RecordApproval",
+      "type": "object"
+    },
+    "RecordAssessment": {
+      "additionalProperties": false,
+      "description": "Minutehand's verdict on a finished run and its checks' findings; never the verdict's words, which name hosts.",
+      "properties": {
+        "failedChecks": {
+          "minimum": 0,
+          "title": "Failedchecks",
+          "type": "integer"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/RecordFinding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "openWaits": {
+          "minimum": 0,
+          "title": "Openwaits",
+          "type": "integer"
+        },
+        "stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StopReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verdict": {
+          "$ref": "#/$defs/VerdictKind"
+        }
+      },
+      "required": [
+        "verdict",
+        "failedChecks",
+        "openWaits",
+        "findings"
+      ],
+      "title": "RecordAssessment",
+      "type": "object"
+    },
+    "RecordChannel": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "channel",
+          "default": "channel",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "RecordChannel",
+      "type": "object"
+    },
+    "RecordCite": {
+      "additionalProperties": false,
+      "description": "What a finding points at, as the record names it: exactly one of a message, an action or an approval.",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "RecordAction.id",
+          "title": "Action"
+        },
+        "approval": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "RecordApproval.id",
+          "title": "Approval"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "RecordMessage.id",
+          "title": "Message"
+        }
+      },
+      "title": "RecordCite",
+      "type": "object"
+    },
+    "RecordDirect": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "direct",
+          "default": "direct",
+          "title": "Kind",
+          "type": "string"
+        },
+        "with": {
+          "title": "With",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "with"
+      ],
+      "title": "RecordDirect",
+      "type": "object"
+    },
+    "RecordFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        },
+        "check": {
+          "title": "Check",
+          "type": "string"
+        },
+        "cites": {
+          "description": "Its evidence that is in the record, in order, each once",
+          "items": {
+            "$ref": "#/$defs/RecordCite"
+          },
+          "title": "Cites",
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/FindingKind"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "text": {
+          "description": "Finding.message",
+          "title": "Text",
+          "type": "string"
+        },
+        "wake": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wake"
+        }
+      },
+      "required": [
+        "check",
+        "severity",
+        "kind",
+        "text",
+        "cites"
+      ],
+      "title": "RecordFinding",
+      "type": "object"
+    },
+    "RecordGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "group",
+          "default": "group",
+          "title": "Kind",
+          "type": "string"
+        },
+        "with": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "With",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "with"
+      ],
+      "title": "RecordGroup",
+      "type": "object"
+    },
+    "RecordItem": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assignee"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "description": "What it is, as its tool calls it: 'Ticket', 'Document', 'Spreadsheet'",
+          "title": "Kind",
+          "type": "string"
+        },
+        "place": {
+          "title": "Place",
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        },
+        "rows": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "enum": [
+                "open",
+                "done"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "tool",
+        "place",
+        "title"
+      ],
+      "title": "RecordItem",
+      "type": "object"
+    },
+    "RecordMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "title": "At",
+          "type": "string"
+        },
+        "by": {
+          "title": "By",
+          "type": "string"
+        },
+        "conversation": {
+          "title": "Conversation",
+          "type": "string"
+        },
+        "edited": {
+          "title": "Edited",
+          "type": "boolean"
+        },
+        "editedUntil": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Editeduntil"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "replyTo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Replyto"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "wake": {
+          "description": "0: there before the run began",
+          "minimum": 0,
+          "title": "Wake",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "by",
+        "conversation",
+        "text",
+        "wake",
+        "edited"
+      ],
+      "title": "RecordMessage",
+      "type": "object"
+    },
+    "RecordPerson": {
+      "additionalProperties": false,
+      "properties": {
+        "chatId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chatid"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "title": "RecordPerson",
+      "type": "object"
+    },
+    "RecordRun": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "description": "The chat service the conversations are in, as its users call it",
+          "title": "Chat",
+          "type": "string"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The run's start plus the scenario's deadline_after, when it gives one",
+          "title": "Deadline"
+        },
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        },
+        "goal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The scenario's goal, verbatim, when it has one",
+          "title": "Goal"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "markup": {
+          "enum": [
+            "slack",
+            "markdown",
+            "plain"
+          ],
+          "title": "Markup",
+          "type": "string"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Person.key of the scenario's owner, when it names one",
+          "title": "Owner"
+        },
+        "ranOn": {
+          "description": "The day the run was performed, by the machine's clock",
+          "format": "date",
+          "title": "Ranon",
+          "type": "string"
+        },
+        "scenario": {
+          "title": "Scenario",
+          "type": "string"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        },
+        "timezone": {
+          "description": "The zone every time is shown in: the scenario owner's, else its first person's",
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "scenario",
+        "timezone",
+        "start",
+        "end",
+        "ranOn",
+        "chat",
+        "markup"
+      ],
+      "title": "RecordRun",
+      "type": "object"
+    },
+    "RecordWake": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "format": "date-time",
+          "title": "From",
+          "type": "string"
+        },
+        "n": {
+          "minimum": 1,
+          "title": "N",
+          "type": "integer"
+        },
+        "to": {
+          "format": "date-time",
+          "title": "To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "n",
+        "from",
+        "to"
+      ],
+      "title": "RecordWake",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "error",
+        "warning",
+        "information"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "StopReason": {
+      "enum": [
+        "agent_done",
+        "wake_limit",
+        "deadline_passed",
+        "window_ended",
+        "nothing_pending",
+        "agent_failed",
+        "closed",
+        "environment_failed",
+        "replay_parted",
+        "interrupted"
+      ],
+      "title": "StopReason",
+      "type": "string"
+    },
+    "VerdictKind": {
+      "enum": [
+        "passed",
+        "unfinished",
+        "failed",
+        "environment_failed",
+        "tool_failed",
+        "not_judged",
+        "simulation_incomplete",
+        "replay_parted"
+      ],
+      "title": "VerdictKind",
+      "type": "string"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/Alknoma/minutehand/integration-main/schemas/record.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/RecordAction"
+      },
+      "title": "Actions",
+      "type": "array"
+    },
+    "agent": {
+      "$ref": "#/$defs/RecordAgent"
+    },
+    "approvals": {
+      "items": {
+        "$ref": "#/$defs/RecordApproval"
+      },
+      "title": "Approvals",
+      "type": "array"
+    },
+    "assessment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordAssessment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "None for a run with no verdict: still being written, or died before its record"
+    },
+    "conversations": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "channel": "#/$defs/RecordChannel",
+            "direct": "#/$defs/RecordDirect",
+            "group": "#/$defs/RecordGroup"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/RecordChannel"
+          },
+          {
+            "$ref": "#/$defs/RecordDirect"
+          },
+          {
+            "$ref": "#/$defs/RecordGroup"
+          }
+        ]
+      },
+      "title": "Conversations",
+      "type": "array"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/RecordItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/RecordMessage"
+      },
+      "title": "Messages",
+      "type": "array"
+    },
+    "people": {
+      "items": {
+        "$ref": "#/$defs/RecordPerson"
+      },
+      "title": "People",
+      "type": "array"
+    },
+    "run": {
+      "$ref": "#/$defs/RecordRun"
+    },
+    "schema": {
+      "const": "minutehand-replay-record/2",
+      "title": "Schema",
+      "type": "string"
+    },
+    "wakes": {
+      "items": {
+        "$ref": "#/$defs/RecordWake"
+      },
+      "title": "Wakes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "run",
+    "agent",
+    "people",
+    "conversations",
+    "messages",
+    "wakes",
+    "actions",
+    "items",
+    "approvals"
+  ],
+  "title": "ReplayRecord",
+  "type": "object"
+}
