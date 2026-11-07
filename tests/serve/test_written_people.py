@@ -95,6 +95,58 @@ def test_a_person_a_model_writes_for_answers_only_once_advance_passes_their_mome
             written.client.close_world(world.world_id)
 
 
+def test_a_reply_owed_is_written_when_it_is_sent_from_every_message_that_arrived_before_it(written: Served) -> None:
+    """A follow-up that brings news while a reply is owed is in front of the person when they write: the reply is
+    written at its moment from the whole conversation, the latest message as the one answered. Written on arrival,
+    a reply answers the first message as though nothing followed it, and asks again for what a follow-up already
+    said."""
+    with event_receiver() as receiver:
+        world = OpenWorld(written.client, written.client.create_world(spec("xoxb-followed", receiver.url, sofia())))
+        try:
+            channel = dm(written, "xoxb-followed", "sofia@example.com")
+            written.slack("xoxb-followed").chat_postMessage(channel=channel, text="Does Thursday work?")
+            world.advance(timedelta(minutes=20))
+            before = len(people_requests())
+            written.slack("xoxb-followed").chat_postMessage(
+                channel=channel, text="Update: the room moved to Friday. Does Friday work?"
+            )
+            world.advance(timedelta(hours=2))
+
+            [request] = people_requests()[before:]
+            prompt = json.dumps(request)
+            answered = prompt[prompt.index("Their last message, which you answer now") :]
+            assert "the room moved to Friday" in answered, prompt
+            assert "Does Thursday work?" in prompt[: prompt.index("Their last message, which you answer now")]
+            assert len(receiver.texts()) == 1
+        finally:
+            written.client.close_world(world.world_id)
+
+
+def test_an_ask_edited_before_its_answer_is_answered_when_it_was_going_to_be(written: Served) -> None:
+    """An edit is not a new ask: the person answers at the moment already drawn, reading the message as it is then.
+    Drawing again from each edit put a reply behind every rewrite, so an agent that edits a message as it works
+    pushed its answer ever later."""
+    with event_receiver() as receiver:
+        world = OpenWorld(written.client, written.client.create_world(spec("xoxb-edited", receiver.url, sofia())))
+        try:
+            channel = dm(written, "xoxb-edited", "sofia@example.com")
+            posted = written.slack("xoxb-edited").chat_postMessage(channel=channel, text="Does Thursday work?")
+            world.advance(timedelta(minutes=1))
+            [owed] = written.client.world(world.world_id).people_owe
+            world.advance(timedelta(minutes=19))
+            ts = posted["ts"]
+            assert isinstance(ts, str)
+            written.slack("xoxb-edited").chat_update(channel=channel, ts=ts, text="Does Thursday at 10 work?")
+            world.advance(timedelta(minutes=1))
+            [still] = written.client.world(world.world_id).people_owe
+            assert still.at == owed.at
+
+            world.advance(timedelta(minutes=40))
+            assert len(receiver.texts()) == 1
+        finally:
+            written.client.close_world(world.world_id)
+
+
 def test_a_reply_is_replayed_after_a_reset_and_asks_the_model_nothing(written: Served) -> None:
     with event_receiver() as receiver:
         world = OpenWorld(written.client, written.client.create_world(spec("xoxb-replayed", receiver.url, sofia())))

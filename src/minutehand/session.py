@@ -156,6 +156,7 @@ from minutehand.domain.provider import Manifest
 from minutehand.domain.run import ReplayRecord, RunRecord, StopReason, wake_limit
 from minutehand.domain.scenario import Model, Person, ProviderKey, Scenario, WrittenScenario
 from minutehand.domain.storage import Freed, RunUsage
+from minutehand.domain.telemetry import SpanSource
 from minutehand.domain.templates import (
     DNS_PORT_VARIABLE,
     RUN_DIR_VARIABLE,
@@ -524,7 +525,7 @@ async def replay(
     agent = stored_agent(directory / AGENT)
     _as_run_was(state, parent_run)
     with reading(state, parent_run) as kept:
-        recorded = ModelReplay.of(parent_run, kept.spans(), live_from=live_from, frozen=frozen)
+        recorded = ModelReplay.of(parent_run, kept.spans(source=SpanSource.WIRE), live_from=live_from, frozen=frozen)
     listen = (listen or Listen()).model_copy(update={"record_model_calls": True})
     replaying = Replaying(parent_run, _root_dir(state, parent.record) / WORLD, recorded)
     [outcome] = await play(
@@ -628,8 +629,9 @@ async def fork(
         # The agent's model calls after the checkpoint answered as the parent's model answered them, until the agent
         # asks something the parent did not: a fork differs from its parent by its changes, not by a model's mood.
         with reading(state, parent_run) as parent_kept:
-            after = [s for s in parent_kept.spans() if s.wake > forked_after]
-        model_replay = ModelReplay.of(parent_run, after, frozen=frozen)
+            model_replay = ModelReplay.of(
+                parent_run, parent_kept.spans(source=SpanSource.WIRE, after_wake=forked_after), frozen=frozen
+            )
         proxy.proxy.addon.model_replay = model_replay
         own_files = OwnDatabases(agent, run_dir(state, child_id))
         scorer.own_files = own_files

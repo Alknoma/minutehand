@@ -72,7 +72,7 @@ runsc --root <state> debug --hold-clock <name>
 runsc --root <state> debug --release-clock <name>
 ```
 
-`idle`: every task is blocked. `now_ns`: the sandbox's realtime clock. `held`: the clock is held (`hold-clock`).
+`idle`: every task is blocked on something other than a file: none running, runnable, or in uninterruptible sleep (a read or write through the gofer). A task waiting on a file is working, and a wake that took it for idle ended with the agent mid-read. `now_ns`: the sandbox's realtime clock. `held`: the clock is held (`hold-clock`).
 These three are all Minutehand reads; it calls `hold-clock` and `release-clock` only when the agent file names them as
 `sandbox.hold` and `sandbox.release` (`docs/design.md`, "A held clock between wakes"). `waits`:
 each blocked task's deadline, as nanoseconds from now; `earliest_ns` the smallest, -1 for none. Minutehand no longer

@@ -57,11 +57,14 @@ def test_advancing_the_clock_past_a_scripted_reply_delivers_it_and_not_before(se
             assert [f.what for f in late.fired] == ["sofia's reply (verbatim)"]
             assert receiver.texts() == ["Yes, Thursday works."]
             replies = world.events(actor=Actor.PERSON, operation=Operation.CREATE)
-            # Her message, its push to the agent (recorded as the scenario's), the move it is (`transition`), then the
+            # Her words written onto the engine's record of what she owes (at her moment, not as the message landed),
+            # her message, its push to the agent (recorded as the scenario's), the move it is (`transition`), then the
             # engine's record of it, closed.
             pushed = [e.seq for e in world.events() if e.entity.kind is EntityKind.PUSH]
+            owed = {e.seq for e in world.events() if e.entity.kind is EntityKind.PENDING}
             assert len(pushed) == 1
-            assert [e.seq for e in replies] == [s for s in late.fired[0].events[:-1] if s not in pushed]
+            assert late.fired[0].events[0] in owed
+            assert [e.seq for e in replies] == [s for s in late.fired[0].events[1:-1] if s not in pushed]
             assert [e.entity.kind for e in replies][-1] is EntityKind.TRANSITION
         finally:
             served.client.close_world(world.world_id)
