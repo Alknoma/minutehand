@@ -125,7 +125,7 @@
           "default": "full"
         },
         "history_turns": {
-          "default": 500,
+          "default": 30,
           "description": "How many messages of what they can see the model is shown word for word, the newest; older ones reach it as one summary, written by a model once and kept",
           "minimum": 1,
           "title": "History Turns",
@@ -1867,7 +1867,7 @@
               "shortest": "PT6H"
             },
             "helpfulness": "full",
-            "history_turns": 500,
+            "history_turns": 30,
             "kind": "answers",
             "model": null,
             "temperature": 0.6,
@@ -2895,7 +2895,7 @@
           "default": "full"
         },
         "history_turns": {
-          "default": 500,
+          "default": 30,
           "description": "How many messages of what they can see the model is shown word for word, the newest; older ones reach it as one summary, written by a model once and kept",
           "minimum": 1,
           "title": "History Turns",
