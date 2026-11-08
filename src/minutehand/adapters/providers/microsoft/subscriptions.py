@@ -195,6 +195,9 @@ class Subscriptions:
                 if live(r, now)
                 and r.subscription.changeType == asked.changeType
                 and r.subscription.resource == asked.resource
+                # `me/...` is the caller's own mailbox: two people's `me/events` are two subscriptions, and only
+                # the same target asked for again is the combination that already exists.
+                and r.watches == watches
             ),
             None,
         )
