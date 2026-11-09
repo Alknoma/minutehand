@@ -605,6 +605,30 @@ def plain(items: JsonValue) -> str:
     return "".join(found)
 
 
+def as_seen(value: JsonValue, title_seen: Callable[[str], str | None]) -> JsonValue:
+    """Stored content as one reader is served it. A page or database mention's `plain_text` is the title of what it
+    names, which `title_seen` gives when the reader reaches it; when the reader does not, "the mention is returned
+    with just the ID", its `plain_text` "appears as "Untitled"" and its annotations are the defaults
+    (https://developers.notion.com/reference/rich-text, page and database mentions). Everything else is returned
+    as it is held."""
+    if isinstance(value, list):
+        return [as_seen(item, title_seen) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if "type" in value and value["type"] == RichTextType.MENTION and "mention" in value:
+        mention = value["mention"]
+        kind = mention["type"] if isinstance(mention, dict) and "type" in mention else None
+        if isinstance(mention, dict) and kind in (MentionType.PAGE, MentionType.DATABASE):
+            target = mention[str(kind)]
+            target_id = str(target["id"]) if isinstance(target, dict) and "id" in target else ""
+            title = title_seen(target_id)
+            if title is None:
+                return {**value, "annotations": _annotations(None, "annotations"), "plain_text": "Untitled"}
+            return {**value, "plain_text": title or "Untitled"}
+        return value
+    return {key: as_seen(item, title_seen) for key, item in value.items()}
+
+
 def text_run(content: str) -> list[JsonValue]:
     """Plain words as one stored rich text run, as a seed or a person writes them."""
     return [
