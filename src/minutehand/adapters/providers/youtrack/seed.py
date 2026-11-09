@@ -637,7 +637,8 @@ def _seed_issue(
 ) -> wire.StoredIssue:
     """The issue seeded from `Scenario.tickets[position]`: its id from what the ticket is (its key, or its project,
     title and place among tickets of that title), its tags' from their names, its comments' from its id and their
-    place on it, so none moves when more is seeded or a ticket is listed before it."""
+    place on it, so none moves when more is seeded or a ticket is listed before it. A label is a team's shared tag:
+    everyone may see it and use it, as a tag shared with All Users is."""
     at = state.millis(start - detail.created_ago)
     number = youtrack.next_number(home.id)
     values: dict[str, wire.FieldValue] = {f.id: f.defaultValue for f in home.fields if f.defaultValue is not None}
@@ -656,6 +657,7 @@ def _seed_issue(
         else:
             values[field.id] = value
     tags: list[str] = []
+    shared = wire.StoredSharing(permittedGroups=[state.ALL_USERS])
     for label in dict.fromkeys(ticket.labels):
         tag = youtrack.tag_named(label)
         if tag is None:
@@ -663,6 +665,8 @@ def _seed_issue(
                 id=state.seeded_id(6, label.lower(), taken=youtrack.taken),
                 name=label,
                 owner=reporter.id,
+                readSharingSettings=shared,
+                tagSharingSettings=shared,
                 seededFrom=labels.index(label.lower()),
             )
             youtrack.write_tag(tag, actor=Actor.SCENARIO)
