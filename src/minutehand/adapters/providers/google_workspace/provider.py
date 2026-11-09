@@ -24,7 +24,6 @@ from minutehand.adapters.providers.google_workspace.calendars import (
     CalendarApi,
     CalendarWorld,
     calendars_of,
-    event_ref,
     invitation,
 )
 from minutehand.adapters.providers.google_workspace.channels import Channels
@@ -103,16 +102,16 @@ class GoogleWorkspaceProvider:
         asks = conversations(email, MANIFEST.key, world.events())
         mine = [w.item for w in asks]
         calendars = CalendarWorld(world)
-        for event, _ in calendars.on(email):
+        for event, stored in calendars.on(email):
             attendee = calendars.attendee(event, person.key)
             cancelled = event.status == "cancelled"  # enum-lint: exempt Calendar's own event status
-            if attendee is None or cancelled or attendee.organizer or event_ref(event.id) in mine:
+            if attendee is None or cancelled or attendee.organizer or stored.entity in mine:
                 continue
             if event.organizer.email.lower() == email.lower() or attendee.responseStatus != NEEDS_ACTION:
                 continue
             shown = invitation(event)
             text = shown.text if isinstance(shown, MessageSnapshot) else ""
-            asks.append(Waiting(item=event_ref(event.id), state=NEEDS_ACTION, shown=text))
+            asks.append(Waiting(item=stored.entity, state=NEEDS_ACTION, shown=text))
         return asks
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
@@ -120,7 +119,7 @@ class GoogleWorkspaceProvider:
         answer Yes, Maybe or No, each by the `responseStatus` it sets, with a comment; the answer they already gave
         is not offered again. Nothing for anyone it is not to."""
         del by
-        event = CalendarWorld(world).event(item.external_id) if item.kind is EntityKind.MESSAGE else None
+        event = CalendarWorld(world).event(item) if item.kind is EntityKind.MESSAGE else None
         if event is None:
             asked = _asked(item, world)
             if asked is None or who is None or who.email not in asked.recipient_emails:
@@ -160,7 +159,7 @@ class GoogleWorkspaceProvider:
         if who is None:
             raise ValueError(f"nobody answers {item.external_id}")
         calendars = CalendarWorld(world)
-        event = calendars.event(item.external_id) if item.kind is EntityKind.MESSAGE else None
+        event = calendars.event(item) if item.kind is EntityKind.MESSAGE else None
         if event is None:
             asked = _asked(item, world)
             if asked is None:
@@ -177,7 +176,7 @@ class GoogleWorkspaceProvider:
             given = content_of(content, found, who.key)
             comment = given[TEXT] if TEXT in given and given[TEXT].strip() else None
             status = offer if offer in calendar_wire.ANSWERS else None
-            await Channels(world, clock).tell_calendars(calendars.respond(event[0].id, who.key, status, comment, clock))
+            await Channels(world, clock).tell_calendars(calendars.respond(item, who.key, status, comment, clock))
             moved = Transition(
                 provider=MANIFEST.key,
                 item=item,
@@ -260,7 +259,7 @@ def _asked(item: EntityRef, world: Store) -> MessageSnapshot | None:
     """The message as it reads now: an event's invitation, or an email."""
     if item.provider != MANIFEST.key or item.kind is not EntityKind.MESSAGE:
         raise ValueError(f"{item.provider} {item.kind.value} {item.external_id} is no Google message")
-    event = CalendarWorld(world).event(item.external_id)
+    event = CalendarWorld(world).event(item)
     if event is not None:
         shown = invitation(event[0])
         return shown if isinstance(shown, MessageSnapshot) else None

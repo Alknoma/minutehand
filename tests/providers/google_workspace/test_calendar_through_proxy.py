@@ -131,7 +131,8 @@ say(answered=answered, moved=moved, changes=[e["id"] for e in changes["items"]],
             e for e in google.store.events() if e.actor is Actor.AGENT and isinstance(e.after, MessageSnapshot)
         ]
         assert isinstance(invited.after, MessageSnapshot)
-        assert invited.entity.external_id == made["id"] and invited.after.channel == made["id"]
+        key = f"mara@example.com/events/{made['id']}"  # its calendar and its id: an id is unique per calendar
+        assert invited.entity.external_id == key and invited.after.channel == key
         assert invited.after.recipient_emails == ["dov@example.com", "rosa@example.com"]
         assert [(a.label, a.action_id) for a in invited.after.actions] == [
             ("Yes", "accepted"),
@@ -185,10 +186,10 @@ say(answered=answered, moved=moved, changes=[e["id"] for e in changes["items"]],
         pressed = [e.after for e in people if isinstance(e.after, InteractionSnapshot)]
         assert [(p.person, p.action_id, p.label) for p in pressed] == [("dov", "accepted", "Yes")]
         said = [e.after for e in people if isinstance(e.after, MessageSnapshot)]
-        assert [(s.text, s.thread_of) for s in said] == [("Could we do 4pm?", made["id"])]
+        assert [(s.text, s.thread_of) for s in said] == [("Could we do 4pm?", key)]
         assert all(e.sim_time == START + timedelta(hours=2) for e in people)
         deleted = [e for e in google.store.events() if e.operation is Operation.DELETE]
-        assert [(e.actor, e.entity.external_id) for e in deleted] == [(Actor.AGENT, made["id"])]
+        assert [(e.actor, e.entity.external_id) for e in deleted] == [(Actor.AGENT, key)]
 
 
 async def test_an_empty_range_another_calendar_a_guests_change_a_taken_id_and_a_zoneless_recurrence_are_refused(
@@ -230,5 +231,5 @@ say(
         assert seen["instances"] == [501, "notImplemented"]
         assert seen["review_self"] == [True] and seen["review_organizer"] is None
         made = [e for e in google.store.events() if e.actor is Actor.AGENT and e.operation is Operation.CREATE]
-        assert [e.entity.external_id for e in made] == ["planning0001"]
+        assert [e.entity.external_id for e in made] == ["mara@example.com/events/planning0001"]
         assert isinstance(made[0].after, RecordSnapshot)  # an event with no guests asks nobody
