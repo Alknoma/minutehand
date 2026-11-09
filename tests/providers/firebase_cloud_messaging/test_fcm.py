@@ -108,9 +108,9 @@ class Fcm:
 
 SEED = FcmSeed(
     tokens=[
-        SeededRegistration(token=ACTIVE),
-        SeededRegistration(token=LAPTOP),
-        SeededRegistration(token=GONE, state=RegistrationState.UNREGISTERED),
+        SeededRegistration(token=ACTIVE, project=PROJECT),
+        SeededRegistration(token=LAPTOP, project=PROJECT),
+        SeededRegistration(token=GONE, project=PROJECT, state=RegistrationState.UNREGISTERED),
     ]
 )
 
@@ -236,6 +236,70 @@ say(none=raw({{"data": {{"a": "b"}}}}), two=raw({{"token": {ACTIVE!r}, "topic": 
     )
 
 
+async def test_a_token_sent_under_a_project_it_was_not_issued_for_is_refused_sender_id_mismatch(fcm: Fcm) -> None:
+    """A registration token is its Firebase project's: "SENDER_ID_MISMATCH: The authenticated sender ID is different
+    from the sender ID for the registration token. A registration token is tied to a certain group of senders"
+    (https://firebase.google.com/docs/cloud-messaging/error-codes). One token cannot be delivered to under two
+    projects; at most one of the two sends is 200."""
+    client = await fcm.client(
+        f"""
+other = session.post("https://fcm.googleapis.com/v1/projects/someone-elses-app/messages:send",
+                     json={{"message": {{"token": {ACTIVE!r}, "data": {{"order": "A-1"}}}}}})
+say(own=raw({{"token": {ACTIVE!r}, "data": {{"order": "A-1"}}}}), other=[other.status_code, other.json()])
+"""
+    )
+    heard = await client.heard()
+    await client.finished()
+    own, other = heard["own"], heard["other"]
+    assert isinstance(own, list) and isinstance(other, list)
+    assert (own[0], other[0]) != (200, 200), "one token delivered to under two Firebase projects"
+    assert own[0] == 200
+    assert other == [
+        403,
+        {
+            "error": {
+                "code": 403,
+                "message": "The authenticated sender ID is different from the sender ID for the registration token.",
+                "status": "PERMISSION_DENIED",
+                "details": [
+                    {"@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError", "errorCode": "SENDER_ID_MISMATCH"}
+                ],
+            }
+        },
+    ]
+    assert [r.project for r in fcm.messages()] == [f"projects/{PROJECT}"]
+
+
+async def test_a_token_sent_under_its_projects_number_or_unregistered_under_another_project_is_refused_by_name(
+    fcm: Fcm,
+) -> None:
+    """The numeric project number is "also supported" (projects.messages.send), and a world holds no project's number;
+    an unregistered token under another project could be SENDER_ID_MISMATCH or UNREGISTERED, and no page says which.
+    `firebase-admin` raises `SenderIdMismatchError` for the one the reference does say."""
+    client = await fcm.client(
+        f"""
+by_number = session.post("https://fcm.googleapis.com/v1/projects/123456789012/messages:send",
+                         json={{"message": {{"token": {ACTIVE!r}}}}})
+gone = session.post("https://fcm.googleapis.com/v1/projects/someone-elses-app/messages:send",
+                    json={{"message": {{"token": {GONE!r}}}}})
+other = firebase_admin.initialize_app(app.credential, {{"projectId": "someone-elses-app"}}, name="other")
+try:
+    messaging.send(messaging.Message(token={ACTIVE!r}), app=other)
+    raised = None
+except exceptions.FirebaseError as e:
+    raised = type(e).__name__
+say(by_number=[by_number.status_code, by_number.text], gone=[gone.status_code, gone.text], raised=raised)
+"""
+    )
+    heard = await client.heard()
+    await client.finished()
+    assert heard["raised"] == "SenderIdMismatchError"
+    by_number, gone = heard["by_number"], heard["gone"]
+    assert isinstance(by_number, list) and isinstance(gone, list)
+    assert by_number[0] == 501 and "a project named by its number is not served" in str(by_number[1])
+    assert gone[0] == 501 and "whether FCM answers SENDER_ID_MISMATCH or UNREGISTERED is not documented" in str(gone[1])
+
+
 async def test_a_data_value_that_is_not_a_string_is_refused_as_fcm_words_it(fcm: Fcm) -> None:
     client = await fcm.client(f"""say(answer=raw({{"token": {ACTIVE!r}, "data": {{"order": "A-1", "count": 12}}}}))""")
     heard = await client.heard()
@@ -312,4 +376,6 @@ def test_a_seeded_sign_in_on_fcm_is_refused_at_seeding(tmp_path: Path) -> None:
 
 def test_a_seed_naming_a_token_twice_is_refused() -> None:
     with pytest.raises(ValidationError, match="a registration token is seeded twice: t1"):
-        FcmSeed(tokens=[SeededRegistration(token="t1"), SeededRegistration(token="t1")])
+        FcmSeed(
+            tokens=[SeededRegistration(token="t1", project=PROJECT), SeededRegistration(token="t1", project=PROJECT)]
+        )
