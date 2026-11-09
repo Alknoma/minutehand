@@ -313,7 +313,8 @@ def _issues(clause: Clause, context: Context) -> set[str]:
     ids: set[str] = set()
     for text in _texts_of(clause, clause.field):
         issue = context.world.find_issue(text)
-        if issue is None:
+        project = context.world.project(issue.project) if issue is not None else None
+        if issue is None or project is None or not context.desk.can_browse(project, context.me):
             if clause.op is Op.EQ:
                 raise wire.jql_error(ISSUE_UNSEEN)
             continue
