@@ -42,6 +42,9 @@ _COMPARED: dict[str, Callable[[int], tuple[int, int | None]]] = {
 }
 FORKS = {"true", "only"}
 SCOPES = {"file", "path"}
+# "`@me` to specify the current user" in a qualifier that takes a username, such as `user:`
+# (https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax#queries-with-usernames).
+ME = "@me"
 
 # The language names and aliases `language:` takes, folded, to linguist's name.
 _LANGUAGE_ALIASES: dict[str, str] = {
@@ -120,9 +123,9 @@ def _holds(seen: list[str], term: list[str]) -> bool:
     return any(seen[i : i + width] == term for i in range(len(seen) - width + 1))
 
 
-def parse(q: str) -> CodeQuery:
+def parse(q: str, me: str) -> CodeQuery:
     """`q` as terms and qualifiers, GitHub's 422 for what it cannot be read as, or `NotServed` naming what it holds
-    that the legacy syntax does not document."""
+    that the legacy syntax does not document. `me` is the caller's login, which `user:@me` names."""
     if not q.strip():
         raise wire.validation_failed(SECTION, wire.FieldError(resource="Search", field="q", code="missing"))
     query = CodeQuery()
@@ -144,7 +147,7 @@ def parse(q: str) -> CodeQuery:
                 raise NotServed(
                     f"the qualifier {part} in q: it is the newer code search syntax's, not the legacy one's"
                 )
-            _qualify(query, key, value)
+            _qualify(query, key, value, me)
             continue
         found = tokens(part.strip('"'))
         if found:
@@ -154,8 +157,10 @@ def parse(q: str) -> CodeQuery:
     return query
 
 
-def _qualify(query: CodeQuery, key: str, value: str) -> None:
+def _qualify(query: CodeQuery, key: str, value: str, me: str) -> None:
     lowered = value.lower()
+    if key == "user" and lowered == ME:
+        lowered = me.lower()
     if key == "repo":
         if lowered.count("/") != 1:
             raise _refused(f"The repo qualifier takes owner/name, not {value}.")
