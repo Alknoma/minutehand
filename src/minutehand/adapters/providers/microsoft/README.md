@@ -54,6 +54,8 @@ manifest, and because the tenant, its bot and its users are one directory every 
   /v1/worlds/{id}/entities?provider=microsoft&kind=record`, those whose `parent` is `subscriptions`): each body's
   `subscription` holds `resource`, `notificationUrl`, `clientState` and `expirationDateTime` as Graph answers them;
   a deleted one is gone, and an expired one stays with its `expirationDateTime` past the world's clock.
+  A subscription keeps what its resource resolved to when it was made, and is renewed by that, however the resource
+  named it. `GET /subscriptions` lists the app's own: under a signed-in user's token only those made for that user.
 - **Mail** (`graph_mail.py`): every user has a mailbox with Inbox, Sent Items, Drafts and Deleted Items, on `/me`
   and `/users/{id | userPrincipalName | mail}`, a folder named in any case or by id, as a segment or
   `mailFolders('Inbox')`. A sent message is one copy per mailbox: the sender's in Sent Items, read, and one unread

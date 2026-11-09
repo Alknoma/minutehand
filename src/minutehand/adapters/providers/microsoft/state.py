@@ -262,6 +262,7 @@ class SubscriptionRecord(Model):
     subscription: wire.Subscription
     tenant_id: str
     watches: str = Field(description="What a change must touch to be notified: a drive, or a conversation")
+    longest: timedelta = Field(description="The longest the watched resource lets a subscription last")
 
 
 def ref(kind: EntityKind, external_id: str) -> EntityRef:

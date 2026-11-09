@@ -276,3 +276,26 @@ async def test_a_mail_subscription_past_seven_days_or_on_a_folder_that_is_none_i
             f"{GRAPH}/subscriptions", json={**base, "expirationDateTime": _at(tenant, timedelta(days=6))}, headers=auth
         )
         assert held.status_code == 201, held.text
+
+
+async def test_a_signed_in_user_listing_subscriptions_sees_only_those_the_app_made_for_them(
+    tenant: Tenant, microsoft: Intercepted, webhook: Webhook
+) -> None:
+    async with microsoft.http() as http:
+        mine = bearer(await signed_in(http, tenant, AGENT))
+        hers = bearer(await signed_in(http, tenant, "sofia@example.com"))
+        for auth, resource in ((mine, "/me/messages"), (hers, "/me/events")):
+            made = await http.post(
+                f"{GRAPH}/subscriptions",
+                json={
+                    "changeType": "created",
+                    "notificationUrl": webhook.url,
+                    "resource": resource,
+                    "expirationDateTime": _at(tenant, timedelta(days=1)),
+                },
+                headers=auth,
+            )
+            assert made.status_code == 201, made.text
+        listed = await http.get(f"{GRAPH}/subscriptions", headers=hers)
+        assert listed.status_code == 200, listed.text
+        assert [s["resource"] for s in listed.json()["value"]] == ["/me/events"]
