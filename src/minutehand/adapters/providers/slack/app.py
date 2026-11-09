@@ -654,6 +654,10 @@ class SlackApi(FileCalls):
         found = self._world.bodies(EntityKind.RECORD, state.SCHEDULED, wire.SlackScheduled)
         return [s for s in found if s.team == self._world.team.id]
 
+    def _scheduled_by_caller(self) -> list[wire.SlackScheduled]:
+        """Those of `_scheduled` the caller scheduled: Slack lists only what was scheduled with the same token."""
+        return [s for s in self._scheduled() if s.scheduled_by == self._world.bot]
+
     def chat_schedule_message(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.ScheduleArgs, presented)
         if args.channel.startswith("#"):
@@ -686,6 +690,7 @@ class SlackApi(FileCalls):
         scheduled = wire.SlackScheduled(
             id=state.scheduled_id(self._world.next_seq()),
             team=self._world.team.id,
+            scheduled_by=self._world.bot,
             channel=channel.id,
             post_at=post_at,
             date_created=self._now(),
@@ -747,7 +752,7 @@ class SlackApi(FileCalls):
             )
         resume = wire.decode_cursor(args.cursor)
         picked: list[wire.SlackScheduled] = []
-        for s in self._scheduled():
+        for s in self._scheduled_by_caller():
             if (args.channel and s.channel != args.channel) or (resume is not None and s.id <= resume):
                 continue
             if s.post_at in (oldest, latest):
@@ -1034,17 +1039,18 @@ class SlackApi(FileCalls):
             (
                 v
                 for v in self._world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView)
-                if v.open and v.view.external_id == external_id
+                if v.open and v.view.team_id == self._world.team.id and v.view.external_id == external_id
             ),
             None,
         )
 
     def _refuse_taken_external_id(self, external_id: str, besides: str | None) -> None:
+        """An `external_id` is unique among the open views of this workspace only: another workspace's may share it."""
         if not external_id:
             return
-        for found in self._world.bodies(EntityKind.RECORD, state.VIEWS, wire.OpenView):
-            if found.open and found.view.external_id == external_id and found.view.id != besides:
-                raise wire.Refusal("duplicate_external_id")
+        found = self._open_view("", external_id)
+        if found is not None and found.view.id != besides:
+            raise wire.Refusal("duplicate_external_id")
 
     def _write_view(self, shown: wire.OpenView, operation: Operation) -> None:
         write_view(self._world, shown, operation, Actor.AGENT)
