@@ -676,7 +676,7 @@ class GitHubApi:
     async def search_code(self, request: Request, caller: Caller) -> Answered:
         if caller.account is None:
             raise wire.requires_authentication()
-        query = search.parse(param(request, "q") or "")
+        query = search.parse(param(request, "q") or "", caller.account.login)
         visible = [r for r in self.world.repositories() if self.permission(caller, r) is not None]
         names = {r.full_name.lower(): r for r in visible}
         logins = {a.login.lower() for a in self.world.accounts()}
