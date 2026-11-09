@@ -287,6 +287,9 @@ class SlackScheduled(Model):
 
     id: str
     team: str
+    scheduled_by: str = Field(
+        description="The caller that scheduled it: the app's bot user, or the person whose user token the call carried"
+    )
     channel: str
     post_at: int
     date_created: int

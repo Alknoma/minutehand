@@ -8,6 +8,7 @@ moment, `deliver_booking` called.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,8 +17,9 @@ from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.application.orchestrator import Services
 from minutehand.domain.clock import Due, DueKind
+from minutehand.domain.scenario import SignIn
 from tests.providers.slack.intercepted import Intercepted, data
-from tests.providers.slack.slack_workspace import GENERAL, Workspace
+from tests.providers.slack.slack_workspace import GENERAL, Workspace, client_for, form, seeded_with
 from tests.providers.slack.test_slack_conversations import not_served, refusal
 
 HOUR = 3600
@@ -391,3 +393,24 @@ def test_slack_books_work_without_being_a_wake_scheduler(workspace: Workspace) -
     assert services.schedulers["slack"] is workspace.provider
     assert workspace.provider.manifest.books_work and not workspace.provider.manifest.books_wakes
     assert state.TEAM_ID
+
+
+async def test_a_scheduled_message_is_listed_only_to_the_token_that_scheduled_it(tmp_path: Path) -> None:
+    """DOCUMENTED: "This method will only return messages that were scheduled via the `chat.scheduleMessage` API
+    method with the same token." A person's user token does not see what the app's bot token scheduled.
+    https://docs.slack.dev/reference/methods/chat.scheduledMessages.list"""
+    world = seeded_with(tmp_path, sign_ins=[SignIn(provider="slack", credential="xoxp-iris", person="iris")])
+    world.provider.bind(Bookings())
+    try:
+        async with client_for(world.provider, world.store, world.clock) as c:
+            at = str(now(world) + HOUR)
+            scheduled = await form(c, "chat.scheduleMessage", channel=GENERAL, post_at=at, text="From the app")
+            assert scheduled["ok"] is True
+
+            by_the_app = await form(c, "chat.scheduledMessages.list")
+            by_iris = await form(c, "chat.scheduledMessages.list", token="xoxp-iris")
+
+        assert [m["text"] for m in by_the_app["scheduled_messages"]] == ["From the app"]  # type: ignore[index]
+        assert by_iris["scheduled_messages"] == []
+    finally:
+        world.store.close()
