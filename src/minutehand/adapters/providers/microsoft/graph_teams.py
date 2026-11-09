@@ -320,6 +320,11 @@ class TeamsGraph:
             context = f"{GRAPH}/$metadata#users('{user.user.id}')/mailboxSettings/automaticRepliesSetting"
             return self._one(request, self._replies(user), context)
         if parts[2:] == ["chats"]:
+            if claims.oid is not None and claims.oid != user.user.id:
+                raise NotServed(
+                    "a signed-in user's token listing another user's chats: chat-list serves that to application "
+                    "permission only, and Graph's answer to a user is not documented or recorded"
+                )
             chats = [
                 self._chat(c)
                 for c in self._world.conversations()
