@@ -322,3 +322,64 @@ def test_md5_digests_are_awss_own(run: AwsRun) -> None:
         "b": {"BinaryValue": b"\x00\xff", "DataType": "Binary"},
     }
     assert json.dumps(got["Body"]) == json.dumps("héllo")
+
+
+# --- a queue is its account's and its region's --------------------------------------------------------------------
+
+
+def test_a_queue_url_naming_another_account_is_refused_and_reaches_no_queue_of_the_runs_own(run: AwsRun) -> None:
+    """A queue name is "unique for your AWS account and region", and the queue URL names the account
+    (`https://sqs.us-east-2.amazonaws.com/123456789012/MyQueue`, SQS guide, sqs-queue-message-identifiers.html);
+    "the SDK or AWS CLI take the destination queue account number from the queue URL" (Knowledge Center,
+    sqs-queuedoesnotexist-errors). A URL for another account's `wakes` is not this account's `wakes`: what AWS answers
+    depends on that account, which the run does not hold, so the send is refused by name and nothing lands in the
+    run's own queue of that name."""
+    url, _ = run.queue("wakes")
+    elsewhere = url.replace(f"/{run.provider.account}/", "/000000000000/")
+    with pytest.raises(ClientError) as refused:
+        run.sqs.send_message(QueueUrl=elsewhere, MessageBody="meant for another account")
+    assert _code(refused) == ("NotImplemented", 501)
+    assert "a queue in another account than this run's" in str(refused.value)
+    assert run.poll(url) == []
+
+
+def test_get_queue_url_for_another_owner_is_refused_never_answered_with_the_runs_own_queue(run: AwsRun) -> None:
+    """`QueueOwnerAWSAccountId` is "The Amazon Web Services account ID of the account that created the queue"
+    (API_GetQueueUrl.html): asking for another owner's `wakes` never answers this account's `wakes`. The run's own
+    account named there is answered."""
+    url, _ = run.queue("wakes")
+    with pytest.raises(ClientError) as refused:
+        run.sqs.get_queue_url(QueueName="wakes", QueueOwnerAWSAccountId="000000000000")
+    assert _code(refused) == ("NotImplemented", 501)
+    assert "of account 000000000000" in str(refused.value)
+    own = run.sqs.get_queue_url(QueueName="wakes", QueueOwnerAWSAccountId=run.provider.account)
+    assert own["QueueUrl"] == url
+
+
+def test_a_queue_url_of_another_region_is_refused_where_the_endpoints_region_holds_a_queue_of_that_name(
+    run: AwsRun,
+) -> None:
+    """Two queues named `wakes`, one per region ("a queue name unique for your AWS account and region", SQS guide,
+    sqs-queue-message-identifiers.html). AWS answers in the endpoint's region ("the client configuration sets the
+    Region", Knowledge Center, sqs-queuedoesnotexist-errors); whether an `us-east-1` URL at the `us-west-2` endpoint
+    is answered for `us-west-2`'s `wakes` or refused is not documented, so it is refused by name, never answered
+    with one queue's attributes under another's name."""
+    east, _ = run.queue("wakes", VisibilityTimeout="45")
+    west_sqs = run.proxy.client("sqs", region="us-west-2")
+    west_sqs.create_queue(QueueName="wakes", Attributes={"VisibilityTimeout": "60"})
+    with pytest.raises(ClientError) as refused:
+        west_sqs.get_queue_attributes(QueueUrl=east, AttributeNames=["All"])
+    assert _code(refused) == ("NotImplemented", 501)
+    assert "is not documented" in str(refused.value)
+
+
+def test_a_queue_url_of_another_region_is_refused_queue_does_not_exist_where_the_endpoints_region_holds_none(
+    run: AwsRun,
+) -> None:
+    """ "You receive the "QueueDoesNotExist" error when you make a request to the incorrect Region" (Knowledge Center,
+    sqs-queuedoesnotexist-errors), and nothing lands in the queue the URL names."""
+    east, _ = run.queue("wakes")
+    west_sqs = run.proxy.client("sqs", region="us-west-2")
+    with pytest.raises(west_sqs.exceptions.QueueDoesNotExist):
+        west_sqs.send_message(QueueUrl=east, MessageBody="sent to the wrong region")
+    assert run.poll(east) == []
