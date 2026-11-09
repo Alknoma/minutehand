@@ -42,6 +42,14 @@ async def test_each_query_shape_finds_what_github_would(hub: Hub, q: str, paths:
     assert await _paths(hub, q) == paths
 
 
+async def test_user_at_me_searches_the_callers_own_repositories_each_caller_their_own(hub: Hub) -> None:
+    """ "you can use any valid username to specify a specific person, `@me` to specify the current user" for a
+    qualifier that requires a username, such as `user`
+    (https://docs.github.com/en/search-github/getting-started-with-searching-on-github/understanding-the-search-syntax#queries-with-usernames)."""
+    assert await _paths(hub, "billing user:@me") == await _paths(hub, "billing user:iris-calder") == ["README.md"]
+    assert await _paths(hub, "billing user:@me", "ghp_outsider000000000000000000000000000000") == []
+
+
 async def test_a_term_matches_whole_tokens_never_a_substring(hub: Hub) -> None:
     assert await _paths(hub, f"check {LEDGER}") == []
     assert await _paths(hub, f"checkout {LEDGER}") == ["README.md", "services/billing/retry.py"]

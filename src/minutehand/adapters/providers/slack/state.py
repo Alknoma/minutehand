@@ -571,9 +571,10 @@ class SlackWorld:
         return self._store.apply(Change(entity=ref, operation=operation, actor=Actor.AGENT))
 
     def open_conversation(self, members: list[str], *, created: int, actor: Actor) -> wire.SlackChannel:
-        """Write an IM (the app and one other) or a group DM, and a membership for each member."""
+        """Write an IM (the caller and one other) or a group DM, and a membership for each member. The caller is the
+        app's bot, or the person whose user token the call carries, so an IM's `user` is the other member."""
         cid = conversation_id(members)
-        bot = self.team.bot_user_id
+        bot = self.bot
         others = [m for m in members if m != bot]
         if len(set(members)) <= 2:
             channel = wire.SlackChannel(

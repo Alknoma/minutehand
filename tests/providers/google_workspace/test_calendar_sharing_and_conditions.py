@@ -312,3 +312,91 @@ say(made=made, got=got, again=again, meet=refused(lambda: calendar.events().inse
             else:
                 assert event[name] == value, (key, name)
     assert seen["meet"] == [501, "notImplemented"]
+
+
+async def test_two_people_each_insert_the_same_event_id_on_their_own_calendar_and_both_are_taken(
+    tmp_path: Path,
+) -> None:
+    """Calendar's `id` rule is "the ID must be unique per calendar" (events reference): Dov choosing on his own
+    primary the id Mara already chose on hers is a different calendar, and is taken."""
+    async with serving(tmp_path, SHARED) as google:
+        client = await google.client(
+            CALENDAR
+            + AS
+            + f"""
+dov = as_person({DOV!r})
+mine = calendar.events().insert(calendarId="primary", body={{"id": "planning0001", "summary": "Mara's", **SLOT}}).execute()
+his = body_of(lambda: dov.events().insert(calendarId="primary",
+                                         body={{"id": "planning0001", "summary": "Dov's", **SLOT}}).execute())
+say(mine=mine["id"], his=his)
+"""
+        )
+        seen = await client.heard()
+        await client.finished()
+    assert seen["mine"] == "planning0001"
+    assert seen["his"] is None, "Dov's own calendar has no event planning0001"
+
+
+async def test_each_calendar_reads_changes_and_deletes_its_own_event_under_an_id_both_chose(tmp_path: Path) -> None:
+    """Two events under one id, one on each of two calendars: each call is the event the calendar it names holds."""
+    async with serving(tmp_path, SHARED) as google:
+        client = await google.client(
+            CALENDAR
+            + AS
+            + f"""
+dov = as_person({DOV!r})
+calendar.events().insert(calendarId="primary", body={{"id": "planning0001", "summary": "Mara's", **SLOT}}).execute()
+dov.events().insert(calendarId="primary", body={{"id": "planning0001", "summary": "Dov's", **SLOT}}).execute()
+patched = dov.events().patch(calendarId="primary", eventId="planning0001", body={{"summary": "Dov's, moved"}}).execute()
+dov.events().delete(calendarId="primary", eventId="planning0001").execute()
+say(
+    patched=patched["summary"],
+    mara=calendar.events().get(calendarId="primary", eventId="planning0001").execute()["summary"],
+    dov=dov.events().get(calendarId="primary", eventId="planning0001").execute()["status"],
+    maras_list=[e["summary"] for e in calendar.events().list(calendarId="primary").execute()["items"]
+                if e["id"] == "planning0001"],
+)
+"""
+        )
+        seen = await client.heard()
+        await client.finished()
+    assert seen["patched"] == "Dov's, moved"
+    assert seen["mara"] == "Mara's", "Dov's change and delete are of his own event"
+    assert seen["dov"] == "cancelled"
+    assert seen["maras_list"] == ["Mara's"]
+
+
+async def test_an_id_a_guest_holds_as_an_invitation_and_inviting_a_guest_who_holds_the_id_are_refused(
+    tmp_path: Path,
+) -> None:
+    """Dov's calendar holds Mara's planning0001 as an invitation, so the id is taken there (409 `duplicate`); Rosa's
+    holds her own planning0002, and how Calendar answers inviting her to Mara's planning0002 is not recorded."""
+    async with serving(tmp_path, SHARED) as google:
+        client = await google.client(
+            CALENDAR
+            + AS
+            + f"""
+dov = as_person({DOV!r})
+rosa = as_person({ROSA!r})
+guests = [{{"email": "dov@example.com"}}]
+calendar.events().insert(calendarId="primary", body={{"id": "planning0001", "summary": "Mara's", "attendees": guests,
+                                                      **SLOT}}).execute()
+rosa.events().insert(calendarId="primary", body={{"id": "planning0002", "summary": "Rosa's", **SLOT}}).execute()
+calendar.events().insert(calendarId="primary", body={{"id": "planning0002", "summary": "Mara's", **SLOT}}).execute()
+say(
+    taken=refused(lambda: dov.events().insert(calendarId="primary",
+                                              body={{"id": "planning0001", "summary": "Dov's", **SLOT}}).execute()),
+    invited=refused(lambda: calendar.events().insert(calendarId="primary", body={{
+        "id": "planning0003", "summary": "x", "attendees": [{{"email": "rosa@example.com"}}], **SLOT}}).execute()),
+    clash=refused(lambda: calendar.events().patch(calendarId="primary", eventId="planning0002",
+                                                  body={{"attendees": [{{"email": "rosa@example.com"}}]}}).execute()),
+    rosas=rosa.events().get(calendarId="primary", eventId="planning0002").execute()["summary"],
+)
+"""
+        )
+        seen = await client.heard()
+        await client.finished()
+    assert seen["taken"] == [409, "duplicate"]
+    assert seen["invited"] is None, "an id Rosa's calendar does not hold invites her"
+    assert seen["clash"] == [501, "notImplemented"]
+    assert seen["rosas"] == "Rosa's"

@@ -20,7 +20,8 @@ from minutehand.domain.scenario import Seed
 from tests.conformance.contract import Api, Driver, IdKind, PersonSeen, Session, ok
 
 PROVIDER = "firebase_cloud_messaging"
-SEND = "https://fcm.googleapis.com/v1/projects/conformance-project/messages:send"
+PROJECT = "conformance-project"
+SEND = f"https://fcm.googleapis.com/v1/projects/{PROJECT}/messages:send"
 DEVICE = "fGcm-conformance-device:APA91bH-active"
 GONE = "fGcm-conformance-device:APA91bH-unregistered"
 UNSEEDED = "ya29.a0unseededaccesstokennobodywasevergiven0000"
@@ -115,7 +116,15 @@ class FcmDriver(Driver):
         given = seed["provider_seeds"] if "provider_seeds" in seed else []
         if not isinstance(given, list):
             raise TypeError("the seed's provider_seeds is not a list")
-        ours = {"provider": PROVIDER, "body": {"tokens": [{"token": DEVICE}, {"token": GONE, "state": "unregistered"}]}}
+        ours = {
+            "provider": PROVIDER,
+            "body": {
+                "tokens": [
+                    {"token": DEVICE, "project": PROJECT},
+                    {"token": GONE, "project": PROJECT, "state": "unregistered"},
+                ]
+            },
+        }
         merged = dict(seed) | {"provider_seeds": [*given, ours]}
         return CreateWorld(seed=Seed.model_validate(merged), claims=Claims(tokens=[token(tag)]))
 

@@ -75,6 +75,7 @@ from minutehand.adapters.providers.aws.wire import (
     AwsCall,
     CallKind,
     NotImplementedByProvider,
+    QueueAddress,
     Refusal,
     ScheduleCall,
     ScheduleRequest,
@@ -83,6 +84,7 @@ from minutehand.adapters.providers.aws.wire import (
     attributes_asked,
     aws_call,
     deliverable,
+    queue_address,
     queue_created,
     schedule_arn,
     schedule_call,
@@ -178,6 +180,10 @@ class AwsProvider:
             host, target, method = _header(headers, b"host"), _header(headers, b"x-amz-target"), str(scope["method"])
             try:
                 asked = aws_call(method, host, str(scope["path"]), _query(scope), target, body)
+                if asked.service is Service.SQS:
+                    address = queue_address(host, target, asked.operation, body)
+                    if address is not None:
+                        self._in_reach(asked.operation, address)
                 call = schedule_call(method, host, str(scope["path"]), _query(scope), body)
                 if call is not None and call.request is not None:
                     deliverable(call.request, self.account)
@@ -235,6 +241,32 @@ class AwsProvider:
             await _respond(send, status, response_headers, response_body)
 
         return serve
+
+    def _in_reach(self, operation: str, address: QueueAddress) -> None:
+        """Refuses by name an SQS request for a queue this run's account cannot be answered for:
+
+        - another account's queue, by its `QueueUrl` ("the SDK or AWS CLI take the destination queue account number
+          from the queue URL") or GetQueueUrl's `QueueOwnerAWSAccountId` (AWS Knowledge Center,
+          sqs-queuedoesnotexist-errors). What AWS answers depends on whether that account holds the queue and what
+          its policy grants the caller, and the run holds no other account;
+        - a `QueueUrl` of another region than the endpoint's, where the endpoint's region holds a queue of that name.
+          AWS answers in the endpoint's region ("the client configuration sets the Region"), and "You receive the
+          QueueDoesNotExist error when you make a request to the incorrect Region" (same page), which moto answers
+          where the endpoint's region holds no such queue; whether AWS answers the endpoint region's queue of that
+          name or refuses is not documented."""
+        if address.account is not None and address.account != self.account:
+            raise NotImplementedByProvider(
+                f"SQS {operation} on queue {address.queue} of account {address.account}: a queue in another account "
+                f"than this run's ({self.account}) is not served"
+            )
+        if address.url_region is None or address.url_region == address.region:
+            return
+        if address.queue in sqs_backends[self.account][address.region].queues:
+            raise NotImplementedByProvider(
+                f"SQS {operation} at the {address.region} endpoint on a {address.url_region} queue URL for "
+                f"{address.queue}, a name {address.region} also holds: whether AWS answers {address.region}'s "
+                f"{address.queue} or refuses is not documented; send it to the {address.url_region} endpoint"
+            )
 
     def _repeated(self, call: ScheduleCall, world: Store) -> bytes | None:
         """CreateSchedule's answer to a create it already made: the same `ClientToken` ("to ensure the idempotency

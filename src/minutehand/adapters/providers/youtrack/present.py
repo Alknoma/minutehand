@@ -7,10 +7,12 @@ from minutehand.adapters.providers.youtrack.state import YouTrackWorld
 
 
 class Presenter:
-    """One request's view of the instance: what it reads of the instance-wide register is read once."""
+    """One request's view of the instance, as its caller sees it: what it reads of the instance-wide register is read
+    once."""
 
-    def __init__(self, world: YouTrackWorld) -> None:
+    def __init__(self, world: YouTrackWorld, viewer: wire.StoredUser) -> None:
         self._world = world
+        self._viewer = viewer
         self._definitions: list[wire.StoredFieldDefinition] | None = None
         self._projects: list[wire.StoredProject] | None = None
         self._users: dict[str, wire.StoredUser] = {}
@@ -245,6 +247,13 @@ class Presenter:
             issue=self.issue_ref(issue),
         )
 
+    def tags_seen(self, issue: wire.StoredIssue) -> list[wire.StoredTag]:
+        """The tags on an issue its viewer can see: "Other users cannot see your personal tags"."""
+        return [t for t in (self._world.tag(i) for i in issue.tags) if t is not None and self.sees(t)]
+
+    def sees(self, tag: wire.StoredTag) -> bool:
+        return self._world.sees(tag, self._viewer)
+
     def tag(self, tag: wire.StoredTag) -> wire.TagOut:
         return wire.TagOut(id=tag.id, name=tag.name, owner=self.user_by_id(tag.owner))
 
@@ -292,7 +301,7 @@ class Presenter:
         project = self.home(issue)
         comments = [self.comment(c, issue) for c in self._world.comments(issue.id)]
         custom = self.issue_fields(project, issue)
-        tags = [self.tag(t) for t in (self._world.tag(i) for i in issue.tags) if t is not None]
+        tags = [self.tag(t) for t in self.tags_seen(issue)]
         return wire.IssueOut(
             id=issue.id,
             idReadable=issue.idReadable,

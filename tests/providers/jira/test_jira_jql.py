@@ -35,6 +35,14 @@ async def test_a_project_the_caller_cannot_see_is_refused_400_as_one_the_site_ha
     assert "VAULT-1" not in await keys(site, "statusCategory = new")
 
 
+async def test_key_equals_an_issue_the_caller_cannot_see_is_refused_400_as_one_the_site_has_not_got(
+    site: Site,
+) -> None:
+    """Jira answers `key = X` for an issue hidden from the caller exactly as for one that is not there."""
+    body = refused(await site.http.post(f"{API}/search/jql", json={"jql": "key = VAULT-1"}), 400)
+    assert body == {"errorMessages": ["Issue does not exist or you do not have permission to see it."], "errors": {}}
+
+
 async def test_assignee_equals_a_quoted_account_id(site: Site) -> None:
     assert await keys(site, f'assignee = "{TOMAS}"') == ["LAUNCH-1"]
 

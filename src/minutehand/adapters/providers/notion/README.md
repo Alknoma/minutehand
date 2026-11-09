@@ -41,7 +41,8 @@ and `child_page` and `child_database` stubs. A link preview can be seeded and re
 creating one through the API is refused, as Notion refuses it.
 
 **Rich text:** text (with links), mentions of a user, page, database or date, and
-equations. Annotations and `plain_text` are filled in.
+equations. Annotations and `plain_text` are filled in; a page or database mention reads as
+`"Untitled"`, with default annotations, to an integration the page or database is not shared with.
 
 **Properties:** title, rich_text, number, select (an unknown option is added to the
 schema), multi_select, status (an unknown option is refused), date, people, checkbox,

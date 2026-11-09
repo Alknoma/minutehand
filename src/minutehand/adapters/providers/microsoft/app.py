@@ -79,13 +79,13 @@ class GraphApp:
         self.calendar = Calendar(self._world, clock, self.mail)
         self._subscriptions = Subscriptions(self._world, clock, self._watchable)
 
-    def _outlook(self, resource: str, claims: wire.Claims | None) -> str | None:
+    def _outlook(self, resource: str, claims: wire.Claims) -> str | None:
         """What a subscription to a mailbox's messages (all, or one folder's) or its events watches; None when the
         resource is neither."""
         parts = split_segments([p for p in resource.strip("/").split("/") if p])
         lowered = [p.lower() for p in parts]
         if lowered[0] == "me":
-            key, rest = (claims.oid if claims is not None else None), lowered[1:]
+            key, rest = claims.oid, lowered[1:]
         elif lowered[0] == "users" and len(parts) >= 2:
             key, rest = parts[1], lowered[2:]
         else:
@@ -100,14 +100,11 @@ class GraphApp:
         ):
             return None
         if key is None:
-            found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
-            if found is None:
-                raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
-            return found.watches
+            raise NotServed("/me with no signed-in user: Graph documents no answer to an application")
         user = self._world.user_by(key)
         if user is None:
             raise NotServed(f"a subscription to {resource!r}, which the world does not hold: not recorded")
-        if claims is not None and claims.oid is not None and claims.oid != user.user.id:
+        if claims.oid is not None and claims.oid != user.user.id:
             raise NotServed("a user's subscription to another user's mailbox: Graph's answer is not recorded")
         if rest[-1] == "events":
             return calendar_watch(user.user.id)
@@ -115,25 +112,13 @@ class GraphApp:
             return mail_watch(user.user.id, None)
         return mail_watch(user.user.id, self.mail.folder(user, parts[-2]).value)
 
-    def _watchable(self, resource: str, claims: wire.Claims | None) -> tuple[str, timedelta]:
+    def _watchable(self, resource: str, claims: wire.Claims) -> tuple[str, timedelta]:
         parts = [p for p in resource.strip("/").split("/") if p]
         outlook = self._outlook(resource, claims)
         if outlook is not None:
             return outlook, OUTLOOK_LIMIT
         if parts[-1:] == ["root"] and len(parts) >= 2:
-            drive_parts = parts[:-1]
-            if drive_parts[0] == "me" and claims is None:
-                found = next((s for s in self._world.subscriptions() if s.subscription.resource == resource), None)
-                if found is None:
-                    raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
-                return found.watches, DRIVE_LIMIT
-            if claims is not None:
-                address = self.files.address(Caller(claims), drive_parts)
-            else:
-                drive = self._world.drive(drive_parts[1]) if drive_parts[0] == "drives" else None
-                if drive is None:
-                    raise NotServed("a subscription whose resource is no longer known: Graph's answer is not recorded")
-                return drive_watch(drive.drive.id), DRIVE_LIMIT
+            address = self.files.address(Caller(claims), parts[:-1])
             return drive_watch(address.drive.drive.id), DRIVE_LIMIT
         if parts[-1:] == ["messages"]:
             if parts[0] == "chats" and len(parts) == 3:

@@ -134,7 +134,8 @@ async def notify(
 class Subscriptions:
     def __init__(self, world: MicrosoftWorld, clock: Clock, resolve) -> None:
         """`resolve(resource, claims)` answers what a resource watches, and the longest a subscription to it may
-        last; it refuses a resource that cannot be watched."""
+        last; it refuses a resource that cannot be watched. Both are kept on the record when it is made, and a
+        renewal reads them there: the resource's words are resolved once, for the caller who wrote them."""
         self._world = world
         self._clock = clock
         self._resolve = resolve
@@ -195,6 +196,9 @@ class Subscriptions:
                 if live(r, now)
                 and r.subscription.changeType == asked.changeType
                 and r.subscription.resource == asked.resource
+                # `me/...` is the caller's own mailbox: two people's `me/events` are two subscriptions, and only
+                # the same target asked for again is the combination that already exists.
+                and r.watches == watches
             ),
             None,
         )
@@ -227,6 +231,7 @@ class Subscriptions:
             ),
             tenant_id=claims.tid or "",
             watches=watches,
+            longest=limit,
         )
         self._write(record, Operation.CREATE)
         return self._answer(record, 201)
@@ -249,12 +254,19 @@ class Subscriptions:
         return self._answer(record)
 
     async def list(self, request: Request) -> Response:
+        """The subscriptions this app created: under a signed-in user's token only those it created for that user,
+        under the app's own token every one (subscription-list, "Basic scenarios"). Subscription.Read.All, which
+        widens the list to other apps', is refused by name."""
         claims = graph_caller(request, self._world)
+        if "Subscription.Read.All" in (claims.scp or "").split():
+            raise NotServed("listing subscriptions with Subscription.Read.All (other apps' subscriptions)")
         now = self._clock.now()
         found = [
             r.subscription
             for r in self._world.subscriptions()
-            if live(r, now) and r.subscription.applicationId == claims.appid
+            if live(r, now)
+            and r.subscription.applicationId == claims.appid
+            and (claims.oid is None or r.subscription.creatorId == claims.oid)
         ]
         page = wire.Page[wire.Subscription](context=f"{GRAPH}/$metadata#subscriptions", value=found)
         return Response(wire.dump(page), media_type=GRAPH_JSON)
@@ -268,9 +280,8 @@ class Subscriptions:
                 f"a request body that cannot be read ({e.message}): Graph's answer is not documented or recorded"
             ) from e
         expires = parse_time(asked.expirationDateTime)
-        _, limit = self._resolve(record.subscription.resource, None)
         now = self._clock.now()
-        if expires <= now or expires > now + limit:
+        if expires <= now or expires > now + record.longest:
             raise NotServed(
                 "renewing to an expirationDateTime outside what the resource allows: Graph's answer is not documented or recorded"
             )

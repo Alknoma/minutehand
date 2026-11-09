@@ -75,6 +75,10 @@ AGENT_LOGIN = "agent-bot"
 AGENT_NAME = "Agent"
 AGENT_EMAIL = "agent-bot@youtrack.invalid"
 
+ALL_USERS = "all-users"
+GLOBAL_GROUPS = [(ALL_USERS, "All Users"), ("registered-users", "Registered Users")]
+"""Hub's two instance-wide groups, as id and name: every user is in both."""
+
 STATE_FIELD = "State"
 ASSIGNEE_FIELD = "Assignee"
 
@@ -342,6 +346,23 @@ class YouTrackWorld:
     def tag_named(self, name: str) -> wire.StoredTag | None:
         wanted = name.strip().lower()
         return next((t for t in self.tags() if t.name.lower() == wanted), None)
+
+    def in_group(self, group: str, user: wire.StoredUser) -> bool:
+        """Whether a user is in a group: everyone is in an instance-wide group, a project's team in its team group."""
+        if any(group == known for known, _ in GLOBAL_GROUPS):
+            return True
+        return any(p.teamGroup == group and user.id in p.team for p in self.projects())
+
+    def _shared(self, sharing: wire.StoredSharing, user: wire.StoredUser) -> bool:
+        return user.id in sharing.permittedUsers or any(self.in_group(g, user) for g in sharing.permittedGroups)
+
+    def sees(self, tag: wire.StoredTag, user: wire.StoredUser) -> bool:
+        """ "By default, tags are visible to you only": its owner sees a tag, and whoever it is shared with to view."""
+        return tag.owner == user.id or self._shared(tag.readSharingSettings, user)
+
+    def uses(self, tag: wire.StoredTag, user: wire.StoredUser) -> bool:
+        """Adding a tag to or removing it from an issue is for its owner and whoever may use it, who must also see it."""
+        return tag.owner == user.id or (self.sees(tag, user) and self._shared(tag.tagSharingSettings, user))
 
     def link_types(self) -> list[wire.StoredLinkType]:
         found = [wire.parse(wire.StoredLinkType, s.body) for s in self._all(EntityKind.RECORD, LINK_TYPES)]

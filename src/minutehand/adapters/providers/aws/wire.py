@@ -574,13 +574,72 @@ def _sqs_region(host: str) -> str | None:
 
 
 def _deleting(host: str, queue_url: str, handles: list[str]) -> SqsDelete | None:
-    """The queue a QueueUrl names (its last path segment), in the region its own host names, else the request's."""
-    url_host, _, path = queue_url.split("://", 1)[-1].partition("/")
-    region = _sqs_region(url_host) or _sqs_region(host)
-    name = path.rstrip("/").rsplit("/", 1)[-1]
+    """The queue a QueueUrl names (its last path segment), in the region of the endpoint the request reached: "The
+    SDK and AWS CLI don't retrieve the destination Region from the queue URL. Instead, the client configuration sets
+    the Region" (AWS Knowledge Center, sqs-queuedoesnotexist-errors). A URL whose own host names another region is
+    refused before this is read (`queue_address`)."""
+    region = _sqs_region(host)
+    name = _url_parts(queue_url)[2]
     if region is None or not name or not handles:
         return None
     return SqsDelete(region=region, queue=name, receipt_handles=handles)
+
+
+def _url_parts(queue_url: str) -> tuple[str | None, str | None, str]:
+    """The region a QueueUrl's host names (None for a host that names none), the account its path names (None for
+    a path of one segment), and the queue name (its last segment):
+    `https://sqs.us-east-2.amazonaws.com/123456789012/MyQueue` (SQS guide, sqs-queue-message-identifiers.html)."""
+    url_host, _, path = queue_url.split("://", 1)[-1].partition("/")
+    segments = [s for s in path.split("/") if s]
+    account = segments[-2] if len(segments) >= 2 else None
+    return _sqs_region(url_host), account, segments[-1] if segments else ""
+
+
+class QueueAddress(Model):
+    """The queue an SQS request names. `region` is the endpoint's, the region the request is answered in;
+    `url_region` and `account` are what its `QueueUrl` names (GetQueueUrl: `QueueOwnerAWSAccountId`), None where it
+    names none."""
+
+    region: str
+    queue: str
+    url_region: str | None
+    account: str | None
+
+
+class _Addressing(Model):
+    """The members of any SQS JSON request that name a queue; every other member is the operation's own."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    queue_url: str | None = Field(default=None, alias="QueueUrl")
+    queue_name: str | None = Field(default=None, alias="QueueName")
+    queue_owner: str | None = Field(default=None, alias="QueueOwnerAWSAccountId")
+
+
+def queue_address(host: str, target: str, operation: str, body: bytes) -> QueueAddress | None:
+    """The queue this SQS request names by `QueueUrl`, or GetQueueUrl by `QueueName` and `QueueOwnerAWSAccountId`
+    (JSON or query protocol); None for a request that names none, or one neither protocol reads (moto answers that
+    as AWS would)."""
+    region = _sqs_region(host)
+    if region is None:
+        return None
+    if target:
+        try:
+            asked = _Addressing.model_validate_json(body)
+        except ValidationError:
+            return None
+        url, name, owner = asked.queue_url, asked.queue_name, asked.queue_owner
+    else:
+        form = _form(body)
+        url = form["QueueUrl"][0] if "QueueUrl" in form else None
+        name = form["QueueName"][0] if "QueueName" in form else None
+        owner = form["QueueOwnerAWSAccountId"][0] if "QueueOwnerAWSAccountId" in form else None
+    if operation == "GetQueueUrl" and name is not None:
+        return QueueAddress(region=region, queue=name, url_region=None, account=owner)
+    if url is None:
+        return None
+    url_region, account, queue = _url_parts(url)
+    return QueueAddress(region=region, queue=queue, url_region=url_region, account=account)
 
 
 _ARN = re.compile(r"arn:aws[a-z-]*:([a-z0-9-]+):([a-z0-9-]*):(\d*):(.+)")
