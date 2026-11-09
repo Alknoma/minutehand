@@ -7,6 +7,7 @@ A trigger is issued the way an interaction hands one to the app: a record in the
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,7 +20,7 @@ from minutehand.adapters.providers.slack.interactive import DeliveryRefused
 from minutehand.domain.scenario import FormInput
 from minutehand.domain.world import Actor, EntityKind, Operation
 from tests.providers.slack.intercepted import SECRET, AgentEndpoint, Intercepted, Received, data
-from tests.providers.slack.slack_workspace import START, Workspace
+from tests.providers.slack.slack_workspace import START, Workspace, body, client_for, seeded_with
 from tests.providers.slack.test_slack_conversations import not_served, refusal
 from tests.providers.slack.test_slack_interactions import REJECT_MODAL, card_to_tomas, tomas_presses
 
@@ -417,3 +418,54 @@ async def test_a_trigger_from_a_submission_pushes_a_view(
     with pytest.raises(SlackApiError) as again:
         await slack.asynchronous().views_push(trigger_id=seen[0], view=modal("Twice"))
     assert again.value.response["error"] == "exchanged_trigger_id"
+
+
+TWO_WORKSPACES: dict[str, object] = {
+    "workspaces": [
+        {
+            "team_id": "TALPHA",
+            "domain": "alpha",
+            "bot_user_id": "UALPHABOT",
+            "bot_id": "BALPHA",
+            "tokens": ["xoxb-alpha"],
+        },
+        {"team_id": "TBETA", "domain": "beta", "bot_user_id": "UBETABOT", "bot_id": "BBETA", "tokens": ["xoxb-beta"]},
+    ]
+}
+
+
+async def test_an_external_id_in_use_in_another_workspace_is_free_in_this_one(tmp_path: Path) -> None:
+    """DOCUMENTED: a view's `external_id` "must be unique for all views on a team" and "unique for all views on a
+    per-team basis": one app installed in two workspaces may give a modal in each the same one.
+    https://docs.slack.dev/reference/methods/views.open, https://docs.slack.dev/reference/views/modal-views"""
+    world = seeded_with(tmp_path, slack=TWO_WORKSPACES)
+    try:
+        trigger(world, "alpha.1")
+        trigger(world, "beta.1")
+        async with client_for(world.provider, world.store, world.clock) as c:
+            alpha = await body(
+                c, "views.open", token="xoxb-alpha", trigger_id="alpha.1", view=modal(external_id="case-7")
+            )
+            beta = await body(c, "views.open", token="xoxb-beta", trigger_id="beta.1", view=modal(external_id="case-7"))
+        assert alpha["ok"] is True
+        assert beta["ok"] is True, beta
+    finally:
+        world.store.close()
+
+
+async def test_a_view_of_another_workspace_updated_by_its_external_id_is_refused_not_found(tmp_path: Path) -> None:
+    """DOCUMENTED: `not_found` "when the given `view_id` or `external_id` doesn't exist", and an `external_id` is
+    unique only "for all views on a team": another workspace's view is not one this workspace's token names.
+    https://docs.slack.dev/reference/methods/views.update"""
+    world = seeded_with(tmp_path, slack=TWO_WORKSPACES)
+    try:
+        trigger(world, "alpha.1")
+        async with client_for(world.provider, world.store, world.clock) as c:
+            opened = await body(
+                c, "views.open", token="xoxb-alpha", trigger_id="alpha.1", view=modal(external_id="case-7")
+            )
+            assert opened["ok"] is True
+            updated = await body(c, "views.update", token="xoxb-beta", external_id="case-7", view=modal("Taken over"))
+        assert updated == {"ok": False, "error": "not_found"}
+    finally:
+        world.store.close()

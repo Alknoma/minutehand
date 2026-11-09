@@ -35,6 +35,8 @@ or refused by name where neither source says what YouTrack answers (rows 6, 8, 9
 
 Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Minutehand checks no credential and enforces no permission. A token the seed names, or one Hub issued, acts as its
 user; any other token, a Basic credential, an empty `Authorization` or none at all acts as the agent's account.
+A tag's sharing is no permission but what the tag is: a tag is seen and used by its owner and whom it is shared with
+alone, so the caller's own account decides which tags it sees and may use ("Tags are their owners'" below).
 Removed, each pinned by a test that it no longer refuses:
 
 | Removed check | Was | Pinned by |
@@ -151,6 +153,17 @@ instance on 2026-10-13, at the URL the row gives, and kept whole in `tests/provi
 | An attribute the Agile or ProjectTimeTrackingSettings schema lists that this fake keeps nothing for (a board's `owner`, `sprints`, columns, sharing…; the settings' `workItemTypes`, `attributes`) is refused by name (501), never left out as if the entity had not got it | documented | the Agile and ProjectTimeTrackingSettings schemas in https://youtrack.jetbrains.com/api/openapi.json | `test_youtrack_time_tracking_and_agiles::test_an_agile_attribute_the_fake_keeps_none_of_is_refused_501_naming_it`, `test_youtrack_time_tracking_and_agiles::test_a_time_tracking_attribute_the_fake_keeps_none_of_is_refused_501_naming_it` |
 | A negative `$top` on an issue's custom fields or on `/agiles` answers every entity | observed | https://youtrack.jetbrains.com/api/issues/IDEA-391136/customFields?fields=id&$top=-1 (`issue_custom_fields_top_negative.http`), https://youtrack.jetbrains.com/api/agiles?fields=id&$top=-1 (`agiles_top_negative.http`: 53 boards, past the default 42) | `test_youtrack_time_tracking_and_agiles::test_a_negative_top_answers_every_entity_as_the_public_instance_does`, `test_youtrack_time_tracking_and_agiles::test_an_issues_size_reads_back_through_the_youtrack_sdk` |
 
+## Tags are their owners'
+
+A tag is seen and used by its owner and whom it is shared with alone; a seeded label is a team's tag shared with All
+Users (`readSharingSettings` and `tagSharingSettings` both naming the All Users group), and a tag the API makes is its
+maker's alone. Where the page gives no answer for an unseen or unusable tag, it is refused by name (501).
+
+| Claim | Class | Source | Pinned by |
+|---|---|---|---|
+| A tag is its owner's: another user does not list it, read it, see it on an issue, in an issue's history or by searching (`tag:` is then a name no tag holds, row 21); a tag shared with a group or user is seen by its members; a seeded label is a team's tag shared with All Users | documented | documented: `GET /api/tags` gives "all tags that are visible to the current user" ([tags](https://www.jetbrains.com/help/youtrack/devportal/resource-api-tags.html)); "By default, tags are visible to you only. Other users cannot see your personal tags." and searching by a tag is for its owner and those allowed to view it ([using tags](https://www.jetbrains.com/help/youtrack/cloud/using-tags.html)); `readSharingSettings` ([IssueTag](https://www.jetbrains.com/help/youtrack/devportal/api-entity-IssueTag.html)). A read of an unseen tag by id refused by name (501): neither documented nor recorded | `test_youtrack_caller_calls::test_a_tag_the_agent_made_is_its_own_and_another_user_does_not_list_it`, `test_youtrack_caller_calls::test_another_users_private_tag_is_not_shown_on_an_issue_it_tags`, `test_youtrack_caller_calls::test_another_users_private_tag_is_not_on_an_issue_read_and_searching_it_is_refused`, `test_youtrack_caller_calls::test_another_users_private_tag_is_not_in_an_issues_history`, `test_youtrack_caller_calls::test_reading_another_users_private_tag_is_refused`, `test_youtrack_caller_calls::test_a_seeded_label_is_a_shared_tag_another_user_lists_and_uses` |
+| Only a tag's owner and those it is shared with to see and use add it to or take it off an issue (by its tags, a body's `tags` or a command); anyone else is refused naming the tag, as is an update whose `tags` would take off a tag the caller may not use, and nothing is written | documented | documented: adding and removing are for "The user who created the tag (its owner)" and "Users and members of groups or teams who are allowed to use the tag" ([using tags](https://www.jetbrains.com/help/youtrack/cloud/using-tags.html)), `tagSharingSettings` ([IssueTag](https://www.jetbrains.com/help/youtrack/devportal/api-entity-IssueTag.html)); the refusal by name (501): its answer neither documented nor recorded | `test_youtrack_caller_calls::test_tagging_an_issue_with_another_users_private_tag_is_refused`, `test_youtrack_caller_calls::test_untagging_an_issue_of_another_users_private_tag_is_refused`, `test_youtrack_caller_calls::test_a_command_tagging_or_untagging_with_another_users_private_tag_is_refused`, `test_youtrack_caller_calls::test_an_update_dropping_another_users_private_tag_is_refused` |
+
 ## Divergences that stay
 
 - **A template's fields of types not held.** The Default template also attaches Subsystem (`ownedField[1]`), Fix
@@ -203,7 +216,9 @@ No refusal is in this fake's own words. Each is one of:
   body (`POST /api/issues` is a 403 there): a body that is empty, not JSON, not an entity, or of the wrong types;
   a create or update without a summary, a comment without text; a project without a name, short name or leader; a
   custom field or bundle value without a name or with one in use; a tag named as one in use or named instead of by
-  id; an issue linked to itself; a command that is empty, unknown, without a value, naming no issues or an unknown
+  id; a tag another user owns and has not shared with the caller, read by id or added to or taken off an issue (an
+  update's `tags` included);
+  an issue linked to itself; a command that is empty, unknown, without a value, naming no issues or an unknown
   tag; `$skip`/`$top` that are not numbers or negative on any collection but the issue search (and a negative `$top` on
   an issue's custom fields or agile boards); Hub's token endpoint
   with an unreadable request, no grant or a grant other than client credentials.

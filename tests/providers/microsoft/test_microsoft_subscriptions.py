@@ -121,3 +121,31 @@ async def test_a_subscription_to_a_receiver_on_a_certificate_no_trusted_ca_signe
     assert len(webhook.validations) == 1
     await person_does(tenant, "sofia", "notes.txt", Edited(append="edited once"))
     assert [n["value"][0]["subscriptionId"] for n in webhook.notifications] == [made.json()["id"]]
+
+
+async def test_a_subscription_on_a_drive_reached_through_its_site_or_its_user_is_renewed_like_one_reached_by_id(
+    tenant: Tenant, microsoft: Intercepted, webhook: Webhook
+) -> None:
+    async with microsoft.http() as http:
+        auth = bearer(await token(http, tenant, "https://graph.microsoft.com/.default"))
+        site = (
+            await http.get(f"{GRAPH}/sites/{tenant.directory.sharepoint_host}:/sites/VendorReviewTeam", headers=auth)
+        ).json()["id"]
+        for resource in (f"/sites/{site}/drive/root", "/users/sofia@example.com/drive/root"):
+            made = await http.post(
+                f"{GRAPH}/subscriptions",
+                json={
+                    "changeType": "updated",
+                    "notificationUrl": webhook.url,
+                    "resource": resource,
+                    "expirationDateTime": _at(tenant, timedelta(hours=1)),
+                },
+                headers=auth,
+            )
+            assert made.status_code == 201, made.text
+            renewed = await http.patch(
+                f"{GRAPH}/subscriptions/{made.json()['id']}",
+                json={"expirationDateTime": _at(tenant, timedelta(days=2))},
+                headers=auth,
+            )
+            assert renewed.status_code == 200, (resource, renewed.text)

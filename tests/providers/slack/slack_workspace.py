@@ -16,7 +16,7 @@ from minutehand.adapters.providers.slack.provider import SlackProvider, build
 from minutehand.adapters.providers.slack.state import BOT_USER_ID, SlackWorld
 from minutehand.adapters.store.sqlite import SqliteStore
 from minutehand.application.run_clock import RunClock
-from minutehand.domain.scenario import Person, Scenario, Silent, WorkingHours
+from minutehand.domain.scenario import Person, ProviderSeed, Scenario, SignIn, Silent, WorkingHours
 from minutehand.domain.world import Actor, Operation
 
 START = datetime(2026, 8, 24, 10, 50, 3, tzinfo=UTC)
@@ -120,6 +120,23 @@ def workspace(tmp_path: Path) -> Iterator[Workspace]:
     provider.seed(SCENARIO, store)
     yield Workspace(provider=provider, store=store, clock=clock, path=tmp_path / "world.db")
     store.close()
+
+
+def seeded_with(
+    path: Path, *, sign_ins: list[SignIn] | None = None, slack: dict[str, object] | None = None
+) -> Workspace:
+    """`SCENARIO` seeded with sign-ins (a person's user token) and a Slack seed of its own; the caller closes its store."""
+    scenario = SCENARIO.model_copy(
+        update={
+            "sign_ins": sign_ins or [],
+            "provider_seeds": [] if slack is None else [ProviderSeed(provider="slack", body=json.dumps(slack))],
+        }
+    )
+    clock = RunClock(START)
+    store = SqliteStore(path / "world.db", "root", clock)
+    provider = build()
+    provider.seed(scenario, store)
+    return Workspace(provider=provider, store=store, clock=clock, path=path / "world.db")
 
 
 def client_for(provider: SlackProvider, store: SqliteStore, clock: RunClock) -> httpx.AsyncClient:

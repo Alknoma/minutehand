@@ -256,6 +256,11 @@ class NotionApi:
 
     # ------------------------------------------------------------------ rendering
 
+    def _seen(self, call: Call, value: JsonValue) -> JsonValue:
+        """Stored content as this integration is served it: a page or database mention reads as the title of what
+        it names only when the integration reaches it (`wire.as_seen`)."""
+        return wire.as_seen(value, lambda named: self._world.title(named) if self.reaches(call, named) else None)
+
     def _user(self, call: Call, user: wire.StoredUser) -> wire.Json:
         email = wire.Capability.READ_USERS_WITH_EMAIL in call.integration.capabilities
         if user.type is wire.UserType.PERSON or user.integration is None:
@@ -297,6 +302,7 @@ class NotionApi:
             properties = {name: self._value(call, value) for name, value in page.properties.items()}
         if only is not None:
             properties = {n: v for n, v in properties.items() if isinstance(v, dict) and v["id"] in only}
+        properties = {n: self._seen(call, v) for n, v in properties.items()}
         return {
             "object": "page",
             "id": page.id,
@@ -324,15 +330,15 @@ class NotionApi:
             held = self._user(call, user) if user is not None else {"object": "user", "id": who}
         return {"id": prop["id"], "type": kind.value, kind.value: held}
 
-    def render_database(self, database: wire.StoredDatabase) -> wire.Json:
+    def render_database(self, call: Call, database: wire.StoredDatabase) -> wire.Json:
         return {
             "object": "database",
             "id": database.id,
             "cover": database.cover,
             "icon": database.icon,
             **database.stamps.render(),
-            "title": database.title,
-            "description": database.description,
+            "title": self._seen(call, database.title),
+            "description": self._seen(call, database.description),
             "is_inline": database.is_inline,
             "properties": {name: dict(prop) for name, prop in database.schema_.items()},
             "parent": database.parent.render(),
@@ -361,8 +367,8 @@ class NotionApi:
             return database is None or database.archived
         return False
 
-    def render_block(self, page: wire.StoredPage, block: wire.StoredBlock) -> wire.Json:
-        content: JsonValue = block.content
+    def render_block(self, call: Call, page: wire.StoredPage, block: wire.StoredBlock) -> wire.Json:
+        content: JsonValue = self._seen(call, block.content)
         archived = block.archived
         has_children = bool(self._live_children(page, block.id))
         stamps = block.stamps
@@ -382,7 +388,8 @@ class NotionApi:
             upload = self._world.file_upload(str(held["file_upload"])) if isinstance(held, dict) else None
             if upload is not None:
                 url, until = wire.file_url(upload, self._clock.now())
-                content = {**block.content, "file": {"url": url, "expiry_time": until}}
+                held_content = content if isinstance(content, dict) else block.content
+                content = {**held_content, "file": {"url": url, "expiry_time": until}}
         return {
             "object": "block",
             "id": block.id,
@@ -485,7 +492,9 @@ class NotionApi:
                     continue
                 if words and words not in wire.plain(database.title).casefold():
                     continue
-                found_items.append((database.stamps.last_edited_time, database.id, self.render_database(database)))
+                found_items.append(
+                    (database.stamps.last_edited_time, database.id, self.render_database(call, database))
+                )
         found_items.sort(key=lambda f: f[1])
         found_items.sort(key=lambda f: f[0], reverse=descending)
         workspace = self._world.workspace(call.workspace)
@@ -604,7 +613,7 @@ class NotionApi:
             return _answer(self._database_as_block(database))
         holder = self._holding(call, block_id)
         self._world.saw(page_ref(holder), Operation.READ)
-        return _answer(self.render_block(holder, holder.blocks[block_id]))
+        return _answer(self.render_block(call, holder, holder.blocks[block_id]))
 
     async def block_update(self, request: Request, call: Call) -> Response:
         block_id = self._id(request, "block_id")
@@ -620,7 +629,7 @@ class NotionApi:
             return _answer(self._database_as_block(self._editor(call).update_database(block_id, body, by=call.bot)))
         self._holding(call, block_id)
         page, block = self._editor(call).update_block(block_id, body, by=call.bot)
-        return _answer(self.render_block(page, block))
+        return _answer(self.render_block(call, page, block))
 
     async def block_delete(self, request: Request, call: Call) -> Response:
         block_id = self._id(request, "block_id")
@@ -634,7 +643,7 @@ class NotionApi:
         self._holding(call, block_id)
         page, block = self._editor(call).archive_block(block_id, by=call.bot)
         latest = self._world.page(page.id) or page
-        return _answer(self.render_block(latest, latest.blocks[block.id]))
+        return _answer(self.render_block(call, latest, latest.blocks[block.id]))
 
     async def children_list(self, request: Request, call: Call) -> Response:
         block_id = self._id(request, "block_id")
@@ -651,7 +660,7 @@ class NotionApi:
         live = self._live_children(holder, container)
         self._world.saw(page_ref(holder), Operation.READ)
         return self._listed(
-            request, [self.render_block(holder, b) for b in live], [b.id for b in live], cursor, size, "block"
+            request, [self.render_block(call, holder, b) for b in live], [b.id for b in live], cursor, size, "block"
         )
 
     async def children_append(self, request: Request, call: Call) -> Response:
@@ -669,7 +678,7 @@ class NotionApi:
             else None
         )
         page, top = self._editor(call).append(block_id, body["children"], after=after, by=call.bot)
-        rendered = [self.render_block(page, b) for b in top]
+        rendered = [self.render_block(call, page, b) for b in top]
         return _answer(wire.render_list(rendered, None, "block", self.request_id(request)))
 
     # ------------------------------------------------------------------ databases
@@ -677,7 +686,7 @@ class NotionApi:
     async def database_get(self, request: Request, call: Call) -> Response:
         database = self._database(call, self._id(request, "database_id"))
         self._world.saw(record_ref(database.id), Operation.READ)
-        return _answer(self.render_database(database))
+        return _answer(self.render_database(call, database))
 
     async def database_query(self, request: Request, call: Call) -> Response:
         database = self._database(call, self._id(request, "database_id"))
@@ -738,12 +747,12 @@ class NotionApi:
         title = wire.rich_text(body["title"], "body.title", editor) if "title" in body else []
         inline = wire.as_bool(body["is_inline"], "body.is_inline") if "is_inline" in body else False
         database = editor.create_database(database_id, parent, title, schema, inline=inline, by=call.bot)
-        return _answer(self.render_database(database))
+        return _answer(self.render_database(call, database))
 
     async def database_update(self, request: Request, call: Call) -> Response:
         database = self._database(call, self._id(request, "database_id"))
         changed = self._editor(call).update_database(database.id, await self._body(request), by=call.bot)
-        return _answer(self.render_database(changed))
+        return _answer(self.render_database(call, changed))
 
     # ------------------------------------------------------------------ users
 
@@ -774,7 +783,7 @@ class NotionApi:
 
     # ------------------------------------------------------------------ comments
 
-    def render_comment(self, comment: wire.StoredComment) -> wire.Json:
+    def render_comment(self, call: Call, comment: wire.StoredComment) -> wire.Json:
         return {
             "object": "comment",
             "id": comment.id,
@@ -783,7 +792,7 @@ class NotionApi:
             "created_time": comment.created_time,
             "last_edited_time": comment.created_time,
             "created_by": {"object": "user", "id": comment.created_by},
-            "rich_text": comment.rich_text,
+            "rich_text": self._seen(call, comment.rich_text),
         }
 
     async def comments_list(self, request: Request, call: Call) -> Response:
@@ -798,7 +807,7 @@ class NotionApi:
         self._world.saw(page_ref(page), Operation.READ)
         return self._listed(
             request,
-            [self.render_comment(c) for c in comments],
+            [self.render_comment(call, c) for c in comments],
             [c.id for c in comments],
             self._one(query, "start_cursor"),
             wire.page_size(self._one(query, "page_size"), refuses_range=True),
@@ -822,7 +831,7 @@ class NotionApi:
                 wire.as_text(body["discussion_id"], "body.discussion_id"), "body.discussion_id"
             )
             page = self._discussion_page(call, discussion)
-        return _answer(self.render_comment(editor.comment(page.id, discussion, text, by=call.bot)))
+        return _answer(self.render_comment(call, editor.comment(page.id, discussion, text, by=call.bot)))
 
     def _discussion_page(self, call: Call, discussion: str) -> wire.StoredPage:
         for page in self._world.pages(call.workspace):

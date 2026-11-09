@@ -12,6 +12,7 @@ import pytest
 from minutehand.domain.people import PersonReply
 from minutehand.domain.scenario import PersonPosts
 from minutehand.domain.world import EntityKind, EntityRef
+from tests.providers.microsoft.outlook import signed_in
 from tests.providers.microsoft.tenant import CONNECTOR, GRAPH, Bot, Intercepted, Tenant, bearer, token
 
 
@@ -195,3 +196,14 @@ async def test_a_users_type_and_whether_it_is_enabled_are_answered_when_selected
 
     assert not any("userType" in u or "accountEnabled" in u for u in plain)
     assert {(u["userType"], u["accountEnabled"]) for u in chosen} == {("Member", True)}
+
+
+async def test_a_signed_in_user_asking_for_another_users_chats_is_refused(graph: Graph) -> None:
+    sofia = graph.tenant.world.person("sofia")
+    assert sofia is not None
+    assert graph.tenant.world.personal_with(sofia.user.id, graph.tenant.directory.tenant_id) is not None
+    owen = bearer(await signed_in(graph.http, graph.tenant, "owen@example.com"))
+    hers = await graph.http.get(f"{GRAPH}/users/sofia@example.com/chats", headers=owen)
+    assert hers.status_code != 200, (
+        "chat-list: /users/{id}/chats with delegated permission names the signed-in user; another's is not listed"
+    )

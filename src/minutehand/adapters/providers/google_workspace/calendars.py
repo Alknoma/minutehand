@@ -5,7 +5,10 @@ the person's working hours' zone (UTC without). A call names it as `primary` or 
 calendar is a 404, as a calendar nobody shared is. Free/busy reads anyone's.
 
 **An event is one entity** (`EntityKind.MESSAGE`) in its organizer's calendar, and is seen on each guest's calendar
-under the same id, as in Calendar. Only the organizer changes or deletes it (403 `forbiddenForNonOrganizer`).
+under the same id, as in Calendar. Only the organizer changes or deletes it (403 `forbiddenForNonOrganizer`). An id
+is "unique per calendar" (the events reference), so the entity is keyed by the calendar it was made on and its id
+(`event_ref`), and an id a call names is the event the calendar it names holds under it (`CalendarWorld.find`): the
+one made on it, else the one its account is or was a guest of. A calendar holds one event under an id, ever.
 
 **An invitation is the agent asking each guest.** The event's `MessageSnapshot` is addressed to every attendee but
 the organizer and offers what Calendar's invitation offers, Yes, Maybe and No, each a control whose id is the
@@ -226,8 +229,14 @@ def calendar_id(seq: int) -> str:
     return hashlib.sha256(f"calendar\x1f{seq}".encode()).hexdigest()[:26] + "@group.calendar.google.com"
 
 
-def event_ref(event: str) -> EntityRef:
-    return EntityRef(provider=MANIFEST.key, kind=EntityKind.MESSAGE, external_id=event)
+def event_ref(calendar: str, event: str) -> EntityRef:
+    """An event as the store keys it: the calendar it was made on, its organizer's, and its id, as Calendar's own
+    path `calendars/{calendarId}/events/{eventId}` names it, since an id is "unique per calendar"."""
+    return EntityRef(provider=MANIFEST.key, kind=EntityKind.MESSAGE, external_id=f"{calendar.lower()}/events/{event}")
+
+
+def stored_ref(event: cal.StoredEvent) -> EntityRef:
+    return event_ref(event.organizer.email, event.id)
 
 
 def record_ref(external_id: str) -> EntityRef:
@@ -254,6 +263,7 @@ def invitation(event: cal.StoredEvent) -> MessageSnapshot | RecordSnapshot:
     """The event as its guests are asked by it: what, when, where, who else, and Yes, Maybe or No."""
     guests = [a.email for a in event.attendees or [] if a.email.lower() != event.organizer.email.lower()]
     when = f"{event.start.dateTime or event.start.date} to {event.end.dateTime or event.end.date}"
+    key = stored_ref(event).external_id
     lines = [event.summary or "(No title)", when, *(event.recurrence or [])]
     if event.location:
         lines.append(event.location)
@@ -266,7 +276,7 @@ def invitation(event: cal.StoredEvent) -> MessageSnapshot | RecordSnapshot:
         return RecordSnapshot(resource="event", text=text)
     return MessageSnapshot(
         text=text,
-        channel=event.id,
+        channel=key,
         recipient_emails=guests,
         actions=[MessageAction(action_id=status, label=label) for status, label in cal.ANSWERS.items()],
     )
@@ -373,28 +383,45 @@ class CalendarWorld:
         named = [r for r in self.rules(calendar) if r.scope.type == "user" and (r.scope.value or "").lower() == mine]
         return named[-1].role if named and named[-1].role != "none" else None  # enum-lint: exempt Calendar ACL role
 
-    def event(self, event: str) -> tuple[cal.StoredEvent, Stored] | None:
-        stored = self._store.get(event_ref(event))
+    def organizers(self) -> list[str]:
+        """Every calendar an event can be made on: each account's primary and each secondary calendar."""
+        found = [u.emailAddress for u in self._drive.users() if u.emailAddress is not None]
+        return found + [c.id for c in self.secondary()]
+
+    def _kept(self, ref: EntityRef) -> list[cal.StoredEvent]:
+        """Every version of an event, oldest first."""
+        kept = (cal.KEPT.validate_json(v.body) for v in self._store.versions(ref))
+        return [k for k in kept if isinstance(k, cal.StoredEvent)]
+
+    def find(self, event: str, calendar: str) -> EntityRef | None:
+        """The event the calendar holds under this id, deleted or not: the one made on it, else the one its account
+        is or was a guest of; None when it holds none. An id is "unique per calendar", and a calendar holds one
+        event under an id ever (`events_insert` refuses a second one, `_clashes` inviting a guest to one)."""
+        own = event_ref(calendar, event)
+        if self._kept(own):
+            return own
+        mine = calendar.lower()
+        for organizer in self.organizers():
+            ref = event_ref(organizer, event)
+            if any(a.email.lower() == mine for e in self._kept(ref) for a in e.attendees or []):
+                return ref
+        return None
+
+    def event(self, ref: EntityRef) -> tuple[cal.StoredEvent, Stored] | None:
+        stored = self._store.get(ref)
         if stored is None:
             return None
         kept = cal.KEPT.validate_json(stored.body)
         return (kept, stored) if isinstance(kept, cal.StoredEvent) else None
 
-    def was(self, event: str) -> bool:
-        """Whether an event by this id was ever written, deleted or not."""
-        return any(
-            isinstance(cal.KEPT.validate_json(v.body), cal.StoredEvent) for v in self._store.versions(event_ref(event))
-        )
-
-    def deleted(self, event: str) -> tuple[cal.StoredEvent, WorldEvent] | None:
+    def deleted(self, ref: EntityRef) -> tuple[cal.StoredEvent, WorldEvent] | None:
         """A deleted event: its last version, and the change that deleted it; None when it is not deleted."""
-        if self._store.get(event_ref(event)) is not None:
+        if self._store.get(ref) is not None:
             return None
-        kept = [k for k in (cal.KEPT.validate_json(v.body) for v in self._store.versions(event_ref(event)))]
-        last = [k for k in kept if isinstance(k, cal.StoredEvent)]
+        last = self._kept(ref)
         if not last:
             return None
-        removal = [e for e in self._store.events() if e.entity == event_ref(event) and e.operation is Operation.DELETE]
+        removal = [e for e in self._store.events() if e.entity == ref and e.operation is Operation.DELETE]
         return (last[-1], removal[-1]) if removal else None
 
     def deletions(self) -> list[tuple[cal.StoredEvent, WorldEvent]]:
@@ -403,14 +430,10 @@ class CalendarWorld:
         for change in self._store.events():
             ref = change.entity
             if ref.provider == MANIFEST.key and ref.kind is EntityKind.MESSAGE and change.operation is Operation.DELETE:
-                gone = self.deleted(ref.external_id)
+                gone = self.deleted(ref)
                 if gone is not None and gone[1].seq == change.seq:
                     found.append(gone)
         return found
-
-    def taken(self, event: str) -> bool:
-        """Whether anything of this provider's was ever written under this id."""
-        return bool(self._store.versions(event_ref(event)))
 
     def organized(self, address: str) -> list[tuple[cal.StoredEvent, Stored]]:
         found: list[tuple[cal.StoredEvent, Stored]] = []
@@ -430,10 +453,8 @@ class CalendarWorld:
     def on(self, calendar_id: str) -> list[tuple[cal.StoredEvent, Stored]]:
         """Every event on a calendar: those it organizes and those its account is a guest of."""
         wanted = calendar_id.lower()
-        organizers = [u.emailAddress for u in self._drive.users() if u.emailAddress is not None]
-        organizers += [c.id for c in self.secondary()]
         found: list[tuple[cal.StoredEvent, Stored]] = []
-        for organizer in organizers:
+        for organizer in self.organizers():
             for event, stored in self.organized(organizer):
                 if organizer.lower() == wanted or any(a.email.lower() == wanted for a in event.attendees or []):
                     found.append((event, stored))
@@ -442,7 +463,7 @@ class CalendarWorld:
     def write(self, event: cal.StoredEvent, *, operation: Operation, actor: Actor, snapshot: bool) -> int:
         return self._store.apply(
             Change(
-                entity=event_ref(event.id),
+                entity=stored_ref(event),
                 operation=operation,
                 actor=actor,
                 body=wire.dump(event),
@@ -454,7 +475,7 @@ class CalendarWorld:
     def delete(self, event: cal.StoredEvent, *, actor: Actor) -> None:
         self._store.apply(
             Change(
-                entity=event_ref(event.id),
+                entity=stored_ref(event),
                 operation=Operation.DELETE,
                 actor=actor,
                 parent=calendar_parent(event.organizer.email),
@@ -471,8 +492,8 @@ class CalendarWorld:
                 + ", ".join(cal.ANSWERS.values())
             )
         if reply.press is not None:
-            return self.respond(reply.in_reply_to.external_id, reply.person, reply.press.action_id, None, clock)
-        return self.respond(reply.in_reply_to.external_id, reply.person, None, reply.text, clock)
+            return self.respond(reply.in_reply_to, reply.person, reply.press.action_id, None, clock)
+        return self.respond(reply.in_reply_to, reply.person, None, reply.text, clock)
 
     def attendee(self, event: cal.StoredEvent, person: str) -> cal.Attendee | None:
         """The person's place on the event's guest list, by their account's address; None when they are not on it."""
@@ -482,12 +503,12 @@ class CalendarWorld:
         address = account.emailAddress.lower()
         return next((a for a in event.attendees or [] if a.email.lower() == address), None)
 
-    def respond(self, event_id: str, person: str, status: str | None, comment: str | None, clock: Clock) -> set[str]:
+    def respond(self, ref: EntityRef, person: str, status: str | None, comment: str | None, clock: Clock) -> set[str]:
         """A guest sets their `responseStatus` (`status`) and/or their response comment, as Calendar's invitation
         does, recorded as actor PERSON: the event as its organizer holds it, and the guest's response, a control
         pressed or words written. An event deleted since, or a guest no longer on it, is left alone. Answers the
         calendars the event changed on, none when it was left alone."""
-        found = self.event(event_id)
+        found = self.event(ref)
         if found is None:
             return set()
         event, _ = found
@@ -508,21 +529,21 @@ class CalendarWorld:
             update={"attendees": attendees, "updated": wire.rfc3339(clock.now()), "etag": f'"{seq}"'}
         )
         self.write(answered, operation=Operation.UPDATE, actor=Actor.PERSON, snapshot=False)
-        response = record_ref(f"{event.id}.response.{address}")
+        response = record_ref(f"{ref.external_id}.response.{address}")
         after: InteractionSnapshot | MessageSnapshot = (
             InteractionSnapshot(
                 interaction=InteractionKind.PRESS,
                 person=person,
-                on=event_ref(event.id),
+                on=ref,
                 action_id=status,
                 label=cal.ANSWERS[status],
             )
             if status is not None
             else MessageSnapshot(
                 text=comment or "",
-                channel=event.id,
+                channel=ref.external_id,
                 recipient_emails=[event.organizer.email],
-                thread_of=event.id,
+                thread_of=ref.external_id,
                 answerable=False,
             )
         )
@@ -532,7 +553,7 @@ class CalendarWorld:
                 operation=Operation.UPDATE if self._store.get(response) is not None else Operation.CREATE,
                 actor=Actor.PERSON,
                 body=wire.dump(attendees[place]),
-                parent=event.id,
+                parent=ref.external_id,
                 after=after,
             )
         )
@@ -690,9 +711,11 @@ class CalendarApi:
         return cal.CancelledEvent(etag=etag, id=event.id)
 
     def _visible(self, event_id: str, calendar: str) -> tuple[cal.StoredEvent, Stored]:
-        found = self._calendars.event(event_id)
+        """The event the calendar holds under the id, which must be on it: one deleted is a 410, none a 404."""
+        ref = self._calendars.find(event_id, calendar)
+        found = self._calendars.event(ref) if ref is not None else None
         if found is None:
-            if self._calendars.was(event_id):
+            if ref is not None:
                 raise cal.refused(410, "deleted", "Resource has been deleted")
             raise _not_found()
         event, stored = found
@@ -811,22 +834,25 @@ class CalendarApi:
         series = Series(event)
         return [self._instance_event(event, series, found) for found in series.between(low, high)]
 
-    def _instance(self, event_id: str, calendar: str) -> cal.StoredEvent | None:
-        """The instance an id names (`<recurring event id>_<original start>`) on the calendar; None when it names
-        none."""
+    def _instance(self, event_id: str, calendar: str) -> tuple[cal.StoredEvent, EntityRef] | None:
+        """The instance an id names (`<recurring event id>_<original start>`) on the calendar, and its recurring
+        event; None when it names none."""
         master_id, underscore, suffix = event_id.rpartition("_")
         if not underscore:
             return None
-        found = self._calendars.event(master_id)
-        if found is None or not found[0].recurrence or not self._on_calendar(found[0], calendar):
+        ref = self._calendars.find(master_id, calendar)
+        found = self._calendars.event(ref) if ref is not None else None
+        if ref is None or found is None or not found[0].recurrence or not self._on_calendar(found[0], calendar):
             return None
         series = Series(found[0])
         instance = series.at(suffix)
-        return self._instance_event(found[0], series, instance) if instance is not None else None
+        return (self._instance_event(found[0], series, instance), ref) if instance is not None else None
 
     def _not_one_instance(self, event_id: str, calendar: str) -> None:
         """Changing or deleting one instance makes an exception, which this fake does not keep."""
-        if self._calendars.event(event_id) is None and self._instance(event_id, calendar) is not None:
+        ref = self._calendars.find(event_id, calendar)
+        held = self._calendars.event(ref) if ref is not None else None
+        if held is None and self._instance(event_id, calendar) is not None:
             raise _unrecorded("changing or deleting one instance of a recurring event")
 
     def _times(self, event: cal.StoredEvent, zone: str) -> tuple[datetime, datetime]:
@@ -873,6 +899,18 @@ class CalendarApi:
             message = absence.outOfOfficeProperties.declineMessage if absence.outOfOfficeProperties else None
             attendees[place] = guest.model_copy(update={"responseStatus": "declined", "comment": message})
         return event.model_copy(update={"attendees": attendees or None})
+
+    def _clashes(self, event: cal.StoredEvent, before: list[cal.Attendee]) -> None:
+        """A guest newly invited whose calendar already holds another event under the event's id: the id is "unique
+        per calendar", and how Calendar answers the invitation is not recorded."""
+        invited = {a.email.lower() for a in before}
+        ref = stored_ref(event)
+        for guest in event.attendees or []:
+            if guest.email.lower() in invited or guest.email.lower() == event.organizer.email.lower():
+                continue
+            held = self._calendars.find(event.id, guest.email)
+            if held is not None and held != ref:
+                raise _unrecorded("inviting a guest whose calendar already holds another event under the event's id")
 
     def _conflicts(self, absence: cal.StoredEvent, calendar: HeldCalendar) -> list[cal.StoredEvent]:
         """The invitations an out-of-office event that declines all conflicting invitations declines on its
@@ -1116,7 +1154,7 @@ class CalendarApi:
         if asked.id is not None:
             if not 5 <= len(asked.id) <= 1024 or any(c not in cal.EVENT_ID_CHARACTERS for c in asked.id):
                 raise cal.refused(400, "invalid", "Invalid resource id value.")
-            if self._calendars.taken(asked.id):
+            if self._calendars.find(asked.id, calendar.id) is not None:
                 raise cal.refused(409, "duplicate", "The requested identifier already exists.")
         new_id = asked.id or event_id(seq)
         now = wire.rfc3339(self._clock.now())
@@ -1140,6 +1178,7 @@ class CalendarApi:
             **{name: getattr(asked, name) for name in cal.VERBATIM},
         )
         self._shaped(event, calendar)
+        self._clashes(event, [])
         event = self._declined_by_absence(event, [])
         conflicts = self._conflicts(event, calendar)
         self._calendars.write(event, operation=Operation.CREATE, actor=Actor.AGENT, snapshot=True)
@@ -1151,17 +1190,19 @@ class CalendarApi:
         """An event on the calendar; a deleted one as its cancelled copy, which "the get method always returns"."""
         calendar = self._own(request, caller)
         spelled = request.path_params["eventId"]
-        gone = self._calendars.deleted(spelled)
-        if gone is not None and self._on_calendar(gone[0], calendar.id):
-            self._calendars.saw(event_ref(spelled), Operation.READ)
+        ref = self._calendars.find(spelled, calendar.id)
+        gone = self._calendars.deleted(ref) if ref is not None else None
+        if ref is not None and gone is not None and self._on_calendar(gone[0], calendar.id):
+            self._calendars.saw(ref, Operation.READ)
             return _json(self._cancelled(gone[0], gone[1], calendar.id, caller, details=True), request, cal.StoredEvent)
-        if self._calendars.event(spelled) is None and not self._calendars.was(spelled):
-            instance = self._instance(spelled, calendar.id)
-            if instance is not None:
-                self._calendars.saw(event_ref(instance.recurringEventId or instance.id), Operation.READ)
+        if ref is None:
+            found = self._instance(spelled, calendar.id)
+            if found is not None:
+                instance, master = found
+                self._calendars.saw(master, Operation.READ)
                 return _json(self._served(instance, calendar.id, caller), request, cal.StoredEvent)
-        event, _ = self._visible(spelled, calendar.id)
-        self._calendars.saw(event_ref(event.id), Operation.READ)
+        event, stored = self._visible(spelled, calendar.id)
+        self._calendars.saw(stored.entity, Operation.READ)
         return _json(self._served(event, calendar.id, caller), request, cal.StoredEvent)
 
     async def events_patch(self, request: Request, caller: Caller) -> Response:
@@ -1219,6 +1260,7 @@ class CalendarApi:
             update["outOfOfficeProperties"] = asked.outOfOfficeProperties
         changed = event.model_copy(update=update)
         self._shaped(changed, calendar)
+        self._clashes(changed, list(event.attendees or []))
         changed = self._declined_by_absence(changed, list(event.attendees or []))
         conflicts = self._conflicts(changed, calendar)
         self._calendars.write(changed, operation=Operation.UPDATE, actor=Actor.AGENT, snapshot=True)
@@ -1383,12 +1425,12 @@ class CalendarApi:
         self._calendars.saw(record_ref(calendar_parent(calendar.id)), Operation.SEARCH)
         return _json(answer, request, cal.IncrementalList)
 
-    def _changes(self, calendar: str, *, since: int) -> list[tuple[str, int, datetime]]:
-        """Each event on the calendar changed after `since`, a deleted one included: its id, and the event and the
+    def _changes(self, calendar: str, *, since: int) -> list[tuple[EntityRef, int, datetime]]:
+        """Each event on the calendar changed after `since`, a deleted one included: its entity, and the event and the
         moment of its latest change, oldest change first."""
         store = self._calendars.store
         mine = calendar.lower()
-        latest: dict[str, tuple[int, datetime]] = {}
+        latest: dict[EntityRef, tuple[int, datetime]] = {}
         for event in store.events(since=since):
             ref = event.entity
             if (
@@ -1396,10 +1438,10 @@ class CalendarApi:
                 and ref.kind is EntityKind.MESSAGE
                 and event.operation not in (Operation.READ, Operation.SEARCH)
             ):
-                latest[ref.external_id] = (event.seq, event.sim_time)
-        found: list[tuple[str, int, datetime]] = []
+                latest[ref] = (event.seq, event.sim_time)
+        found: list[tuple[EntityRef, int, datetime]] = []
         for event_key, (seq, moment) in sorted(latest.items(), key=lambda pair: pair[1][0]):
-            versions = [v for v in store.versions(event_ref(event_key)) if v.seq <= seq]
+            versions = [v for v in store.versions(event_key) if v.seq <= seq]
             kept = [k for k in (cal.KEPT.validate_json(v.body) for v in versions) if isinstance(k, cal.StoredEvent)]
             if not kept:
                 continue

@@ -5,6 +5,7 @@ Both go through the real proxy with the official SDK."""
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,20 @@ from notion_client import APIResponseError
 
 from minutehand.domain.scenario import DocumentHappening, FieldSet
 from minutehand.domain.world import Actor, Operation, RecordSnapshot
-from tests.providers.notion.notion_world import OTHER_TOKEN, START, Sdk, World, ids, query_database, scenario
+from tests.providers.notion.notion_world import (
+    AGENT_TOKEN,
+    NOTION,
+    OTHER_TOKEN,
+    START,
+    Sdk,
+    World,
+    answer,
+    direct,
+    ids,
+    query_database,
+    scenario,
+    seeded,
+)
 
 
 async def _refused_not_found(sdk: Sdk, call: Any, token: str | None = None) -> None:
@@ -185,3 +199,80 @@ async def test_an_agent_conversation_from_a_token_to_an_archived_row(async_sdk: 
 
     agent_writes = [e for e in world.store.events() if e.actor is Actor.AGENT and e.operation is not Operation.READ]
     assert agent_writes and all(e.entity.provider == "notion" for e in agent_writes)
+
+
+async def test_a_mention_of_a_page_not_shared_with_the_reader_reads_as_untitled_with_just_its_id(sdk: Sdk) -> None:
+    """https://developers.notion.com/reference/rich-text: when the connection lacks access to a mentioned page, "the
+    mention is returned with just the ID" and its `plain_text` "appears as "Untitled""."""
+    mention = {"type": "mention", "mention": {"type": "page", "page": {"id": ids("private")}}}
+    appended = await sdk(
+        lambda c: c.blocks.children.append(
+            ids("handbook"), children=[{"type": "paragraph", "paragraph": {"rich_text": [mention]}}]
+        )
+    )
+    written = appended["results"][0]["paragraph"]["rich_text"][0]
+    assert written["mention"]["page"] == {"id": ids("private")}
+    assert written["plain_text"] == "Untitled"
+
+
+BOTH_TOKEN = "ntn_both_secret_for_tests_0004"
+
+
+def _shared_with_both(tmp_path: Path) -> World:
+    """The test workspace with one more integration, which both the handbook and the private page are shared with."""
+    workspaces = NOTION["workspaces"]
+    assert isinstance(workspaces, list)
+    [workspace] = workspaces
+    assert isinstance(workspace, dict) and isinstance(workspace["integrations"], list)
+    both = {"key": "both", "name": "Both bot", "tokens": [BOTH_TOKEN], "shared": ["handbook", "private"]}
+    widened = {**workspace, "integrations": [*workspace["integrations"], both]}
+    return seeded(tmp_path, scenario({**NOTION, "workspaces": [widened]}))
+
+
+async def _mention_in(world: World, token: str, page: str, kind: str, named: str) -> dict[str, Any]:
+    """Appends a bold mention of `named` to `page` as `token`'s integration, and returns the block as it was served."""
+    mention = {"type": "mention", "mention": {"type": kind, kind: {"id": ids(named)}}, "annotations": {"bold": True}}
+    async with direct(world, token) as api:
+        body = {"children": [{"type": "paragraph", "paragraph": {"rich_text": [mention]}}]}
+        appended = answer(await api.patch(f"/v1/blocks/{ids(page)}/children", json=body))
+    return appended["results"][0]
+
+
+async def _read_back(world: World, token: str, block_id: str) -> dict[str, Any]:
+    async with direct(world, token) as api:
+        return answer(await api.get(f"/v1/blocks/{block_id}"))["paragraph"]["rich_text"][0]
+
+
+async def test_the_same_page_mention_reads_with_its_title_only_to_an_integration_the_page_is_shared_with(
+    tmp_path: Path,
+) -> None:
+    """https://developers.notion.com/reference/rich-text: the title a mention shows is the reader's to see; a
+    connection without access to the mentioned page gets "Untitled" and default annotations."""
+    world = _shared_with_both(tmp_path)
+    try:
+        block = await _mention_in(world, AGENT_TOKEN, "handbook", "page", "private")
+        as_writer = block["paragraph"]["rich_text"][0]
+        as_both = await _read_back(world, BOTH_TOKEN, block["id"])
+    finally:
+        world.store.close()
+    assert as_writer["plain_text"] == "Untitled" and as_writer["annotations"]["bold"] is False
+    assert as_writer["mention"] == {"type": "page", "page": {"id": ids("private")}}
+    assert as_both["plain_text"] == "Salary Bands" and as_both["annotations"]["bold"] is True
+    assert as_both["mention"] == as_writer["mention"]
+
+
+async def test_a_database_mention_reads_as_untitled_to_an_integration_the_database_is_not_shared_with(
+    tmp_path: Path,
+) -> None:
+    """https://developers.notion.com/reference/rich-text, database mention: without access "the mention is returned
+    with just the ID", `plain_text` "appears as "Untitled"" and the annotations are the defaults."""
+    world = _shared_with_both(tmp_path)
+    try:
+        block = await _mention_in(world, OTHER_TOKEN, "private", "database", "projects")
+        as_writer = block["paragraph"]["rich_text"][0]
+        as_both = await _read_back(world, BOTH_TOKEN, block["id"])
+    finally:
+        world.store.close()
+    assert as_writer["mention"] == {"type": "database", "database": {"id": ids("projects")}}
+    assert as_writer["plain_text"] == "Untitled" and as_writer["annotations"]["bold"] is False
+    assert as_both["plain_text"] == "Projects" and as_both["annotations"]["bold"] is True

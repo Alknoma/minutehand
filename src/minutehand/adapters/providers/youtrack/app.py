@@ -104,8 +104,8 @@ class YouTrackApi:
 
         return answer
 
-    def presenter(self) -> Presenter:
-        return Presenter(self.world)
+    def presenter(self, call: Call) -> Presenter:
+        return Presenter(self.world, call.caller)
 
     def answer(self, call: Call, answer: wire.Answer | Sequence[wire.Answer]) -> Answered:
         return 200, wire.render(answer, wire.parse_fields(call.param("fields")))
@@ -161,14 +161,14 @@ class YouTrackApi:
 
     def me(self, call: Call) -> Answered:
         self.world.saw(state.user_ref(call.caller.id), Operation.READ)
-        return self.answer(call, self.presenter().me(call.caller))
+        return self.answer(call, self.presenter(call).me(call.caller))
 
     def users(self, call: Call) -> Answered:
         """Every user, paged. YouTrack's description of `GET /users` takes no `query`, so a filter is refused by
         name rather than guessed; Hub's `/users?query=` is the documented search."""
         if (call.param("query") or "").strip():
             raise NotServed("GET /users takes no query parameter in YouTrack's API description")
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.user(u) for u in self.page(call, self.world.users())]
         self.world.saw(state.instance_ref(), Operation.SEARCH)
         return self.answer(call, page)
@@ -181,13 +181,13 @@ class YouTrackApi:
         if found is None:
             raise wire.not_found(reference)
         self.world.saw(state.user_ref(found.id), Operation.READ)
-        return self.answer(call, self.presenter().user(found))
+        return self.answer(call, self.presenter(call).user(found))
 
     # ------------------------------------------------------------------ projects
 
     def projects(self, call: Call) -> Answered:
         visible = self.world.projects()
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.project(p) for p in self.page(call, visible)]
         self.world.saw(state.instance_ref(), Operation.SEARCH)
         return self.answer(call, page)
@@ -195,7 +195,7 @@ class YouTrackApi:
     def project_read(self, call: Call) -> Answered:
         project = self.project(call)
         self.world.saw(state.project_ref(project.id), Operation.READ)
-        return self.answer(call, self.presenter().project(project))
+        return self.answer(call, self.presenter(call).project(project))
 
     def project_create(self, call: Call) -> Answered:
         template = call.param("template")
@@ -245,7 +245,7 @@ class YouTrackApi:
                 ),
                 actor=Actor.AGENT,
             )
-        return self.answer(call, self.presenter().project(made))
+        return self.answer(call, self.presenter(call).project(made))
 
     def _template_field(self, ids: fields.Ids, field: fields.TemplateField) -> wire.StoredProjectField:
         """The template's field on a new project, drawing on the instance's field of that name, defined when the
@@ -265,7 +265,7 @@ class YouTrackApi:
 
     def project_fields(self, call: Call) -> Answered:
         project = self.project(call)
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.project_field(project, f) for f in self.page(call, project.fields)]
         self.world.saw(state.project_ref(project.id), Operation.READ)
         return self.answer(call, page)
@@ -274,7 +274,7 @@ class YouTrackApi:
         project = self.project(call)
         field = self.project_field(call, project)
         self.world.saw(state.project_ref(project.id), Operation.READ)
-        return self.answer(call, self.presenter().project_field(project, field))
+        return self.answer(call, self.presenter(call).project_field(project, field))
 
     def project_field_attach(self, call: Call) -> Answered:
         project = self.project(call)
@@ -302,7 +302,7 @@ class YouTrackApi:
         )
         changed = project.model_copy(update={"fields": [*project.fields, attached]})
         self.world.write_project(changed, actor=Actor.AGENT)
-        return self.answer(call, self.presenter().project_field(changed, attached))
+        return self.answer(call, self.presenter(call).project_field(changed, attached))
 
     def _bundle_values(
         self, bundle: wire.EntityIn | None, definition: wire.StoredFieldDefinition
@@ -319,16 +319,16 @@ class YouTrackApi:
     def project_time_tracking(self, call: Call) -> Answered:
         project = self.project(call)
         self.world.saw(state.project_ref(project.id), Operation.READ)
-        return self.answer(call, self.presenter().time_tracking(project, project.timeTracking))
+        return self.answer(call, self.presenter(call).time_tracking(project, project.timeTracking))
 
     def project_team(self, call: Call) -> Answered:
         project = self.project(call)
         self.world.saw(state.project_ref(project.id), Operation.READ)
-        return self.answer(call, self.presenter().team_group(project))
+        return self.answer(call, self.presenter(call).team_group(project))
 
     def project_team_users(self, call: Call) -> Answered:
         project = self.project(call)
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.user(u) for u in self.page(call, self._team(project))]
         self.world.saw(state.project_ref(project.id), Operation.READ)
         return self.answer(call, page)
@@ -347,12 +347,12 @@ class YouTrackApi:
         if member.id in project.team:
             raise _undocumented(f"adding {member.login} to the team of {project.shortName}, which already holds them")
         self.world.write_project(project.model_copy(update={"team": [*project.team, member.id]}), actor=Actor.AGENT)
-        return self.answer(call, self.presenter().user(member))
+        return self.answer(call, self.presenter(call).user(member))
 
     # ------------------------------------------------------------------ the instance's fields and bundles
 
     def definitions(self, call: Call) -> Answered:
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.definition(d) for d in self.page(call, self.world.definitions())]
         self.world.saw(state.instance_ref(), Operation.SEARCH)
         return self.answer(call, page)
@@ -362,7 +362,7 @@ class YouTrackApi:
         found = self.world.definition(reference)
         if found is None:
             raise wire.not_found(reference)
-        return self.answer(call, self.presenter().definition(found))
+        return self.answer(call, self.presenter(call).definition(found))
 
     def definition_create(self, call: Call) -> Answered:
         body = wire.read_body(wire.FieldDefinitionIn, call.raw)
@@ -379,7 +379,7 @@ class YouTrackApi:
             raise _undocumented(f"a custom field named {name}, a name another holds")
         made = wire.StoredFieldDefinition(id=self.world.next_id(58), name=name, fieldType=kind)
         self.world.write_definition(made, actor=Actor.AGENT)
-        return self.answer(call, self.presenter().definition(made))
+        return self.answer(call, self.presenter(call).definition(made))
 
     def _bundles(self, kind: str) -> list[tuple[wire.StoredProject, wire.StoredProjectField]]:
         types = {
@@ -402,7 +402,7 @@ class YouTrackApi:
         return found
 
     def bundles(self, call: Call) -> Answered:
-        present = self.presenter()
+        present = self.presenter(call)
         made = [present.bundle(p, f) for p, f in self._bundles(_bundle_kind(call))]
         page: list[wire.Answer] = [b for b in self.page(call, made) if b is not None]
         return self.answer(call, page)
@@ -416,14 +416,14 @@ class YouTrackApi:
 
     def bundle_read(self, call: Call) -> Answered:
         project, field = self._bundle(call)
-        bundle = self.presenter().bundle(project, field)
+        bundle = self.presenter(call).bundle(project, field)
         if bundle is None:
             raise wire.not_found(call.path("bundle"))
         return self.answer(call, bundle)
 
     def bundle_values(self, call: Call) -> Answered:
         _, field = self._bundle(call)
-        present = self.presenter()
+        present = self.presenter(call)
         kind = self.definition_of(field).fieldType
         page: list[wire.Answer] = [present.bundle_value(kind, v) for v in self.page(call, field.values)]
         return self.answer(call, page)
@@ -448,12 +448,12 @@ class YouTrackApi:
                 for f in project.fields
             ]
             self.world.write_project(project.model_copy(update={"fields": grown}), actor=Actor.AGENT)
-        return self.answer(call, self.presenter().bundle_value(kind, added))
+        return self.answer(call, self.presenter(call).bundle_value(kind, added))
 
     # ------------------------------------------------------------------ agile boards
 
     def agiles(self, call: Call) -> Answered:
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [
             present.agile(a) for a in self.page(call, self.world.agiles(), paging=wire.Paging.NEGATIVE_TOP_IS_ALL)
         ]
@@ -464,7 +464,7 @@ class YouTrackApi:
 
     def search(self, call: Call) -> Answered:
         matched, scope = self._matching(call, call.param("query"))
-        present = self.presenter()
+        present = self.presenter(call)
         shown = set(call.request.query_params.getlist("customFields"))
         page: list[wire.Answer] = [
             _showing(present.issue(i), shown) for i in self.page(call, matched, paging=wire.Paging.ISSUE_SEARCH)
@@ -500,11 +500,11 @@ class YouTrackApi:
     def issue_read(self, call: Call) -> Answered:
         issue = self.issue(call)
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
-        return self.answer(call, self.presenter().issue(issue))
+        return self.answer(call, self.presenter(call).issue(issue))
 
     def issue_fields(self, call: Call) -> Answered:
         issue = self.issue(call)
-        present = self.presenter()
+        present = self.presenter(call)
         project = self.home(issue)
         page: list[wire.Answer] = list(
             self.page(call, present.issue_fields(project, issue), paging=wire.Paging.NEGATIVE_TOP_IS_ALL)
@@ -517,11 +517,11 @@ class YouTrackApi:
         project = self.home(issue)
         field = self.project_field(call, project)
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
-        return self.answer(call, self.presenter().issue_field(project, issue, field))
+        return self.answer(call, self.presenter(call).issue_field(project, issue, field))
 
     def comments(self, call: Call) -> Answered:
         issue = self.issue(call)
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.comment(c, issue) for c in self.page(call, self.world.comments(issue.id))]
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
         return self.answer(call, page)
@@ -533,12 +533,12 @@ class YouTrackApi:
         if found is None:
             raise wire.not_found(reference)
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
-        return self.answer(call, self.presenter().comment(found, issue))
+        return self.answer(call, self.presenter(call).comment(found, issue))
 
     def activities(self, call: Call) -> Answered:
         issue = self.issue(call)
         wanted = categories(call.param("categories"))
-        found = Feed(self.world, self.presenter()).of(issue, wanted)
+        found = Feed(self.world, self.presenter(call)).of(issue, wanted)
         author = call.param("author")
         if author is not None:
             found = [a for a in found if author in (a.author.id, a.author.login)]
@@ -583,28 +583,46 @@ class YouTrackApi:
             values={f.id: f.defaultValue for f in project.fields if f.defaultValue is not None},
         )
         written = self._with_fields(project, issue, body.customFields, creating=True)
-        written = written.model_copy(update={"tags": self._tags_named(body.tags)})
+        written = written.model_copy(update={"tags": self._tags_named(body.tags, [], call.caller)})
         self._require_filled(project, written)
         written = written.model_copy(
             update={"resolved": call.now if self.world.is_resolved(project, written) else None}
         )
         self.world.create_issue(written, actor=Actor.AGENT)
-        return self.answer(call, self.presenter().issue(written))
+        return self.answer(call, self.presenter(call).issue(written))
 
     def _require_filled(self, project: wire.StoredProject, issue: wire.StoredIssue) -> None:
         for field in project.fields:
             if not field.canBeEmpty and field.id not in issue.values:
                 raise wire.field_required(self.definition_of(field).name)
 
-    def _tags_named(self, tags: list[wire.EntityIn]) -> list[str]:
+    def _tags_named(self, tags: list[wire.EntityIn], held: list[str], caller: wire.StoredUser) -> list[str]:
+        """The tags a body names, each one the caller may use; a body that would take off a tag the caller may not
+        use is refused naming it, since what YouTrack answers it is neither documented nor recorded."""
         named: list[str] = []
         for reference in tags:
-            tag_id = self.entity_id(reference, "tag")
-            if self.world.tag(tag_id) is None:
-                raise _undocumented(f"a body naming tag {tag_id}, which does not exist")
-            if tag_id not in named:
-                named.append(tag_id)
+            tag = self._tag_to_use(self.entity_id(reference, "tag"), caller)
+            if tag.id not in named:
+                named.append(tag.id)
+        for tag_id in held:
+            tag = self.world.tag(tag_id)
+            if tag is not None and tag_id not in named and not self.world.uses(tag, caller):
+                raise _undocumented(f"a body taking off tag {tag_id}, which the caller may not use")
         return named
+
+    def _tag_to_use(self, tag_id: str, caller: wire.StoredUser) -> wire.StoredTag:
+        """A tag the caller may add to or take off an issue: its owner, or one it is shared with to see and use."""
+        tag = self.world.tag(tag_id)
+        if tag is None:
+            raise _undocumented(f"a body naming tag {tag_id}, which does not exist")
+        return self._usable(tag, caller)
+
+    def _usable(self, tag: wire.StoredTag, caller: wire.StoredUser) -> wire.StoredTag:
+        if not self.world.sees(tag, caller):
+            raise _undocumented(f"tag {tag.id}, which is another user's and not shared with the caller")
+        if not self.world.uses(tag, caller):
+            raise _undocumented(f"tag {tag.id}, which the caller may see but not use")
+        return tag
 
     def update(self, call: Call) -> Answered:
         issue = self.issue(call)
@@ -619,9 +637,9 @@ class YouTrackApi:
             changed = changed.model_copy(update={"description": body.description})
         changed = self._with_fields(project, changed, body.customFields)
         if "tags" in body.model_fields_set:
-            changed = changed.model_copy(update={"tags": self._tags_named(body.tags)})
+            changed = changed.model_copy(update={"tags": self._tags_named(body.tags, issue.tags, call.caller)})
         changed = self._written(project, issue, changed, call)
-        return self.answer(call, self.presenter().issue(changed))
+        return self.answer(call, self.presenter(call).issue(changed))
 
     def _written(
         self, project: wire.StoredProject, before: wire.StoredIssue, after: wire.StoredIssue, call: Call
@@ -643,7 +661,7 @@ class YouTrackApi:
         if value is not None:
             values[field.id] = value
         changed = self._written(project, issue, issue.model_copy(update={"values": values}), call)
-        return self.answer(call, self.presenter().issue_field(project, changed, field))
+        return self.answer(call, self.presenter(call).issue_field(project, changed, field))
 
     def _with_fields(
         self,
@@ -750,7 +768,7 @@ class YouTrackApi:
         if body.text is None or not body.text.strip():
             raise _undocumented("a comment without text")
         written = self._comment(issue, body.text, call.caller, call.now)
-        return self.answer(call, self.presenter().comment(written, issue))
+        return self.answer(call, self.presenter(call).comment(written, issue))
 
     def _comment(self, issue: wire.StoredIssue, text: str, author: wire.StoredUser, at: int) -> wire.StoredComment:
         comment = wire.StoredComment(id=self.world.next_id(4), issue=issue.id, text=text, author=author.id, created=at)
@@ -760,8 +778,9 @@ class YouTrackApi:
     # ------------------------------------------------------------------ tags
 
     def tags(self, call: Call) -> Answered:
-        present = self.presenter()
-        page: list[wire.Answer] = [present.tag(t) for t in self.page(call, self.world.tags())]
+        present = self.presenter(call)
+        seen = [t for t in self.world.tags() if present.sees(t)]
+        page: list[wire.Answer] = [present.tag(t) for t in self.page(call, seen)]
         self.world.saw(state.instance_ref(), Operation.SEARCH)
         return self.answer(call, page)
 
@@ -770,7 +789,9 @@ class YouTrackApi:
         found = self.world.tag(reference)
         if found is None:
             raise wire.not_found(reference)
-        return self.answer(call, self.presenter().tag(found))
+        if not self.world.sees(found, call.caller):
+            raise _undocumented(f"tag {found.id}, which is another user's and not shared with the caller")
+        return self.answer(call, self.presenter(call).tag(found))
 
     def tag_create(self, call: Call) -> Answered:
         body = wire.read_body(wire.TagIn, call.raw)
@@ -781,13 +802,12 @@ class YouTrackApi:
             raise _undocumented(f"a tag named {name}, a name another tag holds")
         tag = wire.StoredTag(id=self.world.next_id(6), name=name, owner=call.caller.id)
         self.world.write_tag(tag, actor=Actor.AGENT)
-        return self.answer(call, self.presenter().tag(tag))
+        return self.answer(call, self.presenter(call).tag(tag))
 
     def issue_tags(self, call: Call) -> Answered:
         issue = self.issue(call)
-        present = self.presenter()
-        tags = [t for t in (self.world.tag(i) for i in issue.tags) if t is not None]
-        page: list[wire.Answer] = [present.tag(t) for t in self.page(call, tags)]
+        present = self.presenter(call)
+        page: list[wire.Answer] = [present.tag(t) for t in self.page(call, present.tags_seen(issue))]
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
         return self.answer(call, page)
 
@@ -795,19 +815,17 @@ class YouTrackApi:
         """An issue carries an EXISTING tag, named by its id: a name in that slot tags nothing and makes nothing."""
         issue = self.issue(call)
         body = wire.read_body(wire.TagIn, call.raw)
-        tag_id = self.entity_id(wire.EntityIn(id=body.id), "id")
-        tag = self.world.tag(tag_id)
-        if tag is None:
-            raise _undocumented(f"a body naming tag {tag_id}, which does not exist")
+        tag = self._tag_to_use(self.entity_id(wire.EntityIn(id=body.id), "id"), call.caller)
         if tag.id not in issue.tags:
             self._written(self.home(issue), issue, issue.model_copy(update={"tags": [*issue.tags, tag.id]}), call)
-        return self.answer(call, self.presenter().tag(tag))
+        return self.answer(call, self.presenter(call).tag(tag))
 
     def issue_tag_remove(self, call: Call) -> Answered:
         issue = self.issue(call)
         tag = self.world.tag(call.path("tag"))
         if tag is None:
             raise wire.not_found(call.path("tag"))
+        self._usable(tag, call.caller)
         if tag.id in issue.tags:
             remaining = [t for t in issue.tags if t != tag.id]
             self._written(self.home(issue), issue, issue.model_copy(update={"tags": remaining}), call)
@@ -816,14 +834,14 @@ class YouTrackApi:
     # ------------------------------------------------------------------ links
 
     def link_types(self, call: Call) -> Answered:
-        present = self.presenter()
+        present = self.presenter(call)
         page: list[wire.Answer] = [present.link_type(t) for t in self.page(call, self.world.link_types())]
         return self.answer(call, page)
 
     def links(self, call: Call) -> Answered:
         issue = self.issue(call)
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
-        page: list[wire.Answer] = list(self.page(call, self.presenter().links(issue)))
+        page: list[wire.Answer] = list(self.page(call, self.presenter(call).links(issue)))
         return self.answer(call, page)
 
     def _slot(self, slot: str) -> tuple[wire.StoredLinkType, bool]:
@@ -841,14 +859,14 @@ class YouTrackApi:
 
     def link_slot(self, call: Call) -> Answered:
         issue = self.issue(call)
-        found = next((s for s in self.presenter().links(issue) if s.id == call.path("link")), None)
+        found = next((s for s in self.presenter(call).links(issue) if s.id == call.path("link")), None)
         if found is None:
             raise wire.not_found(call.path("link"))
         return self.answer(call, found)
 
     def link_slot_issues(self, call: Call) -> Answered:
         issue = self.issue(call)
-        found = next((s for s in self.presenter().links(issue) if s.id == call.path("link")), None)
+        found = next((s for s in self.presenter(call).links(issue) if s.id == call.path("link")), None)
         if found is None:
             raise wire.not_found(call.path("link"))
         self.world.saw(state.issue_ref(issue.id), Operation.READ)
@@ -933,8 +951,9 @@ class YouTrackApi:
         for command in commands:
             if command.word is CommandWord.TAG or command.word is CommandWord.UNTAG:
                 tag = self.world.tag_named(command.value)
-                if tag is None:
+                if tag is None or not self.world.sees(tag, call.caller):
                     raise _undocumented(f"a command naming the tag {command.value}, which does not exist")
+                self._usable(tag, call.caller)
                 kept = [t for t in issue.tags if t != tag.id]
                 issue = issue.model_copy(update={"tags": [*kept, tag.id] if command.word is CommandWord.TAG else kept})
                 continue

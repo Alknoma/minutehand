@@ -244,7 +244,7 @@ class View:
         return found
 
     def visible(self, project: wire.AsanaProject) -> bool:
-        return not project.private or self.caller.gid in project.members
+        return self.world.sees_project(self.caller.gid, project)
 
     def project(self, gid: str, *, field: str = "project", status: int = 404) -> wire.AsanaProject:
         found = self.world.project(wire.gid_in_path(field, gid))
@@ -255,14 +255,7 @@ class View:
         return found
 
     def sees(self, task: wire.AsanaTask) -> bool:
-        """A task is seen through any of its projects, or by its assignee and its creator."""
-        if self.caller.gid in (task.assignee, task.created_by):
-            return True
-        projects = [self.world.project(m.project) for m in task.memberships]
-        if not projects:
-            parent = self.world.task(task.parent) if task.parent is not None else None
-            return parent is None or self.sees(parent)
-        return any(p is not None and self.visible(p) for p in projects)
+        return self.world.sees_task(self.caller.gid, task)
 
     def task(self, gid: str, *, field: str = "task", status: int = 404) -> wire.AsanaTask:
         found = self.world.task(wire.gid_in_path(field, gid))

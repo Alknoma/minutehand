@@ -121,14 +121,20 @@ class Matcher:
             return self._has(clause, scope)
         return self._custom(clause, scope)
 
+    def _tags_seen(self, issue: wire.StoredIssue) -> list[str]:
+        """The tags on an issue the caller can see: another user's private tag is no tag to the caller."""
+        return [
+            t for t in issue.tags if (tag := self._world.tag(t)) is not None and self._world.sees(tag, self._caller)
+        ]
+
     def _tags(self, clause: Clause) -> Test:
         tests: list[Test] = []
         for item in clause.items:
             if item.empty:
-                tests.append(lambda i: not i.tags)
+                tests.append(lambda i: not self._tags_seen(i))
                 continue
             tag = self._world.tag_named(item.text)
-            if tag is None:
+            if tag is None or not self._world.sees(tag, self._caller):
                 raise wire.invalid_query(item.text, "tag")
             tests.append(lambda i, t=tag.id, neg=item.negated: (t in i.tags) != neg)
         return _any(tests, clause.items)

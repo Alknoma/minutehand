@@ -31,6 +31,10 @@ Example 2)."""
 UNREGISTERED = "Requested entity was not found."
 """The message FCM answers an unregistered token with, beside `UNREGISTERED` (observed:
 https://community.privacyidea.org/t/firebase-access-suddenly-broken-partially/2018)."""
+SENDER_ID_MISMATCH = "The authenticated sender ID is different from the sender ID for the registration token."
+"""SENDER_ID_MISMATCH's description (https://firebase.google.com/docs/reference/fcm/rest/v1/ErrorCode), answered with
+HTTP 403 and google.rpc.Code PERMISSION_DENIED, the code that HTTP status maps to
+(https://github.com/googleapis/googleapis/blob/master/google/rpc/code.proto)."""
 INVALID_ARGUMENT = "The client specified an invalid argument."
 """google.rpc.Code INVALID_ARGUMENT (https://github.com/googleapis/googleapis/blob/master/google/rpc/code.proto)."""
 TARGET_RULE = (

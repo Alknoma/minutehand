@@ -72,6 +72,9 @@ so nothing the caller signed with is read.
 | A message's body and attributes come back as sent; `MD5OfMessageBody` and `MD5OfMessageAttributes` are AWS's algorithm | documented | F `test_md5_digests_are_awss_own` | SQS guide, sqs-message-metadata.html (Calculating the MD5 message digest for message attributes) |
 | `SenderId` is left out of a received message's attributes: AWS answers the sender's principal there, and Minutehand, which enforces no credentials, knows none | Minutehand's | F `test_a_received_message_carries_no_made_up_sender_id` | SQS API, API_ReceiveMessage.html (SenderId) |
 | `MessageId`, receipt handles and queue URLs are assigned (moto's forms) | documented | P, F (every SQS test) | SQS API, API_SendMessage.html, API_ReceiveMessage.html |
+| A request is answered in the endpoint's region, never the region its `QueueUrl`'s host names: a URL of another region where the endpoint's region holds no queue of that name is `QueueDoesNotExist` | documented | F `test_a_queue_url_of_another_region_is_refused_queue_does_not_exist_where_the_endpoints_region_holds_none` | Knowledge Center, https://repost.aws/knowledge-center/sqs-queuedoesnotexist-errors ("The SDK and AWS CLI don't retrieve the destination Region from the queue URL. Instead, the client configuration sets the Region"; "You receive the "QueueDoesNotExist" error when you make a request to the incorrect Region") |
+| A `QueueUrl` of another region where the endpoint's region holds a queue of that name is refused 501 by name: whether AWS answers the endpoint region's queue or refuses is not documented | documented | F `test_a_queue_url_of_another_region_is_refused_where_the_endpoints_region_holds_a_queue_of_that_name` | https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-queue-message-identifiers.html (a queue name is "unique for your AWS account and region"), https://repost.aws/knowledge-center/sqs-queuedoesnotexist-errors (the Region is the client's; the incorrect Region is "QueueDoesNotExist", which the page does not say for a Region that holds a queue of the name) |
+| A `QueueUrl` naming another account than the run's, and GetQueueUrl's `QueueOwnerAWSAccountId` naming one, are refused 501 by name and reach no queue of the run's own: AWS's answer depends on that account's queue and policy, and the run holds no other account. The run's own account named there is answered | documented | F `test_a_queue_url_naming_another_account_is_refused_and_reaches_no_queue_of_the_runs_own`, `test_get_queue_url_for_another_owner_is_refused_never_answered_with_the_runs_own_queue` | https://repost.aws/knowledge-center/sqs-queuedoesnotexist-errors ("the SDK or AWS CLI take the destination queue account number from the queue URL"); https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_GetQueueUrl.html (QueueOwnerAWSAccountId: "The Amazon Web Services account ID of the account that created the queue") |
 
 ## moto 5.2.3 divergences, and what the provider does about each
 
@@ -90,6 +93,14 @@ so nothing the caller signed with is read.
 | answers JSON `null` for absent members (`Description: null`) and extra members in `ListSchedules` summaries | not documented | not changed: botocore drops them; listed here |
 | refuses a cron schedule whose `StartDate` is more than 5 minutes before now ("The StartDate you specify cannot be earlier than 5 minutes ago.") | no page sets a limit: StartDate is "The date, in UTC, after which the schedule can begin invoking its target" | moto's check replaced; the date kept as sent (F `test_a_cron_schedule_whose_start_date_is_past_is_accepted_as_sent`) |
 | waits for a long poll on its own clock | (the run's clock) | the call held by the proxy and answered on the run's clock (`adapters/proxy/held.py`); refused by name in a standing world |
+
+moto also finds a queue by the last segment of its `QueueUrl` in the run's account (forced by `x-moto-account-id`),
+dropping the account the URL names, and ignores GetQueueUrl's `QueueOwnerAWSAccountId`, so another account's URL
+would reach the run's queue of that name; AWS takes the account from the URL or from `QueueOwnerAWSAccountId`. A
+queue URL or owner naming another account is refused 501 by name before moto (SQS table above). And moto answers in
+the endpoint's region, as AWS does; everything the provider itself reads of a queue (the attributes it restores, the
+deliveries a delete takes) is read in that region too, and a URL of another region is refused by name where the
+endpoint's region holds a queue of that name, so no answer mixes two queues.
 
 ## What it does not do
 
