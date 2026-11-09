@@ -585,6 +585,129 @@ async def test_an_issue_carries_an_existing_tag_by_id_and_drops_it(yt: httpx.Asy
     refusal(await yt.post("/api/issues/LAUNCH-1/tags", json={"id": "6-999"}), 501)
 
 
+async def test_a_tag_the_agent_made_is_its_own_and_another_user_does_not_list_it(yt: httpx.AsyncClient) -> None:
+    """`GET /api/tags` answers "all tags that are visible to the current user", and "By default, tags are visible to
+    you only. Other users cannot see your personal tags." (resource-api-tags, using-tags)."""
+    entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    mine = entities(await yt.get("/api/tags", params={"fields": "name", "$top": 1000}))
+    theirs = entities(await yt.get("/api/tags", params={"fields": "name", "$top": 1000}, headers=as_user(TOMAS_TOKEN)))
+
+    assert "press" in [t["name"] for t in mine]
+    assert "press" not in [t["name"] for t in theirs]
+
+
+async def test_another_users_private_tag_is_not_shown_on_an_issue_it_tags(yt: httpx.AsyncClient) -> None:
+    """ "Other users cannot see your personal tags" (using-tags): the agent's tag on an issue is not Tomas's to read."""
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    theirs = entities(
+        await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}, headers=as_user(TOMAS_TOKEN))
+    )
+
+    assert "press" not in [t["name"] for t in theirs]
+
+
+async def test_tagging_an_issue_with_another_users_private_tag_is_refused(yt: httpx.AsyncClient) -> None:
+    """Adding a tag is for "The user who created the tag (its owner)" and "Users and members of groups or teams who
+    are allowed to use the tag" (using-tags); a new tag is its owner's alone."""
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    tried = await yt.post(
+        "/api/issues/LAUNCH-2/tags", params={"fields": "id"}, json={"id": press["id"]}, headers=as_user(TOMAS_TOKEN)
+    )
+    carried = entities(await yt.get("/api/issues/LAUNCH-2/tags", params={"fields": "name"}))
+
+    refusal(tried, 501)
+    assert "press" not in [t["name"] for t in carried]
+
+
+async def test_a_seeded_label_is_a_shared_tag_another_user_lists_and_uses(yt: httpx.AsyncClient) -> None:
+    """A team's tag shared with All Users is seen and used by everyone (using-tags, "Can view" and "Can use")."""
+    theirs = entities(
+        await yt.get("/api/tags", params={"fields": "id,name", "$top": 1000}, headers=as_user(TOMAS_TOKEN))
+    )
+    venue = named(theirs, "venue")
+    added = await yt.post(
+        "/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": venue["id"]}, headers=as_user(TOMAS_TOKEN)
+    )
+    carried = entities(await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}))
+
+    assert [t["name"] for t in theirs] == ["docs", "venue", "big room"]
+    assert added.status_code == 200 and [t["name"] for t in carried] == ["docs", "venue"]
+
+
+async def test_untagging_an_issue_of_another_users_private_tag_is_refused(yt: httpx.AsyncClient) -> None:
+    """Removing a tag is for its owner and users allowed to use it (using-tags)."""
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    tried = await yt.delete(f"/api/issues/LAUNCH-1/tags/{press['id']}", headers=as_user(TOMAS_TOKEN))
+    carried = entities(await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}))
+
+    refusal(tried, 501)
+    assert [t["name"] for t in carried] == ["docs", "press"]
+
+
+async def test_reading_another_users_private_tag_is_refused(yt: httpx.AsyncClient) -> None:
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+
+    refusal(await yt.get(f"/api/tags/{press['id']}", params={"fields": "name"}, headers=as_user(TOMAS_TOKEN)), 501)
+    assert entity(await yt.get(f"/api/tags/{press['id']}", params={"fields": "name"}))["name"] == "press"
+
+
+async def test_a_command_tagging_or_untagging_with_another_users_private_tag_is_refused(yt: httpx.AsyncClient) -> None:
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    for query in ("tag press", "untag press"):
+        tried = await yt.post(
+            "/api/commands",
+            json={"query": query, "issues": [{"idReadable": "LAUNCH-1"}]},
+            headers=as_user(TOMAS_TOKEN),
+        )
+        refusal(tried, 501)
+    carried = entities(await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}))
+
+    assert [t["name"] for t in carried] == ["docs", "press"]
+
+
+async def test_another_users_private_tag_is_not_on_an_issue_read_and_searching_it_is_refused(
+    yt: httpx.AsyncClient,
+) -> None:
+    """Searching by a tag is for its owner and users allowed to view it (using-tags): to anyone else it is a name
+    no tag holds."""
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    read = entity(await yt.get("/api/issues/LAUNCH-1", params={"fields": "tags(name)"}, headers=as_user(TOMAS_TOKEN)))
+    mine = entities(await yt.get("/api/issues", params={"query": "tag: press", "fields": "idReadable"}))
+    searched = await yt.get(
+        "/api/issues", params={"query": "tag: press", "fields": "idReadable"}, headers=as_user(TOMAS_TOKEN)
+    )
+
+    assert [t["name"] for t in read["tags"]] == ["docs"]  # type: ignore[union-attr]
+    assert [i["idReadable"] for i in mine] == ["LAUNCH-1"]
+    refusal(searched, 400)
+
+
+async def test_another_users_private_tag_is_not_in_an_issues_history(yt: httpx.AsyncClient) -> None:
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    feed = {"categories": "TagsCategory", "fields": "added(name),removed(name)"}
+    mine = entities(await yt.get("/api/issues/LAUNCH-1/activities", params=feed))
+    theirs = entities(await yt.get("/api/issues/LAUNCH-1/activities", params=feed, headers=as_user(TOMAS_TOKEN)))
+
+    assert [t["name"] for t in mine[-1]["added"]] == ["press"]  # type: ignore[union-attr]
+    assert "press" not in [t["name"] for item in theirs for t in item["added"]]  # type: ignore[union-attr]
+
+
+async def test_an_update_by_another_user_keeps_the_private_tag_it_cannot_take_off(yt: httpx.AsyncClient) -> None:
+    press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
+    entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
+    entity(
+        await yt.post("/api/issues/LAUNCH-1", params={"fields": "id"}, json={"tags": []}, headers=as_user(TOMAS_TOKEN))
+    )
+    carried = entities(await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}))
+
+    assert [t["name"] for t in carried] == ["press"]
+
+
 # --------------------------------------------------------------------------- Hub
 
 

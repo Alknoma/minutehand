@@ -361,10 +361,23 @@ class StoredAlias(Wire):
     issue: str
 
 
+class StoredSharing(Wire):
+    """Who a tag is shared with, as YouTrack's `WatchFolderSharingSettings` and `TagSharingSettings` hold it: no one
+    but the tag's owner when both lists are empty."""
+
+    permittedGroups: list[str] = Field(default=[], description="UserGroup ids")
+    permittedUsers: list[str] = Field(default=[], description="User ids")
+
+
 class StoredTag(Wire):
+    """A tag is its owner's alone until shared: `readSharingSettings` says who can see it and `tagSharingSettings`
+    who can add it to and remove it from issues ([IssueTag](https://www.jetbrains.com/help/youtrack/devportal/api-entity-IssueTag.html))."""
+
     id: str
     name: str
     owner: str = Field(description="User id")
+    readSharingSettings: StoredSharing = StoredSharing()
+    tagSharingSettings: StoredSharing = StoredSharing()
     seededFrom: int | None = Field(
         default=None, description="Its position among the seeded tickets' labels, first use first, for a seeded tag"
     )

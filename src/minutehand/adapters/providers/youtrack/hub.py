@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from minutehand.adapters.providers.youtrack.app import Answered, Call, YouTrackApi
 
 TOKEN_LIFETIME_SECONDS = 3600
-_GLOBAL_GROUPS = [("all-users", "All Users"), ("registered-users", "Registered Users")]
 _TOKENS = uuid.UUID("0c7a3f4e-5a52-4bb0-9a51-77b1c64a7e21")
 
 
@@ -87,7 +86,8 @@ class Hub:
         """The two instance-wide groups. A YouTrack project's team is no Hub group since YouTrack 2026.1."""
         everyone = [self._user(u) for u in self._world.users()]
         groups: list[wire.HubAnswer] = [
-            wire.HubGroupOut(id=group_id, name=name, project=None, users=everyone) for group_id, name in _GLOBAL_GROUPS
+            wire.HubGroupOut(id=group_id, name=name, project=None, users=everyone)
+            for group_id, name in state.GLOBAL_GROUPS
         ]
         return self._page(call, "usergroups", groups)
 
@@ -95,7 +95,7 @@ class Hub:
         """A project's team is joined through YouTrack (`/admin/projects/{id}/team/ownUsers`), not Hub: an id that
         is no instance-wide group names nothing here."""
         group = call.path("group")
-        if any(group == known for known, _ in _GLOBAL_GROUPS):
+        if any(group == known for known, _ in state.GLOBAL_GROUPS):
             raise NotServed(f"POST /usergroups/{group}/users: membership of Hub's instance-wide groups")
         raise wire.not_found(group)
 
