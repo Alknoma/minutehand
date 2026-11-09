@@ -697,15 +697,18 @@ async def test_another_users_private_tag_is_not_in_an_issues_history(yt: httpx.A
     assert "press" not in [t["name"] for item in theirs for t in item["added"]]  # type: ignore[union-attr]
 
 
-async def test_an_update_by_another_user_keeps_the_private_tag_it_cannot_take_off(yt: httpx.AsyncClient) -> None:
+async def test_an_update_dropping_another_users_private_tag_is_refused(yt: httpx.AsyncClient) -> None:
+    """Removing a tag is for its owner and users allowed to use it (using-tags): an update whose `tags` leaves out a
+    tag the caller may not use is refused naming it, and nothing is written."""
     press = entity(await yt.post("/api/tags", params={"fields": "id,name"}, json={"name": "press"}))
     entity(await yt.post("/api/issues/LAUNCH-1/tags", params={"fields": "id"}, json={"id": press["id"]}))
-    entity(
-        await yt.post("/api/issues/LAUNCH-1", params={"fields": "id"}, json={"tags": []}, headers=as_user(TOMAS_TOKEN))
+    tried = await yt.post(
+        "/api/issues/LAUNCH-1", params={"fields": "id"}, json={"tags": []}, headers=as_user(TOMAS_TOKEN)
     )
     carried = entities(await yt.get("/api/issues/LAUNCH-1/tags", params={"fields": "name"}))
 
-    assert [t["name"] for t in carried] == ["press"]
+    refusal(tried, 501)
+    assert [t["name"] for t in carried] == ["docs", "press"]
 
 
 # --------------------------------------------------------------------------- Hub

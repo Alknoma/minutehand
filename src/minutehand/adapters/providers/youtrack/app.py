@@ -597,13 +597,17 @@ class YouTrackApi:
                 raise wire.field_required(self.definition_of(field).name)
 
     def _tags_named(self, tags: list[wire.EntityIn], held: list[str], caller: wire.StoredUser) -> list[str]:
-        """The tags a body names, each one the caller may use, after those the issue holds that the caller may not use
-        and so cannot take off."""
-        named = [t for t in held if (tag := self.world.tag(t)) is not None and not self.world.uses(tag, caller)]
+        """The tags a body names, each one the caller may use; a body that would take off a tag the caller may not
+        use is refused naming it, since what YouTrack answers it is neither documented nor recorded."""
+        named: list[str] = []
         for reference in tags:
             tag = self._tag_to_use(self.entity_id(reference, "tag"), caller)
             if tag.id not in named:
                 named.append(tag.id)
+        for tag_id in held:
+            tag = self.world.tag(tag_id)
+            if tag is not None and tag_id not in named and not self.world.uses(tag, caller):
+                raise _undocumented(f"a body taking off tag {tag_id}, which the caller may not use")
         return named
 
     def _tag_to_use(self, tag_id: str, caller: wire.StoredUser) -> wire.StoredTag:
