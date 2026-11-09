@@ -268,3 +268,36 @@ async def test_a_calendar_property_that_would_be_dropped_or_a_name_taken_is_refu
         )
         assert allowed.status_code == 501 and "allowedRoles" in allowed.json()["error"]["message"]
         assert tenant.world.calendar_permissions(calendar) == []
+
+
+async def test_two_people_each_watch_their_own_mailbox_and_one_asking_again_is_refused(
+    tenant: Tenant, microsoft: Intercepted, webhook: Webhook
+) -> None:
+    """`me/events` is the caller's own mailbox: two people subscribing to it at the same notification URL watch two
+    mailboxes, and Graph takes both. A calendar-sync service opens one watch per connected member (alknoma-cloud's
+    work_blocks_team_week, two Outlook members: the second was refused 409 as if the first held it). The same person
+    asking again is the combination that already exists."""
+    body = {"changeType": "created,updated,deleted", "notificationUrl": webhook.url, "resource": "me/events"}
+    async with microsoft.http() as http:
+        assistant = bearer(await signed_in(http, tenant, AGENT))
+        owen = bearer(await signed_in(http, tenant, "owen@example.com"))
+        mine = await http.post(
+            f"{GRAPH}/subscriptions",
+            json={**body, "expirationDateTime": _at(tenant, timedelta(hours=1))},
+            headers=assistant,
+        )
+        theirs = await http.post(
+            f"{GRAPH}/subscriptions", json={**body, "expirationDateTime": _at(tenant, timedelta(hours=1))}, headers=owen
+        )
+        assert mine.status_code == 201, mine.text
+        assert theirs.status_code == 201, theirs.text
+        assert mine.json()["creatorId"] != theirs.json()["creatorId"]
+        again = await http.post(
+            f"{GRAPH}/subscriptions",
+            json={**body, "expirationDateTime": _at(tenant, timedelta(hours=1))},
+            headers=assistant,
+        )
+        assert again.status_code == 409
+        assert again.json()["error"]["message"] == (
+            f"Subscription Id {mine.json()['id']} already exists for the requested combination"
+        )
