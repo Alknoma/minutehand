@@ -190,20 +190,19 @@ class Feed:
                         _plain(shown_was),
                     )
         if Category.TAGS in wanted and before.tags != after.tags:
-            gained = [self._tag(t) for t in after.tags if t not in before.tags]
-            lost = [self._tag(t) for t in before.tags if t not in after.tags]
-            add(
-                "TagsActivityItem",
-                Category.TAGS,
-                _predefined("tag"),
-                [t for t in gained if t is not None],
-                [t for t in lost if t is not None],
-            )
+            gained: list[wire.ActivityValueOut] = [
+                t for t in (self._tag(t) for t in after.tags if t not in before.tags) if t is not None
+            ]
+            lost: list[wire.ActivityValueOut] = [
+                t for t in (self._tag(t) for t in before.tags if t not in after.tags) if t is not None
+            ]
+            if gained or lost:
+                add("TagsActivityItem", Category.TAGS, _predefined("tag"), gained, lost)
         return found
 
     def _tag(self, tag: str) -> wire.TagOut | None:
         stored = self._world.tag(tag)
-        return None if stored is None else self._present.tag(stored)
+        return None if stored is None or not self._present.sees(stored) else self._present.tag(stored)
 
     def _links(self, issue: wire.StoredIssue, target: wire.LinkedIssueOut) -> list[_Item]:
         found: list[_Item] = []
