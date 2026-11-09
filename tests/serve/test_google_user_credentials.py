@@ -62,7 +62,12 @@ def _world(served: Served, refresh: str, person: str) -> OpenWorld:
                 {
                     "provider": "firebase_cloud_messaging",
                     "body": json.dumps(
-                        {"tokens": [{"token": "fGcm-phone"}, {"token": "fGcm-gone", "state": "unregistered"}]}
+                        {
+                            "tokens": [
+                                {"token": "fGcm-phone", "project": "shop-app"},
+                                {"token": "fGcm-gone", "project": "shop-app", "state": "unregistered"},
+                            ]
+                        }
                     ),
                 },
             ],
