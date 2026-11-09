@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.provider import build
 from minutehand.adapters.providers.slack.state import BOT_USER_ID
 from minutehand.domain.errors import NotServed
+from minutehand.domain.scenario import SignIn
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation
 from minutehand.ports.provider import Provider, PushesEvents
 from tests.providers.slack.slack_workspace import (
@@ -19,8 +21,10 @@ from tests.providers.slack.slack_workspace import (
     TOKEN,
     Workspace,
     body,
+    client_for,
     form,
     messages_of,
+    seeded_with,
     text_of,
 )
 
@@ -197,3 +201,20 @@ async def test_lookup_by_email_finds_the_seeded_person(client: httpx.AsyncClient
         "ok": False,
         "error": "users_not_found",
     }
+
+
+async def test_a_dm_a_person_opens_with_their_user_token_names_the_other_person_as_its_user(tmp_path: Path) -> None:
+    """DOCUMENTED: a user token may call conversations.open, which adds the caller itself ("Don't include the ID of the
+    user you're calling conversations.open on behalf of - we do that for you"), and an IM's `user` is "The other
+    user's ID (DM-specific)". https://docs.slack.dev/reference/methods/conversations.open,
+    https://docs.slack.dev/reference/objects/conversation-object"""
+    world = seeded_with(tmp_path, sign_ins=[SignIn(provider="slack", credential="xoxp-noor", person="noor")])
+    try:
+        async with client_for(world.provider, world.store, world.clock) as c:
+            opened = await form(
+                c, "conversations.open", token="xoxp-noor", users=state.user_id("tomas"), return_im="true"
+            )
+        assert opened["ok"] is True
+        assert opened["channel"]["user"] == state.user_id("tomas")  # type: ignore[index]
+    finally:
+        world.store.close()
