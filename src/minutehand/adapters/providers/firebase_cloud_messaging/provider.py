@@ -2,9 +2,10 @@
 
 A server sends each message to a device's registration token with the FCM HTTP v1 API's `messages.send` (what
 `firebase-admin` does for every token of a multicast). There are no devices in a run, so the registrations are the
-scenario's: each seeded token is `active` or `unregistered`, and a token the seed does not name is one FCM never
-issued. A message to an active token is delivered: it is answered with its name and kept, with what it carried, so
-a test reads what reached each device. `validate_only` validates the same way and delivers nothing.
+scenario's: each seeded token is `active` or `unregistered`, issued for the Firebase project its app registered with,
+and a token the seed does not name is one FCM never issued. A token sent under another project is refused
+SENDER_ID_MISMATCH. A message to an active token is delivered: it is answered with its name and kept, with what it
+carried, so a test reads what reached each device. `validate_only` validates the same way and delivers nothing.
 
 What the world log holds: every seeded registration and every delivered message are RECORD entities
 (`RecordSnapshot`, `resource` "registration" or "message"); a message is the agent's, listed under the registration
@@ -46,9 +47,13 @@ class RegistrationState(StrEnum):
 
 
 class SeededRegistration(Model):
-    """A registration token a device's app was given by FCM, and whether it is still registered."""
+    """A registration token a device's app was given by FCM, the Firebase project (its id, as `messages.send`'s
+    `projects/{project_id}` names it) the app registered with, and whether it is still registered. "A registration
+    token is tied to a certain group of senders. When a client app registers for FCM, it must specify which senders
+    are allowed to send messages" (https://firebase.google.com/docs/cloud-messaging/error-codes)."""
 
     token: str = Field(min_length=1)
+    project: str = Field(min_length=1)
     state: RegistrationState = RegistrationState.ACTIVE
 
 
@@ -113,7 +118,10 @@ class Registrations:
                 operation=Operation.CREATE,
                 actor=Actor.SCENARIO,
                 body=registration.model_dump_json(),
-                after=RecordSnapshot(resource="registration", text=f"{registration.token} {registration.state}"),
+                after=RecordSnapshot(
+                    resource="registration",
+                    text=f"{registration.token} {registration.project} {registration.state}",
+                ),
             )
         )
 
@@ -177,6 +185,25 @@ def _message_id(now: datetime, project: str, head: int) -> str:
 _MICROSECOND = datetime(1970, 1, 1, 0, 0, 0, 1, tzinfo=UTC) - EPOCH
 
 
+def _sender_mismatch(project: str, registration: SeededRegistration) -> None:
+    """A token sent under another project than the one its app registered with: 403 SENDER_ID_MISMATCH ("The
+    authenticated sender ID is different from the sender ID for the registration token", ErrorCode). Refused by
+    name where the world cannot say: a project named by its number ("The numeric project number with no padding is
+    also supported in the format of `projects/{project_number}`", projects.messages.send), which the seed does not
+    hold, and an unregistered token, where SENDER_ID_MISMATCH and UNREGISTERED would both apply."""
+    if project.removeprefix("projects/").isdigit():
+        raise NotServed(
+            f"fcm.projects.messages.send under {project}: a project named by its number is not served, as a world's "
+            "registrations name their project by its id"
+        )
+    if registration.state is RegistrationState.UNREGISTERED:
+        raise NotServed(
+            f"fcm.projects.messages.send under {project} to a token unregistered from projects/{registration.project}: "
+            "whether FCM answers SENDER_ID_MISMATCH or UNREGISTERED is not documented"
+        )
+    raise wire.FcmRefusal(403, "PERMISSION_DENIED", wire.SENDER_ID_MISMATCH, wire.fcm_error("SENDER_ID_MISMATCH"))
+
+
 class FcmProvider:
     manifest: Manifest = MANIFEST
     seed_model = FcmSeed
@@ -221,6 +248,8 @@ class FcmProvider:
             registration = registrations.registration(message.token)
             if registration is None:
                 raise wire.FcmRefusal(400, "INVALID_ARGUMENT", wire.INVALID_TOKEN, wire.fcm_error("INVALID_ARGUMENT"))
+            if project != f"projects/{registration.project}":
+                _sender_mismatch(project, registration)
             if registration.state is RegistrationState.UNREGISTERED:
                 raise wire.FcmRefusal(404, "NOT_FOUND", wire.UNREGISTERED, wire.fcm_error("UNREGISTERED"))
             name = f"{project}/messages/{_message_id(clock.now(), project, world.head())}"
