@@ -15,6 +15,10 @@ Written from https://developers.asana.com/docs/webhooks-guide and `createWebhook
   completed, Asana returns a `201 Created` response as the webhook is successfully established"; `active` is false
   when the webhook "isn't currently receiving events"). A delivery's answer does not change it.
 - **Filters.** "If a webhook event passes any of the filters the event will be delivered".
+- **Access.** "If a user loses this access [...] the existing webhook will remain but will stop receiving events. No
+  events will be received until access is restored": while its creator does not see its resource (the same rule that
+  answers them 403 on it), a webhook is sent nothing and is no wake, and the events of that time are passed, never sent
+  once access is restored.
 - **Failure.** A delivery the target does not answer 2xx is recorded (`last_failure_at`, `last_failure_content`,
   `delivery_retry_count`) and its events stay owed, sent again with the next delivery. Asana's exponential back-off
   and its deletion of a webhook that fails for 24 hours are not modelled.
@@ -76,16 +80,31 @@ async def handshake(store: Store, target: str, secret: str) -> bool:
     return sent.snapshot.status in (200, 204) and sent.answer_headers.get(HANDSHAKE.lower()) == secret
 
 
+def hears(world: state.AsanaWorld, hook: wire.AsanaWebhook) -> bool:
+    """Whether the webhook receives events now: only while its creator still sees its resource ("If a user loses this
+    access [...] the existing webhook will remain but will stop receiving events")."""
+    return world.sees(hook.created_by, hook.resource)
+
+
 def watching(world: state.AsanaWorld, task_scope: list[str] | None = None) -> bool:
     """Whether any webhook exists (any that hears of a change to something in `task_scope`, when given)."""
     hooks = world.webhooks()
-    return any(h.resource in task_scope for h in hooks) if task_scope is not None else bool(hooks)
+    if task_scope is None:
+        return bool(hooks)
+    return any(h.resource in task_scope and hears(world, h) for h in hooks)
 
 
 async def deliver(world: state.AsanaWorld, clock: Clock) -> None:
-    """Send every webhook what it is owed: the heartbeat first to one never answered, then its events, in order."""
+    """Send every webhook what it is owed: the heartbeat first to one never answered, then its events, in order. A
+    webhook whose creator no longer sees its resource is sent nothing, and its cursor passes the events it did not
+    receive: they are not sent if access returns."""
     for hook in world.webhooks():
         heard = list(world.events_after(hook.cursor, hook.resource))
+        if not hears(world, hook):
+            if heard:
+                passed = hook.model_copy(update={"cursor": max([hook.cursor, *(e.gid for e in heard)], key=int)})
+                world.put_record(passed, parent=state.WEBHOOKS, actor=Actor.SYSTEM, operation=Operation.UPDATE)
+            continue
         owed = [e for e in heard if passes(hook, e)]
         beating = hook.last_success_at is None
         if not owed and not beating:

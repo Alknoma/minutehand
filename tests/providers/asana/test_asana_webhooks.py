@@ -16,8 +16,8 @@ from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.asana import state
 from minutehand.adapters.providers.asana.app import AsanaApp
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.domain.transitions import Transition
-from minutehand.domain.world import Actor, EntityKind, EntityRef
+from minutehand.domain.transitions import ASSIGNEE, COMMENT, REASSIGN, Transition
+from minutehand.domain.world import Actor, EntityKind, EntityRef, Operation
 from tests.providers.asana.asana_workspace import (
     AUTH,
     SCENARIO,
@@ -31,9 +31,10 @@ from tests.providers.asana.asana_workspace import (
     workspace,
 )
 from tests.providers.asana.hooks import target
-from tests.providers.asana.rich_workspace import got
+from tests.providers.asana.rich_workspace import ALICE_TOKEN, PRICING, ROADMAP, got, rich
+from tests.providers.asana.rich_workspace import SCENARIO as RICH
 
-__all__ = ["workspace"]
+__all__ = ["rich", "workspace"]
 
 WS = state.WORKSPACE_GID
 TOMAS = SCENARIO.people[1]
@@ -279,3 +280,53 @@ async def test_a_person_move_nobody_subscribed_to_is_not_heard_of(wired: Wired) 
     task = await create(wired.client, name="Pour", projects=[VENUE], assignee="tomas@example.com")
     item = EntityRef(provider="asana", kind=EntityKind.TICKET, external_id=str(task["gid"]))
     assert not wired.ws.provider.heard_of(item, TOMAS, wired.ws.store, wired.ws.clock)
+
+
+async def test_a_webhook_whose_creator_loses_access_to_the_resource_stops_receiving_events(rich: Workspace) -> None:
+    """ "If a user loses this access [...] the existing webhook will remain but will stop receiving events. No events
+    will be received until access is restored" (https://developers.asana.com/docs/webhooks-guide#permissions): what is
+    delivered follows the creator's access now, and what happened without it is not sent once it is back."""
+    app = rich.provider.app(rich.store, rich.clock)
+    assert isinstance(app, AsanaApp)
+    guarded = Guarded(app, rich.provider, provider=MANIFEST.key, clock=rich.clock)
+    alice = {"Authorization": f"Bearer {ALICE_TOKEN}"}
+    bob = next(p for p in RICH.people if p.key == "bob")
+    item = EntityRef(provider="asana", kind=EntityKind.TICKET, external_id=PRICING)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=guarded), base_url="https://app.asana.com", headers=alice
+    ) as client:
+        with target() as hook:
+            made = got(await client.post("/webhooks", json={"data": {"resource": ROADMAP, "target": hook.url}}), 201)
+            await app.settled()
+            left = await client.post(f"/projects/{ROADMAP}/removeMembers", json={"data": {"members": "me"}})
+            assert left.status_code == 200, left.text
+            await app.settled()
+            assert (await client.get(f"/projects/{ROADMAP}")).status_code == 403, "alice no longer sees the project"
+            before = len(hook.deliveries)
+            assert not rich.provider.heard_of(item, bob, rich.store, rich.clock), (
+                "a webhook that hears nothing wakes no one"
+            )
+            await rich.provider.apply(
+                item, REASSIGN, Actor.PERSON, bob, json.dumps({ASSIGNEE: bob.email}), rich.store, rich.clock
+            )
+            await rich.provider.apply(
+                item, COMMENT, Actor.PERSON, bob, json.dumps({COMMENT: "Mine now."}), rich.store, rich.clock
+            )
+            await app.settled()
+            heard = [e for d in hook.deliveries[before:] for e in d.events()]
+            assert heard == [], "the webhook stays but hears nothing once its creator cannot see the project"
+            assert got(await client.get(f"/webhooks/{made['gid']}"))["gid"] == made["gid"], "the webhook remains"
+            world = state.AsanaWorld(rich.store)  # alice was its only member: someone in Asana adds her back
+            roadmap = world.project(ROADMAP)
+            assert roadmap is not None
+            back = roadmap.model_copy(update={"members": [state.user_gid("alice")]})
+            world.put_record(back, parent=state.PROJECTS, actor=Actor.PERSON, operation=Operation.UPDATE)
+            assert (await client.get(f"/projects/{ROADMAP}")).status_code == 200, "alice sees the project again"
+            await rich.provider.apply(
+                item, COMMENT, Actor.PERSON, bob, json.dumps({COMMENT: "Back again."}), rich.store, rich.clock
+            )
+            await app.settled()
+            heard = [e for d in hook.deliveries[before:] for e in d.events()]
+            assert [(e["type"], e["action"]) for e in heard] == [("project", "changed"), ("story", "added")], (
+                "only what follows access coming back (alice added, then the comment): nothing from the gap"
+            )

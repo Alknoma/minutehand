@@ -347,6 +347,28 @@ class AsanaWorld:
             found += [wire.parse(wire.AsanaTask, s.body) for s in self._pages(EntityKind.TICKET, parent)]
         return sorted(found, key=lambda t: (t.created_at, int(t.gid)))
 
+    def sees_project(self, user: str, project: wire.AsanaProject) -> bool:
+        """Whether the user sees the project: any public one, a private one only as its member."""
+        return not project.private or user in project.members
+
+    def sees_task(self, user: str, task: wire.AsanaTask) -> bool:
+        """A task is seen through any of its projects, or by its assignee and its creator."""
+        if user in (task.assignee, task.created_by):
+            return True
+        projects = [self.project(m.project) for m in task.memberships]
+        if not projects:
+            parent = self.task(task.parent) if task.parent is not None else None
+            return parent is None or self.sees_task(user, parent)
+        return any(p is not None and self.sees_project(user, p) for p in projects)
+
+    def sees(self, user: str, resource: str) -> bool:
+        """Whether the user sees the task or project `resource` now: false once it is gone."""
+        task = self.task(resource)
+        if task is not None:
+            return self.sees_task(user, task)
+        project = self.project(resource)
+        return project is not None and self.sees_project(user, project)
+
     def project_tasks(self, project: str) -> list[wire.AsanaTask]:
         """A project's tasks, including those whose first project is another one."""
         return [t for t in self.tasks() if any(m.project == project for m in t.memberships)]
