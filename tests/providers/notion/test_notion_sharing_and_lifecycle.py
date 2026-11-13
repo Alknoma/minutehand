@@ -17,6 +17,7 @@ from tests.providers.notion.notion_world import (
     AGENT_TOKEN,
     NOTION,
     OTHER_TOKEN,
+    READER_TOKEN,
     START,
     Sdk,
     World,
@@ -276,3 +277,27 @@ async def test_a_database_mention_reads_as_untitled_to_an_integration_the_databa
     assert as_writer["mention"] == {"type": "database", "database": {"id": ids("projects")}}
     assert as_writer["plain_text"] == "Untitled" and as_writer["annotations"]["bold"] is False
     assert as_both["plain_text"] == "Projects" and as_both["annotations"]["bold"] is True
+
+
+async def test_a_user_mention_reads_as_anonymous_to_an_integration_with_no_user_information(tmp_path: Path) -> None:
+    """https://developers.notion.com/reference/rich-text, user mention: "If your connection doesn't yet have access to
+    the mentioned user, then the `plain_text` that would include a user's name reads as "@Anonymous"", with default
+    annotations; https://developers.notion.com/reference/capabilities: with "No user information", user objects
+    "will not include any information about the user, including name". The reader integration holds only
+    `read_content`."""
+    world = seeded(tmp_path, scenario(NOTION))
+    try:
+        async with direct(world, AGENT_TOKEN) as api:
+            users = answer(await api.get("/v1/users"))["results"]
+        mara = next(u["id"] for u in users if u["type"] == "person" and u["person"]["email"] == "mara@example.com")
+        mention = {"type": "mention", "mention": {"type": "user", "user": {"id": mara}}, "annotations": {"bold": True}}
+        async with direct(world, AGENT_TOKEN) as api:
+            body = {"children": [{"type": "paragraph", "paragraph": {"rich_text": [mention]}}]}
+            block = answer(await api.patch(f"/v1/blocks/{ids('handbook')}/children", json=body))["results"][0]
+        as_writer = block["paragraph"]["rich_text"][0]
+        as_reader = await _read_back(world, READER_TOKEN, block["id"])
+    finally:
+        world.store.close()
+    assert as_writer["plain_text"] != "@Anonymous" and as_writer["annotations"]["bold"] is True
+    assert as_reader["plain_text"] == "@Anonymous" and as_reader["annotations"]["bold"] is False
+    assert as_reader["mention"] == {"type": "user", "user": {"object": "user", "id": mara}}

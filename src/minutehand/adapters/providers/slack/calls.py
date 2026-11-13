@@ -75,8 +75,14 @@ class Calls:
 
     def _served(self, channel: wire.SlackChannel) -> wire.SlackChannel:
         if channel.is_im:
-            return channel
+            return self._im_as_seen(channel)
         return channel.model_copy(update={"is_member": self._in(channel)})
+
+    def _im_as_seen(self, im: wire.SlackChannel) -> wire.SlackChannel:
+        """An IM as the caller reads it: its `user` is the other member, whichever of the two opened it."""
+        caller = self._world.bot
+        other = im.creator if im.user == caller and im.creator else im.user
+        return im.model_copy(update={"user": other})
 
     def _now(self) -> int:
         return int(self._clock.now().timestamp())

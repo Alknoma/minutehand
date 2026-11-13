@@ -258,8 +258,15 @@ class NotionApi:
 
     def _seen(self, call: Call, value: JsonValue) -> JsonValue:
         """Stored content as this integration is served it: a page or database mention reads as the title of what
-        it names only when the integration reaches it (`wire.as_seen`)."""
-        return wire.as_seen(value, lambda named: self._world.title(named) if self.reaches(call, named) else None)
+        it names only when the integration reaches it, and a user mention as the user's name only when it has a
+        user information capability (`wire.as_seen`)."""
+        held = call.integration.capabilities
+        return wire.as_seen(
+            value,
+            lambda named: self._world.title(named) if self.reaches(call, named) else None,
+            sees_users=wire.Capability.READ_USERS_WITH_EMAIL in held
+            or wire.Capability.READ_USERS_WITHOUT_EMAIL in held,
+        )
 
     def _user(self, call: Call, user: wire.StoredUser) -> wire.Json:
         email = wire.Capability.READ_USERS_WITH_EMAIL in call.integration.capabilities

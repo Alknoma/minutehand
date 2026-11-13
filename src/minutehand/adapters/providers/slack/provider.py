@@ -39,7 +39,7 @@ class SlackProvider:
         self._wakes = wakes
 
     async def deliver_booking(self, ref: str, world: Store, clock: Clock) -> None:
-        """A scheduled message's moment has come: Slack posts it, as the app, at the run's clock."""
+        """A scheduled message's moment has come: Slack posts it, as whoever scheduled it, at the run's clock."""
         SlackApi(world, clock).post_scheduled(ref)
 
     async def advance_booking(self, ref: str, world: Store, clock: Clock) -> None:

@@ -414,3 +414,29 @@ async def test_a_scheduled_message_is_listed_only_to_the_token_that_scheduled_it
         assert by_iris["scheduled_messages"] == []
     finally:
         world.store.close()
+
+
+async def test_a_message_a_person_schedules_with_their_user_token_is_posted_as_them(tmp_path: Path) -> None:
+    """DOCUMENTED: a user token acts for its person ("tokens ... represent ... a user"), and what they post carries no
+    bot; a scheduled message is posted at `post_at` as `chat.postMessage` posts, so by the person who scheduled it.
+    https://docs.slack.dev/authentication/tokens, https://docs.slack.dev/reference/methods/chat.scheduleMessage"""
+    world = seeded_with(tmp_path, sign_ins=[SignIn(provider="slack", credential="xoxp-iris", person="iris")])
+    bookings = Bookings()
+    world.provider.bind(bookings)
+    try:
+        async with client_for(world.provider, world.store, world.clock) as c:
+            at = str(now(world) + HOUR)
+            scheduled = await form(
+                c, "chat.scheduleMessage", token="xoxp-iris", channel=GENERAL, post_at=at, text="From Iris"
+            )
+            assert scheduled["ok"] is True
+            await fire(world, bookings, str(scheduled["scheduled_message_id"]))
+            posted = await form(c, "conversations.history", channel=GENERAL)
+
+        messages = posted["messages"]
+        assert isinstance(messages, list)
+        assert [(m["text"], m["user"], "bot_id" in m) for m in messages] == [  # type: ignore[index,operator]
+            ("From Iris", state.user_id("iris"), False)
+        ]
+    finally:
+        world.store.close()

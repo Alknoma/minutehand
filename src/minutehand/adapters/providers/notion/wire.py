@@ -605,14 +605,18 @@ def plain(items: JsonValue) -> str:
     return "".join(found)
 
 
-def as_seen(value: JsonValue, title_seen: Callable[[str], str | None]) -> JsonValue:
+def as_seen(value: JsonValue, title_seen: Callable[[str], str | None], *, sees_users: bool) -> JsonValue:
     """Stored content as one reader is served it. A page or database mention's `plain_text` is the title of what it
     names, which `title_seen` gives when the reader reaches it; when the reader does not, "the mention is returned
     with just the ID", its `plain_text` "appears as "Untitled"" and its annotations are the defaults
-    (https://developers.notion.com/reference/rich-text, page and database mentions). Everything else is returned
-    as it is held."""
+    (https://developers.notion.com/reference/rich-text, page and database mentions). A user mention read by a
+    reader with no user information capability (`sees_users` false) reads as "@Anonymous", with default
+    annotations: that reader has no access to the user, whose user objects then "will not include any information
+    about the user, including name" (https://developers.notion.com/reference/rich-text, user mention;
+    https://developers.notion.com/reference/capabilities, user capabilities). Everything else is returned as it
+    is held."""
     if isinstance(value, list):
-        return [as_seen(item, title_seen) for item in value]
+        return [as_seen(item, title_seen, sees_users=sees_users) for item in value]
     if not isinstance(value, dict):
         return value
     if "type" in value and value["type"] == RichTextType.MENTION and "mention" in value:
@@ -625,8 +629,10 @@ def as_seen(value: JsonValue, title_seen: Callable[[str], str | None]) -> JsonVa
             if title is None:
                 return {**value, "annotations": _annotations(None, "annotations"), "plain_text": "Untitled"}
             return {**value, "plain_text": title or "Untitled"}
+        if kind == MentionType.USER and not sees_users:
+            return {**value, "annotations": _annotations(None, "annotations"), "plain_text": "@Anonymous"}
         return value
-    return {key: as_seen(item, title_seen) for key, item in value.items()}
+    return {key: as_seen(item, title_seen, sees_users=sees_users) for key, item in value.items()}
 
 
 def text_run(content: str) -> list[JsonValue]:

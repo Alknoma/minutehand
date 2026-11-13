@@ -424,7 +424,9 @@ class SlackApi(FileCalls):
                 raise wire.Refusal("channel_not_found")
             self._world.saw(state.channel_ref(channel.id), Operation.READ)
             return wire.Opened(
-                no_op=True, already_open=True, channel=channel if args.return_im else wire.OpenedId(id=channel.id)
+                no_op=True,
+                already_open=True,
+                channel=self._seen_opened(channel) if args.return_im else wire.OpenedId(id=channel.id),
             )
         wanted = [u.strip() for u in args.users.split(",") if u.strip()]
         if not wanted:
@@ -447,8 +449,11 @@ class SlackApi(FileCalls):
         return wire.Opened(
             no_op=not opened,
             already_open=not opened,
-            channel=channel if args.return_im else wire.OpenedId(id=channel.id),
+            channel=self._seen_opened(channel) if args.return_im else wire.OpenedId(id=channel.id),
         )
+
+    def _seen_opened(self, channel: wire.SlackChannel) -> wire.SlackChannel:
+        return self._im_as_seen(channel) if channel.is_im else channel
 
     def conversations_members(self, presented: wire.Presented) -> wire.Ok:
         args = wire.read_args(wire.MembersArgs, presented)
@@ -806,8 +811,8 @@ class SlackApi(FileCalls):
         return wire.Ok()
 
     def post_scheduled(self, ref: str) -> None:
-        """The moment of a scheduled message has come: it is posted as `chat.postMessage` posts, by the app, at the
-        run's clock. One already posted or deleted is left alone, so a second delivery posts nothing."""
+        """The moment of a scheduled message has come: it is posted as `chat.postMessage` posts, by whoever scheduled
+        it (the app, or the person whose user token scheduled it), at the run's clock. One already posted or deleted is left alone, so a second delivery posts nothing."""
         found = next(
             (
                 s
@@ -819,7 +824,10 @@ class SlackApi(FileCalls):
         )
         if found is None:
             return
-        self._world = SlackWorld(self._store).team_of(found.team) or self._world
+        team = next((w for w in SlackWorld(self._store).workspaces() if w.id == found.team), self._world.team)
+        self._world = SlackWorld(self._store).as_team(
+            team, None if found.scheduled_by == team.bot_user_id else found.scheduled_by
+        )
         channel = self._world.channel(found.channel)
         self._world.delete(
             state.scheduled_ref(found.id),
