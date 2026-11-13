@@ -74,7 +74,10 @@ class SeedPage(Model, Keyed):
     )
     parent: str | None = Field(default=None, description="The key of the page it sits under; None at the top")
     blocks: list[SeedBlock] = []
-    created_by: str | None = Field(default=None, description="Person.key; the scenario's owner when None")
+    created_by: str | None = Field(
+        default=None,
+        description="Person.key; when None, the person an older scenario calls its owner, and refused with none",
+    )
     emoji: str | None = None
     archived: bool = False
 
@@ -107,6 +110,10 @@ class SeedDatabase(Model, Keyed):
     properties: list[SeedProperty] = Field(description="Exactly one has type title")
     rows: list[SeedRow] = []
     inline: bool = False
+    created_by: str | None = Field(
+        default=None,
+        description="Person.key; when None, the person an older scenario calls its owner, and refused with none",
+    )
 
     @model_validator(mode="after")
     def _one_title(self) -> Self:
@@ -316,8 +323,6 @@ def seed(scenario: Scenario, world: Store) -> None:
             "workspaces[].integrations"
         )
     now = scenario.starts_at
-    owner = next(p for p in scenario.people if p.key == scenario.owner)
-    people = {p.key: p for p in scenario.people}
     documents = {d.title: d for d in scenario.documents if d.provider == MANIFEST.key}
     claimed = [r.document for w in workspaces for d in w.databases for r in d.rows if r.document is not None]
     claimed += [p.document for w in workspaces for p in w.pages if p.document is not None]
@@ -325,10 +330,10 @@ def seed(scenario: Scenario, world: Store) -> None:
     if unknown:
         raise ValueError(f"a Notion row is the seeded document {unknown[0]!r}, which is no seeded Notion document")
     for workspace in workspaces:
-        _seed_workspace(notion, workspace, people, owner, now, documents)
+        _seed_workspace(notion, workspace, scenario, now, documents)
     where, first = next((w, i) for w in workspaces for i in w.integrations)
     notion.write_agent(wire.StoredAgent(integration=object_id(where.key, first.key)))
-    _seed_documents(notion, workspaces[0], scenario, owner, now, set(claimed))
+    _seed_documents(notion, workspaces[0], scenario, now, set(claimed))
     for n, hook in enumerate(found.webhooks):
         where = next(w for w in workspaces for i in w.integrations if i.key == hook.integration)
         notion.write_webhook(
@@ -382,11 +387,11 @@ def plan(faults: list[SeedFault], bots: dict[str, str]) -> list[wire.PlannedFaul
 def _seed_workspace(
     notion: NotionWorld,
     workspace: SeedWorkspace,
-    people: dict[str, Person],
-    owner: Person,
+    scenario: Scenario,
     now: datetime,
     documents: dict[str, SeededDocument],
 ) -> None:
+    people = {p.key: p for p in scenario.people}
     ws = object_id(workspace.key, workspace.key)
     notion.write_workspace(wire.StoredWorkspace(id=ws, name=workspace.name))
     members = workspace.members if workspace.members is not None else list(people)
@@ -413,7 +418,12 @@ def _seed_workspace(
             )
         )
     by_person = {k: user_id(people[k]) for k in members}
-    creator = by_person[owner.key] if owner.key in by_person else next(iter(by_person.values()), ws)
+
+    def creator(what: str) -> str:
+        """Who made a seeded thing that names nobody: the person an older scenario calls its owner, as a member,
+        else the first member. With no owner, the seed must name them (`Scenario.acting`)."""
+        owner = scenario.acting(None, what)
+        return by_person[owner] if owner in by_person else next(iter(by_person.values()), ws)
 
     for integration in workspace.integrations:
         bot = object_id(workspace.key, integration.key)
@@ -429,9 +439,9 @@ def _seed_workspace(
         for row in database.rows:
             ids[row.key] = object_id(workspace.key, row.key)
 
-    def who(key: str | None) -> str:
+    def who(key: str | None, what: str) -> str:
         if key is None:
-            return creator
+            return creator(what)
         if key not in by_person:
             raise ValueError(f"{key} is not a member of workspace {workspace.key}")
         return by_person[key]
@@ -454,7 +464,7 @@ def _seed_workspace(
             parent,
             {"title": {"title": wire.text_run(page.title)}},
             blocks,
-            by=who(page.created_by),
+            by=who(page.created_by, f"who created the Notion page {page.key!r} (created_by)"),
             icon={"emoji": page.emoji} if page.emoji else None,
         )
     for database in workspace.databases:
@@ -474,7 +484,7 @@ def _seed_workspace(
             wire.text_run(database.title),
             schema,
             inline=database.inline,
-            by=creator,
+            by=who(database.created_by, f"who created the Notion database {database.key!r} (created_by)"),
         )
     for database in workspace.databases:
         made = notion.database(ids[database.key])
@@ -498,11 +508,13 @@ def _seed_workspace(
                 wire.Parent(type=wire.ParentType.DATABASE_ID, id=ids[database.key]),
                 values,
                 blocks[: wire.MAX_CHILDREN],
-                by=who(row.created_by),
+                by=who(row.created_by, f"who created the Notion row {row.key!r} (created_by)"),
             )
     for page in workspace.pages:
         if page.archived:
-            editor.archive(ids[page.key], by=who(page.created_by))
+            editor.archive(
+                ids[page.key], by=who(page.created_by, f"who archived the Notion page {page.key!r} (created_by)")
+            )
     for integration in workspace.integrations:
         _seed_integration(notion, workspace, integration, ws, ids, by_person)
 
@@ -615,7 +627,6 @@ def _seed_documents(
     notion: NotionWorld,
     workspace: SeedWorkspace,
     scenario: Scenario,
-    owner: Person,
     now: datetime,
     rows: set[str],
 ) -> None:
@@ -625,8 +636,13 @@ def _seed_documents(
     ws = object_id(workspace.key, workspace.key)
     folder_editor = Editor(notion, ws, _At(now), actor=Actor.SCENARIO, seeding=True)
     users = notion.users(ws)
-    by = next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
     people = {p.key: p for p in scenario.people}
+
+    def by(what: str) -> str:
+        """Who made a seeded page that names nobody: the person an older scenario calls its owner, else the
+        workspace's first user. With no owner, the seed must name them (`Scenario.acting`)."""
+        owner = people[scenario.acting(None, what)]
+        return next((u.id for u in users if u.email == owner.email), users[0].id if users else ws)
 
     def user_of(key: str | None) -> str | None:
         person = people.get(key) if key is not None else None
@@ -647,7 +663,13 @@ def _seed_documents(
             where = "/".join(path)
             if where not in folders:
                 folder_id = wire.minted_id("seed", workspace.key, "folder", where)
-                folder_editor.create_page(folder_id, parent, {"title": {"title": wire.text_run(step)}}, [], by=by)
+                folder_editor.create_page(
+                    folder_id,
+                    parent,
+                    {"title": {"title": wire.text_run(step)}},
+                    [],
+                    by=user_of(document.owner) or by(f"who made the Notion folder {where!r} (its document's owner)"),
+                )
                 folders[where] = folder_id
                 if len(path) == 1:
                     made.append(folder_id)
@@ -655,7 +677,7 @@ def _seed_documents(
         nth = titled.get(document.title, 0)
         titled[document.title] = nth + 1
         page_id = wire.minted_id("seed", workspace.key, "document", document.title, str(nth))
-        owned = user_of(document.owner) or by
+        owned = user_of(document.owner) or by(f"who owns {document.title!r} (owner)")
         editor = Editor(notion, ws, _At(now - document.modified_before_start), actor=Actor.SCENARIO, seeding=True)
         editor.create_page(
             page_id,
