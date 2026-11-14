@@ -159,9 +159,10 @@ class NotionApi:
     def request_id(self, request: Request) -> str:
         return wire.request_id(f"{self._store.head()}:{request.method}:{request.url.path}")
 
-    def refused(self, request: Request, refusal: wire.Refusal) -> Response:
+    def refused(self, request: Request, refusal: wire.Refusal, call: Call | None = None) -> Response:
+        """The error object; a 404 names the calling integration by its bot user's id, as webhook events do."""
         return Response(
-            refusal.body(self.request_id(request)),
+            refusal.body(self.request_id(request), call.bot if call is not None else None),
             status_code=refusal.status,
             media_type=JSON,
             headers=refusal.headers,
@@ -169,6 +170,7 @@ class NotionApi:
 
     def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
+            call: Call | None = None
             try:
                 version = wire.served_version(
                     request.headers["notion-version"] if "notion-version" in request.headers else None
@@ -177,7 +179,7 @@ class NotionApi:
                 self._faults(request, call)
                 return await handler(request, call)
             except wire.Refusal as refusal:
-                return self.refused(request, refusal)
+                return self.refused(request, refusal, call)
 
         return endpoint
 
@@ -226,7 +228,11 @@ class NotionApi:
 
     @staticmethod
     def _id(request: Request, name: str) -> str:
-        return wire.canonical_id(request.path_params[name], f"path.{name}")
+        """The path's id, dashed or not; one in upper case is looked up as sent, and so not found, as measured of the
+        real service (https://github.com/brekkylab/backlot/issues/376)."""
+        raw = request.path_params[name]
+        canonical = wire.canonical_id(raw, f"path.{name}")
+        return raw if raw != raw.lower() else canonical
 
     # ------------------------------------------------------------------ sharing
 
@@ -612,7 +618,10 @@ class NotionApi:
     # ------------------------------------------------------------------ pages
 
     async def page_get(self, request: Request, call: Call) -> Response:
-        page = self._page(call, self._id(request, "page_id"))
+        page_id = self._id(request, "page_id")
+        if self._world.database(page_id) is not None and self.reaches(call, page_id):
+            raise wire.wrong_kind(page_id, wire.Missing.DATABASE, wire.Missing.PAGE)
+        page = self._page(call, page_id)
         only = self._query(request)["filter_properties"] if "filter_properties" in self._query(request) else None
         self._world.saw(page_ref(page), Operation.READ)
         return _answer(self.render_page(call, page, only))
@@ -806,7 +815,10 @@ class NotionApi:
     # ------------------------------------------------------------------ databases
 
     async def database_get(self, request: Request, call: Call) -> Response:
-        database = self._database(call, self._id(request, "database_id"))
+        database_id = self._id(request, "database_id")
+        if self._world.page(database_id) is not None and self.reaches(call, database_id):
+            raise wire.wrong_kind(database_id, wire.Missing.PAGE, wire.Missing.DATABASE)
+        database = self._database(call, database_id)
         self._world.saw(record_ref(database.id), Operation.READ)
         return _answer(self.render_database(call, database))
 

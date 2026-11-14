@@ -98,16 +98,19 @@ class Refusal(ServiceRefusal):
     def status(self) -> int:
         return _STATUS[self.code]
 
-    def body(self, request_id: str) -> str:
-        return json.dumps(
-            {
-                "object": "error",
-                "status": self.status,
-                "code": self.code.value,
-                "message": self.message,
-                "request_id": request_id,
-            }
-        )
+    def body(self, request_id: str, integration_id: str | None = None) -> str:
+        """A 404 answered to an integration carries its id in `additional_data`, as measured of the real service
+        (https://github.com/brekkylab/backlot/issues/376)."""
+        found: dict[str, JsonValue] = {
+            "object": "error",
+            "status": self.status,
+            "code": self.code.value,
+            "message": self.message,
+        }
+        if self.code is ErrorCode.OBJECT_NOT_FOUND and integration_id is not None:
+            found["additional_data"] = {"integration_id": integration_id}
+        found["request_id"] = request_id
+        return json.dumps(found)
 
     def render(self, asked: Asked) -> Rendered:
         """The error object, its request id minted from the call: the app's own gate mints it from the store's head
@@ -215,7 +218,14 @@ class Missing:
 
 def not_found(what: str, object_id: str, connection: str | None = None) -> Refusal:
     """Notion's documented message (https://developers.notion.com/reference/status-codes), naming the connection
-    when it is known."""
+    when it is known; a user's names the capability to read users instead, as measured of the real service
+    (https://github.com/brekkylab/backlot/issues/376)."""
+    if what == Missing.USER:
+        return Refusal(
+            ErrorCode.OBJECT_NOT_FOUND,
+            f"Could not find user with ID: {object_id}. Make sure your integration has capabilities to read user "
+            "information. With those capabilities, only members and guests in the integration's workspace are visible.",
+        )
     named = f' "{connection}"' if connection is not None else ""
     return Refusal(
         ErrorCode.OBJECT_NOT_FOUND,
@@ -250,6 +260,17 @@ def canonical_id(raw: str, where: str) -> str:
         return str(uuid.UUID(hex=raw.replace("-", "")))
     except ValueError as error:
         raise failed(where, "a valid uuid", raw) from error
+
+
+def wrong_kind(object_id: str, found: str, wanted: str) -> Refusal:
+    """A database's id retrieved as a page, or a page's as a database, in the real service's measured words
+    (https://github.com/brekkylab/backlot/issues/376)."""
+    if wanted == Missing.PAGE:
+        return reported(f"Provided ID {object_id} is a {found}, not a page. Use the retrieve database API instead.")
+    return reported(
+        f"Provided database_id {object_id} is a {found}, not a database. Use the pages API instead, or pass the ID "
+        "of the database itself."
+    )
 
 
 def minted_id(*parts: str) -> str:
