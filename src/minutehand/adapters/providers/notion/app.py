@@ -319,6 +319,8 @@ class NotionApi:
             "parent": page.parent.render(),
             "archived": page.archived,
             "in_trash": page.archived,
+            "is_archived": False,
+            "is_locked": False,
             "properties": properties,
             "url": wire.page_url(page.id, title_of(page)),
             "public_url": None,
@@ -347,12 +349,13 @@ class NotionApi:
             "title": self._seen(call, database.title),
             "description": self._seen(call, database.description),
             "is_inline": database.is_inline,
-            "properties": {name: dict(prop) for name, prop in database.schema_.items()},
+            "properties": {name: wire.render_schema(prop) for name, prop in database.schema_.items()},
             "parent": database.parent.render(),
             "url": wire.record_url(database.id),
             "public_url": None,
             "archived": database.archived,
             "in_trash": database.archived,
+            "is_locked": False,
         }
 
     def _live_children(self, page: wire.StoredPage, container: str) -> list[wire.StoredBlock]:
@@ -397,6 +400,10 @@ class NotionApi:
                 url, until = wire.file_url(upload, self._clock.now())
                 held_content = content if isinstance(content, dict) else block.content
                 content = {**held_content, "file": {"url": url, "expiry_time": until}}
+        elif block.type is wire.BlockType.PARAGRAPH and isinstance(content, dict) and "icon" not in content:
+            # A paragraph answers its `icon`, null when it has none (`contentWithRichTextColorAndIconResponse`,
+            # https://developers.notion.com/reference/block).
+            content = {**content, "icon": None}
         return {
             "object": "block",
             "id": block.id,

@@ -1432,6 +1432,37 @@ def property_id(database_id: str, name: str, kind: PropertyType) -> str:
     return "".join(alphabet[(number >> (6 * i)) % len(alphabet)] for i in range(4))
 
 
+def data_source_id(database_id: str) -> str:
+    """The id of a database's one data source. Notion assigns it, and it is not the database's id: "The two types of
+    IDs are not interchangeable" (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+    return minted_id("data_source", database_id)
+
+
+def render_schema(prop: Json) -> Json:
+    """A property's schema as Notion answers it, with what every version's answer carries that the stored schema
+    does not: the property's `description` and each option's, null when it has none, and a relation's target data
+    source beside its database ("across all API versions, both the `database_id` and `data_source_id` are now
+    included") and its `limit`, "null when there is no limit" (https://developers.notion.com/reference/property-object,
+    https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+    kind = schema_type(prop)
+    config = prop[kind.value]
+    if isinstance(config, dict):
+        config = dict(config)
+        if "options" in config and isinstance(config["options"], list):
+            config["options"] = [
+                {**o, "description": o["description"] if "description" in o else None} if isinstance(o, dict) else o
+                for o in config["options"]
+            ]
+        if kind is PropertyType.RELATION and isinstance(config["database_id"], str):
+            config = {
+                "database_id": config["database_id"],
+                "data_source_id": data_source_id(config["database_id"]),
+                "limit": None,
+                **{k: v for k, v in config.items() if k != "database_id"},
+            }
+    return {**prop, "description": prop["description"] if "description" in prop else None, kind.value: config}
+
+
 def option(database_id: str, name: str, color: str = "default") -> Json:
     return {"id": minted_id("option", database_id, name), "name": name, "color": color}
 
@@ -1631,11 +1662,15 @@ def value_text(value: Json) -> str:
 
 
 def render_user(user: StoredUser, *, email: bool, owner: JsonValue = None, workspace_name: str = "") -> Json:
+    """A user object; a bot's `bot` carries its owner, its workspace's id and its workspace's name
+    (https://developers.notion.com/reference/user)."""
     found: Json = {"object": "user", "id": user.id, "name": user.name, "avatar_url": None, "type": user.type.value}
     if user.type is UserType.PERSON:
         found["person"] = {"email": user.email} if email and user.email else {}
+    elif owner is not None:
+        found["bot"] = {"owner": owner, "workspace_id": user.workspace, "workspace_name": workspace_name}
     else:
-        found["bot"] = {"owner": owner, "workspace_name": workspace_name} if owner is not None else {}
+        found["bot"] = {}
     return found
 
 
