@@ -719,7 +719,11 @@ class SlackApi(FileCalls):
             scheduled_message_id=scheduled.id,
             post_at=str(post_at),
             message=wire.ScheduledBody(
-                text=args.text, bot_id=self._world.team.bot_id, blocks=args.blocks, attachments=args.attachments
+                text=args.text,
+                bot_id=self._world.team.bot_id if self._world.is_app else None,
+                subtype="bot_message" if self._world.is_app else None,
+                blocks=args.blocks,
+                attachments=args.attachments,
             ),
         )
 

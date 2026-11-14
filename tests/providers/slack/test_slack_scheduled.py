@@ -437,6 +437,7 @@ async def test_a_message_a_person_schedules_with_their_user_token_is_posted_as_t
             await fire(world, bookings, str(scheduled["scheduled_message_id"]))
             posted = await form(c, "conversations.history", channel=GENERAL)
 
+        assert scheduled["message"] == {"text": "From Iris", "type": "delayed_message"}
         messages = posted["messages"]
         assert isinstance(messages, list)
         assert [(m["text"], m["user"], "bot_id" in m) for m in messages] == [  # type: ignore[index,operator]
