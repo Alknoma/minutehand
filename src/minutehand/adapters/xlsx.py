@@ -1,6 +1,7 @@
-"""Excel workbooks as real bytes: a seeded spreadsheet is an `.xlsx` an Excel reader opens, its cells read back as
-text. One worksheet, every cell an inline string (`t="inlineStr"`); formulas, styles and number formats are not
-written or read."""
+"""Excel workbooks as real bytes, for every provider whose files include spreadsheets: a OneDrive or SharePoint
+workbook seeded as an `.xlsx` an Excel reader opens, its cells read back as text, and a Google Sheet exported from
+Drive as one. One worksheet named "Sheet1", every cell an inline string (`t="inlineStr"`); formulas, styles and
+number formats are not written or read."""
 
 from __future__ import annotations
 

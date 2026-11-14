@@ -42,7 +42,7 @@ from starlette.responses import Response
 from starlette.routing import Route, Router
 from starlette.types import Receive, Scope, Send
 
-from minutehand.adapters import answering
+from minutehand.adapters import answering, xlsx
 from minutehand.adapters.providers.google_workspace import docs, slides, state, wire
 from minutehand.adapters.providers.google_workspace import query as drive_query
 from minutehand.adapters.providers.google_workspace.access import Caller, bearer, due_fault, signed_in
@@ -69,7 +69,6 @@ EXPORTS_NOT_BUILT = frozenset(
     {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/vnd.oasis.opendocument.text",
         "application/vnd.oasis.opendocument.spreadsheet",
@@ -83,7 +82,7 @@ EXPORTS_NOT_BUILT = frozenset(
 """Formats real Drive exports Docs editors files to and this fake does not render."""
 EXPORTS: dict[str, frozenset[str]] = {
     wire.DOCUMENT: frozenset({"text/plain", "text/markdown"}),
-    wire.SPREADSHEET: frozenset({"text/csv", "text/tab-separated-values"}),
+    wire.SPREADSHEET: frozenset({"text/csv", "text/tab-separated-values", xlsx.XLSX}),
     wire.PRESENTATION: frozenset({"text/plain"}),
 }
 ORDER_KEYS = frozenset({"name", "createdTime", "modifiedTime", "folder", "starred"})
@@ -1477,6 +1476,8 @@ def _exported(content: wire.Content | None, mime_type: str) -> bytes:
     if isinstance(content, slides.Deck):
         return wire.plain_text_export(slides.text_of(content) + "\n")
     if isinstance(content, wire.Sheet):
+        if mime_type == xlsx.XLSX:
+            return xlsx.build(content.rows)
         out = io.StringIO()
         writer = csv.writer(out, delimiter="," if mime_type == "text/csv" else "\t", lineterminator="\r\n")
         writer.writerows(content.rows)

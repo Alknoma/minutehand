@@ -26,7 +26,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from minutehand.adapters.providers.microsoft import docx, wire, xlsx
+from minutehand.adapters import xlsx
+from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.cards import message_actions
 from minutehand.adapters.providers.microsoft.graph_calendar import Calendar
 from minutehand.adapters.providers.microsoft.graph_files import Files, graph_roles, item_id, mime_of
