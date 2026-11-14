@@ -218,3 +218,35 @@ async def test_a_dm_a_person_opens_with_their_user_token_names_the_other_person_
         assert opened["channel"]["user"] == state.user_id("tomas")  # type: ignore[index]
     finally:
         world.store.close()
+
+
+async def test_a_dm_reads_with_the_other_member_as_its_user_whoever_opened_it(tmp_path: Path) -> None:
+    """DOCUMENTED: an IM's `user` is "The other user's ID (DM-specific)": the DM Noor opens with Tomas names Tomas to
+    Noor and Noor to Tomas, and the app's DM with Tomas names the app's bot to Tomas.
+    https://docs.slack.dev/reference/objects/conversation-object"""
+    world = seeded_with(
+        tmp_path,
+        sign_ins=[
+            SignIn(provider="slack", credential="xoxp-noor", person="noor"),
+            SignIn(provider="slack", credential="xoxp-tomas", person="tomas"),
+        ],
+    )
+    noor, tomas = state.user_id("noor"), state.user_id("tomas")
+    try:
+        async with client_for(world.provider, world.store, world.clock) as c:
+            opened = await form(c, "conversations.open", token="xoxp-noor", users=tomas, return_im="true")
+            dm = opened["channel"]["id"]  # type: ignore[index]
+            info = await form(c, "conversations.info", token="xoxp-tomas", channel=dm)
+            reopened = await form(c, "conversations.open", token="xoxp-tomas", channel=dm, return_im="true")
+            listed = await form(c, "conversations.list", token="xoxp-tomas", types="im")
+            with_app = await form(
+                c, "conversations.info", token="xoxp-tomas", channel=state.conversation_id([BOT_USER_ID, tomas])
+            )
+
+        assert info["channel"]["user"] == noor  # type: ignore[index]
+        assert reopened["channel"]["user"] == noor  # type: ignore[index]
+        by_id = {ch["id"]: ch["user"] for ch in listed["channels"]}  # type: ignore[union-attr,index]
+        assert by_id[dm] == noor
+        assert with_app["channel"]["user"] == BOT_USER_ID  # type: ignore[index]
+    finally:
+        world.store.close()

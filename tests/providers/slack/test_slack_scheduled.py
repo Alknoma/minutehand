@@ -15,12 +15,16 @@ import pytest
 
 from minutehand.adapters.providers.slack import state
 from minutehand.adapters.providers.slack.state import BOT_USER_ID
+from minutehand.adapters.proxy.registry import Registry
 from minutehand.application.orchestrator import Services
+from minutehand.domain.agent import AgentUnderTest
 from minutehand.domain.clock import Due, DueKind
-from minutehand.domain.scenario import SignIn
+from minutehand.domain.scenario import Person, Scenario, SignIn
+from minutehand.session import _services  # pyright: ignore[reportPrivateUsage]
 from tests.providers.slack.intercepted import Intercepted, data
 from tests.providers.slack.slack_workspace import GENERAL, Workspace, client_for, form, seeded_with
 from tests.providers.slack.test_slack_conversations import not_served, refusal
+from tests.support.scenarios import SANDBOX, T0
 
 HOUR = 3600
 DAY = 24 * HOUR
@@ -414,3 +418,39 @@ async def test_a_scheduled_message_is_listed_only_to_the_token_that_scheduled_it
         assert by_iris["scheduled_messages"] == []
     finally:
         world.store.close()
+
+
+async def test_a_message_a_person_schedules_with_their_user_token_is_posted_as_them(tmp_path: Path) -> None:
+    """DOCUMENTED: a user token acts for its person ("tokens ... represent ... a user"), and what they post carries no
+    bot; a scheduled message is posted at `post_at` as `chat.postMessage` posts, so by the person who scheduled it.
+    https://docs.slack.dev/authentication/tokens, https://docs.slack.dev/reference/methods/chat.scheduleMessage"""
+    world = seeded_with(tmp_path, sign_ins=[SignIn(provider="slack", credential="xoxp-iris", person="iris")])
+    bookings = Bookings()
+    world.provider.bind(bookings)
+    try:
+        async with client_for(world.provider, world.store, world.clock) as c:
+            at = str(now(world) + HOUR)
+            scheduled = await form(
+                c, "chat.scheduleMessage", token="xoxp-iris", channel=GENERAL, post_at=at, text="From Iris"
+            )
+            assert scheduled["ok"] is True
+            await fire(world, bookings, str(scheduled["scheduled_message_id"]))
+            posted = await form(c, "conversations.history", channel=GENERAL)
+
+        assert scheduled["message"] == {"text": "From Iris", "type": "delayed_message"}
+        messages = posted["messages"]
+        assert isinstance(messages, list)
+        assert [(m["text"], m["user"], "bot_id" in m) for m in messages] == [  # type: ignore[index,operator]
+            ("From Iris", state.user_id("iris"), False)
+        ]
+    finally:
+        world.store.close()
+
+
+def test_slack_is_in_every_run_bound_to_its_table_though_nothing_names_it() -> None:
+    """An agent that only calls Slack (no inbound events, no channels in the world) schedules messages in a run: a
+    provider first built on a call is bound to no dispatch table, and refused `chat.scheduleMessage` 501, so Slack,
+    which books work, is in every run as each scheduler is."""
+    scenario = Scenario(name="outbound_only", starts_at=T0, people=[Person(key="iris", name="Iris", email="i@x.com")])
+    services = _services(scenario, AgentUnderTest(name="a", sandbox=SANDBOX), Registry.installed())
+    assert "slack" in services.schedulers

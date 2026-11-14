@@ -1,4 +1,4 @@
-"""Notion's public API, version 2022-06-28, as one ASGI app over the run's store and clock.
+"""Notion's public API, versions 2022-06-28 and 2025-09-03, as one ASGI app over the run's store and clock.
 
 **Who calls.** A `/v1` call's bearer token names an integration when the seed holds it or
 `/v1/oauth/token` minted it: that integration, its bot user and its workspace. Any other
@@ -8,8 +8,11 @@ one. `/v1/oauth/token` mints tokens for the integration its client id or its cod
 the agent's.
 
 **Version.** `Notion-Version` must be present (400 `missing_version`) and must be
-`2022-06-28`: a later version changes shapes this fake does not serve, and is refused with
-a `validation_error` that says so, never answered in the wrong shape.
+`2022-06-28` or `2025-09-03`; another is refused by name, never answered in the wrong shape.
+On 2025-09-03 each database has one data source, named with its title, whose id is not the
+database's: a database answers it in `data_sources` and no schema, the schema is read, queried
+and changed through `/v1/data_sources`, a row's parent names it beside its database, and search
+answers data sources (`render_database`, `render_data_source`).
 
 **Sharing.** An integration reaches a page or database only when it, or a page or database
 above it, is shared with the integration; everything else answers `object_not_found`,
@@ -65,6 +68,9 @@ SERVED: tuple[tuple[str, str, str], ...] = (
     ("GET", "/v1/databases/{database_id}", "database_get"),
     ("PATCH", "/v1/databases/{database_id}", "database_update"),
     ("POST", "/v1/databases/{database_id}/query", "database_query"),
+    ("GET", "/v1/data_sources/{data_source_id}", "data_source_get"),
+    ("PATCH", "/v1/data_sources/{data_source_id}", "data_source_update"),
+    ("POST", "/v1/data_sources/{data_source_id}/query", "data_source_query"),
     ("GET", "/v1/users", "users_list"),
     ("GET", "/v1/users/me", "users_me"),
     ("GET", "/v1/users/{user_id}", "user_get"),
@@ -93,10 +99,11 @@ never `invalid_request_url` as if Notion had no such endpoint (`test_notion_surf
 
 @dataclass
 class Call:
-    """Who is calling, read from its token."""
+    """Who is calling, read from its token, and in which `Notion-Version`."""
 
     integration: wire.StoredIntegration
     secret: str
+    version: wire.Version
 
     @property
     def bot(self) -> str:
@@ -115,7 +122,7 @@ def _cursor(cursor: str, ids: Sequence[str], kind: str) -> str:
     issue (https://github.com/brekkylab/backlot/issues/375): listing users or querying a database, "The start_cursor
     provided is invalid: <cursor>"; listing children or comments, or searching, a cursor that is not a uuid as a
     validation failure. What those last answer to a uuid they did not issue is not documented."""
-    where = "body.start_cursor" if kind in ("page_or_database", "page") else "query.start_cursor"
+    where = "body.start_cursor" if kind in ("page_or_database", "page_or_data_source", "page") else "query.start_cursor"
     try:
         found = wire.canonical_id(cursor, where)
     except wire.Refusal:
@@ -163,8 +170,10 @@ class NotionApi:
     def guarded(self, handler: Handler) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
             try:
-                call = self._caller(request)
-                wire.served_version(request.headers["notion-version"] if "notion-version" in request.headers else None)
+                version = wire.served_version(
+                    request.headers["notion-version"] if "notion-version" in request.headers else None
+                )
+                call = self._caller(request, version)
                 self._faults(request, call)
                 return await handler(request, call)
             except wire.Refusal as refusal:
@@ -172,13 +181,13 @@ class NotionApi:
 
         return endpoint
 
-    def _caller(self, request: Request) -> Call:
+    def _caller(self, request: Request, version: wire.Version) -> Call:
         """The integration the bearer token names, or the agent's for any other token or none."""
         authorization = request.headers["authorization"] if "authorization" in request.headers else ""
         _, _, secret = authorization.partition(" ")
         token = self._world.token(secret.strip()) if secret.strip() else None
         integration = self._world.integration(token.integration) if token is not None else None
-        return Call(integration=integration or self._world.agent(), secret=secret.strip())
+        return Call(integration=integration or self._world.agent(), secret=secret.strip(), version=version)
 
     def _faults(self, request: Request, call: Call) -> None:
         path = request.url.path
@@ -258,8 +267,15 @@ class NotionApi:
 
     def _seen(self, call: Call, value: JsonValue) -> JsonValue:
         """Stored content as this integration is served it: a page or database mention reads as the title of what
-        it names only when the integration reaches it (`wire.as_seen`)."""
-        return wire.as_seen(value, lambda named: self._world.title(named) if self.reaches(call, named) else None)
+        it names only when the integration reaches it, and a user mention as the user's name only when it has a
+        user information capability (`wire.as_seen`)."""
+        held = call.integration.capabilities
+        return wire.as_seen(
+            value,
+            lambda named: self._world.title(named) if self.reaches(call, named) else None,
+            sees_users=wire.Capability.READ_USERS_WITH_EMAIL in held
+            or wire.Capability.READ_USERS_WITHOUT_EMAIL in held,
+        )
 
     def _user(self, call: Call, user: wire.StoredUser) -> wire.Json:
         email = wire.Capability.READ_USERS_WITH_EMAIL in call.integration.capabilities
@@ -309,9 +325,11 @@ class NotionApi:
             **page.stamps.render(),
             "cover": page.cover,
             "icon": page.icon,
-            "parent": page.parent.render(),
+            "parent": self._page_parent(call, page),
             "archived": page.archived,
             "in_trash": page.archived,
+            "is_archived": False,
+            "is_locked": False,
             "properties": properties,
             "url": wire.page_url(page.id, title_of(page)),
             "public_url": None,
@@ -330,7 +348,42 @@ class NotionApi:
             held = self._user(call, user) if user is not None else {"object": "user", "id": who}
         return {"id": prop["id"], "type": kind.value, kind.value: held}
 
+    def _page_parent(self, call: Call, page: wire.StoredPage) -> wire.Json:
+        """A row's parent: its database on 2022-06-28; on 2025-09-03 its data source, with the database beside it
+        (https://developers.notion.com/reference/parent-object, and recorded:
+        https://github.com/ultimate-notion/ultimate-notion/blob/913f444c69cae690d795dff0aeea0b5722fe4721/tests/cassettes/test_query/test_people_relation_query.yaml#L457)."""
+        if call.version is wire.Version.DATA_SOURCES and is_row(page) and page.parent.id is not None:
+            return {
+                "type": "data_source_id",
+                "data_source_id": wire.data_source_id(page.parent.id),
+                "database_id": page.parent.id,
+            }
+        return page.parent.render()
+
     def render_database(self, call: Call, database: wire.StoredDatabase) -> wire.Json:
+        """A database as the caller's version answers it: on 2022-06-28 with its schema; on 2025-09-03 with its one
+        data source and no schema, as recorded (https://github.com/ramnes/notion-sdk-py/blob/af5e5e2b5e889bad0e4bbbcb9b11a3fd1dca5525/tests/cassettes/test_databases_retrieve.yaml#L92)."""
+        if call.version is wire.Version.DATA_SOURCES:
+            return {
+                "object": "database",
+                "id": database.id,
+                "title": self._seen(call, database.title),
+                "description": self._seen(call, database.description),
+                "parent": database.parent.render(),
+                "is_inline": database.is_inline,
+                "in_trash": database.archived,
+                "is_locked": False,
+                "created_time": database.stamps.created_time,
+                "last_edited_time": database.stamps.last_edited_time,
+                "data_sources": [
+                    {"id": wire.data_source_id(database.id), "name": wire.plain(self._source_title(call, database))}
+                ],
+                "icon": database.icon,
+                "cover": database.cover,
+                "url": wire.record_url(database.id),
+                "public_url": None,
+                "archived": database.archived,
+            }
         return {
             "object": "database",
             "id": database.id,
@@ -340,13 +393,47 @@ class NotionApi:
             "title": self._seen(call, database.title),
             "description": self._seen(call, database.description),
             "is_inline": database.is_inline,
-            "properties": {name: dict(prop) for name, prop in database.schema_.items()},
+            "properties": {name: wire.render_schema(prop) for name, prop in database.schema_.items()},
             "parent": database.parent.render(),
             "url": wire.record_url(database.id),
             "public_url": None,
             "archived": database.archived,
             "in_trash": database.archived,
+            "is_locked": False,
         }
+
+    def render_data_source(self, call: Call, database: wire.StoredDatabase) -> wire.Json:
+        """A database's one data source, on 2025-09-03: the database's schema, title, description, stamps and
+        `url`, its database as `parent` and the database's own parent as `database_parent`, as recorded
+        (https://github.com/ramnes/notion-sdk-py/blob/af5e5e2b5e889bad0e4bbbcb9b11a3fd1dca5525/tests/cassettes/test_data_sources_retrieve.yaml#L127)."""
+        return {
+            "object": "data_source",
+            "id": wire.data_source_id(database.id),
+            "cover": database.cover,
+            "icon": database.icon,
+            **database.stamps.render(),
+            "title": self._source_title(call, database),
+            "description": self._seen(call, database.description),
+            "is_inline": database.is_inline,
+            "properties": {name: wire.render_schema(prop) for name, prop in database.schema_.items()},
+            "parent": {"type": "database_id", "database_id": database.id},
+            "database_parent": database.parent.render(),
+            "url": wire.record_url(database.id),
+            "public_url": None,
+            "in_trash": database.archived,
+            "archived": database.archived,
+        }
+
+    def _source_title(self, call: Call, database: wire.StoredDatabase) -> list[JsonValue]:
+        """A one-source database's data source is named with the database's title, as recorded of databases made with
+        and without `initial_data_source`; whether the name follows when the database is renamed is not recorded."""
+        if database.renamed:
+            raise wire.undocumented(
+                "the data source of a database renamed since it was made, on 2025-09-03: whether its name follows "
+                "the database's title is neither documented nor recorded"
+            )
+        seen = self._seen(call, database.title)
+        return seen if isinstance(seen, list) else []
 
     def _live_children(self, page: wire.StoredPage, container: str) -> list[wire.StoredBlock]:
         listed = page.children[container] if container in page.children else []
@@ -390,6 +477,10 @@ class NotionApi:
                 url, until = wire.file_url(upload, self._clock.now())
                 held_content = content if isinstance(content, dict) else block.content
                 content = {**held_content, "file": {"url": url, "expiry_time": until}}
+        elif block.type is wire.BlockType.PARAGRAPH and isinstance(content, dict) and "icon" not in content:
+            # A paragraph answers its `icon`, null when it has none (`contentWithRichTextColorAndIconResponse`,
+            # https://developers.notion.com/reference/block).
+            content = {**content, "icon": None}
         return {
             "object": "block",
             "id": block.id,
@@ -446,6 +537,11 @@ class NotionApi:
     # ------------------------------------------------------------------ search
 
     async def search(self, request: Request, call: Call) -> Response:
+        """Pages and databases on 2022-06-28; on 2025-09-03 pages and data sources, each data source found by its
+        database's title ("matched against the database title"), and `value` "page" or "data_source"
+        (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+        sources = call.version is wire.Version.DATA_SOURCES
+        tables = "data_source" if sources else "database"
         body = await self._body(request)
         wire.only_keys(body, ["query", "filter", "sort", "start_cursor", "page_size"], "body")
         words = wire.as_text(body["query"], "body.query").casefold() if body.get("query") else ""
@@ -457,8 +553,8 @@ class NotionApi:
             if wire.required(found, "property", "body.filter") != "object":
                 raise wire.failed("body.filter.property", wire.one_of(["object"]), found["property"])
             wanted = wire.as_text(wire.required(found, "value", "body.filter"), "body.filter.value")
-            if wanted not in ("page", "database"):
-                raise wire.failed("body.filter.value", wire.one_of(["page", "database"]), wanted)
+            if wanted not in ("page", tables):
+                raise wire.failed("body.filter.value", wire.one_of(["page", tables]), wanted)
         descending = True
         if "sort" in body and body["sort"] is not None:
             sort = wire.as_object(body["sort"], "body.sort")
@@ -479,7 +575,7 @@ class NotionApi:
             wire.as_text(body["start_cursor"], "body.start_cursor", optional=True) if "start_cursor" in body else None
         )
         found_items: list[tuple[str, str, wire.Json]] = []
-        if wanted != "database":
+        if wanted != tables:
             for page in self._world.pages(call.workspace):
                 if not self.reaches(call, page.id) or self._buried(page.id, call.workspace):
                     continue
@@ -492,16 +588,25 @@ class NotionApi:
                     continue
                 if words and words not in wire.plain(database.title).casefold():
                     continue
-                found_items.append(
-                    (database.stamps.last_edited_time, database.id, self.render_database(call, database))
-                )
+                if sources:
+                    found_items.append(
+                        (
+                            database.stamps.last_edited_time,
+                            wire.data_source_id(database.id),
+                            self.render_data_source(call, database),
+                        )
+                    )
+                else:
+                    found_items.append(
+                        (database.stamps.last_edited_time, database.id, self.render_database(call, database))
+                    )
         found_items.sort(key=lambda f: f[1])
         found_items.sort(key=lambda f: f[0], reverse=descending)
         workspace = self._world.workspace(call.workspace)
         if workspace is not None:
             self._world.saw(record_ref(workspace.id), Operation.SEARCH)
         return self._listed(
-            request, [f[2] for f in found_items], [f[1] for f in found_items], cursor, size, "page_or_database"
+            request, [f[2] for f in found_items], [f[1] for f in found_items], cursor, size, f"page_or_{tables}"
         )
 
     # ------------------------------------------------------------------ pages
@@ -542,6 +647,17 @@ class NotionApi:
         if len(keys) != 1:
             raise wire.undocumented("body.parent naming no single parent")
         key = keys[0]
+        if key == "data_source_id":
+            # A data source parent "works for any API version"
+            # (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03); a row is kept under its
+            # database, whose one data source it names.
+            named = wire.canonical_id(
+                wire.as_text(given[key], "body.parent.data_source_id"), "body.parent.data_source_id"
+            )
+            database = self._world.source(named, call.workspace)
+            if database is None or not self.reaches(call, database.id):
+                raise wire.not_found(wire.Missing.DATA_SOURCE, named, call.integration.name)
+            return wire.Parent(type=wire.ParentType.DATABASE_ID, id=database.id)
         try:
             kind = wire.ParentType(key)
         except ValueError as error:
@@ -626,7 +742,11 @@ class NotionApi:
         if self._world.database(block_id) is not None:
             self._database(call, block_id)
             wire.only_keys(body, ["archived", "in_trash"], "body")
-            return _answer(self._database_as_block(self._editor(call).update_database(block_id, body, by=call.bot)))
+            return _answer(
+                self._database_as_block(
+                    self._editor(call).update_database(block_id, body, by=call.bot, version=call.version)
+                )
+            )
         self._holding(call, block_id)
         page, block = self._editor(call).update_block(block_id, body, by=call.bot)
         return _answer(self.render_block(call, page, block))
@@ -638,7 +758,9 @@ class NotionApi:
             return _answer(self._page_as_block(self._editor(call).archive(block_id, by=call.bot)))
         if self._world.database(block_id) is not None:
             self._database(call, block_id)
-            changed = self._editor(call).update_database(block_id, {"archived": True}, by=call.bot)
+            changed = self._editor(call).update_database(
+                block_id, {"archived": True}, by=call.bot, version=call.version
+            )
             return _answer(self._database_as_block(changed))
         self._holding(call, block_id)
         page, block = self._editor(call).archive_block(block_id, by=call.bot)
@@ -689,7 +811,22 @@ class NotionApi:
         return _answer(self.render_database(call, database))
 
     async def database_query(self, request: Request, call: Call) -> Response:
+        if call.version is wire.Version.DATA_SOURCES:
+            raise wire.undocumented(
+                "POST /v1/databases/{database_id}/query on 2025-09-03, where querying moved to "
+                "/v1/data_sources/{data_source_id}/query"
+            )
         database = self._database(call, self._id(request, "database_id"))
+        return await self._rows(request, call, database, "page")
+
+    async def data_source_query(self, request: Request, call: Call) -> Response:
+        """`POST /v1/data_sources/{data_source_id}/query`, as the 2025-09-03 SDKs send it and as recorded
+        (https://github.com/ramnes/notion-sdk-py/blob/af5e5e2b5e889bad0e4bbbcb9b11a3fd1dca5525/tests/cassettes/test_data_sources_query.yaml#L127):
+        the rows of its database, listed as `page_or_data_source`."""
+        database = self._data_source(call, self._id(request, "data_source_id"))
+        return await self._rows(request, call, database, "page_or_data_source")
+
+    async def _rows(self, request: Request, call: Call, database: wire.StoredDatabase, kind: str) -> Response:
         body = await self._body(request)
         wire.only_keys(body, ["filter", "sorts", "start_cursor", "page_size", "archived", "in_trash"], "body")
         schema = database.schema_
@@ -724,7 +861,7 @@ class NotionApi:
         only = self._query(request)["filter_properties"] if "filter_properties" in self._query(request) else None
         self._world.saw(record_ref(database.id), Operation.SEARCH)
         return self._listed(
-            request, [self.render_page(call, p, only) for p in pages], [p.id for p in pages], cursor, size, "page"
+            request, [self.render_page(call, p, only) for p in pages], [p.id for p in pages], cursor, size, kind
         )
 
     def _name(self, user_id: str) -> str:
@@ -732,17 +869,33 @@ class NotionApi:
         return user.name if user is not None else user_id
 
     async def database_create(self, request: Request, call: Call) -> Response:
+        """On 2022-06-28 the schema is `properties`; on 2025-09-03 it is `initial_data_source.properties`, the schema
+        of the database's first data source (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
         body = await self._body(request)
-        wire.only_keys(body, ["parent", "title", "description", "properties", "icon", "cover", "is_inline"], "body")
+        if call.version is wire.Version.DATA_SOURCES:
+            wire.only_keys(
+                body, ["parent", "title", "description", "initial_data_source", "icon", "cover", "is_inline"], "body"
+            )
+            if "initial_data_source" not in body:
+                raise wire.undocumented(
+                    "a database made on 2025-09-03 with no initial_data_source, whose schema is not"
+                )
+            first = wire.as_object(body["initial_data_source"], "body.initial_data_source")
+            wire.only_keys(first, ["properties"], "body.initial_data_source")
+            given = wire.as_object(
+                wire.required(first, "properties", "body.initial_data_source"), "body.initial_data_source.properties"
+            )
+            where = "body.initial_data_source.properties"
+        else:
+            wire.only_keys(body, ["parent", "title", "description", "properties", "icon", "cover", "is_inline"], "body")
+            given = wire.as_object(wire.required(body, "properties", "body"), "body.properties")
+            where = "body.properties"
         parent = self._parent(call, wire.as_object(wire.required(body, "parent", "body"), "body.parent"))
-        wire.required(body, "properties", "body")
         editor = self._editor(call)
         database_id = editor.mint("database", within=parent.id or call.workspace)
         schema: dict[str, wire.Json] = {}
-        for name, raw in wire.as_object(body["properties"], "body.properties").items():
-            made = wire.schema_from_request(
-                database_id, name, raw, f"body.properties.{name}", lambda d: self._world.database(d) is not None
-            )
+        for name, raw in given.items():
+            made = editor.schema_from_request(database_id, name, raw, f"{where}.{name}", call.version)
             schema[str(made["name"])] = made
         title = wire.rich_text(body["title"], "body.title", editor) if "title" in body else []
         inline = wire.as_bool(body["is_inline"], "body.is_inline") if "is_inline" in body else False
@@ -750,9 +903,52 @@ class NotionApi:
         return _answer(self.render_database(call, database))
 
     async def database_update(self, request: Request, call: Call) -> Response:
+        """On 2025-09-03 a database's schema is its data source's, changed there, and moving it under another page is
+        not served (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
         database = self._database(call, self._id(request, "database_id"))
-        changed = self._editor(call).update_database(database.id, await self._body(request), by=call.bot)
+        body = await self._body(request)
+        if call.version is wire.Version.DATA_SOURCES:
+            if "properties" in body:
+                raise wire.undocumented(
+                    "a database's properties on 2025-09-03, which PATCH /v1/data_sources/{data_source_id} changes"
+                )
+            if "parent" in body:
+                raise wire.unserved("moving a database under another page (PATCH /v1/databases parent)")
+        changed = self._editor(call).update_database(database.id, body, by=call.bot, version=call.version)
         return _answer(self.render_database(call, changed))
+
+    # ------------------------------------------------------------------ data sources
+
+    def _data_source(self, call: Call, data_source_id: str) -> wire.StoredDatabase:
+        """The database whose one data source this is. Data sources exist from 2025-09-03; a database's id names none,
+        and is not found, as a missing one is (brekkylab/backlot#376, measured on 2025-09-03:
+        "Could not find data_source with ID")."""
+        if call.version is not wire.Version.DATA_SOURCES:
+            raise wire.undocumented("/v1/data_sources on 2022-06-28, which has no data sources")
+        database = self._world.source(data_source_id, call.workspace)
+        if database is None or not self.reaches(call, database.id):
+            raise wire.not_found(wire.Missing.DATA_SOURCE, data_source_id, call.integration.name)
+        return database
+
+    async def data_source_get(self, request: Request, call: Call) -> Response:
+        database = self._data_source(call, self._id(request, "data_source_id"))
+        self._world.saw(record_ref(database.id), Operation.READ)
+        return _answer(self.render_data_source(call, database))
+
+    async def data_source_update(self, request: Request, call: Call) -> Response:
+        """Changes the data source's schema, as `properties` changed a database's on 2022-06-28. Its `title`, `icon`,
+        trash and `parent` are refused by name: in a world of one data source per database, whether they change the
+        database too is neither documented nor recorded."""
+        database = self._data_source(call, self._id(request, "data_source_id"))
+        body = await self._body(request)
+        wire.only_keys(body, ["properties", "title", "icon", "in_trash", "archived", "parent"], "body")
+        for key in ("title", "icon", "in_trash", "archived", "parent"):
+            if key in body:
+                raise wire.undocumented(f"body.{key} of a data source, which this fake keeps as its database's")
+        changed = self._editor(call).update_database(
+            database.id, {"properties": wire.required(body, "properties", "body")}, by=call.bot, version=call.version
+        )
+        return _answer(self.render_data_source(call, changed))
 
     # ------------------------------------------------------------------ users
 

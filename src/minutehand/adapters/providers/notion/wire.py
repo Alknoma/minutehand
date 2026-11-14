@@ -1,4 +1,4 @@
-"""Notion's own JSON, version 2022-06-28: the only module that parses or builds it.
+"""Notion's own JSON, versions 2022-06-28 and 2025-09-03: the only module that parses or builds it.
 
 Four families live here:
 
@@ -32,7 +32,15 @@ from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 from minutehand.domain.errors import Asked, NotServed, Rendered, ServiceRefusal
 from minutehand.domain.scenario import Model
 
-API_VERSION = "2022-06-28"
+
+class Version(StrEnum):
+    """The `Notion-Version`s answered: the last before data sources, and the one that brought them
+    (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+
+    LEGACY = "2022-06-28"
+    DATA_SOURCES = "2025-09-03"
+
+
 MAX_PAGE_SIZE = 100
 MAX_CHILDREN = 100
 MAX_NESTING = 2
@@ -182,13 +190,16 @@ MISSING_VERSION = (
 """Notion's own example message for `missing_version` (https://developers.notion.com/reference/status-codes)."""
 
 
-def served_version(version: str | None) -> None:
-    """`Notion-Version` must be sent (https://developers.notion.com/reference/versioning); any but the one this
-    provider answers is refused by name, never answered in another version's shapes."""
+def served_version(version: str | None) -> Version:
+    """`Notion-Version` must be sent (https://developers.notion.com/reference/versioning); one this provider does not
+    answer is refused by name, never answered in another version's shapes."""
     if version is None:
         raise Refusal(ErrorCode.MISSING_VERSION, MISSING_VERSION)
-    if version != API_VERSION:
-        raise unserved(f"Notion-Version {version} (this simulation answers {API_VERSION})")
+    try:
+        return Version(version)
+    except ValueError:
+        answered = " and ".join(v.value for v in Version)
+        raise unserved(f"Notion-Version {version} (this simulation answers {answered})") from None
 
 
 class Missing:
@@ -197,6 +208,7 @@ class Missing:
     PAGE = "page"
     BLOCK = "block"
     DATABASE = "database"
+    DATA_SOURCE = "data_source"
     USER = "user"
     COMMENT = "comment"
 
@@ -605,14 +617,18 @@ def plain(items: JsonValue) -> str:
     return "".join(found)
 
 
-def as_seen(value: JsonValue, title_seen: Callable[[str], str | None]) -> JsonValue:
+def as_seen(value: JsonValue, title_seen: Callable[[str], str | None], *, sees_users: bool) -> JsonValue:
     """Stored content as one reader is served it. A page or database mention's `plain_text` is the title of what it
     names, which `title_seen` gives when the reader reaches it; when the reader does not, "the mention is returned
     with just the ID", its `plain_text` "appears as "Untitled"" and its annotations are the defaults
-    (https://developers.notion.com/reference/rich-text, page and database mentions). Everything else is returned
-    as it is held."""
+    (https://developers.notion.com/reference/rich-text, page and database mentions). A user mention read by a
+    reader with no user information capability (`sees_users` false) reads as "@Anonymous", with default
+    annotations: that reader has no access to the user, whose user objects then "will not include any information
+    about the user, including name" (https://developers.notion.com/reference/rich-text, user mention;
+    https://developers.notion.com/reference/capabilities, user capabilities). Everything else is returned as it
+    is held."""
     if isinstance(value, list):
-        return [as_seen(item, title_seen) for item in value]
+        return [as_seen(item, title_seen, sees_users=sees_users) for item in value]
     if not isinstance(value, dict):
         return value
     if "type" in value and value["type"] == RichTextType.MENTION and "mention" in value:
@@ -625,8 +641,10 @@ def as_seen(value: JsonValue, title_seen: Callable[[str], str | None]) -> JsonVa
             if title is None:
                 return {**value, "annotations": _annotations(None, "annotations"), "plain_text": "Untitled"}
             return {**value, "plain_text": title or "Untitled"}
+        if kind == MentionType.USER and not sees_users:
+            return {**value, "annotations": _annotations(None, "annotations"), "plain_text": "@Anonymous"}
         return value
-    return {key: as_seen(item, title_seen) for key, item in value.items()}
+    return {key: as_seen(item, title_seen, sees_users=sees_users) for key, item in value.items()}
 
 
 def text_run(content: str) -> list[JsonValue]:
@@ -1124,6 +1142,11 @@ class StoredDatabase(Model):
     archived: bool = False
     icon: JsonValue = None
     cover: JsonValue = None
+    renamed: bool = Field(
+        default=False,
+        description="Minutehand's own: its title changed after it was made, which recordings of 2025-09-03 never show "
+        "the name of its data source following or not",
+    )
 
 
 class UserType(StrEnum):
@@ -1426,6 +1449,37 @@ def property_id(database_id: str, name: str, kind: PropertyType) -> str:
     return "".join(alphabet[(number >> (6 * i)) % len(alphabet)] for i in range(4))
 
 
+def data_source_id(database_id: str) -> str:
+    """The id of a database's one data source. Notion assigns it, and it is not the database's id: "The two types of
+    IDs are not interchangeable" (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+    return minted_id("data_source", database_id)
+
+
+def render_schema(prop: Json) -> Json:
+    """A property's schema as Notion answers it, with what every version's answer carries that the stored schema
+    does not: the property's `description` and each option's, null when it has none, and a relation's target data
+    source beside its database ("across all API versions, both the `database_id` and `data_source_id` are now
+    included") and its `limit`, "null when there is no limit" (https://developers.notion.com/reference/property-object,
+    https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+    kind = schema_type(prop)
+    config = prop[kind.value]
+    if isinstance(config, dict):
+        config = dict(config)
+        if "options" in config and isinstance(config["options"], list):
+            config["options"] = [
+                {**o, "description": o["description"] if "description" in o else None} if isinstance(o, dict) else o
+                for o in config["options"]
+            ]
+        if kind is PropertyType.RELATION and isinstance(config["database_id"], str):
+            config = {
+                "database_id": config["database_id"],
+                "data_source_id": data_source_id(config["database_id"]),
+                "limit": None,
+                **{k: v for k, v in config.items() if k != "database_id"},
+            }
+    return {**prop, "description": prop["description"] if "description" in prop else None, kind.value: config}
+
+
 def option(database_id: str, name: str, color: str = "default") -> Json:
     return {"id": minted_id("option", database_id, name), "name": name, "color": color}
 
@@ -1470,9 +1524,18 @@ _SCHEMA_KEYS = frozenset({"name", "type", "id"})
 
 
 def schema_from_request(
-    database_id: str, name: str, value: JsonValue, where: str, known: Callable[[str], bool]
+    database_id: str,
+    name: str,
+    value: JsonValue,
+    where: str,
+    known: Callable[[str], bool],
+    source: Callable[[str], str | None],
+    version: Version,
 ) -> Json:
-    """One property of `databases.create` or `databases.update`: `{"<type>": {...}}`."""
+    """One property of a schema a database or a data source is made or changed with: `{"<type>": {...}}`. A relation
+    names its target by `database_id`, `data_source_id` or both on 2022-06-28, and only by `data_source_id` on
+    2025-09-03 (https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03); `known` says whether a
+    database exists, `source` which database a data source belongs to."""
     given = as_object(value, where)
     kinds = [k for k in given if k not in _SCHEMA_KEYS]
     if len(kinds) != 1:
@@ -1493,12 +1556,32 @@ def schema_from_request(
             choices.append(as_text(listed["name"], f"{where}.{spelled}.options[{i}].name"))
     relates_to: str | None = None
     if kind is PropertyType.RELATION:
-        if "database_id" not in config:
-            raise failed(f"{where}.relation.database_id", "defined")
+        relates_to = _relation_target(config, where, known, source, version)
+    return new_schema(database_id, shown, kind, choices, relates_to)
+
+
+def _relation_target(
+    config: Json, where: str, known: Callable[[str], bool], source: Callable[[str], str | None], version: Version
+) -> str:
+    by_source: str | None = None
+    if "data_source_id" in config:
+        named = canonical_id(as_text(config["data_source_id"], where), f"{where}.relation.data_source_id")
+        by_source = source(named)
+        if by_source is None:
+            raise not_found(Missing.DATA_SOURCE, named)
+    if "database_id" in config:
+        if version is Version.DATA_SOURCES:
+            raise undocumented(f"{where}.relation.database_id on 2025-09-03, which takes only data_source_id")
         relates_to = canonical_id(as_text(config["database_id"], where), f"{where}.relation.database_id")
         if not known(relates_to):
             raise not_found(Missing.DATABASE, relates_to)
-    return new_schema(database_id, shown, kind, choices, relates_to)
+        if by_source is not None and by_source != relates_to:
+            raise undocumented(f"{where}.relation naming a data source of another database than its database_id")
+        return relates_to
+    if by_source is None:
+        missing = "data_source_id" if version is Version.DATA_SOURCES else "database_id"
+        raise failed(f"{where}.relation.{missing}", "defined")
+    return by_source
 
 
 class People(Protocol):
@@ -1625,11 +1708,15 @@ def value_text(value: Json) -> str:
 
 
 def render_user(user: StoredUser, *, email: bool, owner: JsonValue = None, workspace_name: str = "") -> Json:
+    """A user object; a bot's `bot` carries its owner, its workspace's id and its workspace's name
+    (https://developers.notion.com/reference/user)."""
     found: Json = {"object": "user", "id": user.id, "name": user.name, "avatar_url": None, "type": user.type.value}
     if user.type is UserType.PERSON:
         found["person"] = {"email": user.email} if email and user.email else {}
+    elif owner is not None:
+        found["bot"] = {"owner": owner, "workspace_id": user.workspace, "workspace_name": workspace_name}
     else:
-        found["bot"] = {"owner": owner, "workspace_name": workspace_name} if owner is not None else {}
+        found["bot"] = {}
     return found
 
 

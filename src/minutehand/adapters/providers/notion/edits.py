@@ -399,7 +399,7 @@ class Editor:
             self.archive(block_id, by=by)
             return page, block
         if block.type is wire.BlockType.CHILD_DATABASE:
-            self.update_database(block_id, {"archived": True}, by=by)
+            self.update_database(block_id, {"archived": True}, by=by, version=wire.Version.LEGACY)
             return page, block
         return self.update_block(block_id, {"archived": True}, by=by)
 
@@ -436,7 +436,9 @@ class Editor:
         self._write(self._stub(above, wire.BlockType.CHILD_DATABASE, database_id, by), Operation.UPDATE)
         return database
 
-    def update_database(self, database_id: str, body: wire.Json, *, by: str) -> wire.StoredDatabase:
+    def update_database(
+        self, database_id: str, body: wire.Json, *, by: str, version: wire.Version
+    ) -> wire.StoredDatabase:
         database = self.database(database_id)
         wire.only_keys(
             body, ["title", "description", "properties", "is_inline", "archived", "in_trash", "icon", "cover"], "body"
@@ -449,6 +451,7 @@ class Editor:
             raise wire.undocumented("a write into an archived database")
         if "title" in body:
             update["title"] = wire.rich_text(body["title"], "body.title", self)
+            update["renamed"] = True
         if "description" in body:
             update["description"] = wire.rich_text(body["description"], "body.description", self)
         if "is_inline" in body:
@@ -456,13 +459,30 @@ class Editor:
         if "icon" in body:
             update["icon"] = wire.icon(body["icon"], "body.icon")
         if "properties" in body:
-            update["schema_"] = self._schema_after(database, wire.as_object(body["properties"], "body.properties"))
+            update["schema_"] = self._schema_after(
+                database, wire.as_object(body["properties"], "body.properties"), version
+            )
         update["stamps"] = database.stamps.edited(wire.stamp(self.now()), by)
         changed = database.model_copy(update=update)
         self.world.write_database(changed, operation=Operation.UPDATE, actor=self._actor)
         return changed
 
-    def _schema_after(self, database: wire.StoredDatabase, given: wire.Json) -> dict[str, wire.Json]:
+    def schema_from_request(
+        self, database_id: str, name: str, raw: JsonValue, where: str, version: wire.Version
+    ) -> wire.Json:
+        return wire.schema_from_request(
+            database_id,
+            name,
+            raw,
+            where,
+            lambda d: self.world.database(d) is not None,
+            lambda s: found.id if (found := self.world.source(s, self.workspace)) is not None else None,
+            version,
+        )
+
+    def _schema_after(
+        self, database: wire.StoredDatabase, given: wire.Json, version: wire.Version
+    ) -> dict[str, wire.Json]:
         schema = dict(database.schema_)
         by_id = {str(s["id"]): name for name, s in schema.items()}
         for key, raw in given.items():
@@ -480,9 +500,7 @@ class Editor:
                 renamed = wire.as_text(asked["name"], f"{where}.name")
                 schema[renamed] = {**schema.pop(name), "name": renamed}
                 continue
-            made = wire.schema_from_request(
-                database.id, name or key, raw, where, lambda d: self.world.database(d) is not None
-            )
+            made = self.schema_from_request(database.id, name or key, raw, where, version)
             if name is not None:
                 if (
                     wire.schema_type(schema[name]) is wire.PropertyType.TITLE
