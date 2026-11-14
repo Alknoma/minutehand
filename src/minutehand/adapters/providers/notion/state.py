@@ -258,6 +258,10 @@ class NotionWorld:
         found = self._list(EntityKind.RECORD, _integrations_of(workspace))
         return [i for i in found if isinstance(i, wire.StoredIntegration)]
 
+    def source(self, data_source_id: str, workspace: str) -> wire.StoredDatabase | None:
+        """The database whose one data source has this id."""
+        return next((d for d in self.databases(workspace) if wire.data_source_id(d.id) == data_source_id), None)
+
     def databases(self, workspace: str) -> list[wire.StoredDatabase]:
         found = self._list(EntityKind.RECORD, _databases_of(workspace))
         return [d for d in found if isinstance(d, wire.StoredDatabase)]

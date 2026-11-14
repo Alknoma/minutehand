@@ -70,9 +70,9 @@ async def test_a_call_without_a_version_is_refused_missing_version(world: World)
 
 
 async def test_a_version_this_fake_does_not_serve_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
-    for version in ("2025-09-03", "2026-03-11", "2021-08-16"):
+    for version in ("2026-03-11", "2021-08-16"):
         answered = await api.get("/v1/users/me", headers={"Notion-Version": version})
-        assert unserved(answered) == f"Notion-Version {version} (this simulation answers 2022-06-28)"
+        assert unserved(answered) == f"Notion-Version {version} (this simulation answers 2022-06-28 and 2025-09-03)"
 
 
 async def test_an_unknown_path_and_a_wrong_method_are_refused_invalid_request_url(api: httpx.AsyncClient) -> None:
