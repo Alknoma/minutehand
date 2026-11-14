@@ -6,12 +6,15 @@ OBSERVED (no page says so; the older stand-in asserted it from someone's sightin
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import openpyxl
 import pytest
 
 from minutehand.adapters.providers.google_workspace import wire
@@ -40,6 +43,7 @@ from tests.providers.google_workspace.drive_world import (
 from tests.providers.google_workspace.test_docs_batch_update import content, get, text_of
 
 SHEET = "application/vnd.google-apps.spreadsheet"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @dataclass
@@ -341,3 +345,33 @@ async def test_a_csv_uploaded_as_a_sheet_exports_its_rows_as_csv(api: httpx.Asyn
 
     assert exported.status_code == 200, exported.text
     assert [line.split(",") for line in exported.text.splitlines()] == [["berth", "vessel"], ["4", "Kestrel"]]
+
+
+async def test_a_sheet_exports_its_rows_as_an_xlsx_workbook(api: httpx.AsyncClient) -> None:
+    """DOCUMENTED: a Sheet exports as an Excel workbook, one of the formats Drive lists for Google Sheets.
+    https://developers.google.com/workspace/drive/api/guides/ref-export-formats"""
+    wide = [f"bay {n}" for n in range(1, 29)]
+    upload = io.StringIO()
+    csv.writer(upload, lineterminator="\n").writerows([["berth", "vessel & crew"], ["4", "<Kestrel>"], wide])
+    made = answer(
+        await api.post(
+            "/upload/drive/v3/files",
+            params={"uploadType": "multipart"},
+            content=multipart(
+                json.dumps({"name": "Berths", "mimeType": SHEET}), upload.getvalue().encode(), "text/csv"
+            ),
+            headers={**AUTH, "Content-Type": 'multipart/related; boundary="===b0undary=="'},
+        )
+    )
+
+    exported = await api.get(f"/drive/v3/files/{made['id']}/export", params={"mimeType": XLSX}, headers=AUTH)
+
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["content-type"] == XLSX
+    book = openpyxl.load_workbook(io.BytesIO(exported.content))
+    assert book.sheetnames == ["Sheet1"]
+    assert [list(row) for row in book["Sheet1"].iter_rows(values_only=True)] == [
+        ["berth", "vessel & crew", *[None] * 26],
+        ["4", "<Kestrel>", *[None] * 26],
+        wide,
+    ]

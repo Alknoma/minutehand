@@ -43,7 +43,8 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
-from minutehand.adapters.providers.microsoft import docx, wire, xlsx
+from minutehand.adapters import xlsx
+from minutehand.adapters.providers.microsoft import docx, wire
 from minutehand.adapters.providers.microsoft.manifest import MANIFEST
 from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.scenario import Model, Scenario
