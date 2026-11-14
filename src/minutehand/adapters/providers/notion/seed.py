@@ -483,6 +483,9 @@ def _seed_workspace(
             wire.Parent(type=wire.ParentType.PAGE_ID, id=ids[database.parent]),
             wire.text_run(database.title),
             schema,
+            description=[],
+            icon=None,
+            cover=None,
             inline=database.inline,
             by=who(database.created_by, f"who created the Notion database {database.key!r} (created_by)"),
         )

@@ -134,6 +134,29 @@ async def test_a_property_type_notion_takes_and_this_fake_does_not_build_is_refu
     assert unserved(await api.post("/v1/databases", json=body)).startswith("`formula` properties")
 
 
+async def test_a_databases_description_icon_and_cover_come_back_as_they_were_sent(api: httpx.AsyncClient) -> None:
+    """https://developers.notion.com/reference/create-a-database and /update-a-database take `description`, `icon`
+    and `cover`; the database answers them."""
+    cover = {"type": "external", "external": {"url": "https://example.com/cover.png"}}
+    body = {
+        "parent": {"page_id": ids("handbook")},
+        "title": [{"type": "text", "text": {"content": "Risks"}}],
+        "description": [{"type": "text", "text": {"content": "What could go wrong"}}],
+        "icon": {"type": "emoji", "emoji": "\N{WARNING SIGN}"},
+        "cover": cover,
+        "properties": {"Name": {"title": {}}},
+    }
+    made = answer(await api.post("/v1/databases", json=body))
+    read = answer(await api.get(f"/v1/databases/{made['id']}"))
+    assert [r["plain_text"] for r in read["description"]] == ["What could go wrong"]
+    assert read["icon"] == {"type": "emoji", "emoji": "\N{WARNING SIGN}"}
+    assert read["cover"] == cover
+    moved = {"type": "external", "external": {"url": "https://example.com/other.png"}}
+    changed = answer(await api.patch(f"/v1/databases/{made['id']}", json={"cover": moved}))
+    assert changed["cover"] == moved
+    assert answer(await api.get(f"/v1/databases/{made['id']}"))["cover"] == moved
+
+
 async def test_a_missing_version_carries_notions_documented_message(world: World) -> None:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=served(world)), base_url=API) as unversioned:
         message = refusal(await unversioned.get("/v1/users/me"), 400, "missing_version")

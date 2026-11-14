@@ -898,8 +898,19 @@ class NotionApi:
             made = editor.schema_from_request(database_id, name, raw, f"{where}.{name}", call.version)
             schema[str(made["name"])] = made
         title = wire.rich_text(body["title"], "body.title", editor) if "title" in body else []
+        description = wire.rich_text(body["description"], "body.description", editor) if "description" in body else []
         inline = wire.as_bool(body["is_inline"], "body.is_inline") if "is_inline" in body else False
-        database = editor.create_database(database_id, parent, title, schema, inline=inline, by=call.bot)
+        database = editor.create_database(
+            database_id,
+            parent,
+            title,
+            schema,
+            description=description,
+            icon=wire.icon(body["icon"], "body.icon") if "icon" in body else None,
+            cover=body["cover"] if "cover" in body else None,
+            inline=inline,
+            by=call.bot,
+        )
         return _answer(self.render_database(call, database))
 
     async def database_update(self, request: Request, call: Call) -> Response:

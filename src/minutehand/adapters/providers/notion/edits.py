@@ -412,6 +412,9 @@ class Editor:
         title: list[JsonValue],
         schema: dict[str, wire.Json],
         *,
+        description: list[JsonValue],
+        icon: JsonValue,
+        cover: JsonValue,
         inline: bool,
         by: str,
     ) -> wire.StoredDatabase:
@@ -429,8 +432,11 @@ class Editor:
             parent=parent,
             stamps=self._stamps(by),
             title=title,
+            description=description,
             schema=schema,
             is_inline=inline,
+            icon=icon,
+            cover=cover,
         )
         self.world.write_database(database, operation=Operation.CREATE, actor=self._actor)
         self._write(self._stub(above, wire.BlockType.CHILD_DATABASE, database_id, by), Operation.UPDATE)
@@ -458,6 +464,8 @@ class Editor:
             update["is_inline"] = wire.as_bool(body["is_inline"], "body.is_inline")
         if "icon" in body:
             update["icon"] = wire.icon(body["icon"], "body.icon")
+        if "cover" in body:
+            update["cover"] = body["cover"]
         if "properties" in body:
             update["schema_"] = self._schema_after(
                 database, wire.as_object(body["properties"], "body.properties"), version
