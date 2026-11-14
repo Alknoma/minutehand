@@ -292,7 +292,7 @@ OPEN: dict[str, tuple[str, ...]] = {
         "A call with no bearer token, or one that names no integration, is answered as the agent's integration",
         "No capability refuses a call",
         "No client secret, code, redirect URI or refresh token is refused at `/v1/oauth/token`",
-        "A version other than 2022-06-28 is 501 `invalid_request` naming it",
+        "A version other than 2022-06-28 and 2025-09-03 is 501 `invalid_request` naming it",
         "Something Notion takes and this fake does not build (an operation, a version, a block type, a property type, a mention, an image not `external`, a date mention with a time or an end) is the shared not-served refusal, 501 `invalid_request` naming it",
         "A code block takes every language Notion lists",
         'A schema refusal is "<body\\|query\\|path> failed validation: <path> should be <expected>, instead was \\`<value>\\`." (an optional field\'s expectation ending "or \\`undefined\\`", a value cut at 55 characters)',
