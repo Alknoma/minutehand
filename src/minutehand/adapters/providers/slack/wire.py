@@ -1311,12 +1311,13 @@ class Deleted(Ok):
 
 
 class ScheduledBody(Model):
-    """The message `chat.scheduleMessage` answers: what was scheduled, as a delayed message."""
+    """The message `chat.scheduleMessage` answers: what was scheduled, as a delayed message, with the app's bot
+    and `bot_message` only when the app scheduled it (a person's carries neither, as what they post does not)."""
 
     text: str
-    bot_id: str
+    bot_id: str | None
     type: Literal["delayed_message"] = "delayed_message"
-    subtype: Literal["bot_message"] = "bot_message"
+    subtype: Literal["bot_message"] | None
     blocks: list[JsonValue] | None = None
     attachments: list[JsonValue] | None = None
 

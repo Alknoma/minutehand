@@ -20,7 +20,7 @@ from minutehand.adapters.answering import Guarded
 from minutehand.adapters.providers.notion.manifest import MANIFEST
 from minutehand.adapters.providers.notion.provider import NotionProvider, build
 from minutehand.adapters.providers.notion.seed import object_id
-from minutehand.adapters.providers.notion.wire import API_VERSION
+from minutehand.adapters.providers.notion.wire import Version
 from minutehand.adapters.proxy.policy import Routing
 from minutehand.adapters.proxy.registry import Registry
 from minutehand.adapters.proxy.server import Proxy
@@ -306,13 +306,13 @@ class Sdk:
         trust = ssl.create_default_context(cafile=str(self.proxy.ca_cert))
         return (
             Client(
-                notion_version=API_VERSION,
+                notion_version=Version.LEGACY,
                 retry=False,
                 auth=token,
                 client=httpx.Client(proxy=self.proxy.url, verify=trust, trust_env=False),
             ),
             AsyncClient(
-                notion_version=API_VERSION,
+                notion_version=Version.LEGACY,
                 retry=False,
                 auth=token,
                 client=httpx.AsyncClient(proxy=self.proxy.url, verify=trust, trust_env=False),
@@ -338,13 +338,13 @@ async def through_proxy(tmp_path: Path, world: World, flavour: str) -> AsyncIter
     async with Proxy(Routing(registry), world.store, world.clock, confdir=tmp_path / "ca") as proxy:
         trust = ssl.create_default_context(cafile=str(proxy.ca_cert))
         sync = Client(
-            notion_version=API_VERSION,
+            notion_version=Version.LEGACY,
             retry=False,
             auth=AGENT_TOKEN,
             client=httpx.Client(proxy=proxy.url, verify=trust, trust_env=False),
         )
         asynchronous = AsyncClient(
-            notion_version=API_VERSION,
+            notion_version=Version.LEGACY,
             retry=False,
             auth=AGENT_TOKEN,
             client=httpx.AsyncClient(proxy=proxy.url, verify=trust, trust_env=False),

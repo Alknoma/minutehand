@@ -27,7 +27,7 @@ import httpx
 from notion_client import APIResponseError, Client
 
 from minutehand.adapters.control.wire import Claims, CreateWorld, WorldView
-from minutehand.adapters.providers.notion.wire import API_VERSION
+from minutehand.adapters.providers.notion.wire import Version
 from minutehand.domain.scenario import AccessRole, DocumentKind, Seed
 from tests.conformance.contract import (
     Api,
@@ -401,7 +401,7 @@ def _token(world: WorldView) -> str:
 
 def _client(api: Api, world: WorldView) -> Client:
     """The official `notion-client` over a client through the proxy, trusting its CA."""
-    return Client(notion_version=API_VERSION, retry=False, auth=_token(world), client=api.http())
+    return Client(notion_version=Version.LEGACY, retry=False, auth=_token(world), client=api.http())
 
 
 def _raised(call: Callable[[Client], object]) -> Callable[[Api, WorldView], BaseException | None]:

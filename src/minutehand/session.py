@@ -1700,8 +1700,9 @@ def _services(scenario: Scenario, agent: AgentUnderTest, registry: Registry) -> 
     named |= {t.provider for t in agent.inbound}
     if agent.goal is not None:
         named.add(agent.goal.provider)
-    # every agent may book its wakes with a scheduler it calls: each installed one is in the run, bound to its table
-    named |= {m.key for m in registry.manifests if m.books_wakes}
+    # every agent may book its wakes with a scheduler it calls, or work that falls due later (Slack's scheduled
+    # messages): each installed one is in the run, bound to its table, since one first built on a call is bound to none
+    named |= {m.key for m in registry.manifests if m.books_wakes or m.books_work}
     manifests = {m.key: m for m in registry.manifests}
     unknown = sorted(named - set(manifests))
     if unknown:
