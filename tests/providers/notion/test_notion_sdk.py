@@ -31,7 +31,11 @@ def _titles(results: list[Any]) -> list[str]:
 async def test_users_me_is_the_bot_with_its_owner_and_workspace(sdk: Sdk) -> None:
     me = await sdk(lambda c: c.users.me())
     assert (me["object"], me["type"], me["name"]) == ("user", "bot", "Planning bot")
-    assert me["bot"] == {"owner": {"type": "workspace", "workspace": True}, "workspace_name": "Acme"}
+    assert me["bot"] == {
+        "owner": {"type": "workspace", "workspace": True},
+        "workspace_id": ids("acme"),
+        "workspace_name": "Acme",
+    }
 
 
 async def test_users_list_holds_the_people_and_the_bots_and_retrieve_reads_one(sdk: Sdk) -> None:

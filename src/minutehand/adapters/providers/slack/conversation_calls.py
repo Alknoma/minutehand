@@ -372,7 +372,7 @@ class ConversationCalls(Calls):
             if len(picked) == limit:
                 more = True
                 break
-            picked.append(channel)
+            picked.append(self._im_as_seen(channel) if channel.is_im else channel)
         self._world.saw(state.team_ref(self._world.team.id), Operation.SEARCH)
         return wire.ChannelList(
             channels=picked,

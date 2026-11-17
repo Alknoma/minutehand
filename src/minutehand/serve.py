@@ -989,9 +989,10 @@ class Standing:
             if (d / CASE).is_file():
                 kept = CaseKept.model_validate_json((d / CASE).read_text(encoding="utf-8"))
                 closed.append((d, [d.name, *kept.worlds]))
-            elif (d / KEPT).is_file():
-                if Kept.model_validate_json((d / KEPT).read_text(encoding="utf-8")).case_id is None:
-                    closed.append((d, [d.name]))
+            elif (d / KEPT).is_file() and (
+                Kept.model_validate_json((d / KEPT).read_text(encoding="utf-8")).case_id is None
+            ):
+                closed.append((d, [d.name]))
         closed.sort(key=lambda found: (found[0] / RECORD).stat().st_mtime_ns)
         old = closed[: max(0, len(closed) - self._keep)]
         still = {c.case_id for c in self._ended}

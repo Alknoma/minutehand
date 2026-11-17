@@ -70,9 +70,9 @@ async def test_a_call_without_a_version_is_refused_missing_version(world: World)
 
 
 async def test_a_version_this_fake_does_not_serve_is_refused_501_naming_it(api: httpx.AsyncClient) -> None:
-    for version in ("2025-09-03", "2026-03-11", "2021-08-16"):
+    for version in ("2026-03-11", "2021-08-16"):
         answered = await api.get("/v1/users/me", headers={"Notion-Version": version})
-        assert unserved(answered) == f"Notion-Version {version} (this simulation answers 2022-06-28)"
+        assert unserved(answered) == f"Notion-Version {version} (this simulation answers 2022-06-28 and 2025-09-03)"
 
 
 async def test_an_unknown_path_and_a_wrong_method_are_refused_invalid_request_url(api: httpx.AsyncClient) -> None:
@@ -163,6 +163,56 @@ async def test_an_id_that_is_not_a_uuid_is_refused_in_notions_words(api: httpx.A
     """https://github.com/zant/notion-cards-action/issues/21"""
     message = refusal(await api.get("/v1/pages/not-an-id"), 400, "validation_error")
     assert message == 'path failed validation: path.page_id should be a valid uuid, instead was `"not-an-id"`.'
+
+
+@pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
+async def test_an_id_in_upper_case_is_refused_as_not_found_echoing_it_as_sent(
+    api: httpx.AsyncClient, version: str
+) -> None:
+    """https://github.com/brekkylab/backlot/issues/376, measured: an upper-cased id is 404, echoed as sent; the id
+    without its dashes is served."""
+    api.headers["Notion-Version"] = version
+    shouted = ids("handbook").upper()
+    message = refusal(await api.get(f"/v1/pages/{shouted}"), 404, "object_not_found")
+    assert message.startswith(f"Could not find page with ID: {shouted}.")
+    assert answer(await api.get(f"/v1/pages/{ids('handbook').replace('-', '')}"))["id"] == ids("handbook")
+
+
+@pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
+async def test_a_database_retrieved_as_a_page_or_a_page_as_a_database_is_refused_naming_its_kind(
+    api: httpx.AsyncClient, version: str
+) -> None:
+    """https://github.com/brekkylab/backlot/issues/376, measured: a 400 that says which kind the id is; a database's id
+    on `/v1/blocks` is its block."""
+    api.headers["Notion-Version"] = version
+    database, page = ids("projects"), ids("handbook")
+    assert refusal(await api.get(f"/v1/pages/{database}"), 400, "validation_error") == (
+        f"Provided ID {database} is a database, not a page. Use the retrieve database API instead."
+    )
+    assert refusal(await api.get(f"/v1/databases/{page}"), 400, "validation_error") == (
+        f"Provided database_id {page} is a page, not a database. Use the pages API instead, or pass the ID of the "
+        "database itself."
+    )
+    assert answer(await api.get(f"/v1/blocks/{database}"))["type"] == "child_database"
+
+
+@pytest.mark.parametrize("version", ["2022-06-28", "2025-09-03"])
+async def test_a_missing_object_is_refused_with_the_integrations_id_and_a_missing_user_names_the_capability(
+    api: httpx.AsyncClient, version: str
+) -> None:
+    """https://github.com/brekkylab/backlot/issues/376, measured: a 404 carries `additional_data.integration_id`, and a
+    user's names the capability to read users."""
+    api.headers["Notion-Version"] = version
+    nobody = "00000000-0000-0000-0000-000000000000"
+    me = answer(await api.get("/v1/users/me"))["id"]
+    for path in (f"/v1/pages/{nobody}", f"/v1/blocks/{nobody}/children", f"/v1/databases/{nobody}"):
+        assert answer(await api.get(path), 404)["additional_data"] == {"integration_id": me}, path
+    missing = await api.get(f"/v1/users/{nobody}")
+    assert answer(missing, 404)["additional_data"] == {"integration_id": me}
+    assert refusal(missing, 404, "object_not_found") == (
+        f"Could not find user with ID: {nobody}. Make sure your integration has capabilities to read user "
+        "information. With those capabilities, only members and guests in the integration's workspace are visible."
+    )
 
 
 async def test_appending_after_a_block_that_is_not_a_child_is_refused_by_name(

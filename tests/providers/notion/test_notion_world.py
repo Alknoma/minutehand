@@ -261,3 +261,26 @@ async def test_a_mention_reads_as_the_name_it_points_at(api: httpx.AsyncClient) 
     items = made["paragraph"]["rich_text"]
     assert "".join(i["plain_text"] for i in items) == "@Mara Lindqvist see Onboardinge=mc^2 link"
     assert items[-1]["href"] == "https://example.com" and items[0]["annotations"]["bold"] is False
+
+
+def test_a_seed_with_no_owner_naming_no_creator_is_refused_naming_the_page(tmp_path: Path) -> None:
+    """`owner` is retired: a scenario need not have one. A page that names no `created_by` is then refused, naming
+    what to set, never crashed on (it was a StopIteration looking the owner up)."""
+    with pytest.raises(ValueError, match=r"name the person who created the Notion page 'handbook' \(created_by\)"):
+        seeded(tmp_path, scenario().model_copy(update={"owner": None}))
+
+
+def test_a_seed_with_no_owner_seeds_when_each_page_and_database_names_its_creator(tmp_path: Path) -> None:
+    named = json.loads(json.dumps(NOTION))
+    for workspace in named["workspaces"]:
+        for page in workspace["pages"]:
+            page["created_by"] = "dov"
+        for database in workspace["databases"]:
+            database["created_by"] = "dov"
+            for row in database["rows"]:
+                row["created_by"] = "dov"
+    world = seeded(tmp_path, scenario(named).model_copy(update={"owner": None}))
+    try:
+        assert any(isinstance(e.after, DocumentSnapshot) for e in world.store.events())
+    finally:
+        world.store.close()

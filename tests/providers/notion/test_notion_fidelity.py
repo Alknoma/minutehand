@@ -66,6 +66,7 @@ async def test_rich_text_and_block_content_come_back_as_they_were_sent(api: http
     assert blocks[0]["paragraph"] == {
         "rich_text": [{**run, "plain_text": "Read the guide", "href": "https://example.com/guide?a=1&b=2"}],
         "color": "blue",
+        "icon": None,
     }
     assert blocks[1]["to_do"]["rich_text"][0]["text"] == {"content": "  spaced  ", "link": None}
     assert blocks[1]["to_do"]["checked"] is True
@@ -133,6 +134,29 @@ async def test_a_property_type_notion_takes_and_this_fake_does_not_build_is_refu
     assert unserved(await api.post("/v1/databases", json=body)).startswith("`formula` properties")
 
 
+async def test_a_databases_description_icon_and_cover_come_back_as_they_were_sent(api: httpx.AsyncClient) -> None:
+    """https://developers.notion.com/reference/create-a-database and /update-a-database take `description`, `icon`
+    and `cover`; the database answers them."""
+    cover = {"type": "external", "external": {"url": "https://example.com/cover.png"}}
+    body = {
+        "parent": {"page_id": ids("handbook")},
+        "title": [{"type": "text", "text": {"content": "Risks"}}],
+        "description": [{"type": "text", "text": {"content": "What could go wrong"}}],
+        "icon": {"type": "emoji", "emoji": "\N{WARNING SIGN}"},
+        "cover": cover,
+        "properties": {"Name": {"title": {}}},
+    }
+    made = answer(await api.post("/v1/databases", json=body))
+    read = answer(await api.get(f"/v1/databases/{made['id']}"))
+    assert [r["plain_text"] for r in read["description"]] == ["What could go wrong"]
+    assert read["icon"] == {"type": "emoji", "emoji": "\N{WARNING SIGN}"}
+    assert read["cover"] == cover
+    moved = {"type": "external", "external": {"url": "https://example.com/other.png"}}
+    changed = answer(await api.patch(f"/v1/databases/{made['id']}", json={"cover": moved}))
+    assert changed["cover"] == moved
+    assert answer(await api.get(f"/v1/databases/{made['id']}"))["cover"] == moved
+
+
 async def test_a_missing_version_carries_notions_documented_message(world: World) -> None:
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=served(world)), base_url=API) as unversioned:
         message = refusal(await unversioned.get("/v1/users/me"), 400, "missing_version")
@@ -163,3 +187,33 @@ async def test_a_rate_limit_and_a_conflict_carry_notions_documented_messages(tmp
         conflicted = refusal(await api.patch(f"/v1/blocks/{heading['id']}", json=body), 409, "conflict_error")
     assert limited == "You have been rate limited. Please try again later."
     assert conflicted == "Conflict occurred while saving. Please try again."
+
+
+async def test_every_version_answers_the_fields_notion_has_added_since_2022_06_28(api: httpx.AsyncClient) -> None:
+    """DOCUMENTED: "Additive changes apply to every API version at the same time, including older ones"
+    (https://developers.notion.com/reference/versioning), so a 2022-06-28 answer carries what Notion's object pages
+    have added since: a page's and a database's `is_locked` and a page's `is_archived` (nothing in this world locks or
+    archives), a property's and an option's `description`, null when it has none, a relation's `data_source_id` beside
+    its `database_id` ("across all API versions") and its `limit`, null for none, a paragraph's `icon`, and a bot's
+    `workspace_id` (https://developers.notion.com/reference/page, /reference/database, /reference/property-object,
+    /reference/block, /reference/user, https://developers.notion.com/guides/get-started/upgrade-guide-2025-09-03)."""
+    page = answer(await api.get(f"/v1/pages/{ids('handbook')}"))
+    assert (page["is_locked"], page["is_archived"]) == (False, False)
+
+    database = answer(await api.get(f"/v1/databases/{ids('projects')}"))
+    assert database["is_locked"] is False
+    properties = database["properties"]
+    assert {name: prop["description"] for name, prop in properties.items()} == dict.fromkeys(properties)
+    options = properties["Priority"]["select"]["options"]
+    assert options and [o["description"] for o in options] == [None] * len(options)
+    relation = properties["Depends on"]["relation"]
+    assert relation["database_id"] == ids("projects")
+    assert isinstance(relation["data_source_id"], str) and relation["data_source_id"] != ids("projects")
+    assert relation["limit"] is None
+
+    blocks = answer(await api.get(f"/v1/blocks/{ids('handbook')}/children"))["results"]
+    paragraphs = [b for b in blocks if b["type"] == "paragraph"]
+    assert paragraphs and all(b["paragraph"]["icon"] is None for b in paragraphs)
+
+    me = answer(await api.get("/v1/users/me"))
+    assert me["bot"]["workspace_id"] == ids("acme")
