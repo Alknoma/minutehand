@@ -7,6 +7,8 @@ and the paragraph after the table starts at the table's end.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Any
 
 import httpx
@@ -94,3 +96,42 @@ async def test_a_paragraph_style_range_ending_at_the_last_cells_end_styles_that_
 
     styled = _only_table(await _document(docs, document_id))["table"]["tableRows"][1]["tableCells"][1]["content"][0]
     assert styled["paragraph"]["paragraphStyle"]["alignment"] == "CENTER"
+
+
+CELL_TEXT_SELECTION = (
+    "body(content(startIndex,endIndex,table(tableRows(tableCells(content(paragraph(elements(textRun(content)))))))))"
+)
+
+
+def test_a_selection_inside_a_table_cell_is_accepted_by_a_process_that_has_rendered_no_table() -> None:
+    """Docs accepts a `fields` selection that reaches into a cell's content (TableCell.content is a list of
+    StructuralElement: https://developers.google.com/workspace/docs/api/reference/rest/v1/documents#TableCell).
+    The cell model named a model declared after it, so until some table had been rendered in the process the
+    selection was refused "Invalid field selection content" — on every fresh server. Asked of a fresh
+    interpreter, because this one may already have rendered a table."""
+    probe = (
+        "from minutehand.adapters.providers.google_workspace import docs, wire\n"
+        f"wire.selection({CELL_TEXT_SELECTION!r}, docs.Document, 'documentId')\n"
+    )
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+
+    assert done.returncode == 0, done.stderr[-600:]
+
+
+async def test_a_selection_inside_a_table_cell_answers_the_cells_text_and_nothing_else(
+    docs: httpx.AsyncClient,
+) -> None:
+    document_id = await _with_table(docs)
+    first_cell = _only_table(await _document(docs, document_id))["table"]["tableRows"][0]["tableCells"][0]
+    written = await _batch(
+        docs,
+        document_id,
+        [{"insertText": {"location": {"index": first_cell["content"][0]["startIndex"]}, "text": "North"}}],
+    )
+    assert written.status_code == 200, written.text
+
+    answer = await docs.get(f"/v1/documents/{document_id}", headers=AUTH, params={"fields": CELL_TEXT_SELECTION})
+
+    assert answer.status_code == 200, answer.text
+    cell = _only_table(answer.json())["table"]["tableRows"][0]["tableCells"][0]
+    assert cell == {"content": [{"paragraph": {"elements": [{"textRun": {"content": "North\n"}}]}}]}

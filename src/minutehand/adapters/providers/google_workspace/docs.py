@@ -1366,6 +1366,15 @@ class StructuralElement(Model):
     sectionBreak: SectionBreak | None = None
 
 
+# A cell holds structural elements and a structural element holds tables, so
+# the cell is declared before the model its `content` names. Until the cell is
+# completed that field is an unresolved reference, and `wire.check_mask`, which
+# reads the field's type to follow a selection into it, refused a selection
+# inside a cell that Docs accepts — in every process that had not rendered a
+# table yet, which is every fresh server.
+TableCellOut.model_rebuild()
+
+
 class Body(Model):
     content: list[StructuralElement]
 
