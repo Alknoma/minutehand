@@ -78,7 +78,7 @@ class PydanticAIModel:
         self._default_temperature: set[str] = set()
         """Models that take only their own default temperature, as their API said when one was sent: it is left out
         of every later request to them."""
-        resolve(self._named(model_id), httpx2.AsyncClient(trust_env=False))
+        resolve(self._named(model_id), _own_http_client())
 
     def __repr__(self) -> str:
         return f"PydanticAIModel({self.provider}:{self.model_id})"

@@ -11,7 +11,7 @@ in `tests/providers/slack/data/observed/` (where and how it was taken: `tests/pr
 
 Every Web API method Slack lists is either served or refused 501 `not_implemented`, the method named
 (`methods.UNSERVED`; `test_slack_method_coverage.py`). The list is the union of Slack's methods index, Slack's OpenAPI
-file and the pinned `slack_sdk`'s `WebClient`: 393 methods, 50 served, 343 refused by name. A name none of them
+file and the pinned `slack_sdk`'s `WebClient`: 395 methods, 50 served, 345 refused by name. A name none of them
 lists is `unknown_method`, as Slack answers it.
 
 | Claim | Class | Test | Source |

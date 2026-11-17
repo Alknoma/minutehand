@@ -6,9 +6,11 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.shared.exceptions import MCPError
+from mcp.types import INVALID_PARAMS, TextContent
 
 from minutehand import cli
 from minutehand.adapters.mcp.server import tools
@@ -27,3 +29,13 @@ async def test_the_command_serves_every_command_over_stdio(tmp_path: Path) -> No
     assert all(t.description for t in listed.tools)
     [text] = [c.text for c in runs.content if isinstance(c, TextContent)]
     assert json.loads(text)["exit_code"] == 0
+
+
+async def test_a_tool_with_no_command_is_refused_as_invalid_params(tmp_path: Path) -> None:
+    server = StdioServerParameters(command=str(MINUTEHAND), args=["mcp", "--state", str(tmp_path / "state")])
+    async with stdio_client(server) as (read, write), ClientSession(read, write) as client:
+        await client.initialize()
+        with pytest.raises(MCPError) as refused:
+            await client.call_tool("no-such-command", {})
+    assert refused.value.error.code == INVALID_PARAMS
+    assert "no command 'no-such-command'" in refused.value.error.message
