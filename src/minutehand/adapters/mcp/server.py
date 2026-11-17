@@ -19,10 +19,13 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from mcp import types
+from mcp.server import ServerRequestContext
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+from mcp.shared.exceptions import MCPError
 
 from minutehand import cli
 
@@ -195,23 +198,23 @@ INSTRUCTIONS = (
 
 
 def build(state: Path) -> Server:
-    """The MCP server over one state directory: the parser's commands as tools."""
-    server: Server = Server("minutehand", instructions=INSTRUCTIONS)
+    """The MCP server over one state directory: the parser's commands as tools. A tool it has no command for is the
+    protocol's invalid-params error, as the MCP specification has an unknown tool answered."""
     served = {t.name: t for t in tools(cli._parser())}
 
-    @server.list_tools()
-    async def listed() -> list[types.Tool]:
-        return [types.Tool(name=t.name, description=t.description, inputSchema=t.schema()) for t in served.values()]
+    async def listed(_: ServerRequestContext[Any], __: types.PaginatedRequestParams | None) -> types.ListToolsResult:
+        return types.ListToolsResult(
+            tools=[types.Tool(name=t.name, description=t.description, input_schema=t.schema()) for t in served.values()]
+        )
 
-    @server.call_tool()
-    async def called(name: str, arguments: dict[str, object]) -> list[types.TextContent]:
-        tool = served.get(name)
+    async def called(_: ServerRequestContext[Any], asked: types.CallToolRequestParams) -> types.CallToolResult:
+        tool = served.get(asked.name)
         if tool is None:
-            raise ValueError(f"no command {name!r}: the tools are {', '.join(served)}")
-        answered = await run(tool.argv(arguments, state))
-        return [types.TextContent(type="text", text=json.dumps(answered))]
+            raise MCPError(types.INVALID_PARAMS, f"no command {asked.name!r}: the tools are {', '.join(served)}")
+        answered = await run(tool.argv(asked.arguments or {}, state))
+        return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(answered))])
 
-    return server
+    return Server("minutehand", instructions=INSTRUCTIONS, on_list_tools=listed, on_call_tool=called)
 
 
 def serve(state: Path) -> None:

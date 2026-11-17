@@ -174,6 +174,8 @@ UNSERVED: frozenset[str] = frozenset(
         "apps.permissions.users.list",
         "apps.permissions.users.request",
         "apps.uninstall",
+        "apps.user.connection.bulkUpdate",
+        "apps.user.connection.requestAuth",
         "apps.user.connection.update",
         "assistant.search.context",
         "assistant.search.info",
