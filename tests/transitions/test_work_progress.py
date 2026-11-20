@@ -7,12 +7,16 @@ issue that blocks it holds it back, and it resumes with what was left; a take pi
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any
 
+import pytest
+
 from minutehand.adapters.providers.jira.state import issue_ref
 from minutehand.application.people import People
-from minutehand.application.replier import work_part
+from minutehand.application.replier import PeopleReplier, work_part
+from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.scenario import Person, Scenario, Silent
 from minutehand.domain.world import (
     OWN,
@@ -25,7 +29,7 @@ from minutehand.domain.world import (
     TransitionSnapshot,
 )
 from tests.providers.jira.jira_site import API, NOOR, SCENARIO, START, TOMAS, Site, ok
-from tests.support.people import people_engine, people_model
+from tests.support.people import people_engine, people_model, people_requests
 
 SILENT = {"reply": Silent().model_dump(mode="json")}
 HOURLY = {"reply_within": {"min": "PT1H", "max": "PT1H"}}
@@ -318,3 +322,200 @@ async def test_a_fork_that_changes_a_person_replans_work_not_yet_taken_up_and_ke
     faster = _engine(site, _scenario(tomas=HOURLY, noor={"reply_within": {"min": "PT3H", "max": "PT3H"}}))
     [replanned] = await faster.replan(site.store, site.clock, {"noor"})
     assert replanned.at == site.clock.now() + timedelta(hours=3), "not yet taken up: picked up as she now answers"
+
+
+# -- takes on work, forks, and what holds it -------------------------------------------------------------------------
+
+
+async def _act_until_finished(engine: People, site: Site, person: str, key: str) -> list[tuple[str, str]]:
+    moves: list[tuple[str, str]] = []
+    await engine.look(site.store, site.clock)
+    while _course(site, person, key).status is not CourseStatus.FINISHED:
+        moves.append(await _act_at(engine, site, person))
+    return moves
+
+
+async def test_a_take_naming_a_move_that_leaves_the_work_unfinished_is_made_once_until_someone_else_moves_it(
+    site: Site,
+) -> None:
+    """Catches a person pinned to comment on their work commenting again at the same instant, forever, so the run
+    neither reaches its deadline nor its wake limit: Tomas, pinned to comment on LAUNCH-1 a day after it reaches him,
+    takes it up, comments once at that moment, and nothing more of his is booked on it until someone else moves it."""
+    takes = [{"provider": "jira", "take": "comment", "after": "P1D", "verbatim": "Still on it."}]
+    engine = _engine(site, _scenario(tomas={**HOURLY, "takes": takes}))
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    name, state = await _act_at(engine, site, "tomas")
+    assert (name, state, site.clock.now()) == ("comment", "In Progress", START + timedelta(days=1))
+    looked = await engine.look(site.store, site.clock)
+    assert [b for b in [*looked.booked, *looked.moved] if b.person == "tomas" and b.at is not None] == []
+    assert _course(site, "tomas", "LAUNCH-1").stuck
+
+
+@pytest.mark.parametrize("start", ["Start work", "In Progress"])
+async def test_a_take_pinning_their_picking_it_up_leaves_its_finish_to_the_work_left(site: Site, start: str) -> None:
+    """Catches a start take read again as the work's finish once it is begun: by the move's name, it is not offered
+    from In Progress and the finish was dropped; by the state it reaches, it matched the comment there. Pinned to take
+    LAUNCH-1 up two hours after it reaches him, Tomas does, and finishes it when the five hours left have passed."""
+    takes = [{"provider": "jira", "take": start, "after": "PT2H"}]
+    engine = _engine(site, _scenario(tomas={**HOURLY, "takes": takes}))
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    assert site.clock.now() == START + timedelta(hours=2)
+    assert await _act_until_finished(engine, site, "tomas", "LAUNCH-1") == [
+        ("Submit for review", "In Review"),
+        ("Approve", "Done"),
+    ]
+    assert site.clock.now() == START + timedelta(hours=8), "five hours of work, then back to it an hour later"
+
+
+async def test_two_takes_on_one_piece_of_work_pin_its_picking_up_and_its_finish_each_at_its_own_moment(
+    site: Site,
+) -> None:
+    """Catches the second of two takes on one item losing its moment: pinned to start LAUNCH-1 two hours after it
+    reaches him and to finish it two days after, Tomas starts it at two hours and finishes it at two days, not when
+    what is left of it says."""
+    takes = [
+        {"provider": "jira", "nth": 1, "take": "started", "after": "PT2H"},
+        {"provider": "jira", "nth": 1, "take": "done", "after": "P2D"},
+    ]
+    engine = _engine(site, _scenario(tomas={**HOURLY, "takes": takes}))
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    assert site.clock.now() == START + timedelta(hours=2)
+    await _act_until_finished(engine, site, "tomas", "LAUNCH-1")
+    assert site.clock.now() == START + timedelta(days=2)
+
+
+async def test_a_silent_person_pinned_to_start_and_finish_work_with_no_estimate_needs_nobody_to_judge_it(
+    site: Site,
+) -> None:
+    """Catches a run refused mid-way for want of a judgement nobody can give: Noor never speaks, FIELD-1 holds no
+    estimate, and her takes pin both its start and its finish."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": NOOR}), 204)
+    takes = [
+        {"provider": "jira", "take": "started", "after": "PT2H"},
+        {"provider": "jira", "take": "done", "after": "P1D"},
+    ]
+    engine = _engine(site, _scenario(noor={**SILENT, "takes": takes}))
+
+    await _act_until_finished(engine, site, "noor", "FIELD-1")
+    assert site.clock.now() == START + timedelta(days=1)
+
+
+async def test_a_person_whose_finish_a_take_pins_is_never_offered_dropping_the_work(site: Site) -> None:
+    """Catches a model dropping work a take pins to finish as done: Tomas, whose take pins LAUNCH-1's finish, takes it
+    up with the move forward alone (no model weighs it against "Drop"), and finishes it at the pinned moment."""
+    takes = [{"provider": "jira", "take": "done", "after": "P2D"}]
+    engine = _engine(site, _scenario(tomas={**HOURLY, "takes": takes}))
+    asked_before = len(people_requests())
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    assert not any("Drop" in json.dumps(r) for r in people_requests()[asked_before:])
+    await _act_until_finished(engine, site, "tomas", "LAUNCH-1")
+    assert site.clock.now() == START + timedelta(days=2)
+
+
+async def test_a_take_naming_one_piece_of_work_by_its_place_pins_it_once_on_a_tracker_nobody_plays(
+    site: Site,
+) -> None:
+    """Catches a take that names the second piece of work jumping to the first once the second has a course, on a
+    tracker the scenario does not play (where only pinned work is carried): the same issue stays pinned, look after
+    look, and the other is never carried."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": TOMAS}), 204)
+    body = _scenario(tomas={**HOURLY, "takes": [{"provider": "jira", "nth": 2, "take": "done", "after": "P1D"}]})
+    engine = _engine(site, body.model_copy(update={"transitions_on": []}))
+
+    await engine.look(site.store, site.clock)
+    pinned_first = [c.item for _, c in engine.courses("tomas", site.store) if c.finish_take is not None]
+    await engine.look(site.store, site.clock)
+    carried = [(c.item, c.status) for _, c in engine.courses("tomas", site.store)]
+    assert len(pinned_first) == 1
+    assert carried == [(pinned_first[0], CourseStatus.WORKING)], "one issue pinned, and only it carried"
+
+
+async def test_an_absence_that_starts_on_a_first_ask_starts_once_for_someone_who_is_only_handed_work(
+    site: Site,
+) -> None:
+    """Catches an absence starting again at every move of someone nobody has messaged: Tomas, away for a day from his
+    first ask, is handed LAUNCH-1 at the start and never messaged. His absence runs from then, so he takes it up an hour
+    after it ends and finishes the five hours left from that, not a day later at each move."""
+    away = {**HOURLY, "absences": [{"trigger": "on_first_ask", "lasts": "P1D"}]}
+    engine = _engine(site, _scenario(tomas=away))
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    assert site.clock.now() == START + timedelta(days=1, hours=1)
+    assert await _act_at(engine, site, "tomas") == ("Submit for review", "In Review")
+    assert site.clock.now() == START + timedelta(days=1, hours=6)
+
+
+async def test_work_held_back_says_why_it_waits_with_no_moment(site: Site) -> None:
+    """Catches held work read as a move the engine failed to book (`checks.health`, owed and never booked, which makes
+    the run simulation_incomplete): the pending move on LAUNCH-1, taken off the clock while FIELD-1 blocks it, says
+    what holds it."""
+    engine = _engine(site, _scenario(tomas=HOURLY))
+    await _act_at(engine, site, "tomas")
+    await engine.look(site.store, site.clock)
+    ok(
+        await site.http.post(
+            f"{API}/issueLink",
+            json={"type": {"name": "Blocks"}, "outwardIssue": {"key": "FIELD-1"}, "inwardIssue": {"key": "LAUNCH-1"}},
+        ),
+        201,
+    )
+    await engine.look(site.store, site.clock)
+    [owed] = [h.pending for h in engine.held("tomas", site.store) if h.pending.status is PendingStatus.PENDING]
+    assert owed.due_at is None and owed.held is not None and _ref(site, "FIELD-1").external_id in owed.held
+
+
+# -- forks -----------------------------------------------------------------------------------------------------------
+
+
+async def test_a_fork_that_takes_a_persons_takes_away_keeps_the_finish_of_work_they_began(site: Site) -> None:
+    """Catches a fork reading begun work's finish by its place in the parent's takes: an IndexError where the fork
+    holds fewer, another take where it holds others. Tomas, pinned to finish LAUNCH-1 two days after it reaches him,
+    began it; a fork that gives him no takes keeps the finish he was planned with, and he makes it then."""
+    takes = [{"provider": "jira", "take": "done", "after": "P2D"}]
+    engine = _engine(site, _scenario(tomas={**HOURLY, "takes": takes}))
+    await _act_at(engine, site, "tomas")
+    await engine.look(site.store, site.clock)  # his finish booked before the fork, carrying its take
+
+    forked = _engine(site, _scenario(tomas=HOURLY))
+    assert await forked.replan(site.store, site.clock, {"tomas"}) == []
+    await _act_until_finished(forked, site, "tomas", "LAUNCH-1")
+    assert site.clock.now() == START + timedelta(days=2)
+
+
+async def test_a_fork_that_silences_a_person_holds_their_work_not_yet_taken_up(site: Site) -> None:
+    """Catches a person a fork made silent still taking their work up as their answers would have landed, and then
+    holding it begun forever: once Silent, Tomas's pick-up of LAUNCH-1 is held with no moment, saying why."""
+    engine = _engine(site, _scenario(tomas=HOURLY))
+    await engine.look(site.store, site.clock)
+
+    silenced = _engine(site, _scenario())
+    [replanned] = await silenced.replan(site.store, site.clock, {"tomas"})
+    assert replanned.at is None
+    assert silenced.pending(replanned.pending, site.store).held is not None
+
+
+async def test_a_fork_that_pins_when_a_person_moves_their_nth_issue_pins_their_taking_it_up(site: Site) -> None:
+    """Catches `ReplyAt` with `provider` ignored for work: a fork pinning Tomas's first Jira item three hours after it
+    reached him has him take LAUNCH-1 up then, not as his answers land (an hour)."""
+    scenario = _scenario(tomas=HOURLY)
+    pins = [ReplyAt(person="tomas", to_ask=1, provider="jira", after=timedelta(hours=3))]
+    model = people_model()
+    engine = People(scenario, {"jira": site.provider}, PeopleReplier(scenario, model), model, pins=pins)
+
+    assert await _act_at(engine, site, "tomas") == ("Start work", "In Progress")
+    assert site.clock.now() == START + timedelta(hours=3)
+
+
+async def test_a_fork_keeps_the_moment_of_a_pick_up_whose_person_answers_as_before(site: Site) -> None:
+    """Catches a fork redrawing every pick-up not yet made from the fork's moment: replanned half an hour in, Tomas,
+    who answers as he did, still takes LAUNCH-1 up an hour after it reached him."""
+    engine = _engine(site, _scenario(tomas=HOURLY))
+    [pick] = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"]
+    site.clock.jump(START + timedelta(minutes=30))
+
+    [replanned] = await _engine(site, _scenario(tomas=HOURLY)).replan(site.store, site.clock, {"tomas"})
+    assert replanned.at == pick.at == START + timedelta(hours=1)

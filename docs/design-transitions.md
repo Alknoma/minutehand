@@ -310,17 +310,21 @@ invented about the work: what it is, who carries it and what holds it are the wo
   nothing holds back becomes the one: work already under way when it became theirs (`CourseSnapshot.under_way`),
   then the day it is due (`Waiting.due`), then its priority as the service orders its own (`Waiting.rank`), then
   when it became theirs. Work a take pins runs beside the rest.
-- **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`) and
+- **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`), or
+  where a fork pins their nth item there (`ReplyAt` with `provider`), and
   moves it to a started state (`Offer.means` is `TicketState.STARTED`: Jira's In Progress category, YouTrack's In
   Progress) unless it is in one already. It fixes how long the work takes them, in their available time: what its
   service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as they
   judge it takes them from what it asks and what they know (`EffortFrom.PERSON`: one model call as they take it
   up, `person-estimate/1`, kept and replayed as each of theirs is). Someone no model speaks for judges nothing:
-  their work takes what its estimate or their pace says, or a take pins its finish. Its finish is that much of
-  their available time later (`moments.after_available`), booked as `DrawnFrom.WORK`.
+  their work takes what its estimate or their pace says, or a take pins its finish; with none of these, they take
+  it up as a take pins it and never finish it unprompted. Its finish is that much of their available time later
+  (`moments.after_available`), booked as `DrawnFrom.WORK`. An absence that starts on their first ask starts, for
+  someone nobody has messaged, when their first piece of work became theirs: never again at each move.
 - **Cancelling** is theirs to choose beside moving it on, never alone: where the workflow offers a move that means
   cancelled, a model picks between it and the move on from what the person knows (they drop work they know was cut).
-  Someone who never chooses for themselves (silent) is offered no choice: what a take pins, they move on with the
+  Where a take pins how it ends, cancelling is not theirs to choose. Someone who never chooses for themselves
+  (silent), or with no model to choose for them, is offered no choice: what a take pins, they move on with the
   first move forward.
   A finish already due as they come to it (a take pins it then) is one move, not a start and a finish together.
 - **Finishing it** moves it to a state that means done. Where the workflow reaches done only through another state
@@ -329,14 +333,20 @@ invented about the work: what it is, who carries it and what holds it are the wo
   what done means. Nothing that moves it forward leaves it stuck: they turn to other work, and come back once someone
   else moves it.
 - **Held back.** While `holding` names anything unfinished, work not yet begun is not picked up; work begun is taken
-  off the clock, its booked move kept owed for no moment, with the work left on it counted in their available time
+  off the clock, its booked move kept owed for no moment, saying what holds it (`PendingSnapshot.held`, which the
+  run's health does not count as a move never booked), with the work left on it counted in their available time
   (`moments.available_between`). Once nothing holds it, it resumes when it is next their turn: the work left, from
   then.
 - **A take on work** pins the move it names, as takes always have, and when; one naming a move the work never offers
-  is dropped at its moment, saying so, and the work left where it stands: one naming a started state (`take:
-  Start work`, `take: started`) pins their picking it up, `after` from when it became theirs; one naming done (or any
-  other move) pins its finish (`CourseSnapshot.pinned_finish`), whatever its estimate says. Takes that name the same
-  item are its moves in order. A person still believes the estimate, their pace or their own judgement
+  is dropped at its moment, saying so, and the work left where it stands. Which takes pin a piece of work is settled
+  once, as it becomes theirs, and kept on its course: of the takes naming it, the first naming a started state
+  (`take: Start work`, `take: started`) pins their picking it up (`CourseSnapshot.start_take`), `after` from when
+  it became theirs; the first of the rest pins its finish (`finish_take`, `pinned_finish`), whatever its estimate
+  says. One naming a move that leaves the work unfinished (a comment) is made at its moment, and the work then waits
+  for someone else to move it before they come back to it, as any item a person moves does. A take naming the work
+  by its place (`nth`) pins one piece, once; one for every item pins each. Someone who never acts unprompted, pinned
+  only at the finish, makes it in one move then. A fork plans work not yet begun again under the takes it gives,
+  and work begun keeps the takes it was planned with. A person still believes the estimate, their pace or their own judgement
   (`CourseSnapshot.expects_at`), so a finish pinned later than that is a slip they know of once its date passes;
   someone no model speaks for expects it when it lands.
 - **What they know of it.** Each piece they carry, where it stands, and when they expect to finish it (or that it is

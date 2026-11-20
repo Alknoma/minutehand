@@ -151,6 +151,7 @@ async def test_with_no_take_a_draft_is_held_on_its_author_with_no_moment_and_nev
     assert [o.name for o in port.legal(item(4), Actor.PERSON, IRIS, store) if o.unprompted][:1] == ["APPROVE"]
     [mine] = [b for b in (await engine.look(store, clock)).booked if b.person == "tomas"]
     assert mine.item == item(4) and mine.at is None
+    assert engine.pending(mine.pending, store).held is not None, "held on purpose, saying why"
     clock.jump(START + timedelta(days=3))
     assert [b for b in (await engine.look(store, clock)).booked if b.person == "tomas"] == [], "held, not booked again"
     assert pull_of(store).draft is True

@@ -11,7 +11,7 @@ from pydantic import AwareDatetime, ConfigDict, Field
 
 from minutehand.domain.clock import Drawn
 from minutehand.domain.memory import RecordedDue
-from minutehand.domain.scenario import AccessRole, Model, ProviderKey, TicketState
+from minutehand.domain.scenario import AccessRole, Model, ProviderKey, Take, TicketState
 
 
 class EntityKind(StrEnum):
@@ -603,6 +603,17 @@ class CourseSnapshot(Model):
     )
     effort_from: EffortFrom | None = None
     finishes_at: AwareDatetime | None = Field(default=None, description="When they finish it, while they work on it")
+    start_take: Take | None = Field(
+        default=None,
+        description="The take that pins their picking it up, as it stood when the work became theirs: a fork that "
+        "changes their takes plans work not yet begun again, and work begun keeps its own; None: picked up as their "
+        "answers land",
+    )
+    finish_take: Take | None = Field(
+        default=None,
+        description="The take that pins its finish: the move it names, every step toward it, and its moment "
+        "(`pinned_finish`) when it gives `after`; None: finished when its effort says",
+    )
     pinned_finish: AwareDatetime | None = Field(
         default=None,
         description="Where a take pins its finish (`Take.after`): the moment it lands, whatever its estimate says; "
@@ -652,6 +663,11 @@ class PendingSnapshot(Model):
     drawn: Drawn | None = Field(default=None, description="How `due_at` was drawn")
     transition: int | None = Field(default=None, description="The seq of the transition they took")
     failure: str | None = Field(default=None, description="Why their last try to act did not land")
+    held: str | None = Field(
+        default=None,
+        description="Why it waits with no moment though they act on it: what holds the work back, or that nothing "
+        "they would do with it is theirs to do unprompted; None: booked as `due_at` says",
+    )
     conversation: bool = Field(
         default=False,
         description="An ask they answer in words (a message, an item in the agent's own product), planned and "
