@@ -70,7 +70,7 @@ responses:
    sends the automatic reply where the provider has one, and routes the item to the delegate. A follow-up on a
    pending item may bring it sooner (`reminded`). A fork keeps every booking before the checkpoint and draws afresh
    after it with its seed; a pin fixes one.
-3. At the moment it asks the provider for the `legal` offers for that person, and the model (`person-transition/1`)
+3. At the moment it asks the provider for the `legal` offers for that person, and the model (`person-transition/2`)
    picks one and writes its content from what the person can see (the item, their conversations, as `seen_by` does
    today), their facts at that moment, voice, helpfulness and the scenario's bias or odds. The script's role
    shrinks to what it says best: facts, a pinned offer (`take: decline`), exact words (`verbatim`), silence.
@@ -191,8 +191,8 @@ with `transitions_on`, and pins a person's move with `Person.takes` (`take`, `nt
   always was, and tells a live `events.watch` channel, which is a wake.
 - **The engine's own record** is `EntityKind.PENDING` (`PendingSnapshot`, actor SCENARIO), so a fork reads what was
   owed at its checkpoint; a booked move is a `PendingTransition` in the run loop's table (`DueKind.TRANSITION`). A
-  person acts once per turn: after their own move an item waits on them again only once someone else moves it. A
-  move whose words a model failed to write stays owed (`Checkpoint.untaken`) and is tried again on the next turn.
+  person acts once per turn on an item they are asked about: after their own move it waits on them again only once
+  someone else moves it; work they carry is the exception (Phase 5). A move whose words a model failed to write stays owed (`Checkpoint.untaken`) and is tried again on the next turn.
 - **Facts**: `checks/facts.transitions`; the assessment language's `transitions` count and `each: transition`
   (`docs/assessments.md`); the ledger opens a wait on a guest for an invitation the engine holds, settled by their
   move. The read model's `transitions` and `items` views (`docs/querying.md`). `minutehand serve`:
@@ -227,7 +227,7 @@ host nobody declared as a service with no description; the separate stand-in (`a
   by its id; an invitation's are `reply` (a response comment) and each `responseStatus` but the one held, with a
   comment, carried as `text`. Every answer is a transition, and is kept as said (`Store.replies`) when it lands.
 - **Who decides.** A take pins the nth item; a provider the scenario names in `transitions_on` has the model pick
-  among the offers (`person-transition/1`); otherwise the person's script and voice plan and word the answer as they
+  among the offers (`person-transition/2`); otherwise the person's script and voice plan and word the answer as they
   always did (`application/replier.py`); the engine holds the plan on its record (`PendingSnapshot.plan`) and writes
   the words at the answer's moment (`.answer`), from everything the person can see by then. A follow-up on an answer
   owed is no new ask: it moves the answer sooner when the person is `reminded`, and is read when the words are written. An ask edited before its answer is planned again, at the moment already drawn (its words are written then anyway); one
@@ -286,7 +286,7 @@ host nobody declared as a service with no description; the separate stand-in (`a
 | a script's `decisions: [{to_item, inbox, decision, inputs, facts, within}]` | `takes: [{provider: <inbox>, nth: <to_item>, take: <decision>, fields: <inputs>, facts, within}]` |
 | `pending.gates`, `decisions[].permits`, `writes: {gated: true}` | rules over transitions (`docs/inboxes.md`) |
 | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeletesTickets`, `LandsReplies`, `PushesInteractions` | `ProvidesTransitions`, `HoldsSeeded`, `TalksToAgent` |
-| the `person-decision/2` prompt | the people engine's `person-transition/1` |
+| the `person-decision/2` prompt | the people engine's `person-transition/2` |
 
 - **What broke for users.** Every scenario with the retired keys is refused until migrated; rules with
   `writes: {gated}` are refused; an inbox declaration with `gates` or `permits` is refused. A decision's

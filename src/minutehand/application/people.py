@@ -7,14 +7,16 @@ and every other item (a ticket, a declared service's request) on the providers t
 1. **Look.** After every wake (and every `advance` of a standing world) each provider is asked what waits on each
    person (`items_for`). An item not yet held is pending on that person: written to the log as a `PendingSnapshot`
    (actor SCENARIO), so a fork reads what was owed at its checkpoint. One held that no longer waits on them is gone.
-   A person acts once per turn: after their own move an item waits on them again only once someone else moves it.
+   A person acts once per turn on an item they are asked about: after their own move it waits on them again only
+   once someone else moves it. Work they carry is theirs to move on, one move after another, until it is finished
+   (`_carry`).
 2. **Book.** Its moment is pinned by the scenario (`Person.takes` with `after`) or drawn as their answers are
    (`moments.draw_for`): from the run's seed, the person and the item, in their available time. A person who never
    acts (`Silent`, or a script that goes silent with nothing pinned) holds the item pending with no moment.
 3. **Act.** At the moment the provider is asked for the legal offers. A pinned offer is taken (its words exactly as
    pinned, or a model's from its facts); otherwise a model picks one and writes what it carries, from what the person
    can see: the item as the service shows it, their facts at that moment, their conversations
-   (`person-transition/1`). A pick that is not offered is asked again once; then the failure is recorded and the item
+   (`person-transition/2`). A pick that is not offered is asked again once; then the failure is recorded and the item
    stays owed, tried again later. The provider applies it through its own code path.
 4. **Kept.** Every model call is kept and replayed by its context, as the replier's are (`PersonCall`).
 

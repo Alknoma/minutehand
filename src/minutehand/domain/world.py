@@ -641,7 +641,9 @@ class PendingSnapshot(Model):
     turn: int = Field(
         ge=0,
         description="The seq of the last transition anyone else made on it when it became pending; 0: none. A "
-        "person acts once per turn: after their move it waits on them again only once someone else moves it",
+        "person acts once per turn on an item they are asked about: after their move it waits on them again only "
+        "once someone else moves it. Work they carry waits on them again after each move of their own, until it is "
+        "finished",
     )
     status: PendingStatus
     due_at: AwareDatetime | None = Field(description="When they act; None: never (silent, or nothing pinned)")

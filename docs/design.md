@@ -1101,8 +1101,8 @@ unless `inputs` fixes the words. `Answers` is a person with no plan.
 
 **Then the person keeps talking.** Once the steps are used (`then: answers`, the default), and for `Answers`, each
 further ask is answered by the model from the person's facts, stale facts (for a `mistaken` person), helpfulness
-and voice (`person-reply/3`), which may judge that a message (a thank-you) needs no answer; decisions, and any
-other move on an item, are picked from what it offers (`person-transition/1`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
+and voice (`person-reply/5`), which may judge that a message (a thank-you) needs no answer; decisions, and any
+other move on an item, are picked from what it offers (`person-transition/2`). A run is a continuous conversation, bounded by its deadline and wake limit. Silence is only
 ever the author's: `Silent`, or `then: silent`. Each reply records how its words were written (`PersonReply.writing`:
 `script`, `verbatim`, `conversing`, `automatic`, `by_hand`), and a team's rule counts them (`count: {replies: {by,
 written}}`, `docs/assessments.md`).

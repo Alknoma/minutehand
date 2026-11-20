@@ -402,7 +402,7 @@ Each change someone else made in the world (a reply, a decision, an ask-back), w
 
 ### `items`
 
-Every item the people engine held pending on a person (docs/design-transitions.md): when it began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it is pending on them again only once someone else moves it, as a row of its own. Kept in the order `pending_id`.
+Every item the people engine held pending on a person (docs/design-transitions.md): when it began to wait on them, when they act, and how it ended. A person acts once per turn on an item they are asked about: after their move it is pending on them again only once someone else moves it, as a row of its own. Work they carry is pending on them again after each move of their own, a row each, until it is finished. Kept in the order `pending_id`.
 
 | Column | Type | What it holds |
 |---|---|---|
