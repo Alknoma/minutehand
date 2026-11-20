@@ -20,7 +20,7 @@ import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from minutehand.domain.scenario import AccessRole
+from minutehand.domain.scenario import AccessRole, TicketState
 from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
@@ -54,7 +54,10 @@ type Step = tuple[str, str, str, str, tuple[tuple[str, str], ...]]
 def _fields(after: object, names: dict[str, str]) -> tuple[tuple[str, str], ...]:
     """The neutral fields of a snapshot, with every vendor id it holds replaced by the thing's name."""
     if isinstance(after, TicketSnapshot):
-        return (("title", after.title), ("body", after.body.strip()), ("state", after.state.value),
+        # Started is a meaning only some trackers can hold (Jira's In Progress category, YouTrack's In Progress;
+        # Asana holds none): what every tracker of the family says of it is that it is open (`Progress`).
+        state = TicketState.OPEN if after.state is TicketState.STARTED else after.state
+        return (("title", after.title), ("body", after.body.strip()), ("state", state.value),
                 ("assignee", str(after.assignee_email)), ("project", str(after.project)))  # fmt: skip
     if isinstance(after, MessageSnapshot):
         return (

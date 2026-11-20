@@ -1842,6 +1842,18 @@
           "title": "Name",
           "type": "string"
         },
+        "pace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Window"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How long a piece of work handed to them takes them when its tracker holds no estimate: drawn within this much of their available time from when they pick it up; None: as long as one of their answers takes to land (`reply_within`, else their reply's `delay`)"
+        },
         "profile": {
           "default": "",
           "description": "Who this person is, in plain words: their role, what they care about and require, how and when they work and answer. The model that plays them acts from it; `facts` are what they know",
@@ -3949,7 +3961,7 @@
           "title": "Provider"
         },
         "take": {
-          "description": "The offer, in any case: by its name, the state it reaches, the label the person sees, or for a ticket what that state means (open, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'",
+          "description": "The offer, in any case: by its name, the state it reaches, the label the person sees, or for a ticket what that state means (open, started, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'. On work a person carries (`Waiting.work`), the move that finishes it, `after` its finishing moment",
           "minLength": 1,
           "title": "Take",
           "type": "string"
@@ -4241,8 +4253,10 @@
       "type": "object"
     },
     "TicketState": {
+      "description": "What a ticket's state is, read across every provider: each tracker says which of its own states mean which.",
       "enum": [
         "open",
+        "started",
         "done",
         "cancelled"
       ],

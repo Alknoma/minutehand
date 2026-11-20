@@ -1,7 +1,7 @@
-"""People acting on a tracker's items through a whole run: each item pending on a person keeps one record from the
-wake it began to wait on them, under the key it was written at, and is moved at its moment in a later wake; a fork
-from a checkpoint taken after those records were written moves them as its parent did; and every item whose moment
-falls on one decision is moved.
+"""People acting on a tracker's items through a whole run: each move a person owes on their work keeps one record
+under the key it was written at, and the work is carried to its finish at its moments in later wakes, one piece
+after the other; a fork from a checkpoint taken after those records were written carries it as its parent did; and
+every item whose moment falls on one decision is moved.
 
 These hold on the code as it was when a run ended in "LookupError: the engine holds no pending item ...": that run's
 file had lost the records (`tests/test_world_file_sharing.py`); the engine never built a key two ways.
@@ -19,6 +19,7 @@ from minutehand.application.orchestrator import Services, run_scenario
 from minutehand.application.replier import PeopleReplier
 from minutehand.application.rewind import fork_run
 from minutehand.application.run_clock import RunClock
+from minutehand.domain.common import Window
 from minutehand.domain.experiment import Fork
 from minutehand.domain.run import RunRecord
 from minutehand.domain.scenario import Scenario, Take
@@ -68,21 +69,32 @@ def _moves(store: Store) -> list[tuple[int, TransitionSnapshot]]:
     return [(e.wake, e.after) for e in store.events() if isinstance(e.after, TransitionSnapshot)]
 
 
-async def test_two_items_pending_on_one_person_from_one_wake_are_each_moved_legally_at_a_later_moment(
+def _hourly() -> Scenario:
+    """The tracker scenario with John answering, and so taking work up, an hour into his time: his two tasks, with
+    no estimate Asana could hold, take him an hour each."""
+    played = _tracker_scenario()
+    hourly = Window(min=timedelta(hours=1), max=timedelta(hours=1))
+    people = [p.model_copy(update={"reply_within": hourly}) if p.key == "john" else p for p in played.people]
+    return played.model_copy(update={"people": people})
+
+
+async def test_two_items_handed_to_one_person_are_carried_to_a_legal_finish_one_after_the_other(
     tmp_path: Path,
 ) -> None:
-    record, store = await _run(tmp_path, _tracker_scenario())
+    record, store = await _run(tmp_path, _hourly())
 
     held = _pending(store)
-    assert [p.person for p in held.values()] == ["john", "john"], "one record per item, written in one wake"
+    assert [p.person for p in held.values()] == ["john"] * 4, "taking each up, and finishing it"
     assert all(p.status is PendingStatus.ACTED for p in held.values())
     moves = _moves(store)
     assert len(moves) == 2 and all(m.name in LEGAL and m.who == "john" for _, m in moves)
+    first, second = [e.sim_time for e in store.events() if isinstance(e.after, TransitionSnapshot)]
+    assert second - first >= timedelta(hours=2), "the second taken up only once the first is finished"
     assert record.stop is not None
 
 
-async def test_a_fork_from_after_the_records_were_written_moves_both_items_at_their_moments(tmp_path: Path) -> None:
-    played = _tracker_scenario()
+async def test_a_fork_from_after_the_records_were_written_carries_both_items_as_its_parent(tmp_path: Path) -> None:
+    played = _hourly()
     parent, store = await _run(tmp_path, played)
     written = max(
         e.seq for e in store.events() if e.entity.kind is EntityKind.PENDING and e.operation is Operation.CREATE
@@ -115,7 +127,7 @@ async def test_a_fork_from_after_the_records_were_written_moves_both_items_at_th
     forked = SqliteStore(tmp_path / "world.db", "child", RunClock(T0))
     # Mutation: a key built from a seq other than the one it is written at fails here, as in the parent run.
     held = _pending(forked)
-    assert len(held) == 2 and all(p.status is PendingStatus.ACTED for p in held.values())
+    assert len(held) == 4 and all(p.status is PendingStatus.ACTED for p in held.values())
     moves = [m for _, m in _moves(forked)]
     assert len(moves) == 2 and all(m.name in LEGAL and m.who == "john" for m in moves)
     assert child.stop is not None

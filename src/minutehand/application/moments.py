@@ -225,6 +225,19 @@ def sooner(
     )
 
 
+def drawn_span(scenario: Scenario, person: Person, ref: EntityRef, salt: str, window: Window) -> timedelta:
+    """A span drawn uniformly between `window.min` and `window.max`, fixed by the run's seed, the person, the item and
+    what it is drawn for (`salt`), so the same seed draws the same span in every run and fork."""
+    return window.min + timedelta(seconds=_drawn_seconds(scenario.seed, person, ref, salt, window.max - window.min))
+
+
+def drawn_delay(scenario: Scenario, person: Person, ref: EntityRef, salt: str, delay: DelayRange) -> timedelta:
+    """A span drawn uniformly within a reply's `delay` range, fixed as `drawn_span` is."""
+    return delay.shortest + timedelta(
+        seconds=_drawn_seconds(scenario.seed, person, ref, salt, delay.longest - delay.shortest)
+    )
+
+
 def pinned(scenario: Scenario, asked: WorldEvent, after: timedelta) -> Drawn:
     """A moment a fork pins: exactly `after` the ask, nothing drawn."""
     return pinned_at(scenario, asked.sim_time, after)
@@ -285,6 +298,26 @@ def after_available(
         left -= end - at
         at = available_at(end, person, starts_at, first_ask=first_ask)
     raise RunRefused(f"{person.key} has no {span} of available time after {start}: absences and hours leave too little")
+
+
+def available_between(
+    start: datetime, end: datetime, person: Person, starts_at: datetime, *, first_ask: datetime
+) -> timedelta:
+    """How much of this person's available time lies between `start` and `end`: counted only while they are inside
+    their working hours and outside their absences, none when `end` is not after `start`. `after_available` read
+    backwards: the span it would take to reach `end` from `start`."""
+    windows = _windows(person, starts_at, first_ask)
+    total = timedelta(0)
+    at = available_at(start, person, starts_at, first_ask=first_ask)
+    for _ in range(_MAX_PUSHES):
+        if at >= end:
+            return total
+        stretch = _stretch_end(at, person, windows)
+        if stretch is None or stretch >= end:
+            return total + (end - at)
+        total += stretch - at
+        at = available_at(stretch, person, starts_at, first_ask=first_ask)
+    raise RunRefused(f"{person.key} has too many stretches of available time between {start} and {end} to count")
 
 
 def _stretch_end(at: datetime, person: Person, windows: list[tuple[datetime, datetime]]) -> datetime | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence, Set
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -29,6 +30,7 @@ class EntityKind(StrEnum):
     STORED = "stored"  # an item the agent wrote to an outbound host the agent file declares `store`
     TRANSITION = "transition"  # one move of an item's state, by anyone (`domain.transitions.Transition`)
     PENDING = "pending"  # an item pending on a person, as the people engine holds it (`application.people`)
+    COURSE = "course"  # a piece of work a person carries, as the people engine plans it (`application.people`)
     SERVICE_RECORD = (
         "service_record"  # what a declared service is, fixed once per run: its machine, a route, its errors
     )
@@ -547,9 +549,83 @@ class TransitionSnapshot(Model):
 
 class PendingStatus(StrEnum):
     PENDING = "pending"  # waiting on the person; they act at `due_at`, or never when it is None
-    ACTED = "acted"  # they took a transition on it (`PendingSnapshot.transition`)
+    ACTED = "acted"  # they took a transition on it (`PendingSnapshot.transition`), or took up work where none moves it
     GONE = "gone"  # it stopped waiting on them before they acted: moved, reassigned, deleted, no move left
     PASSED = "passed"  # they let it pass: a message that, read when they came to it, needed no answer
+
+
+OWN: ProviderKey = "minutehand"
+"""The provider the people engine's own records are kept under (pending items, courses), as the run loop's are."""
+
+
+class CourseStatus(StrEnum):
+    QUEUED = "queued"  # theirs, not begun: behind other work of theirs, or held back before they began it
+    WORKING = "working"  # the one they are on: their next move on it (picking it up, or finishing it) is booked
+    HELD = "held"  # begun, then held back by what its service says holds it; the work left on it kept
+    FINISHED = "finished"  # they moved it to finished
+    GONE = "gone"  # it stopped being theirs before they finished it: moved on, reassigned or deleted by someone else
+
+
+class EffortFrom(StrEnum):
+    """Where how long a piece of work takes a person came from."""
+
+    TAKE = "take"  # a take pins when they finish it (`Take.after`): nothing drawn
+    ESTIMATE = "estimate"  # the work left on it as its service holds it (`ports.transitions.CarriesWork.estimate`)
+    PACE = "pace"  # drawn within their `Person.pace`
+    ANSWERS = "answers"  # drawn as their answers are: their `reply_within`, else their reply's `delay`
+
+
+class CourseSnapshot(Model):
+    """A piece of work a person carries, as the people engine plans it (`application.people`): written as actor
+    SCENARIO when it becomes theirs and each time its course changes, so a fork reads every plan as it stood at its
+    checkpoint, the person is told where their work stands when they speak, and no check counts it as anyone's work."""
+
+    kind: Literal["course"] = "course"
+    person: str = Field(description="Person.key who carries it")
+    item: EntityRef
+    status: CourseStatus
+    since: AwareDatetime = Field(description="When it became theirs")
+    shown: str = Field(description="The item as they last saw it in its service, in plain text")
+    state: str = Field(description="Its state as they last saw it, in the provider's own words")
+    under_way: bool = Field(
+        default=False,
+        description="It was in a started state when it became theirs: work under way, which they carry on before they "
+        "take up anything new",
+    )
+    due: date | None = None
+    rank: int | None = Field(default=None, ge=0)
+    turn: int = Field(
+        ge=0, description="The seq of the last transition anyone but them made on it when they last read it; 0: none"
+    )
+    started_at: AwareDatetime | None = Field(default=None, description="When they began it")
+    effort: timedelta | None = Field(
+        default=None, description="The work it takes them from when they began it, in their available time"
+    )
+    effort_from: EffortFrom | None = None
+    finishes_at: AwareDatetime | None = Field(default=None, description="When they finish it, while they work on it")
+    pinned_finish: AwareDatetime | None = Field(
+        default=None,
+        description="Where a take pins its finish (`Take.after`): the moment it lands, whatever its estimate says; "
+        "None: when its effort says",
+    )
+    expects_at: AwareDatetime | None = Field(
+        default=None,
+        description="When they believe they will finish it, from its estimate or their pace: the date they quote. "
+        "Later or sooner than `finishes_at` only where a take pins the finish, which is how a slip shows",
+    )
+    held_by: list[EntityRef] = Field(default=[], description="What held it back when they last read it")
+    held_at: AwareDatetime | None = Field(default=None, description="When it was held back after they began it")
+    left: timedelta | None = Field(
+        default=None, description="The work left on it when it was held back, in their available time"
+    )
+    moved_to: list[str] = Field(
+        default=[], description="The states they moved it to since anyone else last moved it, in order"
+    )
+    stuck: bool = Field(
+        default=False,
+        description="They found no move that takes it forward from where it stands: nothing is booked on it, and they "
+        "turn to other work, until someone else moves it",
+    )
 
 
 class PendingSnapshot(Model):
@@ -679,6 +755,7 @@ class PushSnapshot(Model):
 Snapshot = Annotated[
     TransitionSnapshot
     | PendingSnapshot
+    | CourseSnapshot
     | ServiceRecordSnapshot
     | ServiceItemSnapshot
     | ServiceEventSnapshot

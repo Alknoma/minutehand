@@ -81,6 +81,10 @@ responses:
 A person who **starts** something (a happening: posts, edits, opens a ticket) is a transition with no pending item,
 fired from the dispatch table at its moment: the same `apply`, `by: PERSON`.
 
+A person **carries work** (`Waiting.work`: an issue assigned to them and not finished, on a tracker that implements
+`CarriesWork`): it is not moved once and forgotten, but taken from where it stands to finished over their own time,
+one piece at a time (phase 5).
+
 ## 3. Concurrency and state flips
 
 - All moves, the agent's included, go through the provider's legality check against the state in the log at that
@@ -238,7 +242,10 @@ host nobody declared as a service with no description; the separate stand-in (`a
   (written again on the next look, or at its moment, where the old path waited a turn), and a standing world now puts
   an edited ask to its person again, as a run does. An invitation's answer carries its comment as `text`.
 - **GitHub**: an open issue assigned to a person waits on them, and an open pull request that asks their review (and
-  has none from them) or is assigned to them. The offers are the ones the REST routes take: close or reopen an issue
+  has none from them since it was asked: a review answers its request, a request asked again asks again) or is
+  assigned to them; and on its author while it is a draft (`ready_for_review`, which only a take has them take, as
+  their own review or close of it) and once someone else approves it, nobody's latest review asks for changes and it
+  merges cleanly (`merge`). The offers are the ones the REST routes take: close or reopen an issue
   with a comment and the reason GitHub takes; approve, ask for changes or comment on a pull request (`APPROVE`,
   `REQUEST_CHANGES`, `COMMENT`, the events a review takes); merge it where it merges
   cleanly (and is no draft); close it. Each goes through the code of its route, so the update times and the commit are the route's, and
@@ -285,3 +292,55 @@ host nobody declared as a service with no description; the separate stand-in (`a
   `writes: {gated}` are refused; an inbox declaration with `gates` or `permits` is refused. A decision's
   `{ask.answer}` is now its inputs, not its rendered text. Moments of answers to inbox items can shift, since the
   engine draws them per item.
+
+**Phase 5. Work people carry.** An issue assigned to a person and not finished is theirs to carry
+(`application/people.py`, `People._carry`), on every tracker that says so (`Waiting.work`, set by `items_for`) and
+implements `ports.transitions.CarriesWork`: what holds an item back (`holding`, the service's own links: a Jira
+issue that blocks it, a YouTrack issue it depends on, an Asana task it depends on, each not finished) and how much of
+it is left (`estimate`: Jira's remaining estimate, YouTrack's estimate less its spent time; None where the service
+holds none: Asana, GitHub). GitHub holds no link that blocks an issue here (it serves no issue dependencies), so
+nothing holds a GitHub issue back. Nothing is
+invented about the work: what it is, who carries it and what holds it are the world's; only when they move is drawn.
+
+- **A course.** The engine keeps one record per piece of work a person carries (`EntityKind.COURSE`,
+  `CourseSnapshot`, actor SCENARIO): queued, the one they are on (`WORKING`), held back after they began it (`HELD`,
+  the work left kept), finished, or gone (moved on, reassigned or deleted by someone else). A fork reads every
+  course as it stood at its checkpoint.
+- **One at a time.** A person is on one piece of work at a time. When they are on none, the first of the rest that
+  nothing holds back becomes the one: work already under way when it became theirs (`CourseSnapshot.under_way`),
+  then the day it is due (`Waiting.due`), then its priority as the service orders its own (`Waiting.rank`), then
+  when it became theirs. Work a take pins runs beside the rest.
+- **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`) and
+  moves it to a started state (`Offer.means` is `TicketState.STARTED`: Jira's In Progress category, YouTrack's In
+  Progress) unless it is in one already. It fixes how long the work takes them, in their available time: what its
+  service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as one of
+  their answers takes. Its finish is that much of their available time later (`moments.after_available`), booked
+  as `DrawnFrom.WORK`.
+- **Cancelling** is theirs to choose beside moving it on, never alone: where the workflow offers a move that means
+  cancelled, a model picks between it and the move on from what the person knows (they drop work they know was cut).
+  A finish already due as they come to it (a take pins it then) is one move, not a start and a finish together.
+- **Finishing it** moves it to a state that means done. Where the workflow reaches done only through another state
+  (a review), they take the next started state they have not moved it to, and come back to it as an answer of theirs
+  would land; a done the workflow reaches only through a screen nobody is offered (a resolution) is walked there by
+  what done means. Nothing that moves it forward leaves it stuck: they turn to other work, and come back once someone
+  else moves it.
+- **Held back.** While `holding` names anything unfinished, work not yet begun is not picked up; work begun is taken
+  off the clock, its booked move kept owed for no moment, with the work left on it counted in their available time
+  (`moments.available_between`). Once nothing holds it, it resumes when it is next their turn: the work left, from
+  then.
+- **A take on work** pins the move it names, as takes always have, and when; one naming a move the work never offers
+  is dropped at its moment, saying so, and the work left where it stands: one naming a started state (`take:
+  Start work`, `take: started`) pins their picking it up, `after` from when it became theirs; one naming done (or any
+  other move) pins its finish (`CourseSnapshot.pinned_finish`), whatever its estimate says. Takes that name the same
+  item are its moves in order. A person still believes the estimate or their pace (`CourseSnapshot.expects_at`), so a
+  finish pinned later than that is a slip they know of once its date passes.
+- **What they know of it.** Each piece they carry, where it stands, and when they expect to finish it (or that it is
+  taking longer, past that date), and what they finished, are part of what they know whenever they speak or move
+  something (`replier.work_part`, in `person-reply/5`, `person-step/3` and `person-transition/2`), so a status
+  question is answered from the work as the tracker holds it.
+- **Moves and words.** One move to make that takes nothing is made with no model; several go to the model, which picks
+  one and writes what it carries (`person-transition/2`). Every move is the provider's own (`apply`), so the agent
+  sees work progress as it would at a real company: the issue's status and history, and the service's pushes.
+- **What it does not do.** No work product is made: a change to code, a document, a design is the scenario's to
+  seed, and a person's move carries words only. A person never works two pieces at once unless a take pins one.
+

@@ -30,7 +30,7 @@ from minutehand.domain.scenario import (
 )
 from minutehand.domain.world import Actor, EntityKind, MessageSnapshot, Operation, TicketSnapshot, TransitionSnapshot
 from minutehand.ports.provider import Provider
-from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
+from minutehand.ports.transitions import CarriesWork, HoldsSeeded, ProvidesTransitions
 from tests.providers.jira.jira_site import API, IRIS, NOOR, SCENARIO, START, TOMAS, Site, ok
 from tests.support.tickets import acted, assignee_moves, edited
 
@@ -56,7 +56,12 @@ def test_seeding_writes_the_site_as_the_scenario_with_each_tickets_meaning(site:
             title="Book the venue", project="Launch", assignee_email="noor@example.com", state=TicketState.DONE
         ),
         TicketSnapshot(title="Ship the demo kits", project="Field Ops"),
-        TicketSnapshot(title="Rotate the vault keys", project="Vault", assignee_email="iris@example.com"),
+        TicketSnapshot(
+            title="Rotate the vault keys",
+            project="Vault",
+            assignee_email="iris@example.com",
+            state=TicketState.STARTED,
+        ),
     ]
     vault = site.jira.find_issue("VAULT-1")
     assert vault is not None and site.jira.site().status(vault.status).name == "In Progress", "a seed's own status"
@@ -119,8 +124,9 @@ async def test_transition_walks_the_workflow_as_the_assignee(
     assert {e["created"] for e in log} == {"2026-08-26T10:50:03.000+0000"}
 
 
-async def test_transition_back_to_open_clears_the_resolution(site: Site) -> None:
-    await assignee_moves(site.provider, _ref(site, "LAUNCH-2"), TicketState.OPEN, SCENARIO, site.store, site.clock)
+async def test_transition_back_into_progress_clears_the_resolution(site: Site) -> None:
+    # In Progress is started, not open: Launch's workflow leads from Done back to In Progress, and to To Do never.
+    await assignee_moves(site.provider, _ref(site, "LAUNCH-2"), TicketState.STARTED, SCENARIO, site.store, site.clock)
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-2", params={"fields": "status,resolution,resolutiondate"}))
     assert (read["fields"]["status"]["name"], read["fields"]["resolution"], read["fields"]["resolutiondate"]) == (
         "In Progress",
@@ -251,8 +257,10 @@ def test_the_provider_is_one_people_act_through() -> None:
     held: Provider = provider
     acting: ProvidesTransitions = provider
     seeded: HoldsSeeded = provider
-    assert held.manifest is MANIFEST and acting is seeded
+    carrying: CarriesWork = provider
+    assert held.manifest is MANIFEST and acting is seeded is carrying
     assert isinstance(provider, ProvidesTransitions) and isinstance(provider, HoldsSeeded)
+    assert isinstance(provider, CarriesWork), "the engine finds the port by isinstance, so it must be checkable"
 
 
 def test_the_manifest_claims_jira_and_imports_nothing_else_of_the_provider() -> None:

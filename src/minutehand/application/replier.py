@@ -62,12 +62,17 @@ from minutehand.domain.scenario import (
     Speaks,
 )
 from minutehand.domain.world import (
+    OWN,
     Actor,
     ControlKind,
+    CourseSnapshot,
+    CourseStatus,
+    EntityKind,
     EntityRef,
     MessageAction,
     MessageSnapshot,
     Operation,
+    TicketSnapshot,
     WorldEvent,
 )
 from minutehand.ports.clock import Clock
@@ -77,10 +82,10 @@ from minutehand.ports.store import Store
 
 AnswerT = TypeVar("AnswerT", bound=BaseModel)
 
-PERSON_PROMPT_VERSION = "person-reply/4"
+PERSON_PROMPT_VERSION = "person-reply/5"
 """Changes whenever PERSON_PROMPT, HELPFULNESS or what the person is shown changes a word."""
 
-STEP_PROMPT_VERSION = "person-step/2"
+STEP_PROMPT_VERSION = "person-step/3"
 """Changes whenever STEP_PROMPT, INTENT or what the person is shown changes a word."""
 
 
@@ -103,7 +108,7 @@ their last message, as yourself.
 
 What you know:
 {known}
-{believed}
+{believed}{work}
 What you do with this message: {helpfulness}
 
 Rules:
@@ -129,7 +134,7 @@ their last message, as yourself.
 
 What you know:
 {known}
-{believed}
+{believed}{work}
 What this reply says:
 {carries}
 
@@ -397,7 +402,9 @@ class PeopleReplier:
         context = await self.context(person, behaviour, asked, history, world, clock)
         if plan.step is not None:
             step = plan.step
-            system = step_prompt(person, behaviour, step, clock.now(), self._scenario.starts_at)
+            system = step_prompt(
+                person, behaviour, step, clock.now(), self._scenario.starts_at, work_part(person, world, clock.now())
+            )
             written = await self.ask_model(
                 person, Wrote.REPLY, asked.entity, system, context, WrittenStep, STEP_PROMPT_VERSION, world, clock
             )
@@ -424,7 +431,9 @@ class PeopleReplier:
                 written_by=Provenance(model=written.model, prompt_version=STEP_PROMPT_VERSION),
                 **common,
             )
-        system = person_prompt(person, behaviour, clock.now(), self._scenario.starts_at)
+        system = person_prompt(
+            person, behaviour, clock.now(), self._scenario.starts_at, work_part(person, world, clock.now())
+        )
         written = await self.ask_model(
             person, Wrote.REPLY, asked.entity, system, context, WrittenReply, PERSON_PROMPT_VERSION, world, clock
         )
@@ -702,18 +711,83 @@ def believed_part(behaviour: Speaks, stale: list[str]) -> str:
     return ""
 
 
+def work_part(person: Person, world: Store | None, now: datetime) -> str:
+    """The work the person carries, as they know it, for the system text: each piece handed to them they have not
+    finished, the one they are on first, where it stands and when they expect to finish it, then what they finished.
+    Empty when they carry none, or with no world to read. The date they expect is the one they believe (its estimate,
+    their pace): past it and not finished, they know it is taking longer."""
+    if world is None:
+        return ""
+    stored = world.children(OWN, EntityKind.COURSE, person.key, limit=500)
+    courses = [(s, CourseSnapshot.model_validate_json(s.body)) for s in stored]
+    carried = [c for _, c in courses if c.status in (CourseStatus.WORKING, CourseStatus.QUEUED, CourseStatus.HELD)]
+    finished = [(s.sim_time, c) for s, c in courses if c.status is CourseStatus.FINISHED]
+    if not carried and not finished:
+        return ""
+    lines: list[str] = []
+    if carried:
+        lines.append("Your own work as it stands (handed to you and not finished; the one you are on first):")
+        on = any(c.status is CourseStatus.WORKING for c in carried)
+        for course in sorted(carried, key=lambda c: (c.status is not CourseStatus.WORKING, c.since)):
+            lines.append(f"- {_title(course)} ({course.state}): {_standing(course, on, world, now)}.")
+    if finished:
+        done = ", ".join(f"{_title(c)} on {at:%A %d %B}" for at, c in sorted(finished, key=lambda f: f[0]))
+        lines.append(f"Work you finished: {done}.")
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _title(course: CourseSnapshot) -> str:
+    first = course.shown.strip().splitlines()[0] if course.shown.strip() else course.item.external_id
+    return first.strip()
+
+
+def _standing(course: CourseSnapshot, on: bool, world: Store, now: datetime) -> str:
+    began = (
+        f"you took it up on {course.started_at:%A %d %B}"
+        if course.started_at is not None
+        else "you have not taken it up yet"
+    )
+    if course.status is CourseStatus.WORKING and course.started_at is None:
+        return "you are about to take it up"
+    if course.status is CourseStatus.WORKING:
+        expects = course.expects_at
+        if expects is None:
+            return began
+        if expects < now:
+            return f"{began}; you expected to finish it by {expects:%A %d %B} and it is taking longer"
+        return f"{began}; you expect to finish it on {expects:%A %d %B}"
+    if course.stuck:
+        return f"{began}; you cannot take it further from where it stands until someone else moves it"
+    if course.held_by:
+        waits = ", ".join(_titles(course.held_by, world))
+        return f"{began}; it waits on {waits}, which is not finished"
+    return f"{began}; it comes after the work you are on" if on else began
+
+
+def _titles(refs: list[EntityRef], world: Store) -> list[str]:
+    """Each item's title, as its latest version in the log has it; its id where the log holds none."""
+    found: dict[EntityRef, str] = {}
+    for provider in {r.provider for r in refs}:
+        for event in world.events(kinds=[EntityKind.TICKET], providers=[provider]):
+            if event.entity in refs and isinstance(event.after, TicketSnapshot):
+                found[event.entity] = event.after.title
+    return [found[r] if r in found else r.external_id for r in refs]
+
+
 def voice_rule(behaviour: Speaks) -> str:
     return f"You write like this: {behaviour.voice}." if behaviour.voice else "You write plainly and briefly."
 
 
-def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at: datetime) -> str:
-    """The system text for a person conversing. `stale_facts` reach the model only for a MISTAKEN person."""
+def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at: datetime, work: str = "") -> str:
+    """The system text for a person conversing. `stale_facts` reach the model only for a MISTAKEN person; `work` is
+    the work they carry (`work_part`)."""
     facts, stale = person.knows_at(today, starts_at)
     believed = believed_part(behaviour, stale)
     return PERSON_PROMPT.format(
         who=who_is(person),
         known=bulleted(facts),
         believed=believed,
+        work=work,
         helpfulness=HELPFULNESS[behaviour.helpfulness],
         or_believe=" or in what you believe" if believed else "",
         authority=AUTHORITY_RULE.format(source="what you know"),
@@ -722,8 +796,10 @@ def person_prompt(person: Person, behaviour: Speaks, today: datetime, starts_at:
     )
 
 
-def step_prompt(person: Person, behaviour: Speaks, step: ScriptedReply, today: datetime, starts_at: datetime) -> str:
-    """The system text for one step of a person's script."""
+def step_prompt(
+    person: Person, behaviour: Speaks, step: ScriptedReply, today: datetime, starts_at: datetime, work: str = ""
+) -> str:
+    """The system text for one step of a person's script; `work` is the work they carry (`work_part`)."""
     facts, stale = person.knows_at(today, starts_at)
     believed = believed_part(behaviour, stale)
     carries = bulleted(step.facts) if step.facts else "- what you know, as it bears on their last message"
@@ -731,6 +807,7 @@ def step_prompt(person: Person, behaviour: Speaks, step: ScriptedReply, today: d
         who=who_is(person),
         known=bulleted(facts),
         believed=believed,
+        work=work,
         carries=carries,
         intent=INTENT[step.intent],
         helpfulness=HELPFULNESS[behaviour.helpfulness],

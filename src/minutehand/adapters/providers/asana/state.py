@@ -36,7 +36,7 @@ from datetime import UTC, datetime, timedelta
 
 from minutehand.adapters.providers.asana import wire
 from minutehand.adapters.providers.asana.manifest import MANIFEST
-from minutehand.domain.scenario import TicketState
+from minutehand.domain.scenario import FINISHED, TicketState
 from minutehand.domain.transitions import Transition, transition_change
 from minutehand.domain.world import (
     Actor,
@@ -191,10 +191,14 @@ class StateUnexpressible(Exception):
 
 
 def ticket_state(completed: bool, says: TicketState | None) -> TicketState:
-    """What the status source says, with the `completed` box as the floor: a task ticked done is never open."""
-    if says is None or says is TicketState.OPEN:
-        return TicketState.DONE if completed else TicketState.OPEN
-    return says
+    """What the status source says, with the `completed` box as the floor: a task ticked done is finished whatever
+    its place says, never open or started. Asana itself knows only the box ("True if the task is currently marked
+    complete"); a place that means started is the scenario's reading of a section or option of its own."""
+    if says is not None and says in FINISHED:
+        return says
+    if completed:
+        return TicketState.DONE
+    return says if says is not None else TicketState.OPEN
 
 
 @dataclass(frozen=True)
@@ -460,12 +464,13 @@ class AsanaWorld:
         return ticket_state(task.completed, self.says(task))
 
     def moved(self, task: wire.AsanaTask, to: TicketState, *, now: datetime) -> wire.AsanaTask:
-        """The task as a person leaves it after moving it to `to`: the box ticked unless `to` is open, and the
-        status source set to say `to` where it can (where it is, else the first section of its first project or
-        the first option of the status field that means it), else left where the box alone makes it `to`.
-        Raises when nothing the source can hold makes it `to`."""
+        """The task as a person leaves it after moving it to `to`: the box ticked when `to` is finished (done or
+        cancelled) and cleared otherwise, and the status source set to say `to` where it can (where it is, else the
+        first section of its first project or the first option of the status field that means it), else left where
+        the box alone makes it `to`. Raises when nothing the source can hold makes it `to`: started, where no section
+        or option the scenario gave means it."""
         at = wire.stamp(now)
-        completed = to is not TicketState.OPEN
+        completed = to in FINISHED
         ticked = task.model_copy(
             update={
                 "completed": completed,
