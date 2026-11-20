@@ -1,7 +1,8 @@
 """The webhooks GitHub sends the agent for what happens to issues, comments, pull requests and reviews.
 
-A person's move (closing an issue, merging or reviewing a pull request), and the agent's own write through the REST
-API (opening, closing or reopening an issue or a pull request, merging one, reviewing one, commenting), is pushed to
+A person's move (closing an issue, merging or reviewing a pull request, marking a draft ready for review), and the
+agent's own write through the REST API (opening, closing or reopening an issue or a pull request, merging one,
+reviewing one, asking someone's review of one or taking the request back, commenting), is pushed to
 the agent's inbound target for GitHub, one POST per event, with the headers the reference lists
 (https://docs.github.com/en/webhooks/webhook-events-and-payloads#delivery-headers): `X-GitHub-Event`,
 `X-GitHub-Delivery` (a GUID), `User-Agent` (prefixed `GitHub-Hookshot/`), `Content-Type: application/json`, and, only
@@ -281,6 +282,52 @@ class Hooks:
             {
                 "action": "submitted",
                 "review": wire.as_value(self._api.pulls.review_out(repository, review)),
+                "pull_request": self._pull(Caller(account=sender, token=None), repository, issue),
+                "repository": shown,
+                "sender": who,
+            },
+        )
+
+    async def review_requested(
+        self,
+        repository: wire.StoredRepository,
+        issue: wire.StoredIssue,
+        reviewer: wire.StoredAccount,
+        sender: wire.StoredAccount,
+        *,
+        removed: bool,
+    ) -> None:
+        """A review asked of a user, or the request taken back: a `pull_request` event, action `review_requested` or
+        `review_request_removed`, one for each user, who is its `requested_reviewer` (the description's payload names
+        one). https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request"""
+        if not self._listening():
+            return
+        shown, who = self._common(repository, sender)
+        await self._push(
+            "pull_request",
+            {
+                "action": "review_request_removed" if removed else "review_requested",
+                "number": issue.number,
+                "pull_request": self._pull(Caller(account=sender, token=None), repository, issue),
+                "requested_reviewer": wire.as_value(self._api.account_out(reviewer.login)),
+                "repository": shown,
+                "sender": who,
+            },
+        )
+
+    async def ready_for_review(
+        self, repository: wire.StoredRepository, issue: wire.StoredIssue, sender: wire.StoredAccount
+    ) -> None:
+        """A draft marked ready for review: a `pull_request` event, action `ready_for_review` ("A draft pull request was
+        marked as ready for review"). https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request"""
+        if not self._listening():
+            return
+        shown, who = self._common(repository, sender)
+        await self._push(
+            "pull_request",
+            {
+                "action": "ready_for_review",
+                "number": issue.number,
                 "pull_request": self._pull(Caller(account=sender, token=None), repository, issue),
                 "repository": shown,
                 "sender": who,

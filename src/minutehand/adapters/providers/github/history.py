@@ -4,7 +4,8 @@ own (`StoredLine`), each of which has the tree its base and its commits make.
 The default branch's tree is the repository's file records; every other tree is made by laying a line's commits on the
 tree it was made at. A blob is kept under its sha for as long as a tree may name it (`StoredBlob`). A commit made
 through the API is a `StoredCommit` with the paths it changed and the blobs they hold, so that a diff between two
-trees, and a merge, can be worked out from what is kept.
+trees, and a merge, can be worked out from what is kept. A branch made through the API is kept as a seeded one is
+(`branched`), so it can be made only where its tree is kept.
 
 Every other branch and commit of a seeded repository still shows the default branch's head files: history before the
 first commit made here is a list of commits, not a sequence of trees. `README.md` says so.
@@ -78,8 +79,40 @@ def tip(repository: wire.StoredRepository, name: str) -> str | None:
     return None
 
 
+def tips(repository: wire.StoredRepository) -> dict[str, str]:
+    """Every branch the repository has, by name, and the commit it points at: the default branch and those that follow
+    its head, the head; one with commits of its own, its newest, or the commit it was made at while it has none. An
+    empty repository has none."""
+    if not repository.commits:
+        return {}
+    head = repository.commits[0].sha
+    found = {name: head for name in (repository.default_branch, *repository.branches)}
+    return found | {line.name: line.commits[0].sha if line.commits else line.fork for line in repository.lines}
+
+
+def branched(repository: wire.StoredRepository, name: str, sha: str) -> wire.StoredRepository | None:
+    """The repository with a branch `name` made at the commit `sha`, kept where it keeps every branch: one made at the
+    default branch's head follows it, as a seeded branch does; one made at a commit of a branch with commits of its own
+    is a branch of its own carrying that branch's commits up to it; one made at the commit such a branch was made at is
+    a branch of its own with none yet. None where the tree at `sha` is not kept: any other commit of the default
+    branch's history."""
+    if repository.commits and sha == repository.commits[0].sha:
+        return repository.model_copy(update={"branches": [*repository.branches, name]})
+    for line in repository.lines:
+        at = next((n for n, commit in enumerate(line.commits) if commit.sha == sha), None)
+        if at is not None:
+            made = wire.StoredLine(name=name, fork=line.fork, base=line.base, commits=line.commits[at:])
+            return repository.model_copy(update={"lines": [*repository.lines, made]})
+    forked = next((line for line in repository.lines if line.fork == sha), None)
+    if forked is None:
+        return None
+    made = wire.StoredLine(name=name, fork=forked.fork, base=forked.base, commits=[])
+    return repository.model_copy(update={"lines": [*repository.lines, made]})
+
+
 def every_commit(repository: wire.StoredRepository) -> list[wire.StoredCommit]:
-    """Every commit the repository knows: the default branch's history, then each line's own."""
+    """Every commit the repository knows: the default branch's history, then each line's own. A commit two branches of
+    their own share (one made at a commit of the other) is listed once for each."""
     return [*repository.commits, *(c for line in repository.lines for c in line.commits)]
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import AwareDatetime, Field, TypeAdapter, ValidationError
 
@@ -137,6 +137,18 @@ class Waiting(Model):
         default=False,
         description="An ask the person answers in words: a message to them, an item in the agent's own product. "
         "Their script and voice say what they answer (`application.replier`); a pinned take wins over both",
+    )
+    work: bool = Field(
+        default=False,
+        description="Work the person carries to finished by their own moves over their own time, one piece at a time "
+        "(an assigned ticket or issue): the people engine plans its course (`application.people`). False: an ask, an "
+        "invitation or a request, moved once each time someone else moves it",
+    )
+    due: date | None = Field(default=None, description="For work, the day it is due, as the service holds it")
+    rank: int | None = Field(
+        default=None,
+        ge=0,
+        description="For work, its priority as the service orders its own priorities, 0 the most urgent; None: none",
     )
 
 

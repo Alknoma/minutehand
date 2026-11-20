@@ -69,6 +69,7 @@ people:
     reply_within: {min: PT2H, max: PT6H}         # her answers land 2 to 6 hours of her working time after an ask
     reminded: {sooner_within: {min: PT30M, max: PT2H}}   # a follow-up may bring an owed answer sooner, never later
     working_hours: {timezone: Europe/Lisbon, opens: "09:00", closes: "17:00"}
+    pace: {min: PT6H, max: P2D}                   # a piece of work with no estimate takes her this much working time
     reply:
       kind: scripted
       voice: brief and friendly
@@ -99,7 +100,15 @@ approvals, take: approve}]` asks back on the first decision and approves the res
 then on.
 
 Without a take, a model picks among what the item offers when the scenario plays its provider (`transitions_on`,
-and always for the agent's product); a delete, a comment or a note is never picked unprompted. `minutehand migrate
+and always for the agent's product); a delete, a comment or a note is never picked unprompted.
+
+Work handed to a person (an issue assigned to them on a tracker the scenario plays) is carried, one piece at a time:
+picked up as an answer of theirs would land and moved to a started state, finished once the work it takes has passed
+in their working time (what the tracker says is left of it, else drawn within their `pace`, else as long as they
+judge it takes them as they take it up), held back while an
+issue that blocks it is unfinished. A take on it pins the move it names: `take: Start work` when they pick it up,
+`take: done` when they finish it (`docs/design-transitions.md`, phase 5). They tell anyone who asks where their work
+stands, from the work as it is. `minutehand migrate
 <file>` rewrites an older scenario's `ticket_fates`, `press`, `presses_every` and scripted `decisions` as takes
 (`docs/design-transitions.md`, phase 4).
 

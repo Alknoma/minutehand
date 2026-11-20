@@ -181,6 +181,8 @@ def _pending(view: RunView) -> Iterator[HealthFinding]:
             continue
         if p.asked is not None:
             continue  # an ask their script plans no answer to: the script's own word
+        if p.held is not None:
+            continue  # held on purpose, saying why: work something holds back, or nothing theirs to do unprompted
         pinned = p.pinned is not None or p.take is not None
         on_service = p.item.provider in services and p.item.kind is EntityKind.SERVICE_ITEM
         if _speaks(person) or pinned:

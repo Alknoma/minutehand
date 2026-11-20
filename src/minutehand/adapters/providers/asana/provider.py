@@ -1,6 +1,12 @@
-"""The Asana provider: the REST API, the seeded workspace, and tickets people finish, move and talk about."""
+"""The Asana provider: the REST API, the seeded workspace, and tickets people finish, move and talk about.
+
+A task assigned to a person is work they carry (`ports.transitions.CarriesWork`): what holds it back is each task it
+depends on that is not completed. Asana gives a task no priority of its own, so a task has no rank; its estimated and
+actual time are not held here, so it has no work left that this fake can say."""
 
 from __future__ import annotations
+
+from datetime import date, timedelta
 
 from minutehand.adapters.providers.asana import state, webhooks, wire
 from minutehand.adapters.providers.asana.app import build_app
@@ -9,7 +15,7 @@ from minutehand.adapters.providers.asana.seed import AsanaSeed, limited, seed, s
 from minutehand.adapters.providers.asana.state import AsanaWorld
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
-from minutehand.domain.scenario import Person, Scenario, SeededTicket, TicketState
+from minutehand.domain.scenario import FINISHED, Person, Scenario, SeededTicket, TicketState
 from minutehand.domain.transitions import (
     ASSIGNEE,
     COMMENT,
@@ -96,21 +102,34 @@ class AsanaProvider:
     # -- transitions (`ProvidesTransitions`) ---------------------------------------------------------------------
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        """Every task assigned to the person that is neither done nor cancelled, as they read it in Asana."""
+        """Every task assigned to the person that is neither done nor cancelled, as they read it in Asana: a task is
+        work they carry until it is completed, due on its `due_on`; an approval is a decision asked of them, which
+        they make once, not work."""
         asana = AsanaWorld(world)
         user = asana.user_by_email(person.held_email("asana", "every Asana account signs in by its email address"))
         if user is None:
             return []
-        return [
-            Waiting(item=state.task_ref(t.gid), state=asana.words(t), shown=_shown(asana, t))
-            for t in asana.tasks()
-            if t.assignee == user.gid and asana.state_of(t) is TicketState.OPEN
-        ]
+        waiting: list[Waiting] = []
+        for task in asana.tasks():
+            if task.assignee != user.gid or asana.state_of(task) in FINISHED:
+                continue
+            work = task.resource_subtype is not wire.TaskSubtype.APPROVAL
+            waiting.append(
+                Waiting(
+                    item=state.task_ref(task.gid),
+                    state=asana.words(task),
+                    shown=_shown(asana, task),
+                    work=work,
+                    due=date.fromisoformat(task.due_on) if work and task.due_on is not None else None,
+                )
+            )
+        return waiting
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """What a person can make the task say as its status source reads it: each place (the completed box, a
-        section, the status field's option) that means another of open, done or cancelled, as a person leaves it
-        when they move it there, each with a comment and what it means. An approval task is decided instead:
+        section, the status field's option) that means another of open, started (only where the scenario says a
+        section or option means it), done or cancelled, as a person leaves it when they move it there, each with a
+        comment and what it means. An approval task is decided instead:
         `approved`, `rejected` or `changes_requested`, whichever it is not now, each with a comment. Then, only for what
         the scenario has someone do: a comment, a reassignment, the task's deletion."""
         del by, who
@@ -240,6 +259,27 @@ class AsanaProvider:
         asana = AsanaWorld(world)
         return webhooks.watching(asana, asana.scope(_task(asana, item)))
 
+    # -- work (`CarriesWork`) ------------------------------------------------------------------------------------
+
+    def holding(self, item: EntityRef, world: Store) -> list[EntityRef]:
+        """Each task this one depends on (its `dependencies`, as `addDependencies` links them) that is not completed:
+        Asana shows a task waiting on each until it is completed. A dependency since deleted holds nothing."""
+        asana = AsanaWorld(world)
+        task = _task(asana, item)
+        held: list[EntityRef] = []
+        for gid in task.dependencies:
+            precedent = asana.task(gid)
+            if precedent is not None and not precedent.completed:
+                held.append(state.task_ref(precedent.gid))
+        return held
+
+    def estimate(self, item: EntityRef, world: Store) -> timedelta | None:
+        """None: Asana holds a task's estimate in the custom field it creates for it (`asana_created_field`
+        `estimated_time`) and the time logged in `actual_time_minutes` (its time tracking entries); this fake holds
+        neither and serves no time tracking, so no task here holds an estimate."""
+        _task(AsanaWorld(world), item)
+        return None
+
 
 def _recorded(
     world: Store,
@@ -304,5 +344,5 @@ def _task(asana: AsanaWorld, ticket: EntityRef) -> wire.AsanaTask:
 
 
 def build() -> AsanaProvider:
-    """A `Provider` that also `ProvidesTransitions` and `HoldsSeeded`; the tests hold it to all four."""
+    """A `Provider` that also `ProvidesTransitions`, `CarriesWork` and `HoldsSeeded`."""
     return AsanaProvider()

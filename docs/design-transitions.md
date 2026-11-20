@@ -70,7 +70,7 @@ responses:
    sends the automatic reply where the provider has one, and routes the item to the delegate. A follow-up on a
    pending item may bring it sooner (`reminded`). A fork keeps every booking before the checkpoint and draws afresh
    after it with its seed; a pin fixes one.
-3. At the moment it asks the provider for the `legal` offers for that person, and the model (`person-transition/1`)
+3. At the moment it asks the provider for the `legal` offers for that person, and the model (`person-transition/2`)
    picks one and writes its content from what the person can see (the item, their conversations, as `seen_by` does
    today), their facts at that moment, voice, helpfulness and the scenario's bias or odds. The script's role
    shrinks to what it says best: facts, a pinned offer (`take: decline`), exact words (`verbatim`), silence.
@@ -80,6 +80,10 @@ responses:
 
 A person who **starts** something (a happening: posts, edits, opens a ticket) is a transition with no pending item,
 fired from the dispatch table at its moment: the same `apply`, `by: PERSON`.
+
+A person **carries work** (`Waiting.work`: an issue assigned to them and not finished, on a tracker that implements
+`CarriesWork`): it is not moved once and forgotten, but taken from where it stands to finished over their own time,
+one piece at a time (phase 5).
 
 ## 3. Concurrency and state flips
 
@@ -187,8 +191,8 @@ with `transitions_on`, and pins a person's move with `Person.takes` (`take`, `nt
   always was, and tells a live `events.watch` channel, which is a wake.
 - **The engine's own record** is `EntityKind.PENDING` (`PendingSnapshot`, actor SCENARIO), so a fork reads what was
   owed at its checkpoint; a booked move is a `PendingTransition` in the run loop's table (`DueKind.TRANSITION`). A
-  person acts once per turn: after their own move an item waits on them again only once someone else moves it. A
-  move whose words a model failed to write stays owed (`Checkpoint.untaken`) and is tried again on the next turn.
+  person acts once per turn on an item they are asked about: after their own move it waits on them again only once
+  someone else moves it; work they carry is the exception (Phase 5). A move whose words a model failed to write stays owed (`Checkpoint.untaken`) and is tried again on the next turn.
 - **Facts**: `checks/facts.transitions`; the assessment language's `transitions` count and `each: transition`
   (`docs/assessments.md`); the ledger opens a wait on a guest for an invitation the engine holds, settled by their
   move. The read model's `transitions` and `items` views (`docs/querying.md`). `minutehand serve`:
@@ -223,7 +227,7 @@ host nobody declared as a service with no description; the separate stand-in (`a
   by its id; an invitation's are `reply` (a response comment) and each `responseStatus` but the one held, with a
   comment, carried as `text`. Every answer is a transition, and is kept as said (`Store.replies`) when it lands.
 - **Who decides.** A take pins the nth item; a provider the scenario names in `transitions_on` has the model pick
-  among the offers (`person-transition/1`); otherwise the person's script and voice plan and word the answer as they
+  among the offers (`person-transition/2`); otherwise the person's script and voice plan and word the answer as they
   always did (`application/replier.py`); the engine holds the plan on its record (`PendingSnapshot.plan`) and writes
   the words at the answer's moment (`.answer`), from everything the person can see by then. A follow-up on an answer
   owed is no new ask: it moves the answer sooner when the person is `reminded`, and is read when the words are written. An ask edited before its answer is planned again, at the moment already drawn (its words are written then anyway); one
@@ -238,7 +242,10 @@ host nobody declared as a service with no description; the separate stand-in (`a
   (written again on the next look, or at its moment, where the old path waited a turn), and a standing world now puts
   an edited ask to its person again, as a run does. An invitation's answer carries its comment as `text`.
 - **GitHub**: an open issue assigned to a person waits on them, and an open pull request that asks their review (and
-  has none from them) or is assigned to them. The offers are the ones the REST routes take: close or reopen an issue
+  has none from them since it was asked: a review answers its request, a request asked again asks again) or is
+  assigned to them; and on its author while it is a draft (`ready_for_review`, which only a take has them take, as
+  their own review or close of it) and once someone else approves it, nobody's latest review asks for changes and it
+  merges cleanly (`merge`). The offers are the ones the REST routes take: close or reopen an issue
   with a comment and the reason GitHub takes; approve, ask for changes or comment on a pull request (`APPROVE`,
   `REQUEST_CHANGES`, `COMMENT`, the events a review takes); merge it where it merges
   cleanly (and is no draft); close it. Each goes through the code of its route, so the update times and the commit are the route's, and
@@ -279,9 +286,76 @@ host nobody declared as a service with no description; the separate stand-in (`a
 | a script's `decisions: [{to_item, inbox, decision, inputs, facts, within}]` | `takes: [{provider: <inbox>, nth: <to_item>, take: <decision>, fields: <inputs>, facts, within}]` |
 | `pending.gates`, `decisions[].permits`, `writes: {gated: true}` | rules over transitions (`docs/inboxes.md`) |
 | `HoldsTickets`, `EditsTickets`, `ActsOnTickets`, `DeletesTickets`, `LandsReplies`, `PushesInteractions` | `ProvidesTransitions`, `HoldsSeeded`, `TalksToAgent` |
-| the `person-decision/2` prompt | the people engine's `person-transition/1` |
+| the `person-decision/2` prompt | the people engine's `person-transition/2` |
 
 - **What broke for users.** Every scenario with the retired keys is refused until migrated; rules with
   `writes: {gated}` are refused; an inbox declaration with `gates` or `permits` is refused. A decision's
   `{ask.answer}` is now its inputs, not its rendered text. Moments of answers to inbox items can shift, since the
   engine draws them per item.
+
+**Phase 5. Work people carry.** An issue assigned to a person and not finished is theirs to carry
+(`application/people.py`, `People._carry`), on every tracker that says so (`Waiting.work`, set by `items_for`) and
+implements `ports.transitions.CarriesWork`: what holds an item back (`holding`, the service's own links: a Jira
+issue that blocks it, a YouTrack issue it depends on, an Asana task it depends on, each not finished) and how much of
+it is left (`estimate`: Jira's remaining estimate, YouTrack's estimate less its spent time; None where the service
+holds none: Asana, GitHub). GitHub holds no link that blocks an issue here (it serves no issue dependencies), so
+nothing holds a GitHub issue back. Nothing is
+invented about the work: what it is, who carries it and what holds it are the world's; only when they move is drawn.
+
+- **A course.** The engine keeps one record per piece of work a person carries (`EntityKind.COURSE`,
+  `CourseSnapshot`, actor SCENARIO): queued, the one they are on (`WORKING`), held back after they began it (`HELD`,
+  the work left kept), finished, or gone (moved on, reassigned or deleted by someone else). A fork reads every
+  course as it stood at its checkpoint.
+- **One at a time.** A person is on one piece of work at a time. When they are on none, the first of the rest that
+  nothing holds back becomes the one: work already under way when it became theirs (`CourseSnapshot.under_way`),
+  then the day it is due (`Waiting.due`), then its priority as the service orders its own (`Waiting.rank`), then
+  when it became theirs. Work a take pins runs beside the rest.
+- **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`), or
+  where a fork pins their nth item there (`ReplyAt` with `provider`), and
+  moves it to a started state (`Offer.means` is `TicketState.STARTED`: Jira's In Progress category, YouTrack's In
+  Progress) unless it is in one already. It fixes how long the work takes them, in their available time: what its
+  service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as they
+  judge it takes them from what it asks and what they know (`EffortFrom.PERSON`: one model call as they take it
+  up, `person-estimate/1`, kept and replayed as each of theirs is). Someone no model speaks for judges nothing:
+  their work takes what its estimate or their pace says, or a take pins its finish; with none of these, they take
+  it up as a take pins it and never finish it unprompted. Its finish is that much of their available time later
+  (`moments.after_available`), booked as `DrawnFrom.WORK`. An absence that starts on their first ask starts, for
+  someone nobody has messaged, when their first piece of work became theirs: never again at each move.
+- **Cancelling** is theirs to choose beside moving it on, never alone: where the workflow offers a move that means
+  cancelled, a model picks between it and the move on from what the person knows (they drop work they know was cut).
+  Where a take pins how it ends, cancelling is not theirs to choose. Someone who never chooses for themselves
+  (silent), or with no model to choose for them, is offered no choice: what a take pins, they move on with the
+  first move forward.
+  A finish already due as they come to it (a take pins it then) is one move, not a start and a finish together.
+- **Finishing it** moves it to a state that means done. Where the workflow reaches done only through another state
+  (a review), they take the next started state they have not moved it to, and come back to it as an answer of theirs
+  would land; a done the workflow reaches only through a screen nobody is offered (a resolution) is walked there by
+  what done means. Nothing that moves it forward leaves it stuck: they turn to other work, and come back once someone
+  else moves it.
+- **Held back.** While `holding` names anything unfinished, work not yet begun is not picked up; work begun is taken
+  off the clock, its booked move kept owed for no moment, saying what holds it (`PendingSnapshot.held`, which the
+  run's health does not count as a move never booked), with the work left on it counted in their available time
+  (`moments.available_between`). Once nothing holds it, it resumes when it is next their turn: the work left, from
+  then.
+- **A take on work** pins the move it names, as takes always have, and when; one naming a move the work never offers
+  is dropped at its moment, saying so, and the work left where it stands. Which takes pin a piece of work is settled
+  once, as it becomes theirs, and kept on its course: of the takes naming it, the first naming a started state
+  (`take: Start work`, `take: started`) pins their picking it up (`CourseSnapshot.start_take`), `after` from when
+  it became theirs; the first of the rest pins its finish (`finish_take`, `pinned_finish`), whatever its estimate
+  says. One naming a move that leaves the work unfinished (a comment) is made at its moment, and the work then waits
+  for someone else to move it before they come back to it, as any item a person moves does. A take naming the work
+  by its place (`nth`) pins one piece, once; one for every item pins each. Someone who never acts unprompted, pinned
+  only at the finish, makes it in one move then. A fork plans work not yet begun again under the takes it gives,
+  and work begun keeps the takes it was planned with. A person still believes the estimate, their pace or their own judgement
+  (`CourseSnapshot.expects_at`), so a finish pinned later than that is a slip they know of once its date passes;
+  someone no model speaks for expects it when it lands.
+- **What they know of it.** Each piece they carry, where it stands, and when they expect to finish it (or that it is
+  taking longer, past that date), and what they finished, are part of what they know whenever they speak or move
+  something (`replier.work_part`, in `person-reply/5`, `person-step/3` and `person-transition/2`), so a status
+  question is answered from the work as the tracker holds it.
+- **Moves and words.** One move to make that takes nothing is made with no model; several go to the model, which picks
+  one and writes what it carries (`person-transition/2`). Every move is the provider's own (`apply`), so the agent
+  sees work progress as it would at a real company: the issue's status and history, and the service's pushes.
+- **What it does not do.** No work product is made: a change to code, a document, a design is the scenario's to
+  seed, and a person's move carries words only. A person never works two pieces at once unless a take pins one.
+

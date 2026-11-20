@@ -83,13 +83,23 @@ class SeededStatus(Model):
     name: str
     category: wire.Category
     outcome: TicketState | None = Field(
-        default=None, description="What an issue in it is across providers; by default, done for a done category"
+        default=None,
+        description="What an issue in it is across providers; by default its category's: open for To Do (new), "
+        "started for In Progress (indeterminate), done for Done",
     )
 
     def meaning(self) -> TicketState:
+        """What an issue in this status is: its declared outcome, else what its category says of the work, To Do
+        not begun, In Progress being worked on, Done finished."""
         if self.outcome is not None:
             return self.outcome
-        return TicketState.DONE if self.category is wire.Category.DONE else TicketState.OPEN
+        match self.category:
+            case wire.Category.NEW:
+                return TicketState.OPEN
+            case wire.Category.INDETERMINATE:
+                return TicketState.STARTED
+            case wire.Category.DONE:
+                return TicketState.DONE
 
 
 class SeededTransition(Model):
@@ -291,8 +301,10 @@ DEFAULT_FIELDS = [
 PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
 RESOLUTIONS = [("Done", "Work on this issue is finished."), ("Won't Do", "This will not be worked on."),
                ("Duplicate", "The problem is a duplicate of another issue.")]  # fmt: skip
+BLOCKS = "Blocks"
+"""Jira's default link type whose outward issue blocks its inward one: "blocks", and "is blocked by" read back."""
 LINK_TYPES = [
-    ("Blocks", "is blocked by", "blocks"),
+    (BLOCKS, "is blocked by", "blocks"),
     ("Cloners", "is cloned by", "clones"),
     ("Duplicate", "is duplicated by", "duplicates"),
     ("Relates", "relates to", "relates to"),

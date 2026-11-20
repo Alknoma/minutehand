@@ -35,6 +35,10 @@ _RING = uuid.UUID("6f1c3a52-6d3b-4b8e-9a51-2f0f6c1d7e40")
 DAY_AT = time(12, 0)
 """The instant YouTrack's date picker stores for a day: noon UTC, which reads as that day from UTC-12 to UTC+11."""
 
+DEPEND = "Depend"
+"""YouTrack's default link type whose source "is required for" its target, which "depends on" it: the source must be
+resolved first (https://www.jetbrains.com/help/youtrack/cloud/link-issues.html)."""
+
 LINK_TYPES = [
     wire.StoredLinkType(
         id="106-0",
@@ -45,7 +49,7 @@ LINK_TYPES = [
         aggregation=True,
     ),
     wire.StoredLinkType(
-        id="106-1", name="Depend", sourceToTarget="is required for", targetToSource="depends on", directed=True
+        id="106-1", name=DEPEND, sourceToTarget="is required for", targetToSource="depends on", directed=True
     ),
     wire.StoredLinkType(
         id="106-2", name="Duplicate", sourceToTarget="duplicates", targetToSource="is duplicated by", directed=True
@@ -101,7 +105,11 @@ class FieldSeed(Model, Keyed):
 class ValueSeed(Model):
     name: str
     resolved: bool = False
-    means: TicketState | None = Field(default=None, description="Default: done when resolved, open otherwise")
+    means: TicketState | None = Field(
+        default=None,
+        description="What an issue in it is; default: done when resolved, open otherwise. `started` for a value an "
+        "issue is in while it is worked on, as the standard In Progress",
+    )
 
     def value(self) -> fields.Value:
         means = self.means or (TicketState.DONE if self.resolved else TicketState.OPEN)

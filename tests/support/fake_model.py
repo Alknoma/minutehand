@@ -29,7 +29,8 @@ says it is finished. The tools it calls are the same in every recipe:
     python fake_model.py [--port 8790]
 
 It also writes what Minutehand's people say, when Minutehand itself asks (a request offering one tool, the
-structured answer it asks for: `WrittenStep`, `WrittenReply`, `WrittenTransition` or `WrittenSummary`), so a run
+structured answer it asks for: `WrittenStep`, `WrittenReply`, `WrittenTransition`, `WrittenSummary` or
+`JudgedEffort`), so a run
 with model-written people needs no real model either; Minutehand names it `MINUTEHAND_MODEL=openai-chat:<any>` with
 `OPENAI_BASE_URL` pointed here and `OPENAI_API_KEY` set to anything. The rules read the prompt Minutehand sends, never guess:
 
@@ -42,6 +43,7 @@ with model-written people needs no real model either; Minutehand names it `MINUT
                         when they know something, from their facts: a ticket's move, an invitation's answer, a
                         decision in the agent's own product
     a summary           how many earlier messages there were
+    an estimate         the hours of work a fact of the person's names (`takes 12 hours`), else six
     a fact check        whether a person's reply stays inside what they know: a go-ahead or approval that
                         nothing they know gives is not theirs to give
     a review            the shared reviewer of the agent's effects (`ItemReview`): an amount the effect carries
@@ -134,7 +136,7 @@ def decide(situation: str) -> list[Call]:
 
 # -- what people say, when Minutehand asks -------------------------------------------------------------------
 
-PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary")
+PEOPLE = ("WrittenStep", "WrittenReply", "WrittenTransition", "WrittenSummary", "JudgedEffort")
 SERVICES = ("WrittenMachine", "WrittenRoute", "WrittenAnswer")
 JUDGES = ("ItemReview", "FactCheck", "WorkReview")
 
@@ -194,9 +196,24 @@ def person_answer(schema: str, system: str, shown: str) -> dict[str, object]:
         if "?" not in _last_message(shown):
             return {"replies": False, "text": None, "press": None, "form": None}
         return {"replies": True, "text": _sentences(known) or "I do not know.", "press": None, "form": None}
+    if schema == "JudgedEffort":
+        return {"hours": judged_hours(known)}
     if schema != "WrittenTransition":
         raise ValueError(f"no rule for what a person says as {schema}")
     return transition_answer(system, shown, known)
+
+
+JUDGED_HOURS = 6.0
+"""How long a person judges a piece of work takes them, unless a fact of theirs names the hours (`It takes 12
+hours`)."""
+
+
+def judged_hours(known: list[str]) -> float:
+    for fact in known:
+        named = re.search(r"\btakes (\d+(?:\.\d+)?) hours?\b", fact, flags=re.IGNORECASE)
+        if named is not None:
+            return float(named.group(1))
+    return JUDGED_HOURS
 
 
 def transition_answer(system: str, shown: str, known: list[str]) -> dict[str, object]:

@@ -104,6 +104,16 @@ def test_a_move_owed_by_someone_who_speaks_for_themselves_and_never_booked_is_in
     )
 
 
+def test_a_move_held_on_purpose_saying_why_is_not_owed_unbooked() -> None:
+    """Catches a run marked simulation_incomplete for work the world holds back, or a draft only its author marks
+    ready: a pending move held with no moment that says why (`PendingSnapshot.held`) is the engine's choice, not a
+    move it failed to book."""
+    log = Log()
+    log.message([OWEN], 0)
+    _pending(log, "nadia", 1, held="held back by jira ticket 10002")
+    assert [f for f in health(view(scenario(OWEN, NADIA), log)) if f.kind is HealthKind.OWED_UNBOOKED] == []
+
+
 def test_a_moment_booked_that_the_table_of_what_is_due_never_held_is_incomplete() -> None:
     log = Log()
     waited = _pending(log, "nadia", 1, due_at=at(3))

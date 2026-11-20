@@ -1,13 +1,18 @@
-"""The YouTrack provider: the REST API and Hub, the seeded instance, and the moves a person makes on an issue."""
+"""The YouTrack provider: the REST API and Hub, the seeded instance, and the moves a person makes on an issue.
+
+An issue assigned to a person is work they carry (`ports.transitions.CarriesWork`): what holds it back is each
+unresolved issue it depends on, and what is left of it is its estimate less its spent time, both as YouTrack holds
+them."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
 
-from minutehand.adapters.providers.youtrack import wire
+from minutehand.adapters.providers.youtrack import fields, wire
 from minutehand.adapters.providers.youtrack.app import build_app
 from minutehand.adapters.providers.youtrack.manifest import MANIFEST
-from minutehand.adapters.providers.youtrack.seed import YouTrackSeed, seed, write_faults
+from minutehand.adapters.providers.youtrack.seed import DEPEND, YouTrackSeed, seed, write_faults
 from minutehand.adapters.providers.youtrack.state import YouTrackWorld, issue_ref, millis, placed
 from minutehand.domain.errors import Rendered
 from minutehand.domain.people import PermissionGrant
@@ -98,7 +103,9 @@ class YouTrackProvider:
     # -- transitions (`ProvidesTransitions`) ---------------------------------------------------------------------
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        """Every issue assigned to the person's account whose State is not a resolved one, as they read it."""
+        """Every issue assigned to the person's account whose State is not a resolved one, as they read it: work they
+        carry until it is resolved, due on the day its Due Date names, and ranked by its Priority's place in its set,
+        which YouTrack orders most urgent first (Show-stopper is 0)."""
         youtrack = YouTrackWorld(world)
         user = youtrack.user_by_login(person.key) or (youtrack.user_by_email(person.email) if person.email else None)
         if user is None:
@@ -112,7 +119,16 @@ class YouTrackProvider:
             state = youtrack.state_of(project, issue)
             if assignee is None or assignee.id != user.id or state is None or state.isResolved:
                 continue
-            waiting.append(Waiting(item=issue_ref(issue.id), state=state.name, shown=_shown(youtrack, issue, state)))
+            waiting.append(
+                Waiting(
+                    item=issue_ref(issue.id),
+                    state=state.name,
+                    shown=_shown(youtrack, issue, state),
+                    work=True,
+                    due=_due(youtrack, project, issue),
+                    rank=_rank(youtrack, project, issue),
+                )
+            )
         return waiting
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
@@ -197,6 +213,37 @@ class YouTrackProvider:
         del item, who, world, clock
         return False
 
+    # -- work (`CarriesWork`) ------------------------------------------------------------------------------------
+
+    def holding(self, item: EntityRef, world: Store) -> list[EntityRef]:
+        """Each issue this one depends on, by a link of the Depend type (this one "depends on" it, it "is required
+        for" this one, so it must be resolved first), whose State is not a resolved one, in the order the links were
+        made."""
+        youtrack = YouTrackWorld(world)
+        issue, _ = _located(youtrack, item)
+        depend = {t.id for t in youtrack.link_types() if t.name == DEPEND}
+        held: list[EntityRef] = []
+        for link in youtrack.links():
+            if link.linkType not in depend or link.target != issue.id:
+                continue
+            required = youtrack.issue(link.source)
+            project = youtrack.project(required.project) if required is not None else None
+            if required is not None and project is not None and not youtrack.is_resolved(project, required):
+                held.append(issue_ref(required.id))
+        return held
+
+    def estimate(self, item: EntityRef, world: Store) -> timedelta | None:
+        """The issue's estimate less its spent time, by the period fields its project's time-tracking settings name
+        (what is left of the estimate's pie), never below nothing; None where the project tracks no time or the issue
+        holds no estimate."""
+        youtrack = YouTrackWorld(world)
+        issue, project = _located(youtrack, item)
+        tracking = project.timeTracking
+        if not tracking.enabled or tracking.estimate is None or tracking.estimate not in issue.values:
+            return None
+        spent = _minutes(issue, tracking.timeSpent) if tracking.timeSpent is not None else 0
+        return timedelta(minutes=max(0, _minutes(issue, tracking.estimate) - spent))
+
 
 def _assigned(
     youtrack: YouTrackWorld,
@@ -258,6 +305,39 @@ def _shown(youtrack: YouTrackWorld, issue: wire.StoredIssue, state: wire.StoredB
     return "\n".join(lines)
 
 
+def _due(youtrack: YouTrackWorld, project: wire.StoredProject, issue: wire.StoredIssue) -> date | None:
+    """The day the issue's Due Date names, as the date picker keeps it (noon UTC of that day, `seed.DAY_AT`); None
+    when the project carries no Due Date or the issue holds none."""
+    field = youtrack.project_field(project, fields.DUE_DATE.name)
+    if field is None or field.id not in issue.values:
+        return None
+    moment = issue.values[field.id]
+    if not isinstance(moment, int):
+        raise ValueError(f"{issue.idReadable}'s {fields.DUE_DATE.name} holds {moment!r}, which is no moment")
+    return datetime.fromtimestamp(moment / 1000, UTC).date()
+
+
+def _rank(youtrack: YouTrackWorld, project: wire.StoredProject, issue: wire.StoredIssue) -> int | None:
+    """The place of the issue's Priority among the values of its set, in their order (each value's `ordinal`), which
+    for Priority runs most urgent first (Show-stopper is 0); None when the project carries no Priority or the issue
+    holds none."""
+    field = youtrack.project_field(project, fields.PRIORITY.name)
+    if field is None or field.id not in issue.values:
+        return None
+    ordered = sorted(field.values, key=lambda v: v.ordinal)
+    return next((n for n, v in enumerate(ordered) if v.id == issue.values[field.id]), None)
+
+
+def _minutes(issue: wire.StoredIssue, field: str) -> int:
+    """What the issue's period field `field` holds, in minutes; 0 when it holds nothing."""
+    if field not in issue.values:
+        return 0
+    minutes = issue.values[field]
+    if not isinstance(minutes, int):
+        raise ValueError(f"{issue.idReadable} holds {minutes!r} in a period field, which holds minutes")
+    return minutes
+
+
 def _last_move(world: Store, item: EntityRef) -> Transition:
     moves = world.children(MANIFEST.key, EntityKind.TRANSITION, item_parent(item), limit=1000)
     last = max(moves, key=lambda s: s.seq)
@@ -286,5 +366,5 @@ def _located(youtrack: YouTrackWorld, ticket: EntityRef) -> tuple[wire.StoredIss
 
 
 def build() -> YouTrackProvider:
-    """A `Provider` that also `ProvidesTransitions` and `HoldsSeeded`; the tests hold it to all four."""
+    """A `Provider` that also `ProvidesTransitions`, `CarriesWork` and `HoldsSeeded`."""
     return YouTrackProvider()

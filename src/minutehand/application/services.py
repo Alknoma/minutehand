@@ -12,7 +12,7 @@ What is Minutehand's and what is the model's:
   each route means (`service-route/1`); and it renders each answer and push from the state and the log
   (`service-answer/1`), under the shape the route's first answer (or its OpenAPI document, or a pin) fixed. A
   rendering that shows an item in another state than its own, or departs from the shape, is rejected and rendered
-  once more, then refused. A person's response is the engine's (`person-transition/1`).
+  once more, then refused. A person's response is the engine's (`person-transition/2`).
 
 Every model call goes through the world's record (`Store.written`), and every answer rendered is kept with the
 state it was rendered in (`ServiceRecordKind.ANSWER`): polling a service whose state has not changed answers from

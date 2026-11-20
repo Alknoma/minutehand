@@ -7,14 +7,16 @@ and every other item (a ticket, a declared service's request) on the providers t
 1. **Look.** After every wake (and every `advance` of a standing world) each provider is asked what waits on each
    person (`items_for`). An item not yet held is pending on that person: written to the log as a `PendingSnapshot`
    (actor SCENARIO), so a fork reads what was owed at its checkpoint. One held that no longer waits on them is gone.
-   A person acts once per turn: after their own move an item waits on them again only once someone else moves it.
+   A person acts once per turn on an item they are asked about: after their own move it waits on them again only
+   once someone else moves it. Work they carry is theirs to move on, one move after another, until it is finished
+   (`_carry`).
 2. **Book.** Its moment is pinned by the scenario (`Person.takes` with `after`) or drawn as their answers are
    (`moments.draw_for`): from the run's seed, the person and the item, in their available time. A person who never
    acts (`Silent`, or a script that goes silent with nothing pinned) holds the item pending with no moment.
 3. **Act.** At the moment the provider is asked for the legal offers. A pinned offer is taken (its words exactly as
    pinned, or a model's from its facts); otherwise a model picks one and writes what it carries, from what the person
    can see: the item as the service shows it, their facts at that moment, their conversations
-   (`person-transition/1`). A pick that is not offered is asked again once; then the failure is recorded and the item
+   (`person-transition/2`). A pick that is not offered is asked again once; then the failure is recorded and the item
    stays owed, tried again later. The provider applies it through its own code path.
 4. **Kept.** Every model call is kept and replayed by its context, as the replier's are (`PersonCall`).
 
@@ -37,29 +39,43 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 
 from pydantic import Field, TypeAdapter
 
 from minutehand.application.moments import (
+    after_available,
     automatic_reply,
+    available_between,
     decision_text,
     draw_for,
+    drawn_span,
     follow_up_of,
     messages_to,
     pinned_at,
     sooner,
 )
 from minutehand.application.refusals import RunRefused, Unheard
-from minutehand.application.replier import HELPFULNESS, PeopleReplier, believed_part, bulleted, voice_rule, who_is
+from minutehand.application.replier import (
+    HELPFULNESS,
+    PeopleReplier,
+    believed_part,
+    bulleted,
+    voice_rule,
+    who_is,
+    work_part,
+)
 from minutehand.domain.clock import Drawn, DrawnFrom
+from minutehand.domain.common import Window
 from minutehand.domain.conversation import ModelMessage, Provenance, Speaker, Wrote
 from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.people import Decides, PersonReply, Plan, Press, Writing
 from minutehand.domain.scenario import (
+    FINISHED,
     AfterScript,
     Answers,
+    DelayRange,
     FormInput,
     Model,
     Moves,
@@ -70,6 +86,7 @@ from minutehand.domain.scenario import (
     Silent,
     Take,
     TicketHappening,
+    TicketState,
 )
 from minutehand.domain.transitions import (
     AUTOMATIC_REPLY,
@@ -84,8 +101,12 @@ from minutehand.domain.transitions import (
     ticket_move,
 )
 from minutehand.domain.world import (
+    OWN,
     Actor,
     Change,
+    CourseSnapshot,
+    CourseStatus,
+    EffortFrom,
     EntityKind,
     EntityRef,
     InboxItemSnapshot,
@@ -93,6 +114,7 @@ from minutehand.domain.world import (
     Operation,
     PendingSnapshot,
     PendingStatus,
+    TicketSnapshot,
     WorldEvent,
 )
 from minutehand.ports.clock import Clock
@@ -100,9 +122,9 @@ from minutehand.ports.model import Model as LanguageModel
 from minutehand.ports.model import ModelFailed
 from minutehand.ports.people import Replier
 from minutehand.ports.store import Store
-from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions, SteersPeople
+from minutehand.ports.transitions import CarriesWork, HoldsSeeded, ProvidesTransitions, SteersPeople
 
-TRANSITION_PROMPT_VERSION = "person-transition/1"
+TRANSITION_PROMPT_VERSION = "person-transition/2"
 """Changes whenever TRANSITION_PROMPT or what the person is shown changes a word."""
 
 TRANSITION_PROMPT = """\
@@ -111,7 +133,7 @@ there, what you can do with it now and what each takes, and what you can see of 
 
 What you know:
 {known}
-{believed}{decided}
+{believed}{work}{decided}
 Rules:
 - Pick exactly one of the things you can do, by its name exactly as listed, in "take".
 - Fill "fields" with one entry per field you fill, each by its name exactly as listed: a required field always, an \
@@ -122,8 +144,25 @@ optional one only when you have something to say in it. Write each value as you 
 - Today is {today}.
 """
 
-OWN = "minutehand"
-"""The provider the engine's own records are kept under, as the run loop's are."""
+ESTIMATE_PROMPT_VERSION = "person-estimate/1"
+"""Changes whenever ESTIMATE_PROMPT or what the person is shown changes a word."""
+
+JUDGED_HOURS_AT_MOST = 480.0
+"""The most working hours a person judges one piece of work to take them: twelve weeks of forty."""
+
+ESTIMATE_PROMPT = """\
+You are {who}. You are at work, taking up a piece of work of yours now. You are shown it as you see it in the \
+tool your team tracks it in, and what you can see of your conversations.
+
+What you know:
+{known}
+{believed}
+Say in "hours" how much of your own working time it takes you from now until it is done:
+- Judge it as you would in your role, from what it asks and what you know: the time it really takes you, not \
+the least it could take.
+- Hours of work, not of the calendar.
+- Today is {today}.
+"""
 
 _SCAN = 500
 
@@ -138,6 +177,16 @@ class WrittenTransition(Model):
 
     take: str = Field(description="The name of what you do, exactly as listed")
     fields: list[WrittenField] = Field(default=[], description="One per field you fill")
+
+
+class JudgedEffort(Model):
+    """How long a person judges a piece of work they take up takes them."""
+
+    hours: float = Field(
+        gt=0,
+        le=JUDGED_HOURS_AT_MOST,
+        description="The hours of your own working time it takes you from now until it is done",
+    )
 
 
 @dataclass(frozen=True)
@@ -183,6 +232,32 @@ class Acted:
 class Held:
     ref: EntityRef
     pending: PendingSnapshot
+
+
+@dataclass(frozen=True)
+class Carried:
+    """What one look booked for the work a person carries: moves newly booked, and booked moves whose moment moved
+    (None when it was held back and is booked for no moment until it is free again)."""
+
+    booked: list[Booking]
+    moved: list[Booking]
+
+
+@dataclass(frozen=True)
+class _Work:
+    """A piece of work waiting on a person, as one provider sees it now."""
+
+    port: ProvidesTransitions
+    carrier: CarriesWork
+    waiting: Waiting
+    played: bool
+    """Whether the scenario plays its provider (`Scenario.played`): unplayed work is carried only where a take pins it."""
+
+
+_LIVE = frozenset({CourseStatus.QUEUED, CourseStatus.WORKING, CourseStatus.HELD})
+_MEANINGS = frozenset(s.value for s in TicketState)
+_TAKING_UP = "You are taking this up now: you start work on it."
+_FINISHING = "You have done the work this needs."
 
 
 def needs_model(scenario: Scenario) -> list[str]:
@@ -290,6 +365,7 @@ class People:
         for person in self._scenario.people:
             held = self.held(person.key, world)
             asks: list[tuple[ProviderKey, Waiting]] = []
+            works: list[_Work] = []
             for key, port in self._ports.items():
                 waiting = port.items_for(person, world)
                 here = [w.item for w in waiting]
@@ -302,6 +378,8 @@ class People:
                 for item in waiting:
                     if item.conversation:
                         asks.append((key, item))
+                    elif item.work and isinstance(port, CarriesWork):
+                        works.append(_Work(port=port, carrier=port, waiting=item, played=key in played))
                     elif (
                         key in played
                         or self._pins(person, port, item.item, held, world, conversation=False) is not None
@@ -311,6 +389,9 @@ class People:
                             booked.append(made)
             if asks:
                 await self._converse(person, asks, events, world, clock, booked, moved)
+            carried = self._carry(person, works, held, events, world, clock)
+            booked += carried.booked
+            moved += carried.moved
             moved += self._items_reminded(person, events, world, clock)
         return Looked(booked=booked, gone=gone, moved=moved)
 
@@ -608,7 +689,13 @@ class People:
                 if p.status is not PendingStatus.PENDING or p.take == AUTOMATIC_REPLY:
                     continue
                 if p.asked is None:
-                    moved.append(self._repended(person, h, world, clock))
+                    course = self._live_course(key, p.item, world)
+                    if course is None:
+                        moved.append(self._repended(person, h, world, clock))
+                    elif course[1].started_at is None and p.due_at is not None:
+                        # work not yet picked up is planned again under the person as they now are; begun work
+                        # keeps its plan
+                        moved.append(self._replanned_work(person, h, course[0], course[1], world, clock))
                     continue
                 if p.item not in latest:
                     continue
@@ -667,6 +754,14 @@ class People:
         asked = next((e for e in world.events() if e.entity == item.item), None) if item.conversation else None
         began = asked.sim_time if asked is not None else clock.now()
         drawn = self._drawn(person, item.item, nth, take, began, world)
+        held_why: str | None = None
+        if take is None and not item.conversation:
+            offered = self.port(item.item.provider).legal(item.item, Actor.PERSON, person, world)
+            if not any(o.unprompted for o in offered):
+                # nothing they would do with it unprompted (a draft only its author marks ready, where a take says):
+                # held with no moment, as a person who never acts holds it, never booked to be dropped and again
+                drawn = None
+                held_why = "nothing they would do with it is theirs to do unprompted"
         pending = PendingSnapshot(
             person=person.key,
             item=item.item,
@@ -679,6 +774,7 @@ class People:
             pinned=found,
             drawn=drawn,
             conversation=item.conversation,
+            held=held_why,
         )
         ref = self._ref(person, item.item, world)
         self._write(world, ref, pending, Operation.CREATE)
@@ -746,6 +842,481 @@ class People:
             self._scenario, self.port(self._scenario.happening_ticket(happening).provider), happening, world, clock
         )
 
+    # -- work a person carries -------------------------------------------------------------------------------------
+
+    def courses(self, person: str, world: Store) -> list[tuple[EntityRef, CourseSnapshot]]:
+        """Every course the engine has planned for `person`, as each record last stood, in the order they began."""
+        found: list[tuple[EntityRef, CourseSnapshot]] = []
+        after: str | None = None
+        while True:
+            page = world.children(OWN, EntityKind.COURSE, person, after=after, limit=_SCAN)
+            found += [(s.entity, CourseSnapshot.model_validate_json(s.body)) for s in page]
+            if len(page) < _SCAN:
+                return sorted(found, key=lambda f: f[0].external_id.rsplit("|", 1)[1])
+            after = page[-1].entity.external_id
+
+    def _carry(
+        self,
+        person: Person,
+        works: list[_Work],
+        held: list[Held],
+        events: list[WorldEvent],
+        world: Store,
+        clock: Clock,
+    ) -> Carried:
+        """The work waiting on `person` (`Waiting.work`), against the courses the engine holds for them: new work is
+        queued with the takes that pin it as they stand then (`_course_takes`), which it keeps; work no longer theirs
+        is gone; work its service says is held back is paused, with what is left of it kept; and the one they are on
+        has its next move booked. When they are on none, the first of the rest that nothing holds back becomes the
+        one: work already under way first, then by the day it is due, then its priority, then when it became theirs.
+        Work a take pins runs beside the rest, at its pinned moments, whatever else they do or holds it."""
+        now = clock.now()
+        starts_at = self._scenario.starts_at
+        plans = self.courses(person.key, world)
+        live = {c.item: (ref, c) for ref, c in plans if c.status in _LIVE}
+        nths = _work_places(plans, [w.waiting.item for w in works])
+        used = [t for _, c in plans for t in (c.start_take, c.finish_take) if t is not None and t.nth is not None]
+        pins: dict[EntityRef, tuple[Take | None, Take | None]] = {}
+        for work in works:
+            item = work.waiting.item
+            if item in live:
+                kept = live[item][1]
+                pins[item] = (kept.start_take, kept.finish_take)
+                continue
+            pins[item] = self._course_takes(person, work, nths[item], world, used)
+            used += [t for t in pins[item] if t is not None and t.nth is not None]
+        pinned_work = [item for item, (start, finish) in pins.items() if start is not None or finish is not None]
+        here = {w.waiting.item: w for w in works if w.played or w.waiting.item in pinned_work}
+        pending_on = {h.pending.item: h for h in held if h.pending.status is PendingStatus.PENDING}
+        first = self._first_ask(person, events, plans, now)
+        carried = Carried(booked=[], moved=[])
+        for item, (ref, course) in list(live.items()):
+            if item not in here:
+                self._write_course(
+                    world, ref, course.model_copy(update={"status": CourseStatus.GONE}), Operation.UPDATE
+                )
+                del live[item]
+        for item, work in here.items():
+            waiting = work.waiting
+            turn = last_turn(world, item, person.key)
+            existing = live.get(item)
+            if existing is None:
+                start, finish = pins[item]
+                course = CourseSnapshot(
+                    person=person.key,
+                    item=item,
+                    status=CourseStatus.QUEUED,
+                    since=now,
+                    shown=waiting.shown,
+                    state=waiting.state,
+                    under_way=_meaning(item, world) is TicketState.STARTED,
+                    due=waiting.due,
+                    rank=waiting.rank,
+                    turn=turn,
+                    start_take=start,
+                    finish_take=finish,
+                    pinned_finish=now + finish.after if finish is not None and finish.after is not None else None,
+                )
+                ref = self._course_ref(person, item, world)
+                self._write_course(world, ref, course, Operation.CREATE)
+                live[item] = (ref, course)
+                continue
+            ref, course = existing
+            seen = (waiting.shown, waiting.state, waiting.due, waiting.rank)
+            update: dict[str, object] = {}
+            if (course.shown, course.state, course.due, course.rank) != seen:
+                update.update(shown=waiting.shown, state=waiting.state, due=waiting.due, rank=waiting.rank)
+            if turn != course.turn:
+                update.update(turn=turn, moved_to=[], stuck=False)
+            if update:
+                course = course.model_copy(update=update)
+                self._write_course(world, ref, course, Operation.UPDATE)
+                live[item] = (ref, course)
+        for item, (ref, course) in list(live.items()):
+            if item in pinned_work:
+                continue
+            holding = here[item].carrier.holding(item, world)
+            if course.status is CourseStatus.WORKING and holding:
+                if course.started_at is None:
+                    course = course.model_copy(update={"status": CourseStatus.QUEUED, "held_by": holding})
+                else:
+                    ends = course.finishes_at
+                    left = (
+                        available_between(now, ends, person, starts_at, first_ask=first)
+                        if ends is not None
+                        else timedelta(0)
+                    )
+                    course = course.model_copy(
+                        update={
+                            "status": CourseStatus.HELD,
+                            "held_by": holding,
+                            "held_at": now,
+                            "left": left,
+                            "finishes_at": None,
+                        }
+                    )
+                booked_on = pending_on.get(item)
+                if booked_on is not None:
+                    carried.moved.append(self._unbook(booked_on, holding, world))
+            elif holding != course.held_by:
+                course = course.model_copy(update={"held_by": holding})
+            else:
+                continue
+            self._write_course(world, ref, course, Operation.UPDATE)
+            live[item] = (ref, course)
+        for item in [i for i in live if i in pinned_work]:
+            ref, course = live[item]
+            if course.status is not CourseStatus.WORKING:
+                course = course.model_copy(update={"status": CourseStatus.WORKING})
+                self._write_course(world, ref, course, Operation.UPDATE)
+            self._keep_booked(person, course, nths[item], first, pending_on.get(item), world, clock, carried)
+        rest = {item: rc for item, rc in live.items() if item not in pinned_work}
+        current = [item for item, (_, c) in rest.items() if c.status is CourseStatus.WORKING]
+        if not current and (_picks(person) or any(t.after is not None for t in person.takes)):
+            free = [
+                rc
+                for rc in rest.values()
+                if rc[1].status is not CourseStatus.WORKING and not rc[1].held_by and not rc[1].stuck
+            ]
+            if free:
+                ref, course = min(free, key=lambda rc: _order(rc[1]))
+                update = {"status": CourseStatus.WORKING}
+                if course.started_at is not None:
+                    left = course.left if course.left is not None else timedelta(0)
+                    update.update(
+                        finishes_at=after_available(now, left, person, starts_at, first_ask=first),
+                        held_at=None,
+                        left=None,
+                    )
+                course = course.model_copy(update=update)
+                self._write_course(world, ref, course, Operation.UPDATE)
+                live[course.item] = (ref, course)
+                current = [course.item]
+        for item in current:
+            _, course = live[item]
+            self._keep_booked(person, course, nths[item], first, pending_on.get(item), world, clock, carried)
+        if not _picks(person):
+            # a person who never acts holds every piece of their work pending with no moment, as every item before
+            for item, (_, course) in live.items():
+                if item not in pinned_work and item not in pending_on:
+                    carried.booked.append(self._held_still(person, course, nths[item], world))
+        return carried
+
+    def _course_takes(
+        self, person: Person, work: _Work, nth: int, world: Store, used: Sequence[Take]
+    ) -> tuple[Take | None, Take | None]:
+        """The takes that pin a piece of work, as they stand when it becomes theirs: of those naming it
+        (`takes_naming`), the first that names a move beginning it pins their picking it up, and the first of the rest
+        pins its finish. A take naming it by its place pins one piece of work, once (`used`); one for every item pins
+        each it applies to."""
+        named = [
+            t
+            for t in takes_naming(person, work.waiting.item.provider, nth)
+            if (t.nth is None or t not in used) and self._applies(person, t, work, world)
+        ]
+        start = next((t for t in named if self._starts(person, t, work, world)), None)
+        finish = next((t for t in named if t is not start), None)
+        return start, finish
+
+    def _first_ask(
+        self,
+        person: Person,
+        events: Sequence[WorldEvent],
+        plans: Sequence[tuple[EntityRef, CourseSnapshot]],
+        now: datetime,
+    ) -> datetime:
+        """Where an absence that starts on a person's first ask starts: the first message sent to them, else when the
+        first piece of work became theirs, else now. Never the moment of a move on work, so each move does not start
+        the absence again."""
+        sent = messages_to(person, events)
+        if sent:
+            return sent[0].sim_time
+        return min((c.since for _, c in plans), default=now)
+
+    def _first_asked(self, person: Person, world: Store, now: datetime) -> datetime:
+        events = world.events(kinds=[EntityKind.MESSAGE, EntityKind.INBOX_ITEM])
+        return self._first_ask(person, events, self.courses(person.key, world), now)
+
+    def _held_still(self, person: Person, course: CourseSnapshot, nth: int, world: Store) -> Booking:
+        """Work pending on a person who never acts (Silent, nothing pinned): held, with no moment."""
+        pending = PendingSnapshot(
+            person=person.key,
+            item=course.item,
+            nth=nth,
+            state=course.state,
+            turn=course.turn,
+            status=PendingStatus.PENDING,
+            due_at=None,
+            held="they never act on it unprompted",
+        )
+        made = self._ref(person, course.item, world)
+        self._write(world, made, pending, Operation.CREATE)
+        return Booking(pending=made, person=person.key, item=course.item, at=None, drawn=None)
+
+    def _keep_booked(
+        self,
+        person: Person,
+        course: CourseSnapshot,
+        nth: int,
+        first: datetime,
+        booked_on: Held | None,
+        world: Store,
+        clock: Clock,
+        carried: Carried,
+    ) -> None:
+        """The next move on the work they are on, booked unless it already is. Nothing is booked for work they are
+        stuck on, or, for a person who never acts (Silent), for a move no take pins."""
+        if booked_on is not None and booked_on.pending.due_at is not None:
+            return
+        pinned_next = course.start_take if course.started_at is None else course.finish_take
+        if course.stuck or (pinned_next is None and course.pinned_finish is None and not _picks(person)):
+            return
+        booking = self._step(person, course, nth, first, booked_on, world, clock)
+        (carried.moved if booked_on is not None else carried.booked).append(booking)
+
+    def _step(
+        self,
+        person: Person,
+        course: CourseSnapshot,
+        nth: int,
+        first: datetime,
+        booked_on: Held | None,
+        world: Store,
+        clock: Clock,
+        *,
+        began: datetime | None = None,
+    ) -> Booking:
+        """The person's next move on the work they are on: picking it up as soon as an answer of theirs would land
+        (drawn from `began`, when that move was first booked, else now), where a fork pins it (`ReplyAt` with
+        `provider`), or where its start take pins it, and never after a pinned finish; someone who never acts
+        unprompted takes it up only as a take pins it. Then its finish at the moment its course says; or, past that
+        moment and not finished (a step its workflow takes first, a review), its next step as soon as they come back to
+        it, at once where a take pins the finish. The pending record names the take of the move it pins."""
+        now = clock.now()
+        behaviour = person.reply
+        assert isinstance(behaviour, Answers | Scripted | Silent)
+        delay = behaviour.delay if isinstance(behaviour, Answers | Scripted) else None
+        drawn: Drawn
+        take: Take | None = None
+        if course.started_at is None:
+            asked = began if began is not None else now
+            forked = self._item_pins.get((person.key, course.item.provider, nth))
+            if course.start_take is not None:
+                take = course.start_take
+                drawn = (
+                    pinned_at(self._scenario, course.since, take.after)
+                    if take.after is not None
+                    else self._answering(person, course.item, asked, first, take.within, delay)
+                )
+            elif forked is not None:
+                drawn = pinned_at(self._scenario, course.since, forked)
+            elif course.pinned_finish is not None and not _picks(person):
+                # someone who never acts unprompted moves it only as its take says: at its finish, in one move
+                drawn = pinned_at(self._scenario, course.since, course.pinned_finish - course.since)
+                take = course.finish_take
+            else:
+                drawn = self._answering(person, course.item, asked, first, None, delay)
+            if take is None and course.pinned_finish is not None and drawn.lands_at >= course.pinned_finish:
+                # they come to it no sooner than its pinned finish: taking it up is finishing it, as the take says
+                drawn = pinned_at(self._scenario, course.since, course.pinned_finish - course.since)
+                take = course.finish_take
+        else:
+            take = course.finish_take
+            if course.finishes_at is not None and course.finishes_at > now:
+                drawn = (
+                    pinned_at(self._scenario, course.since, course.finishes_at - course.since)
+                    if course.pinned_finish is not None
+                    else Drawn(
+                        source=DrawnFrom.WORK,
+                        seed=self._scenario.seed,
+                        asked_at=course.started_at,
+                        offset=course.effort if course.effort is not None else timedelta(0),
+                        lands_at=course.finishes_at,
+                    )
+                )
+            elif course.pinned_finish is not None:
+                drawn = pinned_at(self._scenario, now, timedelta(0))
+            else:
+                drawn = self._answering(person, course.item, now, first, None, delay)
+        found = _place(person, take)
+        said = take.take if take is not None else None
+        due = max(drawn.lands_at, now)
+        if booked_on is not None:
+            changed = booked_on.pending.model_copy(
+                update={"due_at": due, "drawn": drawn, "pinned": found, "take": said, "held": None}
+            )
+            self._write(world, booked_on.ref, changed, Operation.UPDATE)
+            return Booking(pending=booked_on.ref, person=person.key, item=course.item, at=due, drawn=drawn)
+        pending = PendingSnapshot(
+            person=person.key,
+            item=course.item,
+            nth=nth,
+            state=course.state,
+            turn=course.turn,
+            status=PendingStatus.PENDING,
+            due_at=due,
+            take=said,
+            pinned=found,
+            drawn=drawn,
+        )
+        made = self._ref(person, course.item, world)
+        self._write(world, made, pending, Operation.CREATE)
+        return Booking(pending=made, person=person.key, item=course.item, at=due, drawn=drawn)
+
+    def _answering(
+        self,
+        person: Person,
+        item: EntityRef,
+        now: datetime,
+        first: datetime,
+        within: Window | None,
+        delay: DelayRange | None,
+    ) -> Drawn:
+        """A moment drawn as this person's answers are: within `within` or their `reply_within`, else their reply's
+        delay; at once for someone with neither (a Silent person whose move a take pins)."""
+        if within is None and person.reply_within is None and delay is None:
+            return pinned_at(self._scenario, now, timedelta(0))
+        return draw_for(
+            self._scenario,
+            person,
+            item,
+            now,
+            first_asked=first,
+            within=within,
+            delay=delay if delay is not None else DelayRange(),
+        )
+
+    def _starts(self, person: Person, take: Take, work: _Work, world: Store) -> bool:
+        """Whether a take names a move that begins the work: a move to a started state, by its name, the state it
+        reaches, its label or what that state means."""
+        said = take.take.strip().casefold()
+        if said == TicketState.STARTED.value:
+            return True
+        offer = _matching(take.take, work.port.legal(work.waiting.item, Actor.PERSON, person, world))
+        return offer is not None and offer.means is TicketState.STARTED
+
+    def _unbook(self, booked_on: Held, holding: Sequence[EntityRef], world: Store) -> Booking:
+        """A booked move on work that is now held back: kept owed for no moment until it is free again, saying what
+        holds it."""
+        held_by = ", ".join(f"{r.provider} {r.kind.value} {r.external_id}" for r in holding)
+        changed = booked_on.pending.model_copy(update={"due_at": None, "held": f"held back by {held_by}"})
+        self._write(world, booked_on.ref, changed, Operation.UPDATE)
+        return Booking(
+            pending=booked_on.ref, person=booked_on.pending.person, item=booked_on.pending.item, at=None, drawn=None
+        )
+
+    def _replanned_work(
+        self, person: Person, held: Held, ref: EntityRef, course: CourseSnapshot, world: Store, clock: Clock
+    ) -> Booking:
+        """Work not yet picked up, planned again under the person as a fork changed them: the takes that pin it as
+        they stand now, and its picking up drawn again from when it was first booked, so a person whose answers did
+        not change takes it up when they were going to. Someone the fork made silent holds it with no moment, unless a
+        take pins it."""
+        port = self.port(course.item.provider)
+        waiting = next((w for w in port.items_for(person, world) if w.item == course.item), None)
+        if waiting is not None and isinstance(port, CarriesWork):
+            work = _Work(
+                port=port, carrier=port, waiting=waiting, played=course.item.provider in self._scenario.played()
+            )
+            others = [c for r, c in self.courses(person.key, world) if r != ref]
+            used = [t for c in others for t in (c.start_take, c.finish_take) if t is not None and t.nth is not None]
+            start, finish = self._course_takes(person, work, held.pending.nth, world, used)
+            after = finish.after if finish is not None else None
+            course = course.model_copy(
+                update={
+                    "start_take": start,
+                    "finish_take": finish,
+                    "pinned_finish": course.since + after if after is not None else None,
+                }
+            )
+            self._write_course(world, ref, course, Operation.UPDATE)
+        if not _picks(person) and course.start_take is None and course.pinned_finish is None:
+            changed = held.pending.model_copy(
+                update={
+                    "due_at": None,
+                    "drawn": None,
+                    "pinned": None,
+                    "take": None,
+                    "held": "they never act on it unprompted",
+                }
+            )
+            self._write(world, held.ref, changed, Operation.UPDATE)
+            return Booking(pending=held.ref, person=person.key, item=course.item, at=None, drawn=None)
+        began = next(e.sim_time for e in world.events() if e.entity == held.ref)
+        first = self._first_asked(person, world, clock.now())
+        return self._step(person, course, held.pending.nth, first, held, world, clock, began=began)
+
+    def _applies(self, person: Person, take: Take, work: _Work, world: Store) -> bool:
+        """Whether a take pins a piece of work: one naming its provider or its place does; one for every item anywhere
+        does only where it names what a ticket's state means, or a move the work offers now."""
+        if take.provider is not None or take.nth is not None:
+            return True
+        if take.take.strip().casefold() in {s.value for s in TicketState}:
+            return True
+        return _matching(take.take, work.port.legal(work.waiting.item, Actor.PERSON, person, world)) is not None
+
+    async def _effort(
+        self, person: Person, carrier: CarriesWork, waiting: Waiting, world: Store, clock: Clock
+    ) -> tuple[timedelta, EffortFrom] | None:
+        """How long the work takes them from when they pick it up, in their available time: what its service says is
+        left of it, else drawn within their pace, else as long as they judge it takes them (`_judged`); None for
+        someone no model speaks for, who judges nothing."""
+        estimate = carrier.estimate(waiting.item, world)
+        if estimate is not None:
+            return estimate, EffortFrom.ESTIMATE
+        if person.pace is not None:
+            return drawn_span(self._scenario, person, waiting.item, "pace", person.pace), EffortFrom.PACE
+        behaviour = person.reply
+        if self._words is None or not isinstance(behaviour, Answers | Scripted):
+            return None
+        return await self._judged(person, behaviour, self._words, waiting, world, clock), EffortFrom.PERSON
+
+    async def _judged(
+        self,
+        person: Person,
+        behaviour: Answers | Scripted,
+        words: PeopleReplier,
+        waiting: Waiting,
+        world: Store,
+        clock: Clock,
+    ) -> timedelta:
+        """How much of their working time a piece of work they take up takes them, as they judge it from what it asks
+        and what they know, where its tracker holds no estimate and the scenario gives them no pace: one model call,
+        kept and replayed by its context as each of theirs is."""
+        history = world.events()
+        system = estimate_prompt(person, behaviour, clock.now(), self._scenario.starts_at)
+        context = (
+            await words.context(person, behaviour, history[-1], history, world, clock, answers=False) if history else []
+        )
+        shown = f"The work you are taking up, as {waiting.item.provider} shows it:\n{waiting.shown}"
+        messages = [ModelMessage(speaker=Speaker.ASKER, text=shown + "\n\n" + (context[0].text if context else ""))]
+        judged = await words.ask_model(
+            person, Wrote.ESTIMATE, waiting.item, system, messages, JudgedEffort, ESTIMATE_PROMPT_VERSION, world, clock
+        )
+        return timedelta(hours=judged.answer.hours)
+
+    def _course_ref(self, person: Person, item: EntityRef, world: Store) -> EntityRef:
+        return EntityRef(
+            provider=OWN,
+            kind=EntityKind.COURSE,
+            external_id=f"{person.key}|{item.provider}|{item.kind.value}|{item.external_id}|{world.head() + 1:010d}",
+        )
+
+    def _live_course(self, person: str, item: EntityRef, world: Store) -> tuple[EntityRef, CourseSnapshot] | None:
+        return next(((r, c) for r, c in self.courses(person, world) if c.item == item and c.status in _LIVE), None)
+
+    def _write_course(self, world: Store, ref: EntityRef, course: CourseSnapshot, operation: Operation) -> None:
+        world.apply(
+            Change(
+                entity=ref,
+                operation=operation,
+                actor=Actor.SCENARIO,
+                body=course.model_dump_json(),
+                parent=course.person,
+                after=course,
+            )
+        )
+
     # -- acting ---------------------------------------------------------------------------------------------------
 
     def pending(self, pending: EntityRef, world: Store) -> PendingSnapshot:
@@ -772,7 +1343,10 @@ class People:
             return Acted(transition=None)
         if snap.conversation and (snap.plan is not None or snap.answer is not None):
             return await self._answer(held, person, port, world, clock)
-        take = person.takes[snap.pinned] if snap.pinned is not None else None
+        course = self._live_course(person.key, snap.item, world)
+        if course is not None and isinstance(port, CarriesWork):
+            return await self._work_step(held, person, port, port, waiting, course[0], course[1], world, clock)
+        take = person.takes[snap.pinned] if snap.pinned is not None and snap.pinned < len(person.takes) else None
         steers = port if isinstance(port, SteersPeople) else None
         failure: str | None = None
         for _ in range(2):
@@ -802,6 +1376,243 @@ class People:
             return Acted(transition=transition)
         assert failure is not None
         self._write(world, pending, snap.model_copy(update={"failure": failure}), Operation.UPDATE)
+        return Acted(transition=None, failure=failure)
+
+    async def _work_step(
+        self,
+        held: Held,
+        person: Person,
+        port: ProvidesTransitions,
+        carrier: CarriesWork,
+        waiting: Waiting,
+        ref: EntityRef,
+        course: CourseSnapshot,
+        world: Store,
+        clock: Clock,
+    ) -> Acted:
+        """The person's move on the work they are on, as its course says. Picking it up moves it to a started state,
+        unless it is in one already, or makes the move its start take names; it fixes how long the work takes them.
+        Finishing it moves it to done, or makes the move its finish take names. A finish its workflow cannot reach from
+        where it stands takes the next started state they have not moved it to (a review), and the rest is booked for
+        when they come back to it; one it reaches only through a screen nobody is offered (a resolution) is walked
+        there by what done means. Several moves to choose from go to the model, which writes what they carry; one that
+        takes nothing is taken with no model. Nothing that moves it forward leaves it stuck: they move on, and come
+        back once someone else moves it."""
+        now = clock.now()
+        snap = held.pending
+        offers = port.legal(snap.item, Actor.PERSON, person, world)
+        # cancelling is theirs to choose beside moving it on, never alone, and never where a take pins how it ends: a
+        # model picks it from what they know. Someone who never chooses for themselves (silent), or with no model to
+        # choose for them, moves on with the first move forward.
+        chooses = _picks(person) and self._words is not None
+        cancels = [o for o in offers if o.means is TicketState.CANCELLED and o.unprompted]
+        dropping = cancels if chooses and course.finish_take is None else []
+        if course.started_at is None:
+            first = self._first_asked(person, world, now)
+            try:
+                judged = await self._effort(person, carrier, waiting, world, clock)
+            except ModelFailed as e:
+                return self._still_owed(held, world, str(e))
+            effort: timedelta | None = None
+            effort_from: EffortFrom | None = None
+            finishes: datetime | None = None
+            believed: datetime | None = None
+            if course.pinned_finish is not None:
+                finishes, effort_from = max(course.pinned_finish, now), EffortFrom.TAKE
+                effort = available_between(now, finishes, person, self._scenario.starts_at, first_ask=first)
+                # what they believe it takes them, so a later pinned finish is a slip they know of; someone no
+                # model speaks for believes it as it lands
+                believed = (
+                    after_available(now, judged[0], person, self._scenario.starts_at, first_ask=first)
+                    if judged is not None
+                    else finishes
+                )
+            elif judged is not None:
+                effort, effort_from = judged
+                believed = after_available(now, effort, person, self._scenario.starts_at, first_ask=first)
+                finishes = believed
+            # else: nobody judges how long it takes someone no model speaks for, and no estimate, pace or take says:
+            # they take it up as a take pins it, and never finish it unprompted
+            if finishes is not None and finishes <= now:
+                # its finish is due already as they come to it (a take pins it then, or nothing is left of it):
+                # they finish it outright, one move, rather than starting and finishing it in the same moment
+                course = course.model_copy(
+                    update={
+                        "status": CourseStatus.WORKING,
+                        "started_at": now,
+                        "effort": effort,
+                        "effort_from": effort_from,
+                        "finishes_at": finishes,
+                        "expects_at": believed,
+                    }
+                )
+                self._write_course(world, ref, course, Operation.UPDATE)
+                return await self._finish(
+                    held,
+                    person,
+                    port,
+                    waiting,
+                    ref,
+                    course,
+                    course.finish_take,
+                    offers,
+                    dropping,
+                    chooses,
+                    world,
+                    clock,
+                )
+            start = course.start_take
+            if start is not None:
+                named = _matching(start.take, offers)
+                if named is None and _meaning(snap.item, world) is TicketState.STARTED:
+                    starting: list[Offer] = []  # under way already: taking it up moves nothing
+                elif named is None and start.take.strip().casefold() not in _MEANINGS:
+                    return self._dropped(held, ref, course, _not_offered(person, start, offers), world)
+                else:
+                    starting = [named] if named is not None else []
+            else:
+                forward = [o for o in offers if o.means is TicketState.STARTED and o.unprompted]
+                if _meaning(snap.item, world) not in (None, TicketState.OPEN):
+                    forward = []
+                starting = ([*forward, *dropping] if chooses else forward[:1]) if forward else []
+            moved_to = list(course.moved_to)
+            transition: Transition | None = None
+            offer: Offer | None = None
+            if starting:
+                try:
+                    told = waiting.model_copy(update={"shown": f"{waiting.shown}\n\n{_TAKING_UP}"})
+                    offer, content = await self._pick(person, told, starting, start, world, clock)
+                    transition = await port.apply(snap.item, offer.name, Actor.PERSON, person, content, world, clock)
+                except ModelFailed as e:
+                    return self._still_owed(held, world, str(e))
+                except _Unpinnable as e:
+                    return self._dropped(held, ref, course, str(e), world)
+                except ValueError as e:
+                    return self._still_owed(held, world, f"{snap.item.provider} refused it: {e}")
+                moved_to.append(offer.to_state)
+            state = transition.to_state if transition is not None else course.state
+            begun = course.model_copy(
+                update={
+                    "status": CourseStatus.FINISHED
+                    if offer is not None and offer.means in FINISHED
+                    else CourseStatus.WORKING,
+                    "started_at": now,
+                    "effort": effort,
+                    "effort_from": effort_from,
+                    "finishes_at": finishes,
+                    "expects_at": believed,
+                    "moved_to": moved_to,
+                    "state": state,
+                }
+            )
+            self._write_course(world, ref, begun, Operation.UPDATE)
+            self._close(world, held, PendingStatus.ACTED, transition=transition.seq if transition is not None else None)
+            return Acted(transition=transition)
+        return await self._finish(
+            held, person, port, waiting, ref, course, course.finish_take, offers, dropping, chooses, world, clock
+        )
+
+    async def _finish(
+        self,
+        held: Held,
+        person: Person,
+        port: ProvidesTransitions,
+        waiting: Waiting,
+        ref: EntityRef,
+        course: CourseSnapshot,
+        take: Take | None,
+        offers: list[Offer],
+        dropping: list[Offer],
+        chooses: bool,
+        world: Store,
+        clock: Clock,
+    ) -> Acted:
+        """The person's move once the work is done: to done, or the move its finish take names; else the next started
+        state its workflow takes first; else walked to done; with cancelling beside them for a model to choose from
+        what they know. A take naming a move the work does not offer is dropped, saying so; one naming a move that
+        leaves the work unfinished (a comment) is made, and the work then waits for someone else to move it before they
+        come back to it, as any item a person moves waits on them again only once someone else moves it."""
+        snap = held.pending
+        done = [o for o in offers if o.means is TicketState.DONE and o.unprompted]
+        forward = [
+            o
+            for o in offers
+            if o.means is TicketState.STARTED
+            and o.unprompted
+            and o.to_state not in course.moved_to
+            and o.to_state != waiting.state
+        ]
+        # a finish its workflow reaches only through a screen a person is not offered (a resolution) is walked there
+        walked = [o for o in offers if o.means is TicketState.DONE and not o.unprompted][:1]
+        ahead = done or forward or walked
+        named: Offer | None = None
+        if take is not None:
+            named = _matching(take.take, offers)
+            if named is None and take.take.strip().casefold() not in _MEANINGS:
+                return self._dropped(held, ref, course, _not_offered(person, take, offers), world)
+            choices = [named] if named is not None else ahead
+        else:
+            choices = ([*ahead, *dropping] if chooses else ahead[:1]) if ahead else []
+        if not choices:
+            stuck = course.model_copy(
+                update={"status": CourseStatus.HELD if course.started_at else CourseStatus.QUEUED, "stuck": True}
+            )
+            self._write_course(world, ref, stuck, Operation.UPDATE)
+            self._close(world, held, PendingStatus.GONE, failure=f"nothing takes it forward from {waiting.state}")
+            return Acted(transition=None)
+        try:
+            told = waiting.model_copy(update={"shown": f"{waiting.shown}\n\n{_FINISHING}"})
+            offer, content = await self._pick(person, told, choices, take, world, clock)
+            transition = await port.apply(snap.item, offer.name, Actor.PERSON, person, content, world, clock)
+        except ModelFailed as e:
+            return self._still_owed(held, world, str(e))
+        except _Unpinnable as e:
+            return self._dropped(held, ref, course, str(e), world)
+        except ValueError as e:
+            return self._still_owed(held, world, f"{snap.item.provider} refused it: {e}")
+        moved = {"moved_to": [*course.moved_to, offer.to_state], "state": transition.to_state}
+        if offer.means in FINISHED:
+            ended = course.model_copy(update={**moved, "status": CourseStatus.FINISHED})
+        elif named is not None:
+            # the move its take names, which leaves the work unfinished: theirs is made
+            ended = course.model_copy(update={**moved, "status": CourseStatus.HELD, "stuck": True})
+        else:
+            ended = course.model_copy(update=moved)
+        self._write_course(world, ref, ended, Operation.UPDATE)
+        self._close(world, held, PendingStatus.ACTED, transition=transition.seq)
+        return Acted(transition=transition)
+
+    async def _pick(
+        self, person: Person, waiting: Waiting, offers: list[Offer], take: Take | None, world: Store, clock: Clock
+    ) -> tuple[Offer, str]:
+        """One of `offers` and what it carries: the only one, taken with nothing written when it requires nothing and
+        no take asks for words; else the take's, worded by a model from its facts where it gives some; else the model's
+        pick, which writes what it carries."""
+        if take is not None:
+            chosen = offers[0]
+            exact = _exact(take, chosen, person)
+            if not take.facts:
+                return chosen, json.dumps(exact)
+            offer, content, _ = await self._written(person, waiting, offers, take, chosen, None, world, clock)
+            return offer, json.dumps({**json.loads(content), **exact})
+        if len(offers) == 1 and not any(f.required for f in offers[0].fields):
+            return offers[0], json.dumps({})
+        offer, content, _ = await self._written(person, waiting, offers, None, None, None, world, clock)
+        return offer, content
+
+    def _dropped(self, held: Held, ref: EntityRef, course: CourseSnapshot, failure: str, world: Store) -> Acted:
+        """A move a take pins that the work does not offer: dropped, saying so, and the work left where it stands
+        until someone else moves it (`stuck`), so it is not tried again and again."""
+        stuck = course.model_copy(
+            update={"status": CourseStatus.HELD if course.started_at else CourseStatus.QUEUED, "stuck": True}
+        )
+        self._write_course(world, ref, stuck, Operation.UPDATE)
+        self._close(world, held, PendingStatus.GONE, failure=failure)
+        return Acted(transition=None)
+
+    def _still_owed(self, held: Held, world: Store, failure: str) -> Acted:
+        """A move a model failed to write, or the service refused: still owed, its failure kept, tried again later."""
+        self._write(world, held.ref, held.pending.model_copy(update={"failure": failure}), Operation.UPDATE)
         return Acted(transition=None, failure=failure)
 
     async def ready(self, pending: EntityRef, world: Store, clock: Clock) -> Ready:
@@ -951,7 +1762,16 @@ class People:
         behaviour = person.reply
         assert isinstance(behaviour, Answers | Scripted)
         history = world.events()
-        system = transition_prompt(person, behaviour, take, pinned, leaning, clock.now(), self._scenario.starts_at)
+        system = transition_prompt(
+            person,
+            behaviour,
+            take,
+            pinned,
+            leaning,
+            clock.now(),
+            self._scenario.starts_at,
+            work_part(person, world, clock.now()),
+        )
         shown = asked_to_move(waiting, offers)
         context = (
             await self._words.context(person, behaviour, history[-1], history, world, clock, answers=False)
@@ -1181,6 +2001,24 @@ def pinned(person: Person, provider: ProviderKey, nth: int, nth_any: int | None,
     return None
 
 
+def takes_naming(person: Person, provider: ProviderKey, nth: int) -> list[Take]:
+    """Every take of `person`'s naming their nth piece of work in `provider`, in their order, at the first of these
+    that names any: the provider and its place, the provider, every item anywhere (as `pinned` orders them, asks
+    aside)."""
+    for wanted in ((provider, nth), (provider, None), (None, None)):
+        found = [t for t in person.takes if (t.provider, t.nth) == wanted]
+        if found:
+            return found
+    return []
+
+
+def _place(person: Person, take: Take | None) -> int | None:
+    """Where `take` stands in `Person.takes`; None for none, or one they no longer hold (a fork took it away)."""
+    if take is None:
+        return None
+    return next((n for n, t in enumerate(person.takes) if t == take), None)
+
+
 def _matching(said: str, offers: Sequence[Offer], *, exact: bool = False) -> Offer | None:
     """The offer `said` names, in any case: by its name, else (unless `exact`) by the state it reaches, the label the
     person sees on it, or what a ticket's state means."""
@@ -1228,6 +2066,49 @@ def _places(held: list[Held], item: EntityRef, conversation: bool) -> tuple[int,
     return nth, asks.index(item) + 1 if item in asks else len(asks) + 1
 
 
+def _order(course: CourseSnapshot) -> tuple[bool, bool, date, bool, int, datetime, str]:
+    """Which of a person's work comes first: work already under way when it became theirs, then the day it is due
+    (none last), its priority (none last), when it became theirs, then its id, so the same world always orders it the
+    same way."""
+    return (
+        not course.under_way,
+        course.due is None,
+        course.due if course.due is not None else date.max,
+        course.rank is None,
+        course.rank if course.rank is not None else 0,
+        course.since,
+        course.item.external_id,
+    )
+
+
+def _work_places(plans: list[tuple[EntityRef, CourseSnapshot]], waiting: list[EntityRef]) -> dict[EntityRef, int]:
+    """Where each piece of work stands among the work handed to a person in its provider, from 1, in the order each
+    became theirs (what a take's `nth` counts): work they already carried first, then what waits on them now."""
+    places: dict[EntityRef, int] = {}
+    counted: dict[ProviderKey, int] = {}
+    for item in [*(c.item for _, c in plans), *waiting]:
+        if item in places:
+            continue
+        counted[item.provider] = counted.get(item.provider, 0) + 1
+        places[item] = counted[item.provider]
+    return places
+
+
+def _not_offered(person: Person, take: Take, offers: Sequence[Offer]) -> str:
+    return f"{person.key} is pinned to take {take.take!r}, which is not offered: " + ", ".join(
+        repr(o.name) for o in offers
+    )
+
+
+def _meaning(item: EntityRef, world: Store) -> TicketState | None:
+    """What a ticket's state means now, from its latest version in the log; None for an item that is no ticket."""
+    latest: TicketState | None = None
+    for event in world.events(kinds=[EntityKind.TICKET], providers=[item.provider]):
+        if event.entity == item and isinstance(event.after, TicketSnapshot):
+            latest = event.after.state
+    return latest
+
+
 def last_turn(world: Store, item: EntityRef, person: str) -> int:
     """The seq of the last transition anyone but `person` made on `item`; 0 when none has."""
     latest = 0
@@ -1251,6 +2132,7 @@ def transition_prompt(
     leaning: str | None,
     today: datetime,
     starts_at: datetime,
+    work: str = "",
 ) -> str:
     facts, stale = person.knows_at(today, starts_at)
     believed = believed_part(behaviour, stale)
@@ -1262,10 +2144,21 @@ def transition_prompt(
         who=who_is(person),
         known=bulleted(facts),
         believed=believed,
+        work=work,
         decided=decided,
         or_believe=" or in what you believe" if believed else "",
         helpfulness=f"With what is asked: {HELPFULNESS[behaviour.helpfulness]}",
         voice=voice_rule(behaviour),
+        today=today.strftime("%A %d %B %Y"),
+    )
+
+
+def estimate_prompt(person: Person, behaviour: Answers | Scripted, today: datetime, starts_at: datetime) -> str:
+    facts, stale = person.knows_at(today, starts_at)
+    return ESTIMATE_PROMPT.format(
+        who=who_is(person),
+        known=bulleted(facts),
+        believed=believed_part(behaviour, stale),
         today=today.strftime("%A %d %B %Y"),
     )
 
