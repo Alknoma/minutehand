@@ -1,7 +1,8 @@
 """People carry the work handed to them (docs/design-transitions.md, "Work a person carries"): an issue assigned to a
 person and not finished is theirs to carry over their own time, one piece at a time. They pick it up as an answer of
 theirs would land and move it to a started state; they finish it once the work it takes has passed in their available
-time (what Jira says is left of it, else their pace); a workflow that needs a review first gets one; an unfinished
+time (what Jira says is left of it, else their pace, else as long as they judge it takes them); a workflow that
+needs a review first gets one; an unfinished
 issue that blocks it holds it back, and it resumes with what was left; a take pins the move it names."""
 
 from __future__ import annotations
@@ -219,6 +220,49 @@ async def test_a_take_pins_the_finish_and_the_person_still_quotes_the_estimate_s
         ("tomas", "Submit for review", "In Review"),
         ("tomas", "Approve", "Done"),
     ], "the take's done walks the workflow to Done, each step its own move"
+
+
+KITS_TAKE_TWELVE_HOURS = "Packing and shipping the demo kits takes 12 hours of work."
+
+
+async def test_work_its_tracker_holds_no_estimate_for_takes_as_long_as_they_judge_it_takes_them(site: Site) -> None:
+    """FIELD-1 holds no estimate and Noor has no pace: as she takes it up she judges, from what she knows, that it
+    takes her twelve hours of work, and finishes it that much of her time later. Catches work finished as soon as a
+    person would answer a message: minutes, for a piece of work of days."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": NOOR}), 204)
+    engine = _engine(site, _scenario(noor={**HOURLY, "facts": [KITS_TAKE_TWELVE_HOURS]}))
+
+    name, state = await _act_at(engine, site, "noor")
+    assert state == "In Progress", name
+    begun = _course(site, "noor", "FIELD-1")
+    assert begun.effort == timedelta(hours=12) and begun.effort_from is EffortFrom.PERSON
+    assert begun.finishes_at == START + timedelta(hours=13) == begun.expects_at
+
+
+async def test_a_pace_the_scenario_gives_is_what_their_work_takes_whatever_they_would_judge(site: Site) -> None:
+    """A pace of exactly three hours is what FIELD-1 takes Noor, though she would judge it twelve: the author's
+    pace is kept over her judgement."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": NOOR}), 204)
+    paced = {**HOURLY, "pace": {"min": "PT3H", "max": "PT3H"}, "facts": [KITS_TAKE_TWELVE_HOURS]}
+    engine = _engine(site, _scenario(noor=paced))
+
+    await _act_at(engine, site, "noor")
+    begun = _course(site, "noor", "FIELD-1")
+    assert begun.effort == timedelta(hours=3) and begun.effort_from is EffortFrom.PACE
+
+
+async def test_a_silent_person_pinned_to_finish_work_with_no_estimate_expects_it_as_it_lands(site: Site) -> None:
+    """Noor never speaks, so no model judges how long FIELD-1 takes her: pinned to finish it a day after it reaches
+    her, she does, and expects to then. Catches a pinned finish refused for want of a judgement nobody can give."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": NOOR}), 204)
+    engine = _engine(site, _scenario(noor={**SILENT, "takes": [{"provider": "jira", "take": "done", "after": "P1D"}]}))
+
+    await engine.look(site.store, site.clock)
+    while _course(site, "noor", "FIELD-1").status is not CourseStatus.FINISHED:
+        await _act_at(engine, site, "noor")
+    finished = _course(site, "noor", "FIELD-1")
+    assert site.clock.now() == START + timedelta(days=1) == finished.finishes_at == finished.expects_at
+    assert finished.effort_from is EffortFrom.TAKE
 
 
 async def test_a_take_naming_a_start_pins_when_they_pick_it_up_with_its_words(site: Site) -> None:

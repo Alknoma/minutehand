@@ -47,6 +47,7 @@ class Wrote(StrEnum):
     REPLY = "reply"  # their words back to a message
     SUMMARY = "summary"  # what they saw before the turns they are shown word for word
     TRANSITION = "transition"  # the transition they take on an item pending on them, and what it carries
+    ESTIMATE = "estimate"  # how long a piece of work they take up takes them, as they judge it
     SERVICE_MACHINE = "service_machine"  # the states and transitions of a declared service's items, proposed once
     SERVICE_ROUTE = "service_route"  # what a route of a declared service means, read once
     SERVICE_ANSWER = "service_answer"  # what a declared service answers a call, or pushes, from its state and log
@@ -69,6 +70,7 @@ SIDE = {
     Wrote.REPLY: Side.PERSON,
     Wrote.SUMMARY: Side.PERSON,
     Wrote.TRANSITION: Side.PERSON,
+    Wrote.ESTIMATE: Side.PERSON,
     Wrote.SERVICE_MACHINE: Side.SERVICE,
     Wrote.SERVICE_ROUTE: Side.SERVICE,
     Wrote.SERVICE_ANSWER: Side.SERVICE,

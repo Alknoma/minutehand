@@ -317,8 +317,8 @@ class Person(Model):
     pace: Window | None = Field(
         default=None,
         description="How long a piece of work handed to them takes them when its tracker holds no estimate: drawn "
-        "within this much of their available time from when they pick it up; None: as long as one of their answers "
-        "takes to land (`reply_within`, else their reply's `delay`)",
+        "within this much of their available time from when they pick it up; None: as long as they judge it takes "
+        "them as they pick it up (a model call, `person-estimate/1`)",
     )
     early_follow_ups: int = Field(
         default=2,

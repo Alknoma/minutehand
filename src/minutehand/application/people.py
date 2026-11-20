@@ -50,7 +50,6 @@ from minutehand.application.moments import (
     available_between,
     decision_text,
     draw_for,
-    drawn_delay,
     drawn_span,
     follow_up_of,
     messages_to,
@@ -145,6 +144,26 @@ optional one only when you have something to say in it. Write each value as you 
 - Today is {today}.
 """
 
+ESTIMATE_PROMPT_VERSION = "person-estimate/1"
+"""Changes whenever ESTIMATE_PROMPT or what the person is shown changes a word."""
+
+JUDGED_HOURS_AT_MOST = 480.0
+"""The most working hours a person judges one piece of work to take them: twelve weeks of forty."""
+
+ESTIMATE_PROMPT = """\
+You are {who}. You are at work, taking up a piece of work of yours now. You are shown it as you see it in the \
+tool your team tracks it in, and what you can see of your conversations.
+
+What you know:
+{known}
+{believed}
+Say in "hours" how much of your own working time it takes you from now until it is done:
+- Judge it as you would in your role, from what it asks and what you know: the time it really takes you, not \
+the least it could take.
+- Hours of work, not of the calendar.
+- Today is {today}.
+"""
+
 _SCAN = 500
 
 
@@ -158,6 +177,16 @@ class WrittenTransition(Model):
 
     take: str = Field(description="The name of what you do, exactly as listed")
     fields: list[WrittenField] = Field(default=[], description="One per field you fill")
+
+
+class JudgedEffort(Model):
+    """How long a person judges a piece of work they take up takes them."""
+
+    hours: float = Field(
+        gt=0,
+        le=JUDGED_HOURS_AT_MOST,
+        description="The hours of your own working time it takes you from now until it is done",
+    )
 
 
 @dataclass(frozen=True)
@@ -1151,21 +1180,45 @@ class People:
             return True
         return _matching(take.take, work.port.legal(work.waiting.item, Actor.PERSON, person, world)) is not None
 
-    def _effort(
-        self, person: Person, carrier: CarriesWork, item: EntityRef, world: Store
-    ) -> tuple[timedelta, EffortFrom]:
+    async def _effort(
+        self, person: Person, carrier: CarriesWork, waiting: Waiting, world: Store, clock: Clock
+    ) -> tuple[timedelta, EffortFrom] | None:
         """How long the work takes them from when they pick it up, in their available time: what its service says is
-        left of it, else drawn within their pace, else as long as one of their answers takes."""
-        estimate = carrier.estimate(item, world)
+        left of it, else drawn within their pace, else as long as they judge it takes them (`_judged`); None for
+        someone no model speaks for, who judges nothing."""
+        estimate = carrier.estimate(waiting.item, world)
         if estimate is not None:
             return estimate, EffortFrom.ESTIMATE
         if person.pace is not None:
-            return drawn_span(self._scenario, person, item, "pace", person.pace), EffortFrom.PACE
-        if person.reply_within is not None:
-            return drawn_span(self._scenario, person, item, "effort", person.reply_within), EffortFrom.ANSWERS
+            return drawn_span(self._scenario, person, waiting.item, "pace", person.pace), EffortFrom.PACE
         behaviour = person.reply
-        delay = behaviour.delay if isinstance(behaviour, Answers | Scripted) else DelayRange()
-        return drawn_delay(self._scenario, person, item, "effort", delay), EffortFrom.ANSWERS
+        if self._words is None or not isinstance(behaviour, Answers | Scripted):
+            return None
+        return await self._judged(person, behaviour, self._words, waiting, world, clock), EffortFrom.PERSON
+
+    async def _judged(
+        self,
+        person: Person,
+        behaviour: Answers | Scripted,
+        words: PeopleReplier,
+        waiting: Waiting,
+        world: Store,
+        clock: Clock,
+    ) -> timedelta:
+        """How much of their working time a piece of work they take up takes them, as they judge it from what it asks
+        and what they know, where its tracker holds no estimate and the scenario gives them no pace: one model call,
+        kept and replayed by its context as each of theirs is."""
+        history = world.events()
+        system = estimate_prompt(person, behaviour, clock.now(), self._scenario.starts_at)
+        context = (
+            await words.context(person, behaviour, history[-1], history, world, clock, answers=False) if history else []
+        )
+        shown = f"The work you are taking up, as {waiting.item.provider} shows it:\n{waiting.shown}"
+        messages = [ModelMessage(speaker=Speaker.ASKER, text=shown + "\n\n" + (context[0].text if context else ""))]
+        judged = await words.ask_model(
+            person, Wrote.ESTIMATE, waiting.item, system, messages, JudgedEffort, ESTIMATE_PROMPT_VERSION, world, clock
+        )
+        return timedelta(hours=judged.answer.hours)
 
     def _course_ref(self, person: Person, item: EntityRef, world: Store) -> EntityRef:
         return EntityRef(
@@ -1273,16 +1326,35 @@ class People:
         snap = held.pending
         take = person.takes[snap.pinned] if snap.pinned is not None else None
         offers = port.legal(snap.item, Actor.PERSON, person, world)
-        # cancelling is theirs to choose beside moving it on, never alone: a model picks it from what they know
-        dropping = [o for o in offers if o.means is TicketState.CANCELLED and o.unprompted]
+        # cancelling is theirs to choose beside moving it on, never alone: a model picks it from what they know.
+        # Someone who never chooses for themselves (silent) is offered no choice: they move on what a take pins.
+        chooses = _picks(person)
+        dropping = [o for o in offers if o.means is TicketState.CANCELLED and o.unprompted] if chooses else []
         if course.started_at is None:
             first = _first_asked(person, world, now)
-            effort, source = self._effort(person, carrier, snap.item, world)
-            believed = after_available(now, effort, person, self._scenario.starts_at, first_ask=first)
-            finishes, effort_from = believed, source
+            try:
+                judged = await self._effort(person, carrier, waiting, world, clock)
+            except ModelFailed as e:
+                return self._still_owed(held, world, str(e))
             if course.pinned_finish is not None:
                 finishes, effort_from = max(course.pinned_finish, now), EffortFrom.TAKE
                 effort = available_between(now, finishes, person, self._scenario.starts_at, first_ask=first)
+                # what they believe it takes them, so a later pinned finish is a slip they know of; someone no
+                # model speaks for believes it as it lands
+                believed = (
+                    after_available(now, judged[0], person, self._scenario.starts_at, first_ask=first)
+                    if judged is not None
+                    else finishes
+                )
+            elif judged is None:
+                raise RunRefused(
+                    f"{person.key} takes up work its tracker holds no estimate for, and no model speaks for them to "
+                    "judge how long it takes them: give them a pace"
+                )
+            else:
+                effort, effort_from = judged
+                believed = after_available(now, effort, person, self._scenario.starts_at, first_ask=first)
+                finishes = believed
             if finishes <= now:
                 # its finish is due already as they come to it (a take pins it then, or nothing is left of it):
                 # they finish it outright, one move, rather than starting and finishing it in the same moment
@@ -1309,7 +1381,7 @@ class People:
                 forward = [o for o in offers if o.means is TicketState.STARTED and o.unprompted]
                 if _meaning(snap.item, world) not in (None, TicketState.OPEN):
                     forward = []
-                starting = [*forward, *dropping] if forward else []
+                starting = ([*forward, *dropping] if chooses else forward[:1]) if forward else []
             moved_to = list(course.moved_to)
             transition: Transition | None = None
             offer: Offer | None = None
@@ -1379,7 +1451,7 @@ class People:
                 return self._dropped(held, ref, course, _not_offered(person, take, offers), world)
             choices = [named] if named is not None else ahead
         else:
-            choices = [*ahead, *dropping] if ahead else []
+            choices = ([*ahead, *dropping] if _picks(person) else ahead[:1]) if ahead else []
         if not choices:
             stuck = course.model_copy(
                 update={"status": CourseStatus.HELD if course.started_at else CourseStatus.QUEUED, "stuck": True}
@@ -1977,6 +2049,16 @@ def transition_prompt(
         or_believe=" or in what you believe" if believed else "",
         helpfulness=f"With what is asked: {HELPFULNESS[behaviour.helpfulness]}",
         voice=voice_rule(behaviour),
+        today=today.strftime("%A %d %B %Y"),
+    )
+
+
+def estimate_prompt(person: Person, behaviour: Answers | Scripted, today: datetime, starts_at: datetime) -> str:
+    facts, stale = person.knows_at(today, starts_at)
+    return ESTIMATE_PROMPT.format(
+        who=who_is(person),
+        known=bulleted(facts),
+        believed=believed_part(behaviour, stale),
         today=today.strftime("%A %d %B %Y"),
     )
 

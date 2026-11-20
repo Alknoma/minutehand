@@ -446,7 +446,7 @@ Model calls: the agent's, from the telemetry it exported or the wire (recorded b
 | `cost` | REAL | From the prices the user declared for this model (--prices); NULL when none was declared |
 | `currency` | TEXT | The declared price's currency |
 | `trace_id` | TEXT | The agent's trace |
-| `wrote` | TEXT | For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or service_answer; for a judge's: judgement or fact_check; for the assessor's: review |
+| `wrote` | TEXT | For a person's: reply, transition, summary or estimate; for a declared service's: service_machine, service_route or service_answer; for a judge's: judgement or fact_check; for the assessor's: review |
 | `wrote_seqs` | TEXT | JSON array of the agent messages it is joined to (agent) or of the message it answered (person) |
 | `replayed` | INTEGER | 1 for a person's call answered from the record: no model was called |
 | `failure` | TEXT | Why the call failed: a person's call, or the agent's as its span says (an error answer, an error status) |

@@ -313,11 +313,15 @@ invented about the work: what it is, who carries it and what holds it are the wo
 - **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`) and
   moves it to a started state (`Offer.means` is `TicketState.STARTED`: Jira's In Progress category, YouTrack's In
   Progress) unless it is in one already. It fixes how long the work takes them, in their available time: what its
-  service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as one of
-  their answers takes. Its finish is that much of their available time later (`moments.after_available`), booked
-  as `DrawnFrom.WORK`.
+  service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as they
+  judge it takes them from what it asks and what they know (`EffortFrom.PERSON`: one model call as they take it
+  up, `person-estimate/1`, kept and replayed as each of theirs is). Someone no model speaks for judges nothing:
+  their work takes what its estimate or their pace says, or a take pins its finish. Its finish is that much of
+  their available time later (`moments.after_available`), booked as `DrawnFrom.WORK`.
 - **Cancelling** is theirs to choose beside moving it on, never alone: where the workflow offers a move that means
   cancelled, a model picks between it and the move on from what the person knows (they drop work they know was cut).
+  Someone who never chooses for themselves (silent) is offered no choice: what a take pins, they move on with the
+  first move forward.
   A finish already due as they come to it (a take pins it then) is one move, not a start and a finish together.
 - **Finishing it** moves it to a state that means done. Where the workflow reaches done only through another state
   (a review), they take the next started state they have not moved it to, and come back to it as an answer of theirs
@@ -332,8 +336,9 @@ invented about the work: what it is, who carries it and what holds it are the wo
   is dropped at its moment, saying so, and the work left where it stands: one naming a started state (`take:
   Start work`, `take: started`) pins their picking it up, `after` from when it became theirs; one naming done (or any
   other move) pins its finish (`CourseSnapshot.pinned_finish`), whatever its estimate says. Takes that name the same
-  item are its moves in order. A person still believes the estimate or their pace (`CourseSnapshot.expects_at`), so a
-  finish pinned later than that is a slip they know of once its date passes.
+  item are its moves in order. A person still believes the estimate, their pace or their own judgement
+  (`CourseSnapshot.expects_at`), so a finish pinned later than that is a slip they know of once its date passes;
+  someone no model speaks for expects it when it lands.
 - **What they know of it.** Each piece they carry, where it stands, and when they expect to finish it (or that it is
   taking longer, past that date), and what they finished, are part of what they know whenever they speak or move
   something (`replier.work_part`, in `person-reply/5`, `person-step/3` and `person-transition/2`), so a status

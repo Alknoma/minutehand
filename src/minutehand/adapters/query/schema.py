@@ -502,7 +502,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "wrote",
                 T,
-                "For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or "
+                "For a person's: reply, transition, summary or estimate; for a declared service's: service_machine, "
+                "service_route or "
                 "service_answer; for a judge's: judgement or fact_check; for the assessor's: review",
             ),
             _c(

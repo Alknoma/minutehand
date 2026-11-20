@@ -104,7 +104,8 @@ and always for the agent's product); a delete, a comment or a note is never pick
 
 Work handed to a person (an issue assigned to them on a tracker the scenario plays) is carried, one piece at a time:
 picked up as an answer of theirs would land and moved to a started state, finished once the work it takes has passed
-in their working time (what the tracker says is left of it, else drawn within their `pace`), held back while an
+in their working time (what the tracker says is left of it, else drawn within their `pace`, else as long as they
+judge it takes them as they take it up), held back while an
 issue that blocks it is unfinished. A take on it pins the move it names: `take: Start work` when they pick it up,
 `take: done` when they finish it (`docs/design-transitions.md`, phase 5). They tell anyone who asks where their work
 stands, from the work as it is. `minutehand migrate

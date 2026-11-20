@@ -572,7 +572,7 @@ class EffortFrom(StrEnum):
     TAKE = "take"  # a take pins when they finish it (`Take.after`): nothing drawn
     ESTIMATE = "estimate"  # the work left on it as its service holds it (`ports.transitions.CarriesWork.estimate`)
     PACE = "pace"  # drawn within their `Person.pace`
-    ANSWERS = "answers"  # drawn as their answers are: their `reply_within`, else their reply's `delay`
+    PERSON = "person"  # as long as they judged it takes them as they took it up (`person-estimate/1`)
 
 
 class CourseSnapshot(Model):
