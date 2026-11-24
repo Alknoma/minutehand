@@ -12,10 +12,12 @@ a call without one) and is unproven. Tests are in `tests/providers/github/`, fil
 (F), `test_github_coverage.py` (C), `test_github_world_without_users.py` (W), and, for what the agent writes,
 `test_github_issues.py` (I), `test_github_comments_and_labels.py` (K), `test_github_tracker_seed.py` (E),
 `test_github_pulls.py` (P), `test_github_reviews.py` (V), `test_github_diffs.py` (D),
-`test_github_contents_write.py` (W2), `test_github_webhooks.py` (H2) and
+`test_github_contents_write.py` (W2), `test_github_webhooks.py` (H2), `test_github_refs.py` (RF),
+`test_github_review_requests.py` (RR), `test_github_authors_and_work.py` (T2) and
 `tests/transitions/test_github_people.py` (T). **Observed** means the same of a capture committed under `tests/data/`:
 `tests/data/github_rest/observed-2026-10-09.json` holds read-only exchanges with public repositories, trimmed to what
-a claim rests on and holding no login or free text of anyone.
+a claim rests on and holding no login or free text of anyone; or of a public report that holds the real service's answer,
+whose page is given.
 
 Authentication is out of scope (`docs/design.md`, "Authentication is out of scope"). Every `Authorization`, or none, is accepted, and nothing refuses a call
 for what a token was or was not issued for. The claims GitHub documents about refusing credentials are listed
@@ -134,6 +136,7 @@ made. Rows are written from the reference's pages and the committed description
 | Removing a label the issue does not carry is 404 ("returns a `404 Not Found` status if the label does not exist") | documented | K `test_removing_a_label_the_issue_does_not_carry_is_404` | https://docs.github.com/en/rest/issues/labels#remove-a-label-from-an-issue |
 | An open issue assigned to a person waits on them; they close it and reopen it once closed; each is one move of its state in the log | documented | T `test_an_open_issue_assigned_to_a_person_is_pending_and_a_pinned_close_lands_as_theirs`, T `test_what_is_offered_follows_the_item_and_never_the_role`, I `test_an_issue_opened_closed_and_reopened_by_the_agent_is_three_moves_of_its_state` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
 | A person closes an issue as completed or not planned; `duplicate` names the issue it duplicates, which a person is not offered | documented | T `test_a_close_names_why_it_was_closed_and_only_as_github_takes` | https://docs.github.com/en/rest/issues/issues#update-an-issue |
+| An issue is open or closed, nothing between: closing one finishes it. An issue holds no due day, priority or estimate, and the links that hold an issue back (it is blocked by another, it is a sub-issue) are routes this provider does not serve, so nothing holds an issue back here; an open issue assigned to a person is work they carry | documented | T2 `test_an_issue_assigned_to_a_person_is_work_nothing_holds_back_and_no_estimate_sizes` | https://docs.github.com/en/rest/issues/issues#get-an-issue, https://docs.github.com/en/rest/issues/issue-dependencies, https://docs.github.com/en/rest/issues/sub-issues |
 
 ### Refused by name
 
@@ -148,8 +151,8 @@ is not ISO 8601 with a time zone; a `state`, `sort` or `direction` outside the r
 
 A pull request is an issue with a head branch and a base (one sequence numbers both), so every row of "Issues,
 comments and labels" holds for it too. Its head is a branch with commits of its own, laid on the default branch's head
-as the seed leaves it; its base is the default branch. What it changes is the difference between the tree its head was
-made at and the tree its head has.
+as the seed leaves it or made through the API ("Branches and references") and committed to; its base is the default
+branch. What it changes is the difference between the tree its head was made at and the tree its head has.
 
 | Claim | Class | Test | Source |
 |---|---|---|---|
@@ -180,6 +183,16 @@ made at and the tree its head has.
 | A comment names its line by `line` and `side` (LEFT for deletions, RIGHT for additions and context) or by `position`; a reply (`in_reply_to`) ignores every parameter but `body` | documented | V `test_a_comment_names_its_line_by_the_old_side_or_by_position`, V `test_a_reply_sits_where_the_comment_it_answers_does` | https://docs.github.com/en/rest/pulls/comments#create-a-review-comment-for-a-pull-request |
 | A pull request's review comments list by ascending id, or sorted by created or updated with a direction, and take `since` | documented | V `test_the_comments_of_a_pull_request_list_by_ascending_id_or_sorted` | https://docs.github.com/en/rest/pulls/comments#list-review-comments-on-a-pull-request |
 | An open pull request that asks a person's review waits on them until they have reviewed it; they approve, ask for changes or comment; each is one move of its state in the log | documented | T `test_a_pull_request_that_asks_a_review_is_pending_on_the_reviewer_and_a_pinned_approval_lands_as_theirs`, T `test_a_pull_request_closed_or_reviewed_offers_its_reviewer_nothing_more_to_ask` | https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request |
+| A review is asked of users by `reviewers` (and of teams by `team_reviewers`) and answered 201 with the pull request in the description's `pull-request-simple` form; the requested reviewers list `users` and `teams`; a request is taken back by `reviewers`, answered 200 with the pull request | documented | RR `test_a_review_asked_of_a_collaborator_is_listed_and_answered_with_the_pull_request`, RR `test_a_request_taken_back_asks_the_reviewer_no_more`, C `test_a_served_operation_answers_every_field_the_description_requires` | https://docs.github.com/en/rest/pulls/review-requests |
+| A review asked of someone who is no collaborator is 422 "Reviews may only be requested from collaborators. One or more of the users or teams you specified is not a collaborator of the <owner>/<repo> repository.", and nobody the request names is asked; a collaborator owns the repository, collaborates on it or belongs to the organization that owns it | observed | RR `test_a_review_asked_of_someone_who_is_no_collaborator_is_refused_422` | https://github.com/Automattic/jetpack/issues/37058, https://github.com/NVIDIA/OpenShell/issues/5549, https://docs.github.com/en/rest/collaborators/collaborators#check-if-a-user-is-a-repository-collaborator |
+| A review asked of the pull request's author is 422 "Review cannot be requested from pull request author." | observed | RR `test_a_review_asked_of_the_pull_requests_author_is_refused_422` | https://github.com/github/github-mcp-server/issues/3756, https://github.com/kentaro-m/auto-assign/issues/50 |
+| "Once a requested reviewer submits a review, they are no longer considered a requested reviewer"; after changes a review is asked of the same reviewer again; an open pull request waits on each person it asks a review of until they give it | documented | RR `test_a_review_asked_makes_the_pull_request_wait_on_that_person_until_they_give_it` | https://docs.github.com/en/rest/pulls/review-requests#get-all-requested-reviewers-for-a-pull-request, https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/requesting-a-pull-request-review |
+| An open draft waits on its author: "Ready for review" in its merge box marks it ready for review (GitHub does it by GraphQL's `markPullRequestReadyForReview`; the REST API has no way to), after which it waits on its reviewers and not on its author; a draft is not merged | documented | T2 `test_a_draft_waits_on_its_author_who_marks_it_ready_for_review_only_where_a_take_has_them`, T2 `test_a_take_has_the_author_mark_their_draft_ready_for_review` | https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request, https://docs.github.com/en/graphql/reference/pulls |
+| An open pull request that someone other than its author approves, that nobody's latest review asks changes of, and that merges cleanly waits on its author, who may merge it; each reviewer counts by their latest review that approves or asks for changes (APPROVED "a review allowing the pull request to merge", CHANGES_REQUESTED "a review blocking the pull request from merging", COMMENTED "an informational review"); while it only waits for review it does not wait on its author | documented | T2 `test_a_pull_request_someone_else_approves_that_merges_cleanly_waits_on_its_author_to_merge_it`, T2 `test_a_pull_request_waits_on_its_author_while_the_latest_word_of_every_reviewer_lets_it_merge`, T2 `test_an_approved_pull_request_that_no_longer_merges_cleanly_does_not_wait_on_its_author` | https://docs.github.com/en/graphql/reference/pulls |
+
+Marking a draft ready is offered to whoever can see it, as every move on a pull request is, and is never a model's
+pick for a person (`Offer.unprompted`): a draft is work in progress, and when it is ready is the scenario's to say, by
+a take.
 
 ### Refused by name
 
@@ -192,7 +205,10 @@ reference gives neither commit's default message), of a pull request whose chang
 in the same files, or reopening one that was merged; moving a pull request's base; `sort=long-running`; a review
 with no `event` (left PENDING until submitted), with draft `comments`, or of a commit other than the head; a comment on several lines (`start_line`, `start_side`), on a whole file
 (`subject_type: file`), on a file the pull request does not change, on a line its diff does not show, or on a commit
-other than the head.
+other than the head; a review asked of a team (`team_reviewers`, the world holds none) or of a login that names no
+user; asking or taking back a review on a closed pull request, or taking back a request the pull request does not hold
+(the reference gives no answer for these); re-requesting reviews (`.../requested_reviewers/rerequest`); and GraphQL's
+`markPullRequestReadyForReview`, answered as every mutation is ("This GitHub answers queries").
 
 ## Committing a file
 
@@ -212,6 +228,32 @@ A commit to an empty repository (the reference does
 not say it makes the branch); with `content` that is not base64; with a `sha` for a path that holds no file; giving a file
 the bytes it has; to a path that is a directory, or under a file.
 
+## Branches and references
+
+A branch made through `POST /repos/{o}/{r}/git/refs` is kept where every branch is (`history.branched`). What GitHub
+answers a create it refuses rests on a public report of the real service's answers, recorded on a scratch repository
+under API versions 2022-11-28 and 2026-03-10 with the same results: https://github.com/sapientpants/software-factory/pull/31.
+
+| Claim | Class | Test | Source |
+|---|---|---|---|
+| Creating a reference takes `ref` and `sha` and answers 201 with the description's `git-ref` (`ref`, `node_id`, `url`, `object` with `type`, `sha` and `url`) and a `Location`; the branch it names is then listed, read at, committed to by `branch` and a pull request's `head` | documented | RF `test_a_branch_made_at_the_default_branchs_head_is_committed_to_and_a_pull_request_is_opened_from_it`, C `test_a_served_operation_answers_every_field_the_description_requires` | https://docs.github.com/en/rest/git/refs#create-a-reference |
+| …in the order `ref`, `node_id`, `url`, `object` (`sha`, `type`, `url`), the `url` under `/git/refs/` and the object's under `/git/commits/` | observed | RF (same test) | https://github.com/sapientpants/software-factory/pull/31 |
+| A reference that exists is 422 "Reference already exists", whatever sha the create names | observed | RF `test_a_reference_that_exists_already_is_refused_422_whatever_the_sha` | https://github.com/sapientpants/software-factory/pull/31 |
+| A sha no object of the repository has is 422 "Object does not exist", looked at before whether the reference exists; a sha shorter than one is 422 "Invalid request." with "At least 40 characters are required; only <n> were supplied." and "<sha> does not match /^([0-9a-f]{40}(?:[0-9a-f]{24})?)$/."; no sha is 422 "Invalid request." with `"sha" wasn't supplied.`; a tree's or a blob's is 422 "Reference update failed" | observed | RF `test_a_sha_that_names_no_commit_is_refused_422_in_githubs_words` | https://github.com/sapientpants/software-factory/pull/31 |
+| A name that does not start with `refs/` is 422 "Reference name must start with 'refs/'."; one git takes as no reference's name (`..`, a space, a component ending `.lock`) is 422 "<ref> is not a valid ref name."; one under an existing branch's name, or above it, is 422 "Reference update failed" | observed | RF `test_a_reference_name_github_rejects_is_refused_422_in_its_words`, RF `test_a_branch_named_as_the_directory_of_another_is_refused_422` | https://github.com/sapientpants/software-factory/pull/31, https://git-scm.com/docs/git-check-ref-format |
+| Each refusal of a create points at `https://docs.github.com/rest/git/refs#create-a-reference` | observed | RF (each refusal) | https://github.com/sapientpants/software-factory/pull/31 |
+| A reference is read as `heads/<branch>`, by its whole name: a bare branch name, a prefix of one, or a tag (the world holds none) is 404 "Not Found" | documented | RF `test_a_reference_is_read_by_heads_and_its_whole_name_and_nothing_else` | https://docs.github.com/en/rest/git/refs#get-a-reference, https://github.com/sapientpants/software-factory/pull/31 |
+| Reading a reference of an empty repository is 409 (the reference's status), in the words the commit list answers there | documented | RF `test_an_empty_repository_has_no_reference_and_no_branch` | https://docs.github.com/en/rest/git/refs#get-a-reference |
+| A branch reads as its `name`, its `commit` in full, `_links` (`self`, `html`), `protected`, `protection` and `protection_url`, in that order; one nobody protects reads `protection` as `{"enabled": false, "required_status_checks": {"enforcement_level": "off", "contexts": [], "checks": []}}` | observed | RF `test_a_branch_reads_whole_and_one_that_is_not_there_is_404_branch_not_found`, C `test_a_served_operation_answers_every_field_the_description_requires` | https://docs.github.com/en/rest/branches/branches#get-a-branch, https://github.com/nazarli-shabnam/clevis/issues/788 |
+| A branch that is not there is 404 "Branch not found", pointing at `https://docs.github.com/rest/branches/branches#get-a-branch` | observed | RF `test_a_branch_reads_whole_and_one_that_is_not_there_is_404_branch_not_found` | https://github.com/PyGithub/PyGithub/issues/3011 |
+
+### Refused by name
+
+A reference other than a branch (`refs/tags/…`, `refs/<name>` with one slash, the rest of `refs/`); a branch in an empty
+repository (the reference says none is made there and not how it refuses); a branch at a commit of the default branch's
+history other than its head or a commit a branch of its own was made at (only those trees are kept, README); and what
+lies under a branch's address (`.../branches/{branch}/protection` and the rest).
+
 ## Webhooks
 
 What a person does, and what the agent itself writes through the REST API, is pushed to the agent's inbound target for
@@ -219,8 +261,8 @@ GitHub as GitHub pushes it (`ListensForAgent` tells the provider's app the targe
 returns. The agent's own call is answered first and its webhooks follow, one delivery after another in the order the
 calls set them off; GitHub documents no order of deliveries, and this one is what a replay of the run repeats. A
 delivery the agent refuses for its own call does not fail the call: it is logged and kept (`hooks.Background.refused`).
-A commit through the contents routes would be a `push` event, and a comment on a diff a `pull_request_review_comment`;
-neither is sent yet. The webhook a repository configures has an id and a
+A commit through the contents routes would be a `push` event, a branch made a `create` event, and a comment on a diff a
+`pull_request_review_comment`; none is sent yet. The webhook a repository configures has an id and a
 target of its own, which the world does not hold (`POST /repos/{o}/{r}/hooks` is refused by name), so the headers that
 name it are not sent.
 
@@ -236,6 +278,8 @@ name it are not sent.
 | A comment is an `issue_comment` event (`created`) with `issue`, `comment`, `repository` and `sender` | documented | H2 `test_a_comment_is_an_issue_comment_event_before_the_close_it_comes_with` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issue_comment |
 | Closing or merging a pull request is a `pull_request` event (`closed`) with `number` and the `pull_request`, which says whether it was merged | documented | H2 `test_closing_a_pull_request_is_a_pull_request_event_that_is_not_merged`, H2 `test_merging_a_pull_request_is_a_pull_request_event_that_is_merged` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
 | A review is a `pull_request_review` event (`submitted`) with `review` and `pull_request` | documented | H2 `test_a_review_is_a_pull_request_review_event` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request_review |
+| Asking a user's review is a `pull_request` event (`review_requested`, "Review by a person or team was requested for a pull request") naming them as `requested_reviewer`, one for each user newly asked; taking the request back is one (`review_request_removed`) | documented | RR `test_asking_and_taking_back_a_review_are_pull_request_events_naming_the_reviewer` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
+| Marking a draft ready for review is a `pull_request` event (`ready_for_review`, "A draft pull request was marked as ready for review") | documented | T2 `test_a_draft_waits_on_its_author_who_marks_it_ready_for_review_only_where_a_take_has_them` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#pull_request |
 | Every body holds each field the description of its event requires (`tests/providers/github/openapi/api.github.com.webhooks.subset.json`) | documented | H2 (each event's test, `checked`) | https://github.com/github/rest-api-description |
 | An issue or pull request in a body is the one the REST route answers, beside the keys the webhook's description requires and the route's does not (`reactions`, a null `performed_via_github_app`) | documented | H2 `test_what_a_webhook_carries_is_what_the_rest_route_answers_of_it` | https://docs.github.com/en/webhooks/webhook-events-and-payloads#issues |
 | An open pull request that asks a person's review, or is assigned to them, waits on them; they may also merge it, where it merges cleanly and is no draft, or close it | documented | T `test_a_pull_request_assigned_to_a_person_who_may_merge_it_waits_on_them_and_a_pinned_merge_lands_as_theirs`, T `test_a_pull_request_closed_by_a_person_is_closed_not_merged_with_their_comment`, T `test_a_draft_or_conflicting_pull_request_is_not_offered_a_merge` | https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request |
@@ -294,7 +338,7 @@ organization is a 404 (F `test_a_private_repository_without_access_is_not_found`
 
 Every operation of `tests/providers/github/openapi/api.github.com.subset.json` that is not served is answered 501,
 "minutehand's github fake does not implement <METHOD> <path>" (C `test_every_operation_the_provider_does_not_serve_is_refused_by_name`;
-169 operations, 48 served, 121 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
+175 operations, 57 served, 118 refused, pinned by C `test_the_subset_holds_the_operations_it_is_counted_to_hold`), and so
 is any other path. `X-GitHub-Api-Version: 2026-03-10`, which GitHub answers (recorded), is refused by name the same
 way (F `test_an_api_version_github_serves_and_this_provider_does_not_is_refused_by_name`).
 

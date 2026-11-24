@@ -175,7 +175,7 @@ async def test_seeded_issues_carry_the_scenario_start_as_their_time(client: http
     ("value", "outcome"),
     [
         ("Open", TicketState.OPEN),
-        ("In Progress", TicketState.OPEN),
+        ("In Progress", TicketState.STARTED),
         ("Fixed", TicketState.DONE),
         ("Won't fix", TicketState.CANCELLED),
     ],

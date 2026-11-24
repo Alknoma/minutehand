@@ -4,11 +4,15 @@ Everything a person does to an issue is a transition through `apply` (`ports.tra
 clock's time, recorded as actor PERSON with that person as the changelog's or comment's author: a workflow
 transition, a walk of them to a status that means an outcome, a comment, a reassignment, a deletion. The scenario
 sets an outcome past the workflow (a fork's ticket edit). An act on an issue that is no longer there writes nothing.
+
+An issue assigned to a person is work they carry (`ports.transitions.CarriesWork`): what holds it back is each
+unfinished issue that blocks it, and what is left of it is its remaining estimate, both as Jira holds them.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -16,8 +20,8 @@ from minutehand.adapters.providers.jira import app as jira_app
 from minutehand.adapters.providers.jira import wire
 from minutehand.adapters.providers.jira.app import build_app
 from minutehand.adapters.providers.jira.manifest import MANIFEST
-from minutehand.adapters.providers.jira.moves import Desk, Event
-from minutehand.adapters.providers.jira.seed import JiraSeed, account_id, seed
+from minutehand.adapters.providers.jira.moves import Desk, Event, remaining
+from minutehand.adapters.providers.jira.seed import BLOCKS, JiraSeed, account_id, seed
 from minutehand.adapters.providers.jira.state import issue_ref, placed
 from minutehand.domain.errors import Rendered
 from minutehand.domain.provider import Manifest, PersonChange, fault_fragment
@@ -88,8 +92,9 @@ class JiraProvider:
     # ------------------------------------------------------------------ transitions (`ProvidesTransitions`)
 
     def items_for(self, person: Person, world: Store) -> list[Waiting]:
-        """Every issue assigned to the person's account whose status is not in the Done category: work that waits on
-        them, shown as they would read it in Jira."""
+        """Every issue assigned to the person's account whose status is not in the Done category, shown as they
+        would read it in Jira: work they carry to Done, due on its due date, and ranked by its priority's place among
+        the site's priorities, which Jira lists most urgent first (Highest is 0)."""
         desk = Desk(world)
         if not desk.world.seeded():
             return []
@@ -102,20 +107,27 @@ class JiraProvider:
             status = site.status(issue.status)
             if issue.assignee != user.accountId or status.category is wire.Category.DONE:
                 continue
-            waiting.append(Waiting(item=issue_ref(issue.id), state=status.name, shown=_shown(desk, issue)))
+            waiting.append(
+                Waiting(
+                    item=issue_ref(issue.id),
+                    state=status.name,
+                    shown=_shown(desk, issue),
+                    work=True,
+                    due=issue.duedate,
+                    rank=_rank(site, issue),
+                )
+            )
         return waiting
 
     def legal(self, item: EntityRef, by: Actor, who: Person | None, world: Store) -> list[Offer]:
         """The workflow transitions open from the issue's status, as `GET /issue/{key}/transitions` lists them, each
         taking a comment and saying what its status means. One whose screen requires a field is not offered to a
         person, whose engine writes only free text (README, "People"). Then, only for what the scenario has someone
-        do: each other outcome as a walk of transitions to it (named open, done, cancelled), a comment, a
+        do: each other outcome as a walk of transitions to it (named open, started, done, cancelled), a comment, a
         reassignment, the issue's deletion; for the scenario itself, each outcome set past the workflow."""
         del who
         desk = Desk(world)
-        issue = _located(desk, item)
-        if issue is None:
-            raise LookupError(f"no Jira issue {item.external_id} in this run")
+        issue = _found(desk, item)
         site = desk.site()
         project = _project(desk, issue)
         here = site.status(issue.status)
@@ -176,9 +188,7 @@ class JiraProvider:
         world: Store,
         clock: Clock,
     ) -> Transition:
-        issue = _located(desk, item)
-        if issue is None:
-            raise LookupError(f"no Jira issue {item.external_id} in this run")
+        issue = _found(desk, item)
         project = _project(desk, issue)
         site = desk.site()
         found = next((o for o in self.legal(item, by, who, world) if o.name == offer), None)
@@ -243,6 +253,31 @@ class JiraProvider:
         desk = Desk(world)
         issue = _located(desk, item)
         return issue is not None and jira_app.build(world, clock).hears(issue, Event.ISSUE_UPDATED)
+
+    # ------------------------------------------------------------------ work (`CarriesWork`)
+
+    def holding(self, item: EntityRef, world: Store) -> list[EntityRef]:
+        """Each issue that blocks this one, by a link of the Blocks type whose inward issue this one is (it "is
+        blocked by" the link's outward issue, README "Link direction"), and whose status is not in the Done
+        category, in the order the links were made."""
+        desk = Desk(world)
+        issue = _found(desk, item)
+        site = desk.site()
+        blocks = {t.id for t in site.linkTypes if t.name == BLOCKS}
+        held: list[EntityRef] = []
+        for link in desk.world.links():
+            if link.type not in blocks or link.destination != issue.id:
+                continue
+            blocker = desk.world.issue(link.source)
+            if blocker is not None and site.status(blocker.status).category is not wire.Category.DONE:
+                held.append(issue_ref(blocker.id))
+        return list(dict.fromkeys(held))
+
+    def estimate(self, item: EntityRef, world: Store) -> timedelta | None:
+        """The issue's remaining estimate (`timetracking.remainingEstimateSeconds`): what a worklog last set it to,
+        else its original estimate less the time logged, never below nothing; None for an issue with neither."""
+        left = remaining(_found(Desk(world), item))
+        return timedelta(seconds=left) if left is not None else None
 
     def _walk(
         self,
@@ -361,10 +396,23 @@ def _shown(desk: Desk, issue: wire.StoredIssue) -> str:
     return "\n".join(lines)
 
 
+def _rank(site: wire.StoredSite, issue: wire.StoredIssue) -> int:
+    """The issue's priority's place among the site's priorities, which Jira lists most urgent first: Highest is 0."""
+    return [p.id for p in site.priorities].index(issue.priority)
+
+
 def _located(desk: Desk, ticket: EntityRef) -> wire.StoredIssue | None:
     if ticket.provider != MANIFEST.key or ticket.kind is not EntityKind.TICKET:
         raise ValueError(f"{ticket.provider} {ticket.kind.value} {ticket.external_id} is not a Jira issue")
     return desk.world.find_issue(ticket.external_id)
+
+
+def _found(desk: Desk, ticket: EntityRef) -> wire.StoredIssue:
+    """The issue `ticket` names; refused with `LookupError` when the world does not hold it."""
+    issue = _located(desk, ticket)
+    if issue is None:
+        raise LookupError(f"no Jira issue {ticket.external_id} in this run")
+    return issue
 
 
 def _project(desk: Desk, issue: wire.StoredIssue) -> wire.StoredProject:
@@ -392,5 +440,5 @@ def _account(desk: Desk, email: str) -> str:
 
 
 def build() -> JiraProvider:
-    """A `Provider` that also `ProvidesTransitions` and `HoldsSeeded`."""
+    """A `Provider` that also `ProvidesTransitions`, `CarriesWork` and `HoldsSeeded`."""
     return JiraProvider()

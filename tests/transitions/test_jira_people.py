@@ -20,7 +20,16 @@ from minutehand.application.replier import PeopleReplier
 from minutehand.application.run_clock import RunClock
 from minutehand.domain.conversation import Wrote
 from minutehand.domain.scenario import Scenario, Silent
-from minutehand.domain.world import Actor, EntityKind, EntityRef, PendingSnapshot, PendingStatus, TransitionSnapshot
+from minutehand.domain.world import (
+    OWN,
+    Actor,
+    CourseSnapshot,
+    EntityKind,
+    EntityRef,
+    PendingSnapshot,
+    PendingStatus,
+    TransitionSnapshot,
+)
 from tests.providers.jira.jira_site import API, NOOR, SCENARIO, START, TOMAS, Site, ok
 from tests.support.people import people_engine, people_model
 
@@ -96,24 +105,28 @@ async def test_a_pinned_take_moves_the_issue_with_its_words_as_the_person(site: 
     assert held.status is PendingStatus.ACTED and held.transition == moved.seq
 
 
-async def test_a_person_acts_once_per_turn_until_someone_else_moves_it(site: Site) -> None:
+async def test_a_person_carries_their_work_on_after_their_own_move_and_reads_anyone_elses(site: Site) -> None:
+    """An issue is work they carry: their own move does not end it, its finish is booked next. A move someone else
+    makes is read as it now stands, and what they moved it to since is forgotten."""
     takes = [{"provider": "jira", "take": "Start work", "after": "PT1H"}]
     engine = _engine(site, _scenario(tomas={"takes": takes}, iris=SILENT))
     booked = next(b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas")
     site.clock.jump(START + timedelta(hours=1))
     await engine.act(booked.pending, site.store, site.clock)
-    assert not [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"], (
-        "still assigned and not done, but it was their own move: nothing new waits on them"
+    finish = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"]
+    assert [(b.item, b.at) for b in finish] == [(_ref(site, "LAUNCH-1"), START + timedelta(hours=6))], (
+        "his own move: he carries it on, to a finish the five hours Jira says are left away"
     )
 
     ok(await site.http.post(f"{API}/issue/LAUNCH-1/transitions", json={"transition": {"id": "21"}}), 204)
     agent_move = _moves(site)[-1]
     assert agent_move.actor is Actor.AGENT and agent_move.after.who is None
 
-    again = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"]
-    assert [b.item for b in again] == [_ref(site, "LAUNCH-1")], "the agent moved it: it waits on them again"
-    assert _pending(site, again[0].pending).turn == agent_move.seq
-    assert _pending(site, again[0].pending).state == "In Review"
+    await engine.look(site.store, site.clock)
+    [course] = [
+        CourseSnapshot.model_validate_json(s.body) for s in site.store.children(OWN, EntityKind.COURSE, "tomas")
+    ]
+    assert (course.turn, course.state, course.moved_to) == (agent_move.seq, "In Review", [])
 
 
 async def test_a_model_picks_the_transition_and_writes_its_comment_from_what_they_know(site: Site) -> None:

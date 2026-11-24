@@ -437,8 +437,10 @@ VIEWS: tuple[View, ...] = (
     View(
         name="items",
         description="Every item the people engine held pending on a person (docs/design-transitions.md): when it "
-        "began to wait on them, when they act, and how it ended. A person acts once per turn: after their move it "
-        "is pending on them again only once someone else moves it, as a row of its own.",
+        "began to wait on them, when they act, and how it ended. A person acts once per turn on an item they are "
+        "asked about: after their move it is pending on them again only once someone else moves it, as a row of its "
+        "own. Work they carry is pending on them again after each move of their own, a row each, until it is "
+        "finished.",
         order="pending_id",
         columns=[
             _c("pending_id", T, "The engine's record of it (events.entity_id of its pending rows)"),
@@ -500,7 +502,8 @@ VIEWS: tuple[View, ...] = (
             _c(
                 "wrote",
                 T,
-                "For a person's: reply, transition or summary; for a declared service's: service_machine, service_route or "
+                "For a person's: reply, transition, summary or estimate; for a declared service's: service_machine, "
+                "service_route or "
                 "service_answer; for a judge's: judgement or fact_check; for the assessor's: review",
             ),
             _c(

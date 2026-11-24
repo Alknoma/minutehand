@@ -133,7 +133,9 @@ class SeedTask(Model, Keyed):
 
     ticket: str = Field(description="SeededTicket.title of an asana ticket")
     section: str | None = Field(default=None, description="SeedSection.name in its project; None: as its state says")
-    completed: bool | None = Field(default=None, description="None: completed unless the ticket's state is open")
+    completed: bool | None = Field(
+        default=None, description="None: completed when the ticket's state is finished (done or cancelled)"
+    )
     due_after: timedelta | None = Field(default=None, description="Due on the day this long after the start")
     due_has_time: bool = Field(default=False, description="Due at that moment (`due_at`) rather than on its day")
     tags: list[str] = Field(default=[], description="Tag names")

@@ -52,6 +52,11 @@ SERVED: dict[tuple[str, str], Call] = {
     ("GET", "/repos/{owner}/{repo}"): Call(LEDGER),
     ("GET", "/repos/{owner}/{repo}/languages"): Call(f"{LEDGER}/languages"),
     ("GET", "/repos/{owner}/{repo}/branches"): Call(f"{LEDGER}/branches"),
+    ("GET", "/repos/{owner}/{repo}/branches/{branch}"): Call(f"{LEDGER}/branches/main"),
+    ("GET", "/repos/{owner}/{repo}/git/ref/{ref}"): Call(f"{LEDGER}/git/ref/heads/main"),
+    ("POST", "/repos/{owner}/{repo}/git/refs"): Call(
+        f"{LEDGER}/git/refs", {"ref": "refs/heads/describe-the-ledger", "sha": "{main}"}, 201
+    ),
     ("GET", "/repos/{owner}/{repo}/contents/{path}"): Call(f"{LEDGER}/contents/README.md"),
     ("GET", "/repos/{owner}/{repo}/git/blobs/{file_sha}"): Call(f"{LEDGER}/git/blobs/{{readme}}"),
     ("GET", "/repos/{owner}/{repo}/git/trees/{tree_sha}"): Call(f"{LEDGER}/git/trees/main"),
@@ -123,6 +128,15 @@ SERVED: dict[tuple[str, str], Call] = {
         {"body": "Why?", "commit_id": "{head}", "path": "services/billing/config.py", "line": 1, "side": "RIGHT"},
         201,
     ),
+    ("GET", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"): Call(
+        f"{LEDGER}/pulls/4/requested_reviewers"
+    ),
+    ("POST", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"): Call(
+        f"{LEDGER}/pulls/4/requested_reviewers", {"reviewers": ["iris-calder"]}, 201
+    ),
+    ("DELETE", "/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"): Call(
+        f"{LEDGER}/pulls/4/requested_reviewers", {"reviewers": ["iris-calder"]}
+    ),
 }
 """Each operation the provider serves, and a call of it against the seeded world."""
 
@@ -181,8 +195,8 @@ def seeded() -> GitHubSeed:
 
 
 def test_the_subset_holds_the_operations_it_is_counted_to_hold() -> None:
-    """The counts the provider's README states: 171 operations, 51 served, 120 refused by name."""
-    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (171, 51, 120)
+    """The counts the provider's README states: 175 operations, 57 served, 118 refused by name."""
+    assert (len(OPERATIONS), len([op for op in OPERATIONS if op in SERVED]), len(REFUSED)) == (175, 57, 118)
     assert set(SERVED) <= set(OPERATIONS), set(SERVED) - set(OPERATIONS)
 
 
@@ -194,9 +208,11 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
     async with hub.client(TOMAS) as http:
         readme = (await http.get(f"{LEDGER}/contents/README.md")).json()["sha"]
         head = (await http.get(f"{LEDGER}/pulls/4")).json()["head"]["sha"]
+        main = (await http.get(f"{LEDGER}/commits")).json()[0]["sha"]
         for earlier in call.before:
             assert (await _call(http, "PUT", earlier.url, earlier.json)).status_code == earlier.status
-        answered = await _call(http, method, call.url.replace("{readme}", readme), _filled(call.json, head, readme))
+        sent = _filled(call.json, {"{head}": head, "{readme}": readme, "{main}": main})
+        answered = await _call(http, method, call.url.replace("{readme}", readme), sent)
     assert answered.status_code == call.status, answered.text
     schema = _success_schema(method, path)
     if call.status == 204:
@@ -207,10 +223,12 @@ async def test_a_served_operation_answers_every_field_the_description_requires(
     assert gaps == [], " ".join(gaps)
 
 
-def _filled(sent: object, head: str, readme: str) -> object:
+def _filled(sent: object, values: dict[str, str]) -> object:
+    """`sent` with each placeholder (`{head}`, the pull request's head; `{readme}`, the README's blob; `{main}`, the
+    default branch's head) given its value in the world."""
     if isinstance(sent, dict):
-        return {k: _filled(v, head, readme) for k, v in sent.items()}
-    return {"{head}": head, "{readme}": readme}.get(sent, sent) if isinstance(sent, str) else sent
+        return {k: _filled(v, values) for k, v in sent.items()}
+    return values[sent] if isinstance(sent, str) and sent in values else sent
 
 
 async def test_every_operation_the_provider_does_not_serve_is_refused_by_name(hub: Hub) -> None:

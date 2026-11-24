@@ -20,7 +20,7 @@ from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from minutehand.ports.provider import Provider
-from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
+from minutehand.ports.transitions import CarriesWork, HoldsSeeded, ProvidesTransitions
 from tests.providers.youtrack.youtrack_instance import (
     FIELD_OPS,
     IRIS,
@@ -253,8 +253,10 @@ def test_the_provider_is_one_people_act_through() -> None:
     held: Provider = provider
     acting: ProvidesTransitions = provider
     seeded: HoldsSeeded = provider
-    assert held.manifest is MANIFEST and acting is seeded
+    carrying: CarriesWork = provider
+    assert held.manifest is MANIFEST and acting is seeded is carrying
     assert isinstance(provider, ProvidesTransitions) and isinstance(provider, HoldsSeeded)
+    assert isinstance(provider, CarriesWork), "the engine finds the port by isinstance, so it must be checkable"
 
 
 def test_the_manifest_claims_youtrack_and_imports_nothing_else_of_the_provider() -> None:

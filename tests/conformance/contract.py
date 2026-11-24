@@ -59,8 +59,9 @@ class IdKind(StrEnum):
 
 
 class Progress(StrEnum):
-    """Where a ticket stands, in the words every tracker has: the neutral `TicketState` plus `in_progress`, which
-    the neutral view holds as open."""
+    """Where a ticket stands, in the words every tracker has: the neutral `TicketState` plus `in_progress`, which a
+    tracker that can say so holds as started and the family's neutral view holds as open, since not every tracker can
+    (Asana holds no started meaning)."""
 
     OPEN = "open"
     IN_PROGRESS = "in_progress"

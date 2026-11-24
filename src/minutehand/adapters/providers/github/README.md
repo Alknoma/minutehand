@@ -8,9 +8,11 @@ behaviours it is pinned to, where each comes from, and the test that holds it.
 
 It answers what two kinds of client need: a code-reading service that holds a user's personal access token and reads
 repositories to answer questions about them, and an agent that works a repository's tracker and its changes: issues,
-their comments and labels, pull requests with their files, commits, reviews and merges, and commits to files. People
-(a scenario's) act on that tracker through the transitions port, and the agent is told of what they do by webhooks.
-It does not stand in for GitHub at large.
+their comments and labels, branches it makes, pull requests with their files, commits, the reviews it asks for, reviews
+and merges, and commits to files. People (a scenario's) act on that tracker through the transitions port: an issue
+assigned to them is work they carry, a pull request an ask that waits on its reviewers, its assignees and, while it is a
+draft or once it is approved and merges cleanly, its author. The agent is told of what they do by webhooks. It does not
+stand in for GitHub at large.
 
 Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.githubusercontent.com`,
 `codeload.github.com`; a `download_url` or `html_url` an answer carries is refused by the proxy if followed.
@@ -25,6 +27,8 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | `GET /repos/{o}/{r}` | metadata, `permissions`, `language` |
 | `GET /repos/{o}/{r}/languages` | bytes of code per language, no prose, data, docs or vendored paths |
 | `GET /repos/{o}/{r}/branches?per_page&page` | each branch, the commit it points at, `protected: false` |
+| `GET /repos/{o}/{r}/branches/{branch}` | the branch, its commit in full, the protection of a branch nobody protects; 404 "Branch not found" |
+| `POST /repos/{o}/{r}/git/refs`, `GET .../git/ref/heads/{branch}` | 201: a branch (`refs/heads/…`) made at a commit, then a branch everywhere; GitHub's 422s in its words (`refs.py`); a reference read by its whole name |
 | `GET /repos/{o}/{r}/contents[/{path}]?ref` | a file as wrapped base64; past 1 MiB `"content": ""`, `"encoding": "none"`; a directory capped at 1,000 entries with nothing said |
 | `GET /repos/{o}/{r}/git/blobs/{sha}` | the bytes the contents endpoint refused |
 | `GET /repos/{o}/{r}/git/trees/{sha}?recursive` | one level, or every object when `recursive` has any value; `truncated` past the entry limit |
@@ -47,6 +51,7 @@ Host: `api.github.com` (REST and `/graphql`). Not claimed: `github.com`, `raw.gi
 | `PUT`, `GET .../pulls/{n}/merge` | a merge commit of two parents (`merge_method` merge); 405, 409; 204 once merged |
 | `GET`, `POST .../pulls/{n}/reviews`, `GET .../reviews/{id}`, `GET .../reviews/{id}/comments` | APPROVE, REQUEST_CHANGES, COMMENT; the three states; no pending review |
 | `GET`, `POST .../pulls/{n}/comments` | comments on a line of the diff, with `diff_hunk`, `position`, `line`, `side`; replies |
+| `GET`, `POST`, `DELETE .../pulls/{n}/requested_reviewers` | the users asked for a review until they give it; 201 or 200 with the pull request; 422 for its author or anyone who is no collaborator |
 | `PUT`, `DELETE /repos/{o}/{r}/contents/{path}` | one commit on `branch` (the default branch's, or a branch of its own): 201 or 200 with the `content` and the `commit`; `sha` to replace or delete; 409 on a wrong one |
 
 Every other method and path is refused by name: 501, "minutehand's github fake does not implement <METHOD>
@@ -64,8 +69,9 @@ for a new repository's features (`has_issues` and the rest, from the create-repo
 `tests/providers/github/openapi/api.github.com.subset.json` is the part of GitHub's published REST description
 (github/rest-api-description at `2eba8c3b`, 2026-10-08) for the reference sections this provider touches or
 would be asked for next: repositories, contents, webhooks, branches, commits, git blobs, trees, commits, refs and
-tags, search, users, rate limit, apps and installations, issues, issue comments, labels, pulls, review comments
-and reviews. It holds 171 operations: 51 served, 120 refused by name; the two organization lists were added from the same commit. The coverage test fails if one is neither.
+tags, search, users, rate limit, apps and installations, issues, issue comments, labels, pulls, review comments,
+reviews and review requests. It holds 175 operations: 57 served, 118 refused by name; the two organization lists and
+the review requests were added from the same commit. The coverage test fails if one is neither.
 GraphQL is not in that description; `graphql.py` validates every query against its own schema and refuses what
 it does not answer.
 
@@ -73,24 +79,24 @@ The unserved operations a GitHub client most often calls, to serve next in this 
 
 1. `GET /repos/{owner}/{repo}/commits/{ref}` and `GET /repos/{owner}/{repo}/compare/{basehead}`: one commit with
    its files, and a diff.
-2. `GET /repos/{owner}/{repo}/readme`, `GET /repos/{owner}/{repo}/branches/{branch}`,
-   `GET /repos/{owner}/{repo}/git/ref/{ref}`, `GET /repos/{owner}/{repo}/tags`.
+2. `GET /repos/{owner}/{repo}/readme` and `GET /repos/{owner}/{repo}/tags`.
 3. `GET /repos/{owner}/{repo}/installation` and `GET /app/installations`: finding an app's installation before
-   the token exchange. After them, `POST /repos/{owner}/{repo}/git/refs` and `POST /repos/{owner}/{repo}/pulls/{n}/requested_reviewers`
-   (the latter is not in the committed description yet): an agent that makes its own branch and asks for a review.
+   the token exchange. After them, GraphQL's `markPullRequestReadyForReview` (an agent marking its own draft ready,
+   which `graphql.py` refuses with every mutation) and `POST .../pulls/{n}/requested_reviewers/rerequest`.
 
 ## Webhooks
 
 When the agent declares an inbound target for GitHub (`inbound: - provider: github`, a `url`, and a `secret`), each move a
 person makes, and each write of the agent's own through the REST API, is pushed to it as GitHub pushes it: `issues`
-(opened, closed, reopened), `issue_comment` (created), `pull_request` (opened, closed, merged or not) and
+(opened, closed, reopened), `issue_comment` (created), `pull_request` (opened, closed, merged or not,
+`review_requested` and `review_request_removed` for each reviewer, `ready_for_review`) and
 `pull_request_review` (submitted), a POST of JSON with `X-GitHub-Event`,
 `X-GitHub-Delivery` and a `GitHub-Hookshot/` user agent, and, only where the target declares a secret,
 `X-Hub-Signature-256` and `X-Hub-Signature` (`hooks.py`). A person's move is pushed before it returns, and a delivery
 the agent does not answer with 2xx fails the run; what the agent's own call sets off is pushed after the call is
 answered, in order (`ListensForAgent`, `hooks.Background`), and a delivery refused there is logged and kept. Nothing is
-sent again. A contents commit (`push`) and a diff comment (`pull_request_review_comment`) are not sent yet, and GitHub's
-webhook routes (`/repos/{o}/{r}/hooks`) are refused by name.
+sent again. A contents commit (`push`), a branch made (`create`) and a diff comment (`pull_request_review_comment`) are
+not sent yet, and GitHub's webhook routes (`/repos/{o}/{r}/hooks`) are refused by name.
 
 ## The tracker in a seed
 
@@ -142,8 +148,14 @@ a 200 with `RATE_LIMITED` on GraphQL), `secondary_rate_limited` (403 or 429 with
 
 ## What it does not do
 
-- Milestones, issue types, reactions, issue events and the timeline, review requests, pending and dismissed reviews,
-  repository webhooks and their deliveries, the OAuth web flow, and every app route but the token exchange: refused by name (above).
+- Milestones, issue types, issue dependencies and sub-issues, reactions, issue events and the timeline, teams (a
+  review asked of one), re-requested reviews, pending and dismissed reviews, branch protection, tags and every
+  reference but a branch, repository webhooks and their deliveries, the OAuth web flow, and every app route but the
+  token exchange: refused by name (above). GraphQL answers no mutation, so a draft is marked ready for review only by a
+  person (a take: a model never picks it).
+- A branch is made where its tree is kept: at the default branch's head, at a commit of a branch with commits of its
+  own, or at the commit such a branch was made at; at any other commit of the default branch's history it is refused
+  by name. A `CODEOWNERS` file is a file like any other: nobody is asked for a review by it.
 - A repository's labels are what its seed and the agent's `POST .../labels` define: a label name an issue is given
   that the repository has not defined is refused by name, since the reference does not say what GitHub does with one.
   Labels list alphabetically by name, case aside (recorded). An assignee must be a user of this GitHub.

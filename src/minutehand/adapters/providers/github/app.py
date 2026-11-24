@@ -43,6 +43,7 @@ from minutehand.adapters.providers.github.answers import (
 from minutehand.adapters.providers.github.commits import Commits
 from minutehand.adapters.providers.github.hooks import Background, Hooks, Pusher
 from minutehand.adapters.providers.github.pulls import Pulls
+from minutehand.adapters.providers.github.refs import Refs
 from minutehand.adapters.providers.github.state import GitHubWorld
 from minutehand.adapters.providers.github.tracker import Tracker
 from minutehand.domain.errors import NotServed
@@ -123,6 +124,7 @@ class GitHubApi:
         self.tracker = Tracker(self)
         self.pulls = Pulls(self)
         self.commits_made = Commits(self)
+        self.refs = Refs(self)
         self.hooks = Hooks(self, pusher, background)
 
     # ------------------------------------------------------------------ the gate
@@ -524,9 +526,7 @@ class GitHubApi:
         self.world.saw(state.repository_ref(owner, name), Operation.READ)
         if not repository.commits:
             return as_json([])
-        head = repository.commits[0].sha
-        tips = {name: head for name in (repository.default_branch, *repository.branches)}
-        tips |= {line.name: line.commits[0].sha if line.commits else line.fork for line in repository.lines}
+        tips = history.tips(repository)
         names = sorted(tips)
         start, end, links = paged(request, len(names), path=_by_id(request, repository))
         out: list[wire.Wire] = [
@@ -889,6 +889,7 @@ def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None]
     tracker = api.tracker
     pulls = api.pulls
     made = api.commits_made
+    refs = api.refs
     table: list[tuple[str, str, Handler]] = [
         ("/user", "GET", api.user),
         ("/user/repos", "GET", api.user_repos),
@@ -898,6 +899,9 @@ def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None]
         ("/repos/{owner}/{repo}", "GET", api.repository),
         ("/repos/{owner}/{repo}/languages", "GET", api.languages),
         ("/repos/{owner}/{repo}/branches", "GET", api.branches),
+        ("/repos/{owner}/{repo}/branches/{branch:path}", "GET", refs.get_branch),
+        ("/repos/{owner}/{repo}/git/refs", "POST", refs.create_ref),
+        ("/repos/{owner}/{repo}/git/ref/{ref:path}", "GET", refs.get_ref),
         ("/repos/{owner}/{repo}/contents", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/", "GET", api.contents),
         ("/repos/{owner}/{repo}/contents/{path:path}", "GET", api.contents),
@@ -944,6 +948,13 @@ def build_app(store: Store, clock: Clock, listening: Callable[[], Pusher | None]
         ),
         ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "GET", pulls.list_review_comments),
         ("/repos/{owner}/{repo}/pulls/{pull_number:int}/comments", "POST", pulls.create_review_comment),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/requested_reviewers", "GET", pulls.list_requested_reviewers),
+        ("/repos/{owner}/{repo}/pulls/{pull_number:int}/requested_reviewers", "POST", pulls.request_reviewers),
+        (
+            "/repos/{owner}/{repo}/pulls/{pull_number:int}/requested_reviewers",
+            "DELETE",
+            pulls.remove_requested_reviewers,
+        ),
         ("/search/code", "GET", api.search_code),
         ("/app/installations/{installation_id:int}/access_tokens", "POST", api.installation_token),
         ("/graphql", "POST", api.graph),

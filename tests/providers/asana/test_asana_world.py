@@ -24,7 +24,7 @@ from minutehand.domain.provider import Tier
 from minutehand.domain.scenario import SeededComment, SeededTicket, TicketState
 from minutehand.domain.world import Actor, EntityKind, Operation, TicketSnapshot
 from minutehand.ports.provider import Provider
-from minutehand.ports.transitions import HoldsSeeded, ProvidesTransitions
+from minutehand.ports.transitions import CarriesWork, HoldsSeeded, ProvidesTransitions
 from minutehand.session import _services  # pyright: ignore[reportPrivateUsage]
 from tests.providers.asana.asana_workspace import (
     CATERING,
@@ -234,9 +234,10 @@ async def test_moving_a_task_that_is_not_there_is_refused(workspace: Workspace) 
 
 def test_the_provider_holds_every_port_it_claims() -> None:
     provider = build()
-    held: tuple[Provider, ProvidesTransitions, HoldsSeeded] = (provider, provider, provider)
+    held: tuple[Provider, ProvidesTransitions, HoldsSeeded, CarriesWork] = (provider, provider, provider, provider)
     assert all(p is provider for p in held)
     assert isinstance(provider, HoldsSeeded), "the run finds the port by isinstance, so it must be checkable"
+    assert isinstance(provider, CarriesWork), "so does the engine, for the work a person carries"
 
 
 def test_the_manifest_claims_asana_and_imports_nothing_else_of_the_provider() -> None:

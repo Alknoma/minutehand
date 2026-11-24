@@ -36,6 +36,8 @@ class DrawnFrom(StrEnum):
     REMINDED = "reminded"  # their `reminded.sooner_within`, drawn again on a follow-up, in their available time
     PINNED = "pinned"  # a fork's `reply_at`, or a scenario's `takes` with `after`: no draw
     AUTOMATIC = "automatic"  # their automatic reply while away with a delegate: at once
+    WORK = "work"  # the finish of a piece of work they carry: its effort in their available time after they began it
+    CARRIED = "carried"  # work theirs and under way as the run began: carried on from their first available moment
 
 
 class Drawn(Model):
