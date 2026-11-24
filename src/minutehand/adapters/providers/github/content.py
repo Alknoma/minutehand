@@ -125,7 +125,9 @@ class Located:
 
 def locate(repository: wire.StoredRepository, ref: str | None) -> Located | None:
     """What a ref names, branches with commits of their own included: those by name or by the sha (or its unique
-    prefix of at least seven characters) of one of their commits. None for a ref that names nothing."""
+    prefix of at least seven characters) of one of their commits. A commit two such branches share (one made at a
+    commit of the other) is one commit, read on the first of them: both hold the same tree there. None for a ref that
+    names nothing."""
     found = resolve(repository, ref)
     if found is not None:
         return Located(found, None)
@@ -138,7 +140,7 @@ def locate(repository: wire.StoredRepository, ref: str | None) -> Located | None
     lowered = ref.lower()
     if len(lowered) >= 7 and all(c in "0123456789abcdef" for c in lowered):
         matches = [(line, c) for line in repository.lines for c in line.commits if c.sha.startswith(lowered)]
-        if len(matches) == 1:
+        if len({c.sha for _, c in matches}) == 1:
             return Located(matches[0][1], matches[0][0])
     return None
 

@@ -998,6 +998,72 @@ class BranchOut(Wire):
     protected: bool
 
 
+class BranchLinksOut(Wire):
+    self_: str = Field(alias="self")
+    html: str
+
+
+class StatusCheckOut(Wire):
+    """A status check a protected branch requires; no branch here is protected, so none is ever listed."""
+
+    context: str
+    app_id: int | None
+
+
+class RequiredStatusChecksOut(Wire):
+    """The status checks a branch with no protection requires: none, enforced for nobody (observed,
+    https://github.com/nazarli-shabnam/clevis/issues/788)."""
+
+    enforcement_level: Literal["off"] = "off"
+    contexts: list[str] = []
+    checks: list[StatusCheckOut] = []
+
+
+class ProtectionOut(Wire):
+    """`protection` of a branch with none: not enabled, and no status check required."""
+
+    enabled: Literal[False] = False
+    required_status_checks: RequiredStatusChecksOut = RequiredStatusChecksOut()
+
+
+class BranchDetailOut(Wire):
+    """`GET /repos/{o}/{r}/branches/{branch}`: the description's `branch-with-protection`, in the order the real service
+    writes it, for a branch nobody protects."""
+
+    name: str
+    commit: CommitOut
+    links: BranchLinksOut = Field(alias="_links")
+    protected: Literal[False] = False
+    protection: ProtectionOut = ProtectionOut()
+    protection_url: str
+
+
+class GitObjectOut(Wire):
+    """What a reference points at: a branch's is always a commit."""
+
+    sha: str
+    type: Literal["commit"] = "commit"
+    url: str
+
+
+class GitRefOut(Wire):
+    """`POST /repos/{o}/{r}/git/refs` and `GET .../git/ref/{ref}`: the description's `git-ref`, in the order the real
+    service writes it (observed, https://github.com/sapientpants/software-factory/pull/31)."""
+
+    ref: str
+    node_id: str
+    url: str
+    object: GitObjectOut
+
+
+class ReviewRequestsOut(Wire):
+    """`GET /repos/{o}/{r}/pulls/{n}/requested_reviewers`: the description's `pull-request-review-request`. The world
+    holds no teams, so `teams` is always empty."""
+
+    users: list[AccountOut]
+    teams: list[AccountOut] = []
+
+
 class GraphErrorLocation(Wire):
     line: int
     column: int

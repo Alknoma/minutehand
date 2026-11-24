@@ -17,7 +17,7 @@ from minutehand.checks.ledger import Away, absences, recipients
 from minutehand.domain.checks import Needs, Obligation, ObligationKind, RunView
 from minutehand.domain.clock import AGENT_SOURCES, REACHED, DueClosed
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import DispatchFault, Model, TicketState
+from minutehand.domain.scenario import FINISHED, DispatchFault, Model
 from minutehand.domain.transitions import Transition, moves
 from minutehand.domain.world import (
     Actor,
@@ -273,9 +273,7 @@ def _duplicates(events: list[WorldEvent]) -> set[int]:
     found: set[int] = set()
     for event in events:
         after = event.after
-        if event.operation is Operation.DELETE or (
-            isinstance(after, TicketSnapshot) and after.state is not TicketState.OPEN
-        ):
+        if event.operation is Operation.DELETE or (isinstance(after, TicketSnapshot) and after.state in FINISHED):
             live = {k: v for k, v in live.items() if v.entity != event.entity}
             continue
         if event.actor is not Actor.AGENT or event.operation is not Operation.CREATE:

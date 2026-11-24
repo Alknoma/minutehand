@@ -9,6 +9,7 @@ model's pick from what the person can see) and applies it. The provider does the
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 from typing import Protocol, runtime_checkable
 
 from minutehand.domain.common import Window
@@ -47,6 +48,25 @@ class ProvidesTransitions(Protocol):
         """Whether the service tells the agent when `who` moves this item: an answer it pushes (a Slack event), or a
         push the agent asked for (a live watch on the calendar or mailbox it lands in). That push is a wake. False:
         the agent finds the move on its next read."""
+        ...
+
+
+@runtime_checkable
+class CarriesWork(Protocol):
+    """A provider whose items may be work a person carries to finished over their own time (`Waiting.work`): what
+    holds a piece back, and how much of it is left, each as the service itself holds it. The people engine plans the
+    course (`application.people`); the provider only says what its service says."""
+
+    def holding(self, item: EntityRef, world: Store) -> list[EntityRef]:
+        """The items that hold `item` back now, by the service's own links (an issue that blocks it, a task it
+        depends on) and that are not finished themselves. Empty: nothing does. An item the world does not hold
+        raises `LookupError`, as `legal` does."""
+        ...
+
+    def estimate(self, item: EntityRef, world: Store) -> timedelta | None:
+        """The work left on `item` as the service holds it: its estimate less the time logged against it, never
+        below none. None: the service holds no estimate for it. An item the world does not hold raises
+        `LookupError`."""
         ...
 
 

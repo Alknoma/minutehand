@@ -52,16 +52,21 @@ class Value(Model):
     outcome: TicketState = TicketState.OPEN
 
 
+IN_PROGRESS = Value(name="In Progress", outcome=TicketState.STARTED)
+"""The unresolved State an issue is in while it is worked on: the time it spends there is "the time spent working on
+an issue" (the In Progress Work Timer workflow, https://www.jetbrains.com/help/youtrack/cloud/workflow-work-timer.html).
+Every other unresolved value a bundle here starts with is open."""
+
 SEEDED_STATES = [
     Value(name="Open"),
-    Value(name="In Progress"),
+    IN_PROGRESS,
     Value(name="Fixed", resolved=True, outcome=TicketState.DONE),
     Value(name="Won't fix", resolved=True, outcome=TicketState.CANCELLED),
 ]
 TEMPLATE_STATES = [
     Value(name="Submitted"),
     Value(name="Open"),
-    Value(name="In Progress"),
+    IN_PROGRESS,
     Value(name="To be discussed"),
     Value(name="Reopened"),
     Value(name="Can't Reproduce", resolved=True, outcome=TicketState.CANCELLED),
@@ -132,7 +137,7 @@ TEMPLATES: dict[str | None, list[TemplateField]] = {
             type=wire.FieldType.STATE,
             values=[
                 Value(name="Open"),
-                Value(name="In Progress"),
+                IN_PROGRESS,
                 Value(name="To Verify"),
                 Value(name="Done", resolved=True, outcome=TicketState.DONE),
                 Value(name="Duplicate", resolved=True, outcome=TicketState.CANCELLED),

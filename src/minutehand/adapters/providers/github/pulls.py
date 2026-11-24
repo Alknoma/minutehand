@@ -1,4 +1,5 @@
-"""Pull requests, their files and commits, their reviews and the comments on their diffs.
+"""Pull requests, their files and commits, the reviews asked of people and those they give, and the comments on their
+diffs.
 
 A pull request is an issue with a head branch and a base (`StoredIssue.pull`), numbered with the repository's issues
 (https://docs.github.com/en/rest/issues/issues#list-repository-issues). Its head is a branch with commits of its own
@@ -6,6 +7,10 @@ A pull request is an issue with a head branch and a base (`StoredIssue.pull`), n
 tree its head was made at and the tree its head has; whether it merges cleanly is worked out from the three trees
 where that can be known, and is `null` ("GitHub has started a background job to compute the mergeability") where it
 cannot.
+
+A review is asked of a user (`requested_reviewers`) until they give one: "Once a requested reviewer submits a review,
+they are no longer considered a requested reviewer"; asked again, they are asked again
+(https://docs.github.com/en/rest/pulls/review-requests).
 """
 
 from __future__ import annotations
@@ -33,6 +38,14 @@ if TYPE_CHECKING:
 PULLS = "/pulls/pulls"
 REVIEWS = "/pulls/reviews"
 REVIEW_COMMENTS = "/pulls/comments"
+REVIEW_REQUESTS = "/pulls/review-requests"
+AUTHOR_ASKED = "Review cannot be requested from pull request author."
+"""GitHub's refusal of a review asked of the pull request's author, a 422 (observed:
+https://github.com/github/github-mcp-server/issues/3756, https://github.com/kentaro-m/auto-assign/issues/50)."""
+READY_FOR_REVIEW = "ready_for_review"
+"""The move that marks a draft ready for review, by the name GitHub's webhook and timeline give it."""
+DRAFT = "draft"
+"""What a draft is, as the pull request's page shows it."""
 MERGED = "Pull Request successfully merged"
 """The message of a successful merge, as the reference shows it: https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request"""
 NOT_MERGEABLE = "Method Not Allowed"
@@ -156,6 +169,31 @@ def merges_cleanly(world: GitHubWorld, repository: wire.StoredRepository, issue:
         if there != change.previous_sha and there != change.sha:
             return None
     return True
+
+
+def approved(reviews: list[wire.StoredReview], issue: wire.StoredIssue) -> bool:
+    """Whether someone other than its author approves the pull request and nobody asks for changes to it, of its
+    repository's `reviews` (oldest first): each reviewer counted by their latest review that approves or asks for
+    changes (GraphQL's `latestOpinionatedReviews`; APPROVED is "a review allowing the pull request to merge",
+    CHANGES_REQUESTED "a review blocking the pull request from merging", COMMENTED "an informational review":
+    https://docs.github.com/en/graphql/reference/pulls)."""
+    latest: dict[str, wire.ReviewState] = {}
+    for review in reviews:
+        if review.pull != issue.number or review.author.lower() == issue.author.lower():
+            continue
+        if review.state is not wire.ReviewState.COMMENTED:
+            latest[review.author.lower()] = review.state
+    decided = set(latest.values())
+    return wire.ReviewState.APPROVED in decided and wire.ReviewState.CHANGES_REQUESTED not in decided
+
+
+def not_a_collaborator(repository: wire.StoredRepository) -> str:
+    """GitHub's refusal of a review asked of someone who is no collaborator, a 422 (observed:
+    https://github.com/Automattic/jetpack/issues/37058, https://github.com/NVIDIA/OpenShell/issues/5549)."""
+    return (
+        "Reviews may only be requested from collaborators. One or more of the users or teams you specified is not a "
+        f"collaborator of the {repository.full_name} repository."
+    )
 
 
 class Pulls:
@@ -621,6 +659,43 @@ class Pulls:
         await self._api.hooks.state_changed(repository, issue, done, account)
         return done
 
+    async def ready_for_review(
+        self,
+        repository: wire.StoredRepository,
+        issue: wire.StoredIssue,
+        account: wire.StoredAccount,
+        *,
+        actor: Actor,
+        who: str | None,
+        content: str = "{}",
+    ) -> wire.StoredIssue:
+        """A draft marked ready for review, as the merge box's "Ready for review" marks it and GraphQL's
+        `markPullRequestReadyForReview` does (the REST API cannot): no draft any more, the move from draft recorded, and
+        a `pull_request` webhook (`ready_for_review`) if the agent has a target.
+        https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request,
+        https://docs.github.com/en/graphql/reference/pulls"""
+        pull = issue.pull
+        assert pull is not None
+        if issue.state is not wire.IssueState.OPEN or not pull.draft:
+            raise NotServed("marking ready for review a pull request that is no open draft: GitHub's answer is unknown")
+        ready = issue.model_copy(update={"pull": pull.model_copy(update={"draft": False})})
+        kept = await self.tracker.edit_issue(repository, issue, ready, by=account, actor=actor, who=who)
+        moved = Transition(
+            provider=MANIFEST.key,
+            item=state.issue_ref(repository.owner, repository.name, issue.number),
+            name=READY_FOR_REVIEW,
+            from_state=DRAFT,
+            to_state=kept.state.value,
+            by=actor,
+            who=who,
+            content=content,
+            at=self._api.clock.now(),
+        )
+        world = self._api.world
+        world.store.apply(transition_change(moved, at_seq=world.store.head() + 1))
+        await self._api.hooks.ready_for_review(repository, kept, account)
+        return kept
+
     # ------------------------------------------------------------------ reviews
 
     def review_out(self, repository: wire.StoredRepository, review: wire.StoredReview) -> wire.ReviewOut:
@@ -711,7 +786,10 @@ class Pulls:
         actor: Actor,
         who: str | None,
     ) -> wire.StoredReview:
-        """A review submitted on a pull request, as `POST /repos/{owner}/{repo}/pulls/{n}/reviews` submits it."""
+        """A review submitted on a pull request, as `POST /repos/{owner}/{repo}/pulls/{n}/reviews` submits it. Whoever
+        it was asked of is asked no longer: "Once a requested reviewer submits a review, they are no longer considered a
+        requested reviewer."
+        https://docs.github.com/en/rest/pulls/review-requests#get-all-requested-reviewers-for-a-pull-request"""
         section = f"{REVIEWS}#create-a-review-for-a-pull-request"
         if event is not wire.ReviewEvent.APPROVE and (body is None or not body.strip()):
             # "**Required** when using `REQUEST_CHANGES` or `COMMENT` for the `event` parameter."
@@ -731,6 +809,12 @@ class Pulls:
             submitted_at=now,
         )
         world.put_review(repository, review, operation=Operation.CREATE, actor=actor)
+        pull = issue.pull
+        assert pull is not None
+        if account.login in pull.requested_reviewers:
+            answered = [login for login in pull.requested_reviewers if login != account.login]
+            issue = issue.model_copy(update={"pull": pull.model_copy(update={"requested_reviewers": answered})})
+            world.put_issue(repository, issue, operation=Operation.UPDATE, actor=actor)
         moved = Transition(
             provider=MANIFEST.key,
             item=state.issue_ref(repository.owner, repository.name, issue.number),
@@ -745,6 +829,108 @@ class Pulls:
         world.store.apply(transition_change(moved, at_seq=world.store.head() + 1))
         await self._api.hooks.review_submitted(repository, issue, review, account)
         return review
+
+    # ------------------------------------------------------------------ reviews asked of people
+
+    def reviewers(
+        self, repository: wire.StoredRepository, issue: wire.StoredIssue, logins: list[str], section: str
+    ) -> list[wire.StoredAccount]:
+        """The users a request names, each once, refused as GitHub refuses them: the pull request's author, and anyone
+        who is no collaborator, each a 422 in GitHub's words. A collaborator is whoever owns the repository,
+        collaborates on it or belongs to the organization that owns it ("organization members with access through
+        default organization permissions": https://docs.github.com/en/rest/collaborators/collaborators). A login that
+        names no user of this GitHub is refused by name, as an assignee's is."""
+        world = self._api.world
+        found: list[wire.StoredAccount] = []
+        for login in logins:
+            account = world.account(login)
+            if account is None or account.type is wire.AccountType.ORGANIZATION:
+                raise NotServed(f"asking a review of {login}, who is not a user of this GitHub")
+            if account.login.lower() == issue.author.lower():
+                raise wire.Refusal(422, AUTHOR_ASKED, section=section)
+            if world.role(account, repository) is None:
+                raise wire.Refusal(422, not_a_collaborator(repository), section=section)
+            if account not in found:
+                found.append(account)
+        return found
+
+    def asked_of(self, sent: wire.Sent, issue: wire.StoredIssue) -> list[str] | None:
+        """The logins a request to ask or take back reviews names, None when it names none. The world holds no teams, so
+        a team is refused by name, as asking or taking back a review on a pull request that is closed is: the reference
+        gives no answer for it."""
+        logins = sent.texts("reviewers")
+        if sent.texts("team_reviewers"):
+            raise NotServed("team_reviewers: the world holds no teams")
+        if issue.state is not wire.IssueState.OPEN:
+            raise NotServed("the review requests of a closed pull request: the reference gives no answer for them")
+        return logins
+
+    async def list_requested_reviewers(self, request: Request, caller: Caller) -> Answered:
+        section = f"{REVIEW_REQUESTS}#get-all-requested-reviewers-for-a-pull-request"
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._api.visible(caller, owner, name, section)
+        issue = self.pull_of(request, repository, section)
+        pull = issue.pull
+        assert pull is not None
+        self._api.world.saw(state.issue_ref(owner, name, issue.number), Operation.READ)
+        users = [self._api.account_out(login) for login in pull.requested_reviewers]
+        return as_json(wire.ReviewRequestsOut(users=users))
+
+    async def request_reviewers(self, request: Request, caller: Caller) -> Answered:
+        """201 with the pull request in the simple form the description gives; a user asked already is asked once, and
+        each newly asked is a `pull_request` webhook (`review_requested`). `reviewers` and `team_reviewers` are each
+        optional, and a request naming neither is 422 "Invalid request"."""
+        section = f"{REVIEW_REQUESTS}#request-reviewers-for-a-pull-request"
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._api.visible(caller, owner, name, section)
+        issue = self.pull_of(request, repository, section)
+        account = self.tracker.agent(caller)
+        sent = wire.Sent.read(await request.body(), section=section, optional=True)
+        if not sent.present("reviewers") and not sent.present("team_reviewers"):
+            raise sent.invalid()
+        logins = self.asked_of(sent, issue)
+        pull = issue.pull
+        assert pull is not None
+        named = self.reviewers(repository, issue, logins or [], section)
+        added = [a for a in named if a.login not in pull.requested_reviewers]
+        asked = [*pull.requested_reviewers, *(a.login for a in added)]
+        changed = issue.model_copy(update={"pull": pull.model_copy(update={"requested_reviewers": asked})})
+        kept = await self.tracker.edit_issue(repository, issue, changed, by=account, actor=Actor.AGENT, who=None)
+        for reviewer in added:
+            await self._api.hooks.review_requested(repository, kept, reviewer, account, removed=False)
+        return as_json(self.present(caller, repository, [kept], full=False)[0], 201)
+
+    async def remove_requested_reviewers(self, request: Request, caller: Caller) -> Answered:
+        """200 with the pull request in the simple form; each user taken off is a `pull_request` webhook
+        (`review_request_removed`). `reviewers` is required. Taking back a request the pull request does not hold is
+        refused by name: the reference gives no answer for it."""
+        section = f"{REVIEW_REQUESTS}#remove-requested-reviewers-from-a-pull-request"
+        owner, name = request.path_params["owner"], request.path_params["repo"]
+        repository = self._api.visible(caller, owner, name, section)
+        issue = self.pull_of(request, repository, section)
+        account = self.tracker.agent(caller)
+        sent = wire.Sent.read(await request.body(), section=section)
+        if not sent.present("reviewers"):
+            raise sent.invalid()
+        logins = self.asked_of(sent, issue) or []
+        pull = issue.pull
+        assert pull is not None
+        removed: list[str] = []
+        for login in logins:
+            held = next((r for r in pull.requested_reviewers if r.lower() == login.lower()), None)
+            if held is None:
+                raise NotServed(f"taking back a review request of {login}, whose review the pull request does not ask")
+            if held not in removed:
+                removed.append(held)
+        left = [r for r in pull.requested_reviewers if r not in removed]
+        changed = issue.model_copy(update={"pull": pull.model_copy(update={"requested_reviewers": left})})
+        kept = await self.tracker.edit_issue(repository, issue, changed, by=account, actor=Actor.AGENT, who=None)
+        for login in removed:
+            reviewer = self._api.world.account(login)
+            if reviewer is None:
+                raise LookupError(f"{login} is asked for a review and is not in this GitHub")
+            await self._api.hooks.review_requested(repository, kept, reviewer, account, removed=True)
+        return as_json(self.present(caller, repository, [kept], full=False)[0])
 
     # ------------------------------------------------------------------ comments on the diff
 

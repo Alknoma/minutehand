@@ -60,11 +60,11 @@ async def test_an_open_issue_assigned_to_a_person_is_pending_and_a_pinned_close_
     # Iris for a review, and is no assignment of anyone's here. Mutation: dropping the open-state or the pull request
     # filter books more.
     booked = (await engine.look(store, clock)).booked
-    assert [(b.person, b.item.external_id) for b in booked] == [
+    assert sorted((b.person, b.item.external_id) for b in booked) == [
         ("iris", "issue/lanternworks/ledger/0000000001"),
         ("iris", "issue/lanternworks/ledger/0000000004"),
         ("tomas", "issue/lanternworks/ledger/0000000003"),
-    ]
+    ], "an assigned issue is work they carry, booked after what is asked of them"
     [mine] = [b for b in booked if b.person == "tomas"]
     assert mine.at == START + timedelta(hours=2)
     assert [o.name for o in provider.legal(mine.item, Actor.PERSON, TOMAS, store)] == ["close"]

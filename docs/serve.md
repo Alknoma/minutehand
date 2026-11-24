@@ -250,7 +250,7 @@ environment. The inboxes are read as each person at a step's end, on `advance` a
 agent asking that person, recorded in the world. With scripted people on, each person's decision is owed like a
 reply and made when the clock passes it: a take's decision as it says, what it gives (a reason) written by the
 model from its facts unless `fields` fixes the words, and, with no take, the decision the model picks from the
-person's facts (`person-transition/1`). `inboxes/read` lists each with its moment; its `decision` is
+person's facts (`person-transition/2`). `inboxes/read` lists each with its moment; its `decision` is
 null until a model makes it. A harness that keeps its own clock asks `inboxes/read` for the
 earliest decision due, marks its next step there, and has it made with `inboxes/due`; one that keeps its own timing
 has a person decide now with `inboxes/decide`. `OpenWorld.inboxes()`, `.perform_due()`, `.decide()` (and the same on

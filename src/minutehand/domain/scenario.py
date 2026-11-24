@@ -245,7 +245,8 @@ class Take(Model):
     take: str = Field(
         min_length=1,
         description="The offer, in any case: by its name, the state it reaches, the label the person sees, or for a "
-        "ticket what that state means (open, done, cancelled): 'Done', 'declined', 'Approve', 'done', 'delete'",
+        "ticket what that state means (open, started, done, cancelled): 'Done', 'declined', 'Approve', 'done', "
+        "'delete'. On work a person carries (`Waiting.work`), the move that finishes it, `after` its finishing moment",
     )
     after: timedelta | None = Field(
         default=None,
@@ -313,6 +314,12 @@ class Person(Model):
     )
     working_hours: WorkingHours | None = None
     absences: list[Absence] = []
+    pace: Window | None = Field(
+        default=None,
+        description="How long a piece of work handed to them takes them when its tracker holds no estimate: drawn "
+        "within this much of their available time from when they pick it up; None: as long as they judge it takes "
+        "them as they pick it up (a model call, `person-estimate/1`)",
+    )
     early_follow_ups: int = Field(
         default=2,
         ge=0,
@@ -350,9 +357,16 @@ class Person(Model):
 
 
 class TicketState(StrEnum):
-    OPEN = "open"
+    """What a ticket's state is, read across every provider: each tracker says which of its own states mean which."""
+
+    OPEN = "open"  # not started
+    STARTED = "started"  # being worked on, not finished: Jira's In Progress category, YouTrack's In Progress
     DONE = "done"
     CANCELLED = "cancelled"
+
+
+FINISHED = frozenset({TicketState.DONE, TicketState.CANCELLED})
+"""A ticket in one of these states is finished: nobody works on it any more."""
 
 
 class SeededComment(Model):

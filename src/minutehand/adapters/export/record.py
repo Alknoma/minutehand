@@ -50,7 +50,7 @@ from minutehand.domain.presentation import (
     ReplayRecord,
 )
 from minutehand.domain.run import Verdict
-from minutehand.domain.scenario import Person, Scenario, TicketState
+from minutehand.domain.scenario import FINISHED, Person, Scenario
 from minutehand.domain.world import (
     Actor,
     DocumentSnapshot,
@@ -327,7 +327,7 @@ def _items(
                     place=snapshot.project or tool,
                     title=snapshot.title,
                     text=snapshot.body or None,
-                    state="open" if snapshot.state is TicketState.OPEN else "done",
+                    state="done" if snapshot.state in FINISHED else "open",
                     assignee=by_email[email] if email is not None and email in by_email else None,
                 )
             )

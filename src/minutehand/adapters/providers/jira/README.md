@@ -37,7 +37,8 @@ a 501 naming it.
 Workflows are per project: statuses with a category (`new`, `indeterminate`, `done`) and transitions with ids,
 sources and screens. Entering a done status sets `resolution` (the transition's screen value, else Done, or
 Won't Do for a status declared cancelled) and `resolutiondate`; leaving it clears both. `TicketSnapshot.state`
-is each status's declared outcome: by default `done` for a done category and `open` otherwise.
+is each status's declared outcome: by default its category's, `open` for To Do (`new`), `started` for In Progress
+(`indeterminate`) and `done` for Done.
 
 **Link direction.** Atlassian's reference for `POST /rest/api/3/issueLink`
 (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-links/) calls the outward issue the
@@ -76,7 +77,10 @@ the transitions offered are those `GET /issue/{key}/transitions` lists from its 
 the person's move goes through the same path as `POST /issue/{key}/transitions` (`Desk.transition`), its comment as
 `update.comment`, authored by them. A transition whose screen requires a field is not offered to a person: the
 engine writes free text only. The agent's own transitions and creates (the workflow's initial `Create`) and every
-move a person makes are recorded as transitions beside the issue's versions.
+move a person makes are recorded as transitions beside the issue's versions. Such an issue is work the person
+carries (`CarriesWork`): due on its `duedate`, ranked by its priority's place in the site's priorities (Highest
+first), held back by each issue that blocks it (a Blocks link whose inward issue it is) while that one is not in the
+Done category, and with its remaining estimate left to do.
 
 **Webhooks.** `JiraSeed.webhooks` sets up admin webhooks (`url`, `events`, `jql`, `secret`) as Jira administration
 would. Each is POSTed `jira:issue_created`, `jira:issue_updated` and `comment_created` (`webhooks.py`): after the

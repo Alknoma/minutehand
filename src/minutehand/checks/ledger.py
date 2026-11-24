@@ -40,7 +40,15 @@ from pydantic import AwareDatetime, Field
 from minutehand.domain.absence import first_ask, placed
 from minutehand.domain.checks import Obligation, ObligationKind
 from minutehand.domain.people import PersonReply
-from minutehand.domain.scenario import AbsenceTrigger, DelayRange, Model, Person, Scenario, Silent, TicketState
+from minutehand.domain.scenario import (
+    FINISHED,
+    AbsenceTrigger,
+    DelayRange,
+    Model,
+    Person,
+    Scenario,
+    Silent,
+)
 from minutehand.domain.world import (
     Actor,
     EntityKind,
@@ -56,7 +64,6 @@ from minutehand.domain.world import (
     WorldEvent,
 )
 
-FINISHED = frozenset({TicketState.DONE, TicketState.CANCELLED})
 _READS = frozenset({Operation.READ, Operation.SEARCH})
 
 
