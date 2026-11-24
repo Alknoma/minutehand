@@ -217,6 +217,36 @@ async def test_a_person_reassigns_comments_on_and_deletes_an_issue_at_their_mome
     assert site.store.head() == head, "an act on an issue that is gone writes nothing"
 
 
+async def test_a_person_moving_an_issue_where_it_already_stands_does_nothing(site: Site) -> None:
+    """Noor has moved LAUNCH-1 to done; the scenario's later move of hers to done finds it there and does nothing. A
+    comment, which leaves the issue in Done, is no move to done."""
+    at = timedelta(hours=5)
+    site.clock.jump(START + at)
+    await _act(site, _happening("noor", at, Moves(to=TicketState.DONE)))
+    head = site.store.head()
+
+    assert (
+        await acted(site.provider, _happening("noor", at, Moves(to=TicketState.DONE)), SCENARIO, site.store, site.clock)
+        is None
+    )
+    assert site.store.head() == head, "a move to where the issue already stands writes nothing"
+
+
+async def test_a_person_moving_an_issue_to_what_its_status_already_means_does_nothing(site: Site) -> None:
+    """Iris starts LAUNCH-1; the scenario's later move of hers to started finds it in progress and does nothing,
+    though Submit for review would take it on to In Review, which means started too."""
+    at = timedelta(hours=5)
+    site.clock.jump(START + at)
+    await _act(site, _happening("iris", at, Moves(to=TicketState.STARTED)))
+    head = site.store.head()
+
+    happening = _happening("iris", at, Moves(to=TicketState.STARTED))
+    assert await acted(site.provider, happening, SCENARIO, site.store, site.clock) is None
+    assert site.store.head() == head, "a move to what the issue's status already means writes nothing"
+    read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "status"}))
+    assert read["fields"]["status"]["name"] == "In Progress"
+
+
 async def test_a_person_reassigning_to_nobody_leaves_the_issue_unassigned(site: Site) -> None:
     await _act(site, _happening("tomas", timedelta(hours=1), Reassigns(to=None)))
     read = ok(await site.http.get(f"{API}/issue/LAUNCH-1", params={"fields": "assignee"}))

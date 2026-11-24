@@ -837,7 +837,7 @@ class People:
     async def happen(self, happening: TicketHappening, world: Store, clock: Clock) -> Transition | None:
         """A person does something to a seeded ticket by themselves, at the scenario's moment: the move, comment,
         reassignment or deletion its action names, through the provider's `apply` like any other transition. Nothing
-        when the ticket is gone, or already where the move would take it."""
+        when the ticket is gone, already means the state a move would take it to, or offers them no move there."""
         return await happen(
             self._scenario, self.port(self._scenario.happening_ticket(happening).provider), happening, world, clock
         )
@@ -1964,7 +1964,8 @@ async def happen(
     scenario: Scenario, port: ProvidesTransitions, happening: TicketHappening, world: Store, clock: Clock
 ) -> Transition | None:
     """`People.happen` for one provider: a ticket happening landed through `port`'s `apply`. Nothing when the ticket
-    is gone, or already where the move would take it."""
+    is gone, already means the state a move would take it to, or offers them no move there. A move goes by what the
+    state it reaches means, so what leaves the ticket where it is (a comment) is never one."""
     seeded = scenario.happening_ticket(happening)
     if not isinstance(port, HoldsSeeded):
         raise RunRefused(f"a happening acts on a seeded {seeded.provider} ticket, and {seeded.provider} holds none")
@@ -1973,8 +1974,13 @@ async def happen(
         return None
     person = next(p for p in scenario.people if p.key == happening.person)
     name, given = ticket_move(happening.action, {p.key: p.email for p in scenario.people if p.email})
-    if isinstance(happening.action, Moves) and _matching(name, port.legal(item, Actor.PERSON, person, world)) is None:
-        return None  # already where it would go
+    if isinstance(happening.action, Moves):
+        wanted = happening.action.to
+        offers = port.legal(item, Actor.PERSON, person, world)
+        offer = next((o for o in offers if o.means is wanted), None)
+        if _meaning(item, world) is wanted or offer is None:
+            return None
+        return await port.apply(item, offer.name, Actor.PERSON, person, json.dumps(dict(given)), world, clock)
     return await move(port, item, name, Actor.PERSON, person, given, world, clock)
 
 
