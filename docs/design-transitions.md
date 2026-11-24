@@ -311,7 +311,10 @@ invented about the work: what it is, who carries it and what holds it are the wo
   then the day it is due (`Waiting.due`), then its priority as the service orders its own (`Waiting.rank`), then
   when it became theirs. Work a take pins runs beside the rest.
 - **Picking it up** is booked as one of their answers would land (`reply_within`, else their reply's `delay`), or
-  where a fork pins their nth item there (`ReplyAt` with `provider`), and
+  where a fork pins their nth item there (`ReplyAt` with `provider`). Work that was theirs and under way as the run
+  began (`CourseSnapshot.under_way_at_start`: started, with them as its assignee, at setup) is carried on from their
+  first available moment instead (`DrawnFrom.CARRIED`): they were on it already, and nothing reaches them to answer.
+  Work started or handed to them since is new to them, and is taken up as an answer would land. Picking it up
   moves it to a started state (`Offer.means` is `TicketState.STARTED`: Jira's In Progress category, YouTrack's In
   Progress) unless it is in one already. It fixes how long the work takes them, in their available time: what its
   service says is left of it (`EffortFrom.ESTIMATE`), else drawn within their `Person.pace`, else as long as they

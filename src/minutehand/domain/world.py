@@ -592,6 +592,12 @@ class CourseSnapshot(Model):
         description="It was in a started state when it became theirs: work under way, which they carry on before they "
         "take up anything new",
     )
+    under_way_at_start: bool = Field(
+        default=False,
+        description="It was theirs and under way as the run began: started, with them as its assignee, as the scenario "
+        "set it up. They were on it already, so they carry on with it from their first available moment rather than "
+        "taking it up as an answer of theirs would land",
+    )
     due: date | None = None
     rank: int | None = Field(default=None, ge=0)
     turn: int = Field(

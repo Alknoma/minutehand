@@ -902,6 +902,7 @@ class People:
             existing = live.get(item)
             if existing is None:
                 start, finish = pins[item]
+                under_way = _meaning(item, world) is TicketState.STARTED
                 course = CourseSnapshot(
                     person=person.key,
                     item=item,
@@ -909,7 +910,8 @@ class People:
                     since=now,
                     shown=waiting.shown,
                     state=waiting.state,
-                    under_way=_meaning(item, world) is TicketState.STARTED,
+                    under_way=under_way,
+                    under_way_at_start=under_way and _under_way_at_setup(item, world),
                     due=waiting.due,
                     rank=waiting.rank,
                     turn=turn,
@@ -1088,8 +1090,9 @@ class People:
     ) -> Booking:
         """The person's next move on the work they are on: picking it up as soon as an answer of theirs would land
         (drawn from `began`, when that move was first booked, else now), where a fork pins it (`ReplyAt` with
-        `provider`), or where its start take pins it, and never after a pinned finish; someone who never acts
-        unprompted takes it up only as a take pins it. Then its finish at the moment its course says; or, past that
+        `provider`), or where its start take pins it, and never after a pinned finish; work they were on as the run
+        began, from their first available moment; someone who never acts unprompted takes it up only as a take pins
+        it. Then its finish at the moment its course says; or, past that
         moment and not finished (a step its workflow takes first, a review), its next step as soon as they come back to
         it, at once where a take pins the finish. The pending record names the take of the move it pins."""
         now = clock.now()
@@ -1114,6 +1117,16 @@ class People:
                 # someone who never acts unprompted moves it only as its take says: at its finish, in one move
                 drawn = pinned_at(self._scenario, course.since, course.pinned_finish - course.since)
                 take = course.finish_take
+            elif course.under_way_at_start:
+                # on it already as the run began: nothing reaches them to answer, so nothing is drawn
+                resumes = after_available(asked, timedelta(0), person, self._scenario.starts_at, first_ask=first)
+                drawn = Drawn(
+                    source=DrawnFrom.CARRIED,
+                    seed=self._scenario.seed,
+                    asked_at=asked,
+                    offset=resumes - asked,
+                    lands_at=resumes,
+                )
             else:
                 drawn = self._answering(person, course.item, asked, first, None, delay)
             if take is None and course.pinned_finish is not None and drawn.lands_at >= course.pinned_finish:
@@ -2097,6 +2110,24 @@ def _work_places(plans: list[tuple[EntityRef, CourseSnapshot]], waiting: list[En
 def _not_offered(person: Person, take: Take, offers: Sequence[Offer]) -> str:
     return f"{person.key} is pinned to take {take.take!r}, which is not offered: " + ", ".join(
         repr(o.name) for o in offers
+    )
+
+
+def _under_way_at_setup(item: EntityRef, world: Store) -> bool:
+    """Whether a ticket stood started at setup (wake 0, as the scenario set it up) with the assignee it has now: work
+    its person was already on as the run began. Work started or handed to them since is new to them."""
+    seeded: TicketSnapshot | None = None
+    latest: TicketSnapshot | None = None
+    for event in world.events(kinds=[EntityKind.TICKET], providers=[item.provider]):
+        if event.entity == item and isinstance(event.after, TicketSnapshot):
+            latest = event.after
+            if event.wake == 0:
+                seeded = event.after
+    return (
+        seeded is not None
+        and latest is not None
+        and seeded.state is TicketState.STARTED
+        and seeded.assignee_email == latest.assignee_email
     )
 
 

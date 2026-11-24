@@ -1,6 +1,7 @@
 """People carry the work handed to them (docs/design-transitions.md, "Work a person carries"): an issue assigned to a
 person and not finished is theirs to carry over their own time, one piece at a time. They pick it up as an answer of
-theirs would land and move it to a started state; they finish it once the work it takes has passed in their available
+theirs would land (work they were on as the run began, from their first available moment) and move it to a started
+state; they finish it once the work it takes has passed in their available
 time (what Jira says is left of it, else their pace, else as long as they judge it takes them); a workflow that
 needs a review first gets one; an unfinished
 issue that blocks it holds it back, and it resumes with what was left; a take pins the move it names."""
@@ -16,6 +17,7 @@ import pytest
 from minutehand.adapters.providers.jira.state import issue_ref
 from minutehand.application.people import People
 from minutehand.application.replier import PeopleReplier, work_part
+from minutehand.domain.clock import DrawnFrom
 from minutehand.domain.experiment import ReplyAt
 from minutehand.domain.scenario import Person, Scenario, Silent
 from minutehand.domain.world import (
@@ -153,6 +155,44 @@ async def test_work_already_under_way_is_carried_on_before_anything_new_whatever
     assert [b.item for b in booked] == [_ref(site, "FIELD-1")]
     assert _course(site, "tomas", "FIELD-1").under_way
     assert _course(site, "tomas", "LAUNCH-1").status is CourseStatus.QUEUED
+
+
+async def test_work_under_way_as_the_run_began_is_carried_on_from_the_start_not_as_an_answer_would_land(
+    site: Site,
+) -> None:
+    """VAULT-1 was Iris's and in progress when the run began. She was on it already, so she carries on with it from the
+    run's first moment, not three hours in as an answer of hers would land; it moves nothing, and she finishes it as
+    long as she judges it takes her after that."""
+    engine = _engine(site, _scenario(iris={"reply_within": {"min": "PT3H", "max": "PT3H"}}))
+
+    booked = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "iris"]
+    assert [(b.item, b.at) for b in booked] == [(_ref(site, "VAULT-1"), START)]
+    assert booked[0].drawn is not None and booked[0].drawn.source is DrawnFrom.CARRIED, "nothing is drawn"
+    assert _course(site, "iris", "VAULT-1").under_way_at_start
+
+    acted = await engine.act(booked[0].pending, site.store, site.clock)
+    assert acted.transition is None and acted.failure is None, "it is in progress already: carrying on moves nothing"
+    begun = _course(site, "iris", "VAULT-1")
+    assert (begun.started_at, begun.effort, begun.effort_from) == (START, timedelta(hours=6), EffortFrom.PERSON)
+    assert begun.finishes_at == START + timedelta(hours=6)
+
+
+async def test_work_handed_over_already_under_way_is_taken_up_as_an_answer_would_land(site: Site) -> None:
+    """FIELD-1 was Noor's and in progress as the run began. Once the run is under way it is handed to Tomas: he was not
+    on it, so he takes it up three hours later as an answer of his would land, and still before anything new."""
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": NOOR}), 204)
+    transitions = ok(await site.http.get(f"{API}/issue/FIELD-1/transitions"))["transitions"]
+    started = next(t["id"] for t in transitions if t["to"]["statusCategory"]["key"] == "indeterminate")
+    ok(await site.http.post(f"{API}/issue/FIELD-1/transitions", json={"transition": {"id": started}}), 204)
+    site.clock.begin_wake()
+    ok(await site.http.put(f"{API}/issue/FIELD-1/assignee", json={"accountId": TOMAS}), 204)
+    engine = _engine(site, _scenario(tomas={"reply_within": {"min": "PT3H", "max": "PT3H"}}))
+
+    booked = [b for b in (await engine.look(site.store, site.clock)).booked if b.person == "tomas"]
+    assert [(b.item, b.at) for b in booked] == [(_ref(site, "FIELD-1"), START + timedelta(hours=3))]
+    assert booked[0].drawn is not None and booked[0].drawn.source is DrawnFrom.WINDOW
+    handed = _course(site, "tomas", "FIELD-1")
+    assert handed.under_way and not handed.under_way_at_start
 
 
 async def test_work_held_back_by_an_unfinished_blocker_waits_then_resumes_with_what_was_left(site: Site) -> None:
